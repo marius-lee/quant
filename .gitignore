@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.env
+logs/
+*.log
+*.err
+data/market.db
+data/results.db
+data/monitor.db
+data/auto_status.json
+.DS_Store
+.idea/
+*.swp
+*.swo

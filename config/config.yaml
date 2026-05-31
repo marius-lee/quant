@@ -1,0 +1,72 @@
+# 量化交易系统配置 — 5000→100万激进策略版
+
+data:
+  # tushare token（注册获取: https://tushare.pro）
+  # 通过环境变量 TUSHARE_TOKEN 设置，或直接填在此处（注意不要提交到 git）
+  tushare_token: ""
+  # 历史数据起始日期
+  start_date: "2023-01-01"      # 近3年(妖股模式变化快，太旧数据无意义)
+
+factor:
+  # 因子大类开关
+  use_technical: true
+  use_fundamental: false         # 价值因子(PE/PB/股息)对短期极端收益无意义，关闭
+  # 缺失值处理: drop | median | mean | zero
+  na_fill: "median"
+  # 因子标准化: zscore | rank | minmax
+  normalize: "zscore"
+  # 去极值: mad | percentile | none
+  winsorize: "mad"
+
+strategy:
+  # 模型: ensemble (5模型集成)
+  model: "ensemble"
+  # 预测目标: return_1d | return_5d | return_20d
+  target: "return_1d"            # 极短期: 预测明天涨跌，捕捉涨停
+  # 训练窗口（交易日）
+  train_window: 252              # ~1年 (妖股模式变化快，缩短到1年)
+  # 训练/测试分割比例
+  train_split: 0.7
+
+ranker:
+  # ML模型权重（1-ml_weight为妖股信号权重）
+  ml_weight: 0.2                 # 激进: 妖股信号占80%，ML仅作辅助
+  # 行业市值中性化开关
+  neutralize: false              # 关闭: 行业集中和小盘暴露是主动alpha来源
+
+backtest:
+  # 初始资金 — 实盘5000元
+  initial_capital: 5_000
+  # 手续费率
+  commission: 0.0003             # 万三(但实盘最低5元/笔在代码层处理)
+  # 滑点（%）
+  slippage: 0.003                # 提高到千三(小盘股冲击成本更大)
+  # 持仓数量上限 — 5000元最多买2-3只
+  max_positions: 3
+  # 单票仓位上限 — 集中押注
+  max_weight: 0.50
+  # 基准指数
+  benchmark: "000300"            # 沪深300
+
+execution:
+  # 券商: mock | xtquant | easytrader
+  broker: "mock"
+
+risk:
+  # 最大回撤止损线 — 200倍路径必须容忍大幅回撤
+  max_drawdown: 0.80
+  # 单日亏损上限 — 妖股日波动10-20%很正常
+  daily_loss_limit: 0.25
+
+screening:
+  # IC筛选阈值 (提高以减少噪声因子)
+  min_abs_ic: 0.03               # 原0.01太宽松
+  min_ic_ir: 0.15                # 原0.05太宽松
+
+affordable:
+  # 5000元可买性约束
+  max_stock_price: 50            # 最高股价(元)，50元×100股=5000元，买得起1手
+  min_daily_amount: 100_000       # 最低日成交额(DB单位)，过滤僵尸股。5000元不需要高流动性
+  exclude_st: false              # 不排除ST (摘帽是弹性来源)
+  exclude_star_st: true          # 仍排除*ST (退市风险)
+  min_history_days: 120          # 最少交易日(原250天排除了次新股)

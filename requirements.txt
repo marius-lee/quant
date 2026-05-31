@@ -1,0 +1,31 @@
+# A股量化交易系统
+# Core
+numpy>=2.0
+pandas>=2.0
+scipy>=1.12
+
+# Data sources
+akshare>=1.14          # A股免费数据源
+tushare>=1.4           # 备选数据源（需token）
+
+# ML / Factor
+scikit-learn>=1.5
+xgboost>=2.0
+lightgbm>=4.3
+
+# Backtest
+backtrader>=1.9        # 回测框架
+
+# Visualization
+matplotlib>=3.8
+seaborn>=0.13
+plotly>=5.20
+
+# Utils
+pyyaml>=6.0
+joblib>=1.4
+tqdm>=4.66
+
+# Notebook
+jupyter>=1.0
+ipykernel>=6.29

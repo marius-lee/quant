@@ -45,11 +45,19 @@ def generate_weights(signals: pd.Series,
             # 全部预测为负或零时回退为等权
             weights[long_mask] = 1.0 / long_mask.sum()
 
+    elif method == "risk_parity":
+        raise NotImplementedError(
+            "risk_parity method is not yet implemented. "
+            "Use 'equal' or 'prediction' instead."
+        )
+
+    else:
+        raise ValueError(f"unknown weight method: {method}. Use 'equal', 'prediction', or 'risk_parity' (NYI).")
+
     return weights
 
 
 if __name__ == "__main__":
-    stocks = [f"00000{i}" for i in range(1, 11)]
     pred = pd.Series(
         np.random.randn(10) * 0.02,
         index=stocks

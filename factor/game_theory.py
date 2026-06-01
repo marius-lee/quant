@@ -2,18 +2,25 @@
 import numpy as np
 import pandas as pd
 from factor.base import BaseFactor
+from utils.logger import get_logger
 
 
 class GameTheoryFactors(BaseFactor):
     def __init__(self, na_fill="median", windows=(5, 10, 20, 60)):
         super().__init__(na_fill)
         self.windows = windows
+        self.logger = get_logger("factor.game_theory")
 
     def compute(self, data: dict) -> pd.DataFrame:
         close = data["close"]
         ret = close.pct_change()
         amount = data.get("amount", close * data.get("volume", close * 1e7))
         dollar_vol = (amount / 1e8).replace(0, np.nan)
+
+        # 检查数据完整性（compute.py 已提供 fallback，此处做二次校验日志）
+        for key in ("high", "low", "volume", "open"):
+            if key not in data:
+                self.logger.warning(f"game_theory: '{key}' missing from data dict, factor quality degraded")
         H = data.get("high", close * 1.01)
         L = data.get("low", close * 0.99)
         V = data.get("volume", close * 1e7)
@@ -37,7 +44,7 @@ class GameTheoryFactors(BaseFactor):
                 (f"hl_spread_{w}d", hl.rolling(w).mean()),
                 (f"kyle_lambda_{w}d", kyle.rolling(w).mean()),
                 (f"info_arrival_{w}d", (V / V.rolling(w*5, min_periods=1).mean()).clip(0, 10)),
-                (f"nash_distortion_{w}d", ret.rolling(w).skew().abs() + (ret.rolling(w).kurt() - 3).abs()),
+                (f"nash_distortion_{w}d", ret.rolling(w).skew().abs() + ret.rolling(w).kurt().abs()),
             ]
             for fname, vals in pairs:
                 factor_names.append(fname)

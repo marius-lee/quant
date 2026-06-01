@@ -45,8 +45,10 @@ class RiskChecker:
         """检查卖出订单是否合规。"""
         if symbol not in positions:
             return {"ok": False, "reason": f"未持有{symbol}", "proceeds": 0}
-        if positions[symbol] < shares:
-            shares = positions[symbol]
+        pos_data = positions[symbol]
+        held_shares = pos_data.get("shares", 0) if isinstance(pos_data, dict) else pos_data
+        if held_shares < shares:
+            shares = held_shares
         if shares < 100:
             return {"ok": False, "reason": f"可卖股数{shares}<100", "proceeds": 0}
         if prev_close and prev_close > 0:

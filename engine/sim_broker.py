@@ -8,17 +8,19 @@
 """
 import sqlite3, os, json
 from datetime import datetime
+from backtest import compute_commission
 import numpy as np
 import pandas as pd
 from utils.logger import get_logger
 
 logger = get_logger("simulation.broker")
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "results.db")
+from web.db import get_conn as _results_conn
+DB_PATH = None  # unused, connection via _results_conn()
 
 
 def init_simulation():
-    conn = sqlite3.connect(DB_PATH)
+    conn = _results_conn()
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS positions (
@@ -47,17 +49,19 @@ def init_simulation():
         );
     """)
     conn.commit()
-    conn.close()
     logger.info("simulation tables initialized")
 
 
-def execute_simulation(result: dict):
-    """推荐入库后执行模拟交易: 卖出旧仓 → 买入新推荐"""
+def execute_simulation(result: dict, store=None):
+    """推荐入库后执行模拟交易: 卖出旧仓 → 买入新推荐。
+
+    store: DataStore 实例，用于获取最新行情价格（卖出旧仓时使用）。
+           若为 None，则从推荐列表中查找价格。"""
     recs = result.get("recommendations", [])
     if not recs:
         return
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = _results_conn()
     conn.execute("PRAGMA journal_mode=WAL")
     run_id = conn.execute("SELECT MAX(id) FROM runs").fetchone()[0]
     today = datetime.now().strftime("%Y-%m-%d")
@@ -68,10 +72,22 @@ def execute_simulation(result: dict):
     for row in old:
         sym = row[1]  # column 1 = symbol
         if sym not in new_symbols:
-            price = next((r["last_price"] for r in recs if r["symbol"] == sym), row[4])  # cost_price as fallback
+            # 优先从行情数据源获取最新价，回退到推荐列表价格
+            price = 0.0
+            if store:
+                try:
+                    raw = store.get_daily([sym], start=(datetime.now().replace(day=1) - pd.Timedelta(days=30)).strftime("%Y%m%d"))
+                    if not raw.empty and "close" in raw:
+                        price = float(raw["close"].iloc[-1, 0])
+                except Exception:
+                    logger.warning(f"sim unable to get market price for {sym} from store")
+            if price <= 0:
+                price = next((r["last_price"] for r in recs if r["symbol"] == sym), 0.0)
+            if price <= 0:
+                logger.warning(f"sim skip sell {sym}: no valid price available (cost={row[4]}) — position not closed")
+                continue
             proceeds = row[3] * price
-            commission = max(5.0, proceeds * 0.0003)
-            stamp = proceeds * 0.001
+            fee, stamp, total_cost = compute_commission(proceeds, is_sell=True)
             conn.execute(
                 "UPDATE positions SET status='closed' WHERE id=?",
                 (row[0],)
@@ -79,9 +95,9 @@ def execute_simulation(result: dict):
             conn.execute(
                 "INSERT INTO trade_history (trade_date, symbol, name, side, shares, price, cost, commission, run_id) "
                 "VALUES (?,?,?,?,?,?,?,?,?)",
-                (today, sym, row[2], "sell", row[3], price, proceeds, commission + stamp, run_id)
+                (today, sym, row[2], "sell", row[3], price, proceeds, total_cost, run_id)
             )
-            logger.info(f"sim sell: {sym} {row[3]}@{price:.2f} proceeds={proceeds-commission-stamp:.1f}")
+            logger.info(f"sim sell: {sym} {row[3]}@{price:.2f} proceeds={proceeds-total_cost:.1f}")
 
     # 买入新推荐(每只100股, 推荐价)
     for rec in recs:
@@ -93,7 +109,7 @@ def execute_simulation(result: dict):
             continue
         shares = 100
         cost = shares * price
-        commission = max(5.0, cost * 0.0003)
+        fee, stamp, commission = compute_commission(cost, is_sell=False)
 
         # 检查是否已经持有同一只(同一推荐日)
         existing = conn.execute(
@@ -116,12 +132,11 @@ def execute_simulation(result: dict):
         logger.info(f"sim buy: {symbol} {shares}@{price:.2f} cost={cost+commission:.1f}")
 
     conn.commit()
-    conn.close()
 
 
 def get_positions(store=None) -> list:
     """获取当前持仓列表(含最新估值)"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _results_conn()
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT * FROM positions WHERE status='open' ORDER BY buy_date DESC"
@@ -154,18 +169,16 @@ def get_positions(store=None) -> list:
 
         positions.append(p)
 
-    conn.close()
     return positions
 
 
 def get_trades(limit: int = 50) -> list:
     """获取交易历史记录"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _results_conn()
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT * FROM trade_history ORDER BY id DESC LIMIT ?", (limit,)
     ).fetchall()
-    conn.close()
     return [dict(r) for r in rows]
 
 

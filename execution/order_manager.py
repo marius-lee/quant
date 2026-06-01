@@ -55,7 +55,9 @@ class OrderManager:
             else:
                 alerts.append(f"卖出{sym}被风控拦截: {check['reason']}")
 
-        n_new = len(to_buy) + len(to_hold)
+        # 卖出后重新获取现金余额（卖出已增加 cash），再计算买入预算
+        cash = self.broker.get_cash()
+        n_new = len(to_buy)
         if n_new > 0:
             capital_per = cash / n_new
             for sym in to_buy:
@@ -74,6 +76,7 @@ class OrderManager:
                     cash = self.broker.get_cash()
                     if result.get("status") == "filled":
                         positions[sym] = {"shares": max_shares, "cost_price": price, "current_price": price}
+                        # 更新本地副本使后续check_buy的max_positions检查生效
                 else:
                     alerts.append(f"买入{sym}被风控拦截: {check['reason']}")
 

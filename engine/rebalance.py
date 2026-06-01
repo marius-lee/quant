@@ -7,6 +7,7 @@
 import numpy as np
 import pandas as pd
 from backtest.metrics import compute_metrics
+from backtest import compute_commission
 from config.loader import get as cfg
 from utils.logger import get_logger
 
@@ -23,7 +24,11 @@ def run_backtest_with_rebalancing(
     commission: float = None,
     slippage: float = None,
 ) -> dict:
-    """按月再平衡的回测。在每个月初重新预测/排名，调仓至top N。
+    """按周/月再平衡的回测。在每个调仓点重新排名，调仓至top N。
+
+    注意: 当前版本使用 pipeline 启动时的一次性 pred_series 进行所有调仓日排名，
+    而非每个调仓日重新从因子缓存计算最新预测。这意味着后期调仓可能使用过时的因子数据。
+    TODO: 每次调仓时重新加载因子并预测。
 
     Args:
         rebalance_freq: "M"=月度, "W"=周度
@@ -92,9 +97,18 @@ def run_backtest_with_rebalancing(
         # 获取当期收盘价（第一天的价格用于调仓）
         entry_prices = period_close.iloc[0]
 
-        # 确定本期持仓: 使用当前日期有效的预测排名
+        # 确定本期持仓: 排除涨停股（当日无法买入）
+        # 用前周期最后一天的收盘价判断当日涨跌
+        prev_close = close_df.shift(1)
+        if actual_date in prev_close.index:
+            prev_row = prev_close.loc[actual_date]
+            limit_up_mask = (entry_prices / prev_row - 1) > 0.095
+            blocked = set(prev_row[limit_up_mask].index)
+        else:
+            blocked = set()
         available_stocks = [s for s in pred_series.index
-                          if s in entry_prices.index and entry_prices[s] > 0]
+                          if s in entry_prices.index and entry_prices[s] > 0
+                          and s not in blocked]
         if len(available_stocks) < top_n:
             target_stocks = available_stocks
         else:
@@ -109,27 +123,34 @@ def run_backtest_with_rebalancing(
         for sym in to_sell:
             if sym in positions and sym in entry_prices.index:
                 price = entry_prices[sym] * (1 - slippage)
-                cash += positions[sym] * price * (1 - commission)
+                proceeds = positions[sym] * price
+                _, _, sell_cost = compute_commission(proceeds, is_sell=True)
+                cash += proceeds - sell_cost
                 trades.append({
                     "date": actual_date, "symbol": sym, "side": "sell",
                     "shares": positions[sym], "price": price,
                 })
                 del positions[sym]
 
-        # 等权开仓买入
-        n_new = len(to_buy) + len(to_hold)
-        if n_new == 0:
+        # 等权开仓买入：总资产 = 现金 + 已有持仓市值
+        n_all = len(to_buy) + len(to_hold)
+        if n_all == 0:
             continue
 
-        target_value = cash / n_new
+        hold_value = sum(positions[s] * entry_prices[s]
+                         for s in to_hold if s in entry_prices.index and s in positions)
+        total_equity = cash + hold_value
+        target_value = total_equity / n_all
         for sym in to_buy:
             if sym in entry_prices.index:
                 price = entry_prices[sym] * (1 + slippage)
                 shares = int(target_value / price / 100) * 100  # A股手数取整
                 if shares >= 100:
-                    cost = shares * price * (1 + commission)
-                    if cost <= cash:
-                        cash -= cost
+                    trade_value = shares * price
+                    _, _, buy_cost = compute_commission(trade_value, is_sell=False)
+                    total_cost = trade_value + buy_cost
+                    if total_cost <= cash:
+                        cash -= total_cost
                         positions[sym] = positions.get(sym, 0) + shares
                         trades.append({
                             "date": actual_date, "symbol": sym, "side": "buy",
@@ -145,9 +166,11 @@ def run_backtest_with_rebalancing(
                 if abs(diff) > max(100, cash * 0.01):  # 最小交易阈值：100元或1%资金
                     if diff > 0:  # 加仓
                         shares = int(diff / price / 100) * 100
-                        cost = shares * price * (1 + slippage + commission)
-                        if shares >= 100 and cost <= cash:
-                            cash -= cost
+                        trade_value = shares * price * (1 + slippage)
+                        _, _, buy_cost = compute_commission(trade_value, is_sell=False)
+                        total_cost = trade_value + buy_cost
+                        if shares >= 100 and total_cost <= cash:
+                            cash -= total_cost
                             positions[sym] += shares
                             trades.append({
                                 "date": actual_date, "symbol": sym, "side": "buy",
@@ -157,7 +180,9 @@ def run_backtest_with_rebalancing(
                         shares = min(int(-diff / price / 100) * 100, positions[sym] - 100)
                         if shares >= 100:
                             sell_price = price * (1 - slippage)
-                            cash += shares * sell_price * (1 - commission)
+                            sell_proceeds = shares * sell_price
+                            _, _, sell_cost = compute_commission(sell_proceeds, is_sell=True)
+                            cash += sell_proceeds - sell_cost
                             positions[sym] -= shares
                             trades.append({
                                 "date": actual_date, "symbol": sym, "side": "sell",

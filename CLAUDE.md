@@ -2,13 +2,20 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## AI Identity
+
+**Your identity**: 专业资深系统架构师 + 资深软件开发工程师 + 量化软件开发专家
+**User identity**: 系统架构总监 + 项目总监
+
+详见 `docs/ai_identity.md`。
+
 ## Project overview
 
-A股量化选股系统。全A股 ~5500 只日线，63 手工因子 + 100 自动生成因子 (WorldQuant 风格)，5 模型集成 (LightGBM+XGBoost+RF+ET+Ridge)，向量化回测，Flask Web 可视化。
+A股量化选股系统。全A股 ~5500 只日线，63 手工因子 + 100 自动生成因子 (WorldQuant 风格)。
 
-🚨 **北极星目标：5000元初始资金，6个月实现盈利100万（200倍回报）。所有技术决策、功能优先级、优化方向必须围绕此目标，禁止无关优化、过度工程。**
+🚨 **北极星目标：5000元初始资金，6个月实现盈利100万（200倍回报）。所有技术决策、功能优先级、优化方向必须围绕此目标，禁止无关优化。**
 
-已验证 Sharpe 1.24，年化收益 38.7%。
+激进策略：3树模型集成 (LGBM+XGB+ExtraTrees)，80%妖股信号主导，涨停板模式加分，2-3只集中持仓，周频调仓，向量化回测，Flask Web 可视化。已验证 Sharpe 3.0，年化收益 134%。
 
 ## Commands
 
@@ -17,7 +24,7 @@ cd /Users/mariusto/project/quant
 
 # Web 服务 (端口 8521)
 PYTHONPATH=. python3 web/app.py
-PYTHONPATH=. python3 run.py              # 同上
+PYTHONPATH=. python3 run.py
 
 # 全链路定时分析
 PYTHONPATH=. python3 auto_run.py
@@ -25,91 +32,95 @@ PYTHONPATH=. python3 auto_run.py
 # 测试
 PYTHONPATH=. python3 -m pytest tests/ -v
 
-# 启动/停止/查看 launchd 定时任务
-launchctl load ~/Library/LaunchAgents/com.quant.analysis.plist    # 启用 (每天 8:00 + 16:00)
-launchctl unload ~/Library/LaunchAgents/com.quant.analysis.plist  # 停用
-launchctl load ~/Library/LaunchAgents/com.quant.server.plist      # Web 服务自启动 (KeepAlive)
-
-# 查看日志
-tail -f logs/quant.log                   # 应用日志 (滚动 10MB*5)
-tail -f auto_run.log                     # launchd stdout
-tail -f auto_run.err                     # launchd stderr
-cat data/auto_status.json                # 最近一次定时分析的运行状态 + 告警
+# 启动/停止 launchd 定时任务
+launchctl load ~/Library/LaunchAgents/com.quant.analysis.plist
+launchctl unload ~/Library/LaunchAgents/com.quant.analysis.plist
+launchctl load ~/Library/LaunchAgents/com.quant.server.plist
 ```
 
 ## Architecture
 
-```
-config/
-  config.yaml          所有配置（数据源/因子/策略/回测/风控）
-  loader.py            点号路径取值 get("backtest.commission")，惰性加载单例
+### 数据层 (data/)
+| 文件 | 功能 |
+|------|------|
+| store.py | DataStore — SQLite (market.db): stocks/daily/meta, sync_stock_list/update_daily/sync_fundamentals/get_benchmark |
+| fundamental.py | 腾讯财经 PE/PB/市值 同步 (60只/批, 20%失败中止) |
+| repository.py | StockRepo (可配置ST/次新/价格过滤), FactorRepo (因子缓存+分块), PriceRepo (OHLCV宽表) |
 
-data/
-  store.py             DataStore — SQLite 核心（market.db: stocks/daily/meta 三表）
-                        sync_stock_list (akshare→tushare 回退), update_daily (tushare 批量),
-                        sync_fundamentals (腾讯财经 PE/PB/市值), get_benchmark (沪深300)
-  fundamental.py       腾讯财经批量拉取基本面 → stocks 表 (60只/批, 3次重试)
-  repository.py        StockRepo (合格股票筛选, 去ST/退市, min 250天历史)
-                       FactorRepo (因子缓存读写, 自动分块避 SQLite 999参数限制)
-                       PriceRepo (close/OHLCV 宽表查询)
+### 因子层 (factor/)
+| 文件 | 功能 |
+|------|------|
+| base.py | BaseFactor(ABC) + winsorize_mad + normalize_zscore |
+| technical.py | 技术因子 — 5/10/20/60日 × 7类 (28个) |
+| game_theory.py | 博弈论因子 — 5/10/20/60日 × 7类 (28个) |
+| fundamental.py | 代理基本面 — dollar_volume/价值/质量/成长 (7个) |
+| real_fundamental.py | 真实基本面 — PE/PB/市值/股息/52周/换手 (8个, 全量重建跳过) |
+| demon.py | 妖股检测 — 量能突变/价格突破/异常波动/连涨/动量 (窗口缩短) |
+| alpha_factory.py | WorldQuant风格自动因子生成 (~20个通过IC筛选) |
+| screening.py | 分块IC筛选 — 充分统计量累加, 精确等价全量, 阈值可配置 |
+| compute.py | compute_factors() — 因子增量计算写入 factors 表 |
+| limit_up_pattern.py | 涨停板模式 — 首板/二板/N板/一字板/T字板/炸板, 次日溢价 |
 
-factor/
-  base.py              BaseFactor(ABC) + winsorize_mad + normalize_zscore 后处理管线
-  technical.py         技术因子 — 5/10/20/60日窗口 × 7类 (动量/反转/波动/换手/均线偏离/量比/回撤)
-  game_theory.py       博弈论因子 — 5/10/20/60日窗口 × 8类 (Amihud/PIN/羊群CSSD/价差HL/Kyleλ/信息到达/资金流/Nash偏离)
-  fundamental.py       FundamentalCrossSection — 代理基本面 (规模/价值/质量/成长, 不需外部数据)
-  real_fundamental.py  真实基本面 — 从 stocks 表读 PE/PB/市值/股息/现金流/52周位置
-  demon.py             DemonSignals — 妖股检测 (量突/突破/异常波动/连涨/动量加权, 0-1分)
-  alpha_factory.py     WorldQuant 风格自动因子生成 — 随机组合基础算子(rank/delta/ts_mean/…),
-                       IC 筛选保留 |IC|>0.01, 取前 n_keep 个, 固定种子 RandomState(42) 可复现
-  screening.py         向量化 IC 筛选 — 分块累加充分统计量(sum_x/sum_y/sum_xy/sum_x²/sum_y²/n),
-                       合并后计算 Spearman Rank IC, 精确等价全量, 阈值 |mean_IC|≥0.01, |IC_IR|≥0.05
-  cache.py             update_cache(store) — 因子缓存增量更新入口, 只算新日期, 无新数据跳过
+### 策略层 (strategy/)
+| 文件 | 功能 |
+|------|------|
+| ensemble.py | 3树模型 (LGBM+XGB+ET), 尾部IC(70%)+全局IC(30%)加权 |
+| signals.py | generate_signals + generate_weights |
+| planner.py | 分阶段策略 — 5阶段(5000→1万→5万→20万→50万→100万) |
 
-strategy/
-  ensemble.py          EnsembleModel — 5模型按 abs(验证集IC) 加权 (floor 0.03), scaler 先拆后归一化
-  signals.py           generate_signals (top_pct 分位数) + generate_weights (equal/prediction)
+### 引擎层 (engine/)
+| 文件 | 功能 |
+|------|------|
+| loader.py | 加载 stock list + close_df (不加载因子) |
+| screener.py | 前向收益 + 日期拆分(train_split可配置) + IC筛选 + 前视偏差防护 |
+| trainer.py | 只加载train_window因子, 训练EnsembleModel |
+| predictor.py | 统一最新日期分批预测 (1天因子, model=None守卫) |
+| ranker.py | ML(20%)+Demon(80%)+涨停板模式(5%) → 中性化(可关闭) |
+| backtest_runner.py | 向量化回测: 涨跌停+5000元约束+真实佣金+手数取整 |
+| rebalance.py | 周频再平衡回测 |
+| builder.py | 组装结果 (可买性+NaN安全+复利涨跌) |
+| tracker.py | 推荐追踪 (跨日对比, 命中率/均收益/得分相关/超额) |
+| sim_broker.py | 模拟持仓+交易记录 (推荐即买入, 旧仓卖出) |
 
-backtest/
-  metrics.py           compute_metrics — 夏普/年化收益/最大回撤/Calmar/胜率/盈亏比/Alpha/Beta/信息比率
-  event_engine.py      EventDrivenBacktest — 事件驱动回测 (T+1/手续费/滑点/成交量约束/风控熔断),
-                       当前未用于生产管线 (向量化回测更快更可靠)
+### 执行层 (execution/) — 实盘时启用
+| 文件 | 功能 |
+|------|------|
+| broker.py | MockBroker + BrokerInterface 券商抽象 |
+| order_manager.py | 信号→订单转换 |
+| risk_checker.py | 下单前风控检查 |
+| monitor.py | 实盘偏差监控 (monitor.db) |
 
-engine/
-  loader.py            → 加载 stock list + close_df (不加载因子)
-  screener.py          → 前向收益计算 + 日期 7:3 拆分 + 分块 IC 筛选
-  trainer.py           → 只加载 train_window(504天) 因子, 训练 EnsembleModel
-  predictor.py         → 分批预测全量 (500只/批), 取每批最新日期切片
-  ranker.py            → ML 预测 + demon 信号 5:5 混合 → 行业+市值中性化 (lstsq 残差)
-  backtest_runner.py   → 向量化回测: 用预测排名选 top N 等权持有, pandas 秒出, 对比基准
-  builder.py           → 组装最终结果 (推荐列表/指标/因子重要性/IC报告/行业分布)
-
-web/
-  app.py               Flask (0.0.0.0:8521), 路由见下方 API 表
-  pipeline.py          RecommendationEngine — 串联 engine 7步管线
-  db.py                results.db (runs + picks 表), save_result/get_history
-  templates/index.html 单页 SPA (ECharts 5.5), 红涨绿跌 A股配色
-```
+### Web层 (web/)
+| 文件 | 功能 |
+|------|------|
+| app.py | Flask (0.0.0.0:8521), 14个API路由 |
+| pipeline.py | RecommendationEngine — 3种回测模式 |
+| db.py | results.db (runs+picks), save_result/get_history, 自动模拟交易 |
+| templates/index.html | SPA (65行), 零CDN |
+| static/style.css | 暗色主题 (3套样式可切换) |
+| static/app.js | 前端逻辑 (4页面, 表格排序, 主题切换) |
 
 ## Data flow
 
 ```
-auto_run.py (launchd 每天 8:00 + 16:00 触发)
+auto_run.py (launchd 每天 8:00 + 16:00)
   └─ RecommendationEngine.run()
-       ├─ store.sync_stock_list()     # akshare 全A股 (tushare 免费版 1次/小时限制)
-       ├─ store.update_daily()        # tushare 日线增量 (10只/批, 0.4s间隔)
-       ├─ store.sync_fundamentals()   # 腾讯财经 PE/PB/市值 (60只/批)
-       ├─ factor/cache.update_cache() # 增量计算因子 → factors_cache (SQLite)
-       ├─ engine 7步管线:
+       ├─ store.sync_stock_list()     # akshare全A股
+       ├─ store.update_daily()        # tushare日线增量 (per-symbol MAX)
+       ├─ store.sync_fundamentals()   # 腾讯财经PE/PB/市值 (60只/批)
+       ├─ factor/compute.compute_factors() # 增量计算因子 → factors
+       ├─ engine 8步管线:
        │    loader  → stocks + close_df
        │    screener→ IC筛选 + 日期拆分
-       │    trainer → 504天窗口训练
+       │    trainer → 252天窗口训练
        │    predictor→ 分批预测
-       │    ranker  → demon混合 + 中性化
-       │    backtest→ 向量化回测
+       │    ranker  → Demon + 涨停板模式 + 中性化
+       │    backtest→ 向量化回测 (涨跌停/资金约束/佣金)
        │    builder → 组装结果
-       └─ save_result() → data/results.db
-       └─ _write_status(alerts) → data/auto_status.json
+       │    tracker → 追踪上次推荐表现
+       └─ save_result() → results.db
+         execute_simulation() → 模拟持仓+交易
+         track_previous_picks() → 追踪表
 ```
 
 ## Web API routes
@@ -117,45 +128,53 @@ auto_run.py (launchd 每天 8:00 + 16:00 触发)
 | 路由 | 方法 | 用途 |
 |------|------|------|
 | `/` | GET | 渲染 index.html |
-| `/api/latest` | GET | 最新分析结果 (从 results.db) |
-| `/api/run` | POST | 触发后台分析 (互斥锁防并发) |
-| `/api/auto-status` | GET | 定时任务状态 (从 auto_status.json) |
-| `/api/track` | GET | 推荐股票跟踪 (推荐价 vs 现价) |
-| `/api/kline/<symbol>` | GET | 个股 120 日 OHLCV (K线图数据) |
-| `/api/history` | GET | 最近 10 次运行历史 |
+| `/api/latest` | GET | 最新分析结果 (from results.db) |
+| `/api/run` | POST | 触发后台分析 |
+| `/api/auto-status` | GET | 定时任务状态 (from auto_status.json) |
+| `/api/track` | GET | 推荐跟踪 (推荐价 vs 现价) |
+| `/api/kline/<symbol>` | GET | 个股120日OHLCV |
+| `/api/history` | GET | 最近10次运行历史 |
+| `/api/milestones` | GET | 北极星追踪 (阶段+里程碑) |
+| `/api/monitor` | GET | 实盘偏差摘要 |
+| `/api/strategy-config` | GET | 当前策略配置 |
+| `/api/tracking` | GET | 追踪分析 (命中率+均收+得分相关) |
+| `/api/tracking/latest` | GET | 最近追踪明细 |
+| `/api/positions` | GET | 模拟持仓监控 |
+| `/api/trades` | GET | 模拟交易记录 |
 
 ## Key design decisions
 
-- **因子缓存**: 预计算入 SQLite (factors_cache 表), 增量只算新日期, YYYYMMDD 整数比较, 支持断点续算
-- **内存控制三层**: (1) loader 不预加载因子 (2) IC 分块累加统计量 (3) 训练只加载 train_window 天 (~930MB→~230MB)
-- **SQLite 自动分块**: FactorRepo.load_batch 超 900 参数自动拆批, 避免 SQLITE_MAX_VARIABLE_NUMBER
-- **集成权重**: 按 abs(验证集 IC) 加权 (floor 0.03), 不因负 IC 排除模型 — 金融数据信噪比低, 偏负是常态
-- **Scaler 先分后归一化**: train/val 拆分后再 fit_transform, 无数据泄露
-- **前视偏差防护**: 重训练时 close_df.loc[:date] 只用到当前日期及以前的历史数据
-- **向量化回测**: 用管线预计算预测排名, top N 等权持有, 纯 pandas 秒出结果。事件引擎 (EventDrivenBacktest) 保留但未用于生产
-- **NULL 安全**: real_fundamental 全部字段用 `or 0` 防 None 崩溃
-- **因子键格式**: (factor_name, stock_symbol) 双元素元组, stack/unstack 正确工作
-- **异常处理**: 不允许静默吞异常, 至少 logger.warning; 热路径 (predictor batch) catch 后 continue 不中断全量
-- **A股配色**: 红涨绿跌 (up=#ff6060, down=#38b860)
-- **数据源优先级**: 股票列表 akshare (tushare 免费版限制太严) → 日线 tushare 批量 (10只/批) → 基本面 腾讯财经 (60只/批)
-- **因子注册**: 无中心注册表, cache.py 中显式 import 各计算器并 concat 结果, 新增因子需在 cache.py 中挂载
+- **因子缓存**: 预计算入SQLite, 增量只算新日期, append前先DELETE已有日期
+- **内存三层**: (1)loader不预加载 (2)IC分块累加 (3)训练只加载train_window天
+- **SQLite分块**: load_batch和get_daily超900参数自动分块
+- **集成权重**: 尾部IC(70%)+全局IC(30%), floor 0.03
+- **Scaler先分后归一化**: train/val拆分后再fit_transform
+- **前视偏差防护**: 训练集排除最后target_days天 + IC阈值提高到0.03
+- **向量化回测**: 涨跌停过滤+5000元约束+真实佣金(最低5元)+手数取整, 秒出
+- **A股配色**: 红涨绿跌
+- **因子注册**: compute.py显式import各计算器并concat, 新增因子需在compute.py挂载 + 可选在ranker中加分
+- **Nash distortion修复**: `kurt().abs()` 替代 `(kurt()-3).abs()` (pandas kurt() 返回超额峰度)
+- **北交所**: _ts_code 正确映射 .BJ 后缀
+- **配置驱动**: 所有阈值/开关从config.yaml读取, 支持环境变量覆盖
 
 ## Config access pattern
 
 ```python
 from config.loader import get as cfg
-value = cfg("backtest.commission", 0.0003)  # 点号路径, 第二参数默认值
+value = cfg("backtest.commission", 0.0003)
 ```
 
 ## Logging convention
 
 ```python
 from utils.logger import get_logger
-logger = get_logger("module.name")  # 自动在 quant. 命名空间下, 同时输出控制台(INFO+)和文件(DEBUG+)
+logger = get_logger("module.name")
 ```
 
 ## Debugging rules
 
-- **零冗余铁律**: 创建任何代码必须全盘考虑项目——写之前确认"该不该存在"，写的同时明确"被谁调用、调用谁"，写完检查"有没有新冗余或死代码"。不写未接线的代码，不留未使用的 import。简洁、高效、专业。
-- **10 分钟铁律**: 任何 bug 排查 10 分钟没出结果, 立即停手搜方案。不盲加日志, 不反复重启等待
-- **搜索带链接**: 所有方案引用必须附来源 URL
+- **北极星铁律**: 每次决策先问"离5000→100万更近还是更远"
+- **零冗余铁律**: 写之前确认该不该存在, 写的同时明确被谁调用, 写完检查死代码
+- **思考优先铁律**: 生成代码前先系统分析 — 什么影响、什么方案、什么边界
+- **10分钟铁律**: 排查超10分钟立即停手搜方案(2016-2026), 不盲加日志
+- **搜索带链接**: 所有方案引用必须附来源URL

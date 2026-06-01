@@ -38,18 +38,20 @@ class StockRepo:
 
         conditions = ["1=1"]
         if exclude_st and exclude_star_st:
-            conditions.append("(s.name NOT LIKE '%ST%' AND s.name NOT LIKE '%*ST%' AND s.name NOT LIKE '%退%')")
+            conditions.append("(s.name NOT LIKE '%ST%' AND s.name NOT LIKE '%退%')")
         elif exclude_star_st:
             conditions.append("(s.name NOT LIKE '%*ST%' AND s.name NOT LIKE '%退%')")
         elif exclude_st:
-            conditions.append("s.name NOT LIKE '%ST%'")
+            # 排除 ST 但保留 *ST: NOT (name LIKE '%ST%' AND name NOT LIKE '%*ST%')
+            # = name NOT LIKE '%ST%' OR name LIKE '%*ST%'
+            conditions.append("(s.name NOT LIKE '%ST%' OR s.name LIKE '%*ST%')")
+            conditions.append("s.name NOT LIKE '%退%'")
 
         where_clause = " AND ".join(conditions)
 
         # 获取最近日期的收盘价用于可买性过滤
         latest_date = conn.execute("SELECT MAX(date) FROM daily").fetchone()[0]
         if not latest_date:
-            conn.close()
             return []
 
         symbols = [r[0] for r in conn.execute(f"""
@@ -61,6 +63,8 @@ class StockRepo:
         """, (min_days,)).fetchall()]
 
         # 可买性过滤: 股价和日成交额约束
+        if not symbols:
+            return []
         if max_price > 0 or min_amount > 0:
             placeholders = ",".join("?" for _ in symbols)
             df = pd.read_sql_query(
@@ -77,7 +81,6 @@ class StockRepo:
                 affordable.add(row["symbol"])
             symbols = [s for s in symbols if s in affordable]
 
-        conn.close()
         return symbols
 
     def get_fundamentals(self, symbols: list) -> pd.DataFrame:
@@ -91,27 +94,32 @@ class StockRepo:
         return dict(zip(df["symbol"], df["name"])) if not df.empty else {}
 
     def get_industry_mv(self, symbols: list) -> pd.DataFrame:
-        """symbol → industry + total_mv。若 industry 列不存在则返回空。"""
+        """symbol → industry + total_mv。若 industry 列不存在则返回空。
+
+        TODO: industry 列需要从外部数据源（如东方财富/申万行业分类）同步创建。
+        当前 stocks 表无 industry 列，此方法始终返回空 DataFrame。
+        """
         conn = self.store._connect()
         cols = [r[1] for r in conn.execute("PRAGMA table_info(stocks)").fetchall()]
-        conn.close()
         if "industry" not in cols:
+            logger.warning("industry column not available — get_industry_mv returns empty")
             return pd.DataFrame()
         return self._query_symbols("symbol,industry,total_mv", symbols)
 
     def _query_symbols(self, cols: str, symbols: list) -> pd.DataFrame:
+        if not symbols:
+            return pd.DataFrame()
         conn = self.store._connect()
         ph = ",".join("?" for _ in symbols)
         df = pd.read_sql_query(
             f"SELECT {cols} FROM stocks WHERE symbol IN ({ph})",
             conn, params=symbols
         )
-        conn.close()
         return df
 
 
 class FactorRepo:
-    """因子缓存（factors_cache 表）读写"""
+    """因子缓存（factors 表）读写"""
 
     def __init__(self, store: DataStore):
         self.store = store
@@ -135,7 +143,7 @@ class FactorRepo:
 
     def _load_batch_chunk(self, symbols: list, start_date: str = None,
                           end_date: str = None) -> pd.DataFrame:
-        # 统一日期格式: factors_cache 存 YYYY-MM-DD 字符串 (pandas to_sql 生成)
+        # 统一日期格式: factors 存 YYYY-MM-DD 字符串 (pandas to_sql 生成)
         def _norm_date(d):
             if d is None:
                 return None
@@ -162,10 +170,9 @@ class FactorRepo:
                 end_next = (datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
                 params.append(end_next)
         df = pd.read_sql_query(
-            f"SELECT * FROM factors_cache WHERE {where} ORDER BY date",
+            f"SELECT * FROM factors WHERE {where} ORDER BY date",
             conn, params=params
         )
-        conn.close()
         if df.empty:
             return pd.DataFrame()
         df["date"] = pd.to_datetime(df["date"])
@@ -175,26 +182,22 @@ class FactorRepo:
     def save_batch(self, df: pd.DataFrame, mode: str = "append"):
         """写入一批因子数据"""
         conn = self.store._connect()
-        df.to_sql("factors_cache", conn, if_exists=mode, index=False, chunksize=30000)
+        df.to_sql("factors", conn, if_exists=mode, index=False, chunksize=30000)
         conn.commit()
-        conn.close()
 
     def max_date(self) -> str:
         """缓存中最新的日期"""
         conn = self.store._connect()
         try:
-            return conn.execute("SELECT MAX(date) FROM factors_cache").fetchone()[0]
+            return conn.execute("SELECT MAX(date) FROM factors").fetchone()[0]
         except Exception:
-            logger.warning("failed to read factors_cache max date")
+            logger.warning("failed to read factors max date")
             return None
-        finally:
-            conn.close()
 
     def ensure_index(self):
         conn = self.store._connect()
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_fc_uniq ON factors_cache(stock,date)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_factors_uniq ON factors(stock,date)")
         conn.commit()
-        conn.close()
 
 
 class PriceRepo:

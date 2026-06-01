@@ -139,6 +139,7 @@ class EnsembleModel:
             if hasattr(model, "feature_importances_"):
                 imp += w * model.feature_importances_
             elif hasattr(model, "coef_"):
+                # 预留: 线性模型（如 Ridge/LinearRegression）使用系数绝对值作为重要性
                 imp += w * np.abs(model.coef_).flatten()
         imp /= total_w
         return pd.Series(imp, index=self.feature_names).sort_values(ascending=False)

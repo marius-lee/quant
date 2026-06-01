@@ -73,7 +73,14 @@ class MockBroker(BrokerInterface):
         return dict(self._positions)
 
     def get_price(self, symbol: str) -> float:
+        """返回该 symbol 的最近已知价格。注意: mock 模式下价格仅在 buy() 时设置，
+        不会随市场自动更新 — 实盘场景下应使用 execute_simulation 或 DataStore 获取实时行情。"""
         return self._positions.get(symbol, {}).get("current_price", 0)
+
+    def update_price(self, symbol: str, price: float):
+        """更新持仓的当前市价（供外部行情源调用）"""
+        if symbol in self._positions and price > 0:
+            self._positions[symbol]["current_price"] = price
 
     def buy(self, symbol: str, price: float, shares: int) -> dict:
         if shares < 100:
@@ -133,19 +140,20 @@ def get_broker(name: str = None, **kwargs) -> BrokerInterface:
     elif name == "xtquant":
         try:
             import xtquant
-            logger.info("xtquant connected")
+            logger.error("xtquant real broker not yet implemented — falling back to mock")
+            # TODO: implement XtQuantBroker(BrokerInterface) for real trading
+            # Reference: http://docs.thinktrader.net/pages/1ec9d0/
         except ImportError:
             logger.error("xtquant not installed, falling back to mock")
-            return MockBroker()
-        return MockBroker()
+        return MockBroker(initial_cash=cfg("backtest.initial_capital", 5000))
     elif name == "easytrader":
         try:
             import easytrader
-            logger.info("easytrader loaded")
+            logger.error("easytrader real broker not yet implemented — falling back to mock")
+            # TODO: implement EasyTraderBroker(BrokerInterface) for real trading
         except ImportError:
             logger.error("easytrader not installed, falling back to mock")
-            return MockBroker()
-        return MockBroker()
+        return MockBroker(initial_cash=cfg("backtest.initial_capital", 5000))
     else:
         logger.warning(f"unknown broker: {name}, using mock")
         return MockBroker()

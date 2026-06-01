@@ -63,12 +63,13 @@ def get_strategy_config(capital: float) -> dict:
     }
 
 
-def compute_milestones(capital: float, daily_return: float = 0.02) -> list:
+def compute_milestones(capital: float, daily_return: float = 0.005) -> list:
     """计算资金翻倍里程碑
 
     Args:
         capital: 当前资金
-        daily_return: 日均收益率 (激进目标: 2%)
+        daily_return: 日均收益率 (默认0.5%=年化250%，已远超市场平均。
+                      原默认2%年化14000%极不现实，降低到可量化范围内)
 
     Returns: [{target, days, date, progress_pct}]
     """

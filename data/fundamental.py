@@ -1,8 +1,10 @@
 """基本面数据同步。
 
-数据源优先级:
-  1. 腾讯财经 qt.gtimg.cn — 批量 PE/PB/市值, 66只/次, ~40秒全量
-  2. 东方财富 push2 — 备用 (PE+市值/100只或单股PB)
+数据源:
+  1. 腾讯财经 qt.gtimg.cn — 批量 PE/PB/市值, 60只/次
+  2. 东方财富 push2 — 备用 (TODO: 尚未实现，当前仅使用腾讯财经)
+
+TODO: 实现东方财富回退路径，提高数据获取鲁棒性
 """
 
 import re
@@ -15,14 +17,8 @@ from utils.logger import get_logger
 logger = get_logger("data.fundamental")
 
 
-def sync_all(db_path: str, max_pb_fetch: int = 0) -> dict:
-    """全量同步 PE/PB/市值。
-
-    优先腾讯财经(PE/PB/市值三合一, 批量), 失败回退东方财富。
-    """
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
+def sync_all(conn, max_pb_fetch: int = 0) -> dict:
+    """全量同步 PE/PB/市值。conn 为 DataStore 共享连接。"""
     _ensure_columns(conn)
 
     result = _tencent_batch(conn)
@@ -30,7 +26,6 @@ def sync_all(db_path: str, max_pb_fetch: int = 0) -> dict:
     mv_count = conn.execute(
         "SELECT COUNT(*) FROM stocks WHERE total_mv > 0"
     ).fetchone()[0]
-    conn.close()
 
     logger.info(
         f"fundamentals done: PE={result['pe_count']} "
@@ -134,7 +129,7 @@ def _tencent_batch(conn) -> dict:
                 break
             time.sleep(3)
 
-        if (i + batch_size) % 1000 == 0:
+        if (i // batch_size + 1) % 15 == 0:  # 每15批(900只)提交一次
             conn.commit()
             logger.info(f"tencent: {min(i+batch_size, len(symbols))}/{len(symbols)}, {updated} updated")
 

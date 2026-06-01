@@ -17,11 +17,17 @@ from utils.logger import get_logger
 logger = get_logger("execution.monitor")
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "monitor.db")
+_conn = None  # 懒加载连接，任务结束时释放
+def _get_conn():
+    global _conn
+    if _conn is None:
+        _conn = sqlite3.connect(DB_PATH)
+        _conn.execute("PRAGMA journal_mode=WAL")
+    return _conn
 
 
 def init_monitor_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL")
+    conn = _get_conn()
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS trade_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,33 +60,31 @@ def init_monitor_db():
         );
     """)
     conn.commit()
-    conn.close()
 
 
 def log_trade(date: str, symbol: str, side: str, signal_price: float,
               actual_price: float, shares: int, status: str, reason: str = ""):
     slippage = (actual_price / signal_price - 1) * 10000 if signal_price > 0 else 0
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     conn.execute("""
         INSERT INTO trade_log (trade_date, symbol, side, signal_price, actual_price, shares, slippage_bps, status, reason)
         VALUES (?,?,?,?,?,?,?,?,?)
     """, (date, symbol, side, signal_price, actual_price, shares, round(slippage), status, reason))
     conn.commit()
-    conn.close()
 
     if abs(slippage) > 50:  # 滑点>50bps告警
         _alert(date, "slippage", f"{symbol} {side} 滑点{slippage:.0f}bps (signal={signal_price:.2f} actual={actual_price:.2f})", "warning")
 
 
-def update_daily_pnl(date: str, recs: list, cash: float, portfolio_value: float, n_positions: int):
+def update_daily_pnl(date: str, recs: list, cash: float, portfolio_value: float, n_positions: int,
+                     expected_return: float = 0.0, actual_return: float = 0.0):
     """记录每日盈亏。recs: 当日信号推荐的股票列表"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     conn.execute("""
-        INSERT OR REPLACE INTO daily_pnl (date, cash, portfolio_value, n_positions, alerts)
-        VALUES (?,?,?,?,?)
-    """, (date, cash, portfolio_value, n_positions, json.dumps([])))
+        INSERT OR REPLACE INTO daily_pnl (date, expected_return, actual_return, cash, portfolio_value, n_positions, alerts)
+        VALUES (?,?,?,?,?,?,?)
+    """, (date, expected_return, actual_return, cash, portfolio_value, n_positions, json.dumps([])))
     conn.commit()
-    conn.close()
 
 
 def compute_deviation(expected_daily_return: float, actual_daily_return: float, days: int = 1) -> dict:
@@ -107,7 +111,7 @@ def compute_deviation(expected_daily_return: float, actual_daily_return: float, 
 
 def get_monitor_summary(days: int = 30) -> dict:
     """获取最近N天的监控摘要"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     conn.row_factory = sqlite3.Row
 
     # 成交率
@@ -122,7 +126,6 @@ def get_monitor_summary(days: int = 30) -> dict:
     # 最近告警
     alerts = [dict(r) for r in conn.execute("SELECT * FROM deviation_alerts ORDER BY id DESC LIMIT 20").fetchall()]
 
-    conn.close()
     return {
         "total_trades": total_trades,
         "fill_rate": round(fill_rate * 100, 1),
@@ -132,11 +135,10 @@ def get_monitor_summary(days: int = 30) -> dict:
 
 
 def _alert(date: str, alert_type: str, detail: str, severity: str = "info"):
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     conn.execute("INSERT INTO deviation_alerts (date, alert_type, detail, severity) VALUES (?,?,?,?)",
                  (date, alert_type, detail, severity))
     conn.commit()
-    conn.close()
     logger.warning(f"[{severity.upper()}] {alert_type}: {detail}")
 
 

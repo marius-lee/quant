@@ -6,6 +6,7 @@
 import numpy as np
 import pandas as pd
 from typing import Callable
+from backtest import compute_commission
 from utils.logger import get_logger
 
 logger = get_logger("backtest.engine")
@@ -83,15 +84,21 @@ class EventDrivenBacktest:
                 if np.isnan(price) or price <= 0:
                     continue
 
-                # 成交量约束: 不超过当日成交量的 5%（以手为单位取整）
-                max_shares = int(today_volume.get(sym, 1e9) * 0.05 // 100 * 100) if today_volume is not None else 999999900
+                # 成交量约束: 仅对买入限制（不超过当日成交量的5%），卖出不受此约束
+                max_buy_shares = int(today_volume.get(sym, 1e9) * 0.05 // 100 * 100) if today_volume is not None else 999999900
                 target_shares = int(diff_value / price / 100) * 100
-                shares = max(-max_shares, min(max_shares, target_shares))
+                # 买入: 上限为 max_buy_shares；卖出: 无成交量上限
+                if target_shares > 0:
+                    shares = min(max_buy_shares, target_shares)
+                else:
+                    shares = target_shares  # 卖出不做成交量限制
 
                 if shares == 0:
                     continue
 
-                cost = abs(shares) * price * (1 + self.commission + self.slippage)
+                trade_value = abs(shares) * price
+                fee, stamp, total_fee = compute_commission(trade_value, is_sell=(shares < 0))
+                cost = trade_value * (1 + self.slippage) + total_fee
 
                 if shares > 0:
                     planned_buys.append((sym, shares, price, cost))
@@ -99,8 +106,11 @@ class EventDrivenBacktest:
                     current_shares = self.positions.get(sym, 0)
                     sell_shares = min(abs(shares), current_shares)
                     if sell_shares > 0:
+                        sell_value = sell_shares * price
+                        sell_fee, sell_stamp, sell_total = compute_commission(sell_value, is_sell=True)
+                        net_proceeds = sell_value * (1 - self.slippage) - sell_total
                         self.positions[sym] = current_shares - sell_shares
-                        self.cash += sell_shares * price * (1 - self.commission - self.slippage)
+                        self.cash += net_proceeds
                         self.trades.append({
                             "date": date, "symbol": sym, "shares": -sell_shares,
                             "price": price, "side": "sell",
@@ -154,7 +164,9 @@ class EventDrivenBacktest:
         for sym, shares in list(self.positions.items()):
             p = prices.get(sym, 0)
             if shares > 0 and not np.isnan(p) and p > 0:
-                self.cash += shares * p * (1 - self.commission - self.slippage)
+                sell_value = shares * p
+                sell_fee, sell_stamp, sell_total = compute_commission(sell_value, is_sell=True)
+                self.cash += sell_value * (1 - self.slippage) - sell_total
                 self.trades.append({
                     "date": date, "symbol": sym, "shares": -shares,
                     "price": p, "side": "sell", "reason": reason,
@@ -200,7 +212,6 @@ if __name__ == "__main__":
     stocks = [r[0] for r in conn.execute(
         "SELECT symbol FROM daily GROUP BY symbol HAVING COUNT(*)>=250 LIMIT 30"
     ).fetchall()]
-    conn.close()
 
     raw = store.get_daily(stocks)
     prices = raw["close"].sort_index().dropna(how="all")

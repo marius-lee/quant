@@ -3,24 +3,16 @@
 data:
   # tushare token（注册获取: https://tushare.pro）
   # 通过环境变量 TUSHARE_TOKEN 设置，或直接填在此处（注意不要提交到 git）
-  tushare_token: ""
+  tushare_token: "aeeb8c7d0bdeb7d3e63e737490f3e8f9e97198ec6c85c6978d44f4ae"
   # 历史数据起始日期
-  start_date: "2023-01-01"      # 近3年(妖股模式变化快，太旧数据无意义)
+  start_date: "2020-01-01"      # ~6年历史 (妖股模式变化快但需足够训练样本)
 
 factor:
   # 因子大类开关
   use_technical: true
   use_fundamental: false         # 价值因子(PE/PB/股息)对短期极端收益无意义，关闭
-  # 缺失值处理: drop | median | mean | zero
-  na_fill: "median"
-  # 因子标准化: zscore | rank | minmax
-  normalize: "zscore"
-  # 去极值: mad | percentile | none
-  winsorize: "mad"
 
 strategy:
-  # 模型: ensemble (5模型集成)
-  model: "ensemble"
   # 预测目标: return_1d | return_5d | return_20d
   target: "return_1d"            # 极短期: 预测明天涨跌，捕捉涨停
   # 训练窗口（交易日）
@@ -43,8 +35,8 @@ backtest:
   slippage: 0.003                # 提高到千三(小盘股冲击成本更大)
   # 持仓数量上限 — 5000元最多买2-3只
   max_positions: 3
-  # 单票仓位上限 — 集中押注
-  max_weight: 0.50
+  # 单票仓位上限 — 5000元集中押注，不设单票限（由max_positions控制）
+  max_weight: 1.00
   # 基准指数
   benchmark: "000300"            # 沪深300
 
@@ -66,7 +58,7 @@ screening:
 affordable:
   # 5000元可买性约束
   max_stock_price: 50            # 最高股价(元)，50元×100股=5000元，买得起1手
-  min_daily_amount: 100_000       # 最低日成交额(DB单位)，过滤僵尸股。5000元不需要高流动性
+  min_daily_amount: 100           # 最低日成交额(千元)=10万元。过滤真正的僵尸股，但保留小盘妖股
   exclude_st: false              # 不排除ST (摘帽是弹性来源)
   exclude_star_st: true          # 仍排除*ST (退市风险)
   min_history_days: 120          # 最少交易日(原250天排除了次新股)

@@ -3,7 +3,7 @@ import json, os, threading, time
 from flask import Flask, jsonify, render_template
 from web.pipeline import RecommendationEngine
 from web.db import init_db, save_result, get_history
-from factor.cache import update_cache
+from factor.compute import compute_factors
 from data.store import DataStore
 from utils.logger import get_logger
 
@@ -75,7 +75,7 @@ def run_analysis():
         try:
             t0 = time.time()
             engine = get_engine()
-            update_cache(engine.store)
+            compute_factors(engine.store)
             result = engine.run()
             save_result(result)
             elapsed = time.time() - t0
@@ -165,14 +165,12 @@ def track():
 @app.route("/api/kline/<symbol>")
 def kline(symbol):
     """返回单只股票最近120天的 OHLCV 数据"""
-    import sqlite3
-    db = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data/market.db")
-    conn = sqlite3.connect(db)
+    store = get_store()
+    conn = store._connect()
     rows = conn.execute(
         "SELECT date,open,high,low,close,volume FROM daily WHERE symbol=? ORDER BY date DESC LIMIT 120",
         (symbol,)
     ).fetchall()
-    conn.close()
     if not rows:
         return jsonify({"ok": False, "msg": "无数据"})
     rows.reverse()
@@ -202,9 +200,9 @@ def milestones():
         if history:
             m = history[0]
             ann_ret = m.get("annual_return", 0) or 0
-            daily_ret = (1 + ann_ret) ** (1/252) - 1 if ann_ret > -1 else 0.02
+            daily_ret = (1 + ann_ret) ** (1/252) - 1 if ann_ret > -1 else 0.005
         else:
-            daily_ret = 0.02  # default: 2% daily
+            daily_ret = 0.005  # default: 0.5% daily (matches planner.py)
 
         capital = 5000  # start
         stage = get_stage(capital)

@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from data.store import DataStore
 from data.repository import StockRepo, PriceRepo
+from engine.backtest_runner import affordable_filter
 from utils.logger import get_logger
 
 logger = get_logger("pipeline.builder")
@@ -21,13 +22,8 @@ def build_result(pred_series: pd.Series, store: DataStore,
     initial_capital = cfg("backtest.initial_capital", 5_000)
     stocks_repo = StockRepo(store)
 
-    # 可买性过滤: 只排除买不起1手的股票（股价×100 > 5000）
-    max_price = initial_capital / 100  # ¥50 = 5000/100
-    latest_close = close_df.iloc[-1] if len(close_df) > 0 else pd.Series()
-    affordable = [s for s in pred_series.index
-                  if s in latest_close.index
-                  and latest_close[s] > 0
-                  and latest_close[s] <= max_price]
+    # 可买性过滤 (与 backtest_runner 共用同一函数)
+    affordable = affordable_filter(pred_series.index.tolist(), close_df, initial_capital)
     if affordable:
         affordable_pred = pred_series.loc[pred_series.index.isin(affordable)]
         top = affordable_pred.head(top_n)
@@ -58,6 +54,13 @@ def build_result(pred_series: pd.Series, store: DataStore,
             price_series = pd.Series()
             perf = pd.Series()
 
+        # 安全计算 5 日涨跌幅 (复利, 防 NaN)
+        if len(perf) >= 5:
+            change_raw = (1 + perf.iloc[-5:]).prod() - 1
+            change_5d = round(float(change_raw * 100), 2) if not np.isnan(change_raw) else 0
+        else:
+            change_5d = 0
+
         recent = price_series.iloc[-60:].dropna() if len(price_series) >= 60 else price_series.dropna()
         spark = [round(float(x), 2) for x in recent.values] if len(recent) > 0 else []
 
@@ -66,7 +69,7 @@ def build_result(pred_series: pd.Series, store: DataStore,
             "name": names.get(sym, ""),
             "score": round(float(score), 6),
             "last_price": round(float(price_series.iloc[-1]), 2) if len(price_series) > 0 else 0,
-            "change_5d": round(float(((1 + perf.iloc[-5:]).prod() - 1) * 100), 2) if len(perf) >= 5 else 0,
+            "change_5d": change_5d,
             "volatility": round(float(perf.std() * 100), 2) if len(perf) > 0 else 0,
             "sparkline": spark,
         })

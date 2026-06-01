@@ -13,16 +13,16 @@ logger = get_logger("auto_run")
 
 from web.pipeline import RecommendationEngine
 from web.db import init_db, save_result
-from factor.cache import update_cache
+from factor.compute import compute_factors
 
 def _get_prev_picks() -> set:
     """获取上次分析的推荐代码集合"""
-    import sqlite3, json, os
+    import json, os
+    from web.db import get_conn as _results_conn
     db = os.path.join(os.path.dirname(__file__), "data/results.db")
     if not os.path.exists(db): return set()
-    conn = sqlite3.connect(db)
+    conn = _results_conn()
     row = conn.execute("SELECT raw_json FROM runs ORDER BY id DESC LIMIT 1").fetchone()
-    conn.close()
     if row:
         try:
             prev = json.loads(row[0])
@@ -80,12 +80,18 @@ if __name__ == "__main__":
         except Exception as e:
             sync_errors.append(f"fundamentals: {e}")
             logger.exception("fundamentals sync failed")
-        logger.info("updating factor cache...")
+        logger.info("syncing LHB data...")
         try:
-            update_cache(engine.store)
+            store.sync_lhb_data()
         except Exception as e:
-            sync_errors.append(f"factor_cache: {e}")
-            logger.exception("factor cache update failed")
+            sync_errors.append(f"lhb: {e}")
+            logger.exception("LHB sync failed")
+        logger.info("computing factors...")
+        try:
+            compute_factors(engine.store)
+        except Exception as e:
+            sync_errors.append(f"factors: {e}")
+            logger.exception("factor computation failed")
         if sync_errors:
             logger.warning(f"sync errors ({len(sync_errors)}): {'; '.join(sync_errors)}")
 
@@ -141,3 +147,11 @@ if __name__ == "__main__":
         logger.error(f"failed ({elapsed:.0f}s): {err_msg}")
         logger.exception(f"analysis failed")
         _write_status("failed", f"{err_msg} (运行{elapsed:.0f}s后失败)")
+    finally:
+        # 任务结束，释放所有数据库连接
+        try:
+            engine.store.close()
+        except Exception:
+            pass
+        from web.db import close as _close_results
+        _close_results()

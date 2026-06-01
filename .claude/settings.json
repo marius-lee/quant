@@ -1,0 +1,31 @@
+{
+  "mcpServers": {
+    "sqlite-quant": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-server-sqlite",
+        "--db-path",
+        "/Users/mariusto/project/quant/data/market.db"
+      ]
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@latest"]
+    }
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/hooks/guard.py",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  }
+}

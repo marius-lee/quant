@@ -23,12 +23,13 @@ from utils.logger import get_logger
 
 logger = get_logger("engine.tracker")
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "results.db")
+from web.db import get_conn as _results_conn
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "results.db")  # only used for DB_PATH reference
 
 
 def init_tracking():
     """创建追踪分析表"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _results_conn()
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS tracking (
@@ -66,7 +67,6 @@ def init_tracking():
         );
     """)
     conn.commit()
-    conn.close()
     logger.info("tracking tables initialized")
 
 
@@ -75,13 +75,12 @@ def track_previous_picks(store=None) -> dict:
 
     查出最近一次非今天的 run 的 picks, 获取它们的最新价格, 计算收益。
     """
-    conn = sqlite3.connect(DB_PATH)
+    conn = _results_conn()
     conn.row_factory = sqlite3.Row
 
     # 找到最新的 run
     latest = conn.execute("SELECT id, run_at FROM runs ORDER BY id DESC LIMIT 1").fetchone()
     if not latest:
-        conn.close()
         return {"error": "no runs found"}
 
     latest_date_str = latest["run_at"][:10]
@@ -93,7 +92,6 @@ def track_previous_picks(store=None) -> dict:
     ).fetchone()
 
     if not prev:
-        conn.close()
         return {"error": "no previous run to track", "latest_date": latest_date_str}
 
     prev_date_str = prev["run_at"][:10]
@@ -102,7 +100,6 @@ def track_previous_picks(store=None) -> dict:
     ).fetchall()
 
     if not picks:
-        conn.close()
         return {"error": "no picks in previous run"}
 
     # 如果已有这条追踪记录，跳过重复计算
@@ -111,7 +108,6 @@ def track_previous_picks(store=None) -> dict:
         (prev_date_str, latest_date_str)
     ).fetchone()[0]
     if existing > 0:
-        conn.close()
         return {"status": "already_tracked", "rec_date": prev_date_str, "track_date": latest_date_str}
 
     # 获取这些股票的最新价格
@@ -119,7 +115,6 @@ def track_previous_picks(store=None) -> dict:
     close_data = _get_recent_closes(store, symbols, prev_date_str, latest_date_str)
 
     if close_data is None or close_data.empty:
-        conn.close()
         return {"error": "no price data available"}
 
     # 逐只计算
@@ -128,6 +123,9 @@ def track_previous_picks(store=None) -> dict:
     returns_list = []
     scores_list = []
     today_str = latest_date_str
+
+    # 基准对比: 沪深300同期复利回报（循环外计算一次）
+    bench_compound = _get_benchmark_return(store, prev_date_str, today_str)
 
     for p in picks:
         sym = p["symbol"]
@@ -156,9 +154,7 @@ def track_previous_picks(store=None) -> dict:
         daily_chg = sym_close.pct_change()
         is_limit = 1 if daily_chg.max() > 0.095 else 0
 
-        # 基准对比 (用等权平均模拟)
-        all_stocks_avg = close_data.pct_change().mean(axis=1).sum() * 100
-        excess = round(chg_pct - all_stocks_avg, 2)
+        excess = round(chg_pct - bench_compound, 2)
 
         if is_up:
             n_up += 1
@@ -174,7 +170,7 @@ def track_previous_picks(store=None) -> dict:
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (today_str, prev_date_str, prev["id"], sym, p["name"],
               rec_price, rec_score, rank, exit_price, chg_pct,
-              days, is_up, is_limit, round(all_stocks_avg, 2), excess))
+              days, is_up, is_limit, round(bench_compound, 2), excess))
 
     # 汇总
     n = len(returns_list)
@@ -182,7 +178,7 @@ def track_previous_picks(store=None) -> dict:
     hit_rate = round(n_up / n * 100, 1) if n > 0 else 0
     max_ret = round(max(returns_list), 2) if returns_list else 0
     min_ret = round(min(returns_list), 2) if returns_list else 0
-    excess_avg = round(sum(r - all_stocks_avg for r in returns_list) / n, 2) if n > 0 else 0
+    excess_avg = round(sum(r - bench_compound for r in returns_list) / n, 2) if n > 0 else 0
 
     # 得分-收益相关性: 高分股是否确实涨得更多?
     score_corr = round(np.corrcoef(scores_list, returns_list)[0, 1], 4) if len(scores_list) >= 3 and len(set(scores_list)) > 1 else None
@@ -209,7 +205,6 @@ def track_previous_picks(store=None) -> dict:
           excess_avg, score_corr, n_limit_up, json.dumps(summary)))
 
     conn.commit()
-    conn.close()
 
     logger.info(f"tracked {prev_date_str} picks: {n} stocks, "
                 f"hit_rate={hit_rate}%, avg={avg_ret}%, score_corr={score_corr}")
@@ -218,7 +213,7 @@ def track_previous_picks(store=None) -> dict:
 
 def get_tracking_history(limit: int = 10) -> list:
     """获取追踪历史"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _results_conn()
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT * FROM tracking_summary ORDER BY id DESC LIMIT ?", (limit,)
@@ -232,18 +227,16 @@ def get_tracking_history(limit: int = 10) -> list:
         ).fetchall()
         d["details"] = [dict(x) for x in detail]
         result.append(d)
-    conn.close()
     return result
 
 
 def get_tracking_stats() -> dict:
     """全局追踪统计: 所有推荐的整体表现"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _results_conn()
     conn.row_factory = sqlite3.Row
 
     total = conn.execute("SELECT COUNT(*) FROM tracking").fetchone()[0]
     if total == 0:
-        conn.close()
         return {"total_tracked": 0}
 
     avg_ret = conn.execute("SELECT AVG(change_pct) FROM tracking").fetchone()[0]
@@ -261,7 +254,6 @@ def get_tracking_stats() -> dict:
         "SELECT AVG(change_pct) FROM tracking WHERE rank > 1 AND rank <= 3"
     ).fetchone()[0]
 
-    conn.close()
 
     return {
         "total_tracked": total,
@@ -272,6 +264,26 @@ def get_tracking_stats() -> dict:
         "high_score_avg_return": round(high_score, 2) if high_score else 0,
         "mid_score_avg_return": round(mid_score, 2) if mid_score else 0,
     }
+
+
+def _get_benchmark_return(store, start_date: str, end_date: str) -> float:
+    """获取沪深300在追踪期间的复利收益率(%)"""
+    if store is None:
+        return 0.0
+    try:
+        bench_returns = store.get_benchmark("000300", start=start_date.replace("-", ""))
+        if bench_returns.empty:
+            return 0.0
+        # 截取追踪时间段的收益序列
+        start_dt = pd.to_datetime(start_date)
+        end_dt = pd.to_datetime(end_date)
+        period = bench_returns.loc[start_dt:end_dt]
+        if len(period) < 2:
+            return 0.0
+        compound = ((1 + period).prod() - 1) * 100
+        return round(compound, 2)
+    except Exception:
+        return 0.0
 
 
 def _get_recent_closes(store, symbols: list, start_date: str, end_date: str) -> pd.DataFrame:

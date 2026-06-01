@@ -2,6 +2,7 @@
 import numpy as np
 import pandas as pd
 from backtest.metrics import compute_metrics
+from backtest import compute_commission as _real_commission
 from config.loader import get as cfg
 from utils.logger import get_logger
 
@@ -26,23 +27,14 @@ def _is_limit_down(close_price, prev_close):
     return chg < -0.095
 
 
-def _real_commission(trade_value: float) -> float:
-    """真实佣金模型: 万三费率, 最低5元/笔, 卖出加千一印花税"""
-    commission_rate = cfg("backtest.commission", 0.0003)
-    min_commission = 5.0
-    fee = max(min_commission, trade_value * commission_rate)
-    return fee
-
-
-def _affordable_filter(symbols, close_df, capital, top_n):
-    """过滤: 只保留买得起至少1手的股票 (股价×100 ≤ 全部资金)"""
+def affordable_filter(symbols, close_df, capital):
+    """过滤: 只保留买得起至少1手的股票 (股价×100 ≤ 全部资金)。
+    供 backtest_runner 和 builder 共用。"""
     if close_df.empty:
         return []
     max_price = capital / 100  # 5000/100 = ¥50
     latest = close_df.iloc[-1] if len(close_df) > 0 else pd.Series()
-    affordable = [s for s in symbols if s in latest.index
-                  and latest[s] > 0 and latest[s] <= max_price]
-    return affordable
+    return [s for s in symbols if s in latest.index and latest[s] > 0 and latest[s] <= max_price]
 
 
 def run_backtest(store, factors_repo, all_stocks, close_df, passed, model,
@@ -64,8 +56,8 @@ def run_backtest(store, factors_repo, all_stocks, close_df, passed, model,
         return {"metrics": {}, "equity_curve": pd.DataFrame(), "trades": pd.DataFrame()}
 
     # 5000元可买性过滤: 排除买不起一手的股票
-    affordable = _affordable_filter(pred_series.index.tolist(), test_close,
-                                     initial_capital, top_n)
+    affordable = affordable_filter(pred_series.index.tolist(), test_close,
+                                     initial_capital)
     if len(affordable) < 1:
         logger.warning("no affordable stocks for 5000 capital")
         return {"metrics": {}, "equity_curve": pd.DataFrame(), "trades": pd.DataFrame()}
@@ -97,20 +89,21 @@ def run_backtest(store, factors_repo, all_stocks, close_df, passed, model,
         shares = int(capital_per_stock / price / 100) * 100  # A股手数取整
         if shares >= 100:
             cost = shares * price
-            total_commission += _real_commission(cost)
+            fee, _, _ = _real_commission(cost, is_sell=False)
+            total_commission += fee
             positions[sym] = shares
 
     if not positions:
         return {"metrics": {}, "equity_curve": pd.DataFrame(), "trades": pd.DataFrame()}
 
     portfolio_prices = test_close[list(positions.keys())]
-    # 按持仓股数加权 (而非等权)
     daily_value = pd.DataFrame(0.0, index=portfolio_prices.index, columns=["value"])
     for sym, shares in positions.items():
         daily_value["value"] += portfolio_prices[sym] * shares
-    daily_value["value"] -= total_commission
-    daily_return = daily_value["value"].pct_change().dropna()
-    cumulative = (daily_value["value"] / daily_value["value"].iloc[0]) * initial_capital
+    # 从初始净值中扣除佣金（建仓一次性成本），而非每天重复扣除
+    net_capital = initial_capital - total_commission
+    cumulative = (daily_value["value"] / daily_value["value"].iloc[0]) * net_capital
+    daily_return = cumulative.pct_change().dropna()
     eq = pd.DataFrame({"value": cumulative, "return": daily_return})
 
     metrics = compute_metrics(daily_return, initial_capital=initial_capital)

@@ -1,5 +1,7 @@
 """量化选股 Web 服务 — 后台分析, 永不阻塞"""
 import json, os, threading, time
+
+import pandas as pd
 from flask import Flask, jsonify, render_template
 from web.pipeline import RecommendationEngine
 from web.db import init_db, save_result, get_history
@@ -133,33 +135,38 @@ def _sync_auto_status(result: dict, elapsed: float):
 
 @app.route("/api/track")
 def track():
-    history = get_history(limit=1)
-    if not history:
-        return jsonify({"ok": False, "msg": "暂无记录"})
-    r = history[0]
-    import pandas as pd
-    symbols = [p["symbol"] for p in r["picks"][:20]]
-    prices = get_store().get_daily(symbols)
-    close_batch = prices["close"].sort_index() if not prices.empty and "close" in prices else pd.DataFrame()
-    tracked = []
-    for p in r["picks"][:20]:
-        sym, old = p["symbol"], p["price"]
-        if sym in close_batch.columns and old > 0:
-            new = float(close_batch[sym].iloc[-1])
-            chg = (new / old - 1)
-        else:
-            new, chg = 0, 0
-        tracked.append({
-            "symbol": sym, "name": p["name"],
-            "rec_price": old, "latest_price": round(new, 2),
-            "change_pct": round(chg * 100, 2),
+    """实时追踪：拿最近一次推荐的 top 20，对比当前最新价格。
+    与 /api/tracking (持久化追踪表，跨日对比命中率) 不同，本端点轻量、无状态。"""
+    try:
+        history = get_history(limit=1)
+        if not history:
+            return jsonify({"ok": False, "msg": "暂无记录"})
+        r = history[0]
+        symbols = [p["symbol"] for p in r["picks"][:20]]
+        prices = get_store().get_daily(symbols)
+        close_batch = prices["close"].sort_index() if not prices.empty and "close" in prices else pd.DataFrame()
+        tracked = []
+        for p in r["picks"][:20]:
+            sym, old = p["symbol"], p["price"]
+            if sym in close_batch.columns and old > 0:
+                new = float(close_batch[sym].iloc[-1])
+                chg = (new / old - 1)
+            else:
+                new, chg = 0, 0
+            tracked.append({
+                "symbol": sym, "name": p["name"],
+                "rec_price": old, "latest_price": round(new, 2),
+                "change_pct": round(chg * 100, 2),
+            })
+        avg = sum(t["change_pct"] for t in tracked) / len(tracked) if tracked else 0
+        win = sum(1 for t in tracked if t["change_pct"] > 0)
+        return jsonify({
+            "ok": True, "run_at": r["run_at"], "tracked": tracked,
+            "avg_change": round(avg, 2), "win_rate": f"{win}/{len(tracked)}",
         })
-    avg = sum(t["change_pct"] for t in tracked) / len(tracked) if tracked else 0
-    win = sum(1 for t in tracked if t["change_pct"] > 0)
-    return jsonify({
-        "ok": True, "run_at": r["run_at"], "tracked": tracked,
-        "avg_change": round(avg, 2), "win_rate": f"{win}/{len(tracked)}",
-    })
+    except Exception as e:
+        logger.exception("/api/track failed")
+        return jsonify({"ok": False, "msg": str(e)})
 
 
 @app.route("/api/kline/<symbol>")

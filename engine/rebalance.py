@@ -229,24 +229,10 @@ def run_backtest_with_rebalancing(
     }
 
     # 基准对比
-    bench_code = cfg("backtest.benchmark", "000300")
-    bench_returns = store.get_benchmark(bench_code)
-    if not bench_returns.empty:
-        aligned_bench = bench_returns.reindex(daily_returns.index).dropna()
-        common_idx = daily_returns.index.intersection(aligned_bench.index)
-        if len(common_idx) >= 5:
-            daily_aligned = daily_returns.loc[common_idx]
-            bench_aligned = aligned_bench.loc[common_idx]
-            excess = daily_aligned - bench_aligned
-            excess_m = compute_metrics(excess, initial_capital=initial_capital)
-            bench_m = compute_metrics(bench_aligned, initial_capital=initial_capital)
-            result["benchmark"] = {
-                "code": bench_code,
-                "benchmark_return": round(float(bench_m.get("annual_return", 0)), 4),
-                "benchmark_sharpe": round(float(bench_m.get("sharpe_ratio", 0)), 4),
-                "alpha": round(float(excess_m.get("alpha", 0)), 4),
-                "excess_sharpe": round(float(excess_m.get("sharpe_ratio", 0)), 4),
-            }
+    from engine.backtest_runner import _compute_benchmark_result
+    bench_result = _compute_benchmark_result(store, daily_returns, initial_capital)
+    if bench_result:
+        result["benchmark"] = bench_result
 
     logger.info(f"rebalance done: {len(daily_returns)} days, "
                 f"sharpe={metrics.get('sharpe_ratio', 0):.3f}, "

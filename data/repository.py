@@ -147,7 +147,7 @@ class FactorRepo:
         def _norm_date(d):
             if d is None:
                 return None
-            s = str(d)
+            s = str(d).split(" ")[0]  # pd.Timestamp 会产生 "2026-06-01 00:00:00"
             if "-" not in s and len(s) == 8:
                 return f"{s[:4]}-{s[4:6]}-{s[6:]}"  # YYYYMMDD → YYYY-MM-DD
             return s

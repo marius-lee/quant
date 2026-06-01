@@ -1,5 +1,4 @@
 """测试 strategy/signals.py — 信号生成和权重"""
-import numpy as np
 import pandas as pd
 import pytest
 from strategy.signals import generate_signals, generate_weights

@@ -1,5 +1,4 @@
 """回测 — 5000元激进策略: 涨跌停约束 + 真实佣金 + 手数取整"""
-import numpy as np
 import pandas as pd
 from backtest.metrics import compute_metrics
 from backtest import compute_commission as _real_commission
@@ -8,6 +7,9 @@ from utils.logger import get_logger
 
 logger = get_logger("pipeline.backtest")
 
+# A股涨跌停阈值 (9.5% 容错，覆盖10%主板和20%创业板)
+LIMIT_THRESHOLD = 0.095
+
 
 def _is_limit_up(close_price, prev_close):
     """检测涨停 (A股±10%, 创业板±20%)。用9.5%阈值容错。"""
@@ -15,7 +17,7 @@ def _is_limit_up(close_price, prev_close):
         chg = float(close_price) / float(prev_close) - 1
     except (TypeError, ValueError, ZeroDivisionError):
         return False
-    return chg > 0.095
+    return chg > LIMIT_THRESHOLD
 
 
 def _is_limit_down(close_price, prev_close):
@@ -24,7 +26,7 @@ def _is_limit_down(close_price, prev_close):
         chg = float(close_price) / float(prev_close) - 1
     except (TypeError, ValueError, ZeroDivisionError):
         return False
-    return chg < -0.095
+    return chg < -LIMIT_THRESHOLD
 
 
 def affordable_filter(symbols, close_df, capital):

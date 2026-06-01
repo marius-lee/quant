@@ -1,6 +1,5 @@
 """测试 strategy/ensemble.py — 集成模型训练、预测、特征重要性"""
 import numpy as np
-import pandas as pd
 import pytest
 from strategy.ensemble import EnsembleModel
 

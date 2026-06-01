@@ -9,8 +9,8 @@
 import sqlite3, os, json
 from datetime import datetime
 from backtest import compute_commission
-import numpy as np
 import pandas as pd
+from config.loader import get as cfg
 from utils.logger import get_logger
 
 logger = get_logger("simulation.broker")
@@ -195,5 +195,5 @@ def get_portfolio_summary(store=None) -> dict:
         "total_pnl": round(total_pnl, 2),
         "total_pnl_pct": round(total_pnl / total_cost * 100, 2) if total_cost > 0 else 0,
         "n_positions": len(positions),
-        "cash_remaining": round(max(0, 5000 - total_cost), 2),
+        "cash_remaining": round(max(0, cfg("backtest.initial_capital", 5000) - total_cost), 2),
     }

@@ -4,7 +4,6 @@
   - 静态: 期初选top N，全程持有不动
   - 再平衡: 每周初重新排名选top N，计算换手率，扣交易成本
 """
-import numpy as np
 import pandas as pd
 from backtest.metrics import compute_metrics
 from backtest import compute_commission
@@ -37,6 +36,7 @@ def run_backtest_with_rebalancing(
         commission: 手续费率（单边），默认从config读取
         slippage: 滑点（%），默认从config读取
     """
+    from engine.backtest_runner import _compute_benchmark_result, LIMIT_THRESHOLD
     if pred_series is None or pred_series.empty:
         logger.warning("rebalance: no pred_series, skipped")
         return {"metrics": {}, "equity_curve": pd.DataFrame(), "trades": pd.DataFrame()}
@@ -102,7 +102,7 @@ def run_backtest_with_rebalancing(
         prev_close = close_df.shift(1)
         if actual_date in prev_close.index:
             prev_row = prev_close.loc[actual_date]
-            limit_up_mask = (entry_prices / prev_row - 1) > 0.095
+            limit_up_mask = (entry_prices / prev_row - 1) > LIMIT_THRESHOLD
             blocked = set(prev_row[limit_up_mask].index)
         else:
             blocked = set()
@@ -229,7 +229,6 @@ def run_backtest_with_rebalancing(
     }
 
     # 基准对比
-    from engine.backtest_runner import _compute_benchmark_result
     bench_result = _compute_benchmark_result(store, daily_returns, initial_capital)
     if bench_result:
         result["benchmark"] = bench_result

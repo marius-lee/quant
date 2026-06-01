@@ -101,7 +101,7 @@ function spark(v){
   var mn=v[0],mx=v[0];
   for(var i=1;i<v.length;i++){if(v[i]<mn)mn=v[i];if(v[i]>mx)mx=v[i];}
   var r=mx-mn||1,w=60,h=20,p='';
-  for(i=0;i<v.length;i++)p+=(i/(v.length-1)*w).toFixed(1)+','+(h-((v[i]-mn)/r)*(h-4)-2).toFixed(1)+' ';
+  for(var i=0;i<v.length;i++)p+=(i/(v.length-1)*w).toFixed(1)+','+(h-((v[i]-mn)/r)*(h-4)-2).toFixed(1)+' ';
   return'<svg class="spark-wrap" viewBox="0 0 '+w+' '+h+'"><polyline fill="none" stroke="'+(v[v.length-1]>=v[0]?THEMES[themeIdx].spUp:THEMES[themeIdx].spDown)+'" stroke-width="1.3" points="'+p+'"/></svg>';
 }
 

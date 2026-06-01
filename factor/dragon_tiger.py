@@ -7,7 +7,6 @@
 
 接入: factor/compute.py 中调用 compute(store, symbols, date)。
 """
-import numpy as np
 import pandas as pd
 from utils.logger import get_logger
 

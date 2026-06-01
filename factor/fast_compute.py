@@ -3,7 +3,6 @@
 策略：pandas wide → Polars long → 加列计算全部因子 → 返回 Polars long。
 消除 concat(18K列)+stack(level=1)+wide 中间态。
 """
-import numpy as np
 import pandas as pd
 import polars as pl
 

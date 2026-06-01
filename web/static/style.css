@@ -59,7 +59,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
 .tbl th.srt{color:var(--amber)}
 .tbl td{font-size:13px;padding:7px 10px;border-bottom:1px solid var(--border);font-family:var(--mono)}
 .tbl td.name{font-family:var(--font);font-size:12px}
-.tbl tr:nth-child(even) td{background:rgba(255,255,255,0.008)}
+.tbl tr:nth-child(even) td{background:var(--bg-hover)}
 .tbl tr:hover td{background:var(--bg-hover)}
 .tbl .num{text-align:right}
 .tbl .sym{font-weight:600}

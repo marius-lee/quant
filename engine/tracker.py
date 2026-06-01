@@ -24,6 +24,7 @@ from utils.logger import get_logger
 logger = get_logger("engine.tracker")
 
 from web.db import get_conn as _results_conn
+from engine.backtest_runner import LIMIT_THRESHOLD
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "results.db")  # only used for DB_PATH reference
 
 
@@ -152,7 +153,7 @@ def track_previous_picks(store=None) -> dict:
 
         # 涨停检测: 单日涨幅>=9.5%
         daily_chg = sym_close.pct_change()
-        is_limit = 1 if daily_chg.max() > 0.095 else 0
+        is_limit = 1 if daily_chg.max() > LIMIT_THRESHOLD else 0
 
         excess = round(chg_pct - bench_compound, 2)
 

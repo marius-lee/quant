@@ -365,12 +365,19 @@ def run():
             # 按得分降序排列 → 龙头优先
             new_signals.sort(key=lambda s: s.get("score", 0), reverse=True)
 
-            # 持久化所有新信号 (无论是否成交)
+            # 持久化新信号 (去重: 同日+同symbol+同mode只存一次)
             today_str = date.today().isoformat()
+            sig_conn = sqlite3.connect(TRADE_DB)
+            existing = set(
+                sig_conn.execute("SELECT symbol, mode FROM signals WHERE date=?", (today_str,)).fetchall()
+            )
             for s in new_signals:
-                record_signal(today_str, s.get("time", ""), s["symbol"], s["mode"],
-                             s.get("price", 0), s.get("score", 0), s.get("board_count", 0),
-                             s.get("gap_pct", 0), s.get("daily_ret", 0), s.get("reason", ""))
+                if (s["symbol"], s["mode"]) not in existing:
+                    record_signal(today_str, s.get("time", ""), s["symbol"], s["mode"],
+                                 s.get("price", 0), s.get("score", 0), s.get("board_count", 0),
+                                 s.get("gap_pct", 0), s.get("daily_ret", 0), s.get("reason", ""))
+                    existing.add((s["symbol"], s["mode"]))
+            sig_conn.close()
 
             # D: 更新持仓元数据 (封板/炸板追踪)
             for pos in positions:

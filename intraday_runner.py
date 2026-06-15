@@ -131,7 +131,19 @@ def run():
     logger.info("日内监控启动, 全天候运行中...")
     update_state({"status": "休市"})
 
+    last_sync_date = None
+
     while True:
+        # ── 每日日线同步 (无论何时启动, 每天一次) ──
+        if last_sync_date != date.today():
+            try:
+                from data.store import DataStore
+                n = DataStore(db_path=DB).update_daily(start=(date.today() - timedelta(days=2)).isoformat())
+                if n > 0:
+                    logger.info(f"日线同步: +{n} 条")
+            except Exception:
+                pass
+            last_sync_date = date.today()
         now = datetime.now()
 
         # 非交易日 → 等明天
@@ -176,18 +188,6 @@ def run():
 
         # ═══ 交易时段内: 初始化并监控 ═══
         logger.info(f"=== {date.today()} 开始监控 ===")
-
-        # ── 同步昨日日线 (TickFlow次日凌晨更新, 开盘前拉取) ──
-        try:
-            from data.store import DataStore
-            store = DataStore(db_path=DB)
-            sync_start = (date.today() - timedelta(days=2)).isoformat()
-            n = store.update_daily(start=sync_start)
-            if n > 0:
-                logger.info(f"日线同步: +{n} 条")
-        except Exception as e:
-            logger.warning(f"日线同步失败: {e}")
-
         update_state({"status": "盘中", "progress": "加载行情..."})
         conn = sqlite3.connect(DB)
         watchlist = get_watchlist(conn)

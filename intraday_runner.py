@@ -387,6 +387,9 @@ def run():
 
             # ── B1-B3: 盘中风控 (来源: 陈小群卖出纪律) ──
             for pos in list(positions):
+                # T+1: 今天买的不能卖 (来源: A股交易规则)
+                if pos.get("date", "") >= date.today().isoformat():
+                    continue
                 sym = pos["symbol"]
                 st = tracker.stocks.get(sym)
                 if not st or st["close"] <= 0:

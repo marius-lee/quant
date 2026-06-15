@@ -55,23 +55,17 @@ def generate_review(target_date: str = None) -> dict:
     total_sell_pnl = sum(r[3] for r in sells if r[3])
     hold_symbols = [r[0] for r in buys if r[0] not in [s[0] for s in sells]]
 
-    # ── 当前持仓估值 ──
+    # ── 当前持仓 (成本价; 今日日线收盘后同步,次日可见实时估值) ──
     positions_value = 0
     hold_details = []
     for sym in hold_symbols:
-        row = mc.execute(
-            "SELECT close FROM daily WHERE symbol=? ORDER BY date DESC LIMIT 1", (sym,)
-        ).fetchone()
-        current_px = row[0] if row else 0
         buy_info = next((b for b in buys if b[0] == sym), None)
-        if buy_info and current_px > 0:
-            val = buy_info[2] * current_px
-            pnl_pct = (current_px / buy_info[1] - 1) * 100
+        if buy_info:
+            val = buy_info[2] * buy_info[1]  # 成本价估值
             positions_value += val
             hold_details.append({
                 "symbol": sym, "shares": buy_info[2], "cost": buy_info[1],
-                "current": round(current_px, 2), "board_count": buy_info[3],
-                "pnl_pct": round(pnl_pct, 2), "value": round(val, 2),
+                "board_count": buy_info[3], "value": round(val, 2),
             })
 
     # ── 龙头信号 ──

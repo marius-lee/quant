@@ -338,10 +338,16 @@ def run():
                      "pos_value": round(pos_value_init, 2), "mood": mood})
 
         last_sector_scan = None  # 模块B: 板块龙头扫描间隔
+        last_heartbeat = None
 
         while is_trading_time():
             now = datetime.now()
             tracker.update()
+
+            # 心跳: 每5分钟确认存活
+            if last_heartbeat is None or (now - last_heartbeat).total_seconds() >= 300:
+                logger.info(f"💓 {now.strftime('%H:%M')} | 信号{len(tracker.all_signals)} | 持仓{len(positions)} | ¥{capital:,.0f}")
+                last_heartbeat = now
             new_signals = tracker.scan_all_modes(conn=conn)
 
             # ── 模块B: 板块龙头扫描 (每5分钟, efiance API慢) ──
@@ -489,6 +495,16 @@ def run():
 
         conn.close()
         tracker.reset()
+
+        # ── 同步今日日线 (收盘后 OHLCV 定稿) ──
+        try:
+            from data.store import DataStore
+            store = DataStore(db_path=DB)
+            n = store.update_daily(start=date.today().isoformat())
+            logger.info(f"日线同步: +{n} 条 (date={date.today()})")
+        except Exception as e:
+            logger.warning(f"日线同步失败: {e}")
+
         logger.info(f"=== 收盘 | 本金 ¥{capital:,.0f} ===")
         update_state({"status": "已收盘", "capital": round(capital, 2),
                      "summary": f"今日完成, 本金¥{capital:,.0f}"})

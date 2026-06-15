@@ -264,13 +264,13 @@ class BoardTracker:
 
         self.update_count += 1
 
-    # ═══ 模块 C: 陈小群买点 — 全天即时触发 ═══
-    # 来源: 陈小群真实体系 (17次搜索交叉验证, 2026-06-15)
-    # 三大核心: S1弱转强(原B4) / S2首阴反包(原B3) / S3二板接力(原B2)
-    # S4首板试探为观察信号(原B1), 非主买点
+    # ═══ 模块 C: 陈小群买点 — 按本人原话实现 ═══
+    # 来源: 陈小群公开访谈/直播/复盘 (17次搜索交叉验证)
+    # 两大核心买点: 弱转强 / 首阴反包
+    # 首板不打 (陈小群: "首板看运气"), 二板是弱转强的载体
 
     def _prev_volume(self, conn, sym) -> int:
-        """查昨日成交量 (来源: daily表)"""
+        """查前日成交量"""
         if conn is None:
             return 0
         row = conn.execute(
@@ -279,23 +279,19 @@ class BoardTracker:
         return row[0] if row else 0
 
     def scan_all_modes(self, conn=None) -> list[dict]:
-        """每次 update 后调用 — 检测 S1-S4 信号。
+        """每次 update 后调用 — 陈小群买点。
 
-        S1 弱转强:   昨炸板 + gap 2-5% + 开盘量>昨3倍 + 5分钟涨>7%
-        S2 首阴反包: 昨炸板 + gap≥3% + 换手20-30% + 15分钟站稳均线
-        S3 二板接力: 2连板 + 换手>10% + 二板量≥首板2/3 + 早盘封板加权
-        S4 首板试探: 首板 + 非一字 + gap>3% (观察信号,非主买点)
+        弱转强:   昨炸板 + 高开2-5% + 量>昨3倍 + 5分钟涨>7%
+        首阴反包: 昨炸板 + 高开≥3% + 换手10-30% + 15分钟站稳均线
         """
         now = datetime.now()
         minutes_elapsed = (now - now.replace(hour=9, minute=30, second=0)).total_seconds() / 60
         today_str = date.today().isoformat()
 
-        # 封板时间加分 (来源: 45,458样本回测)
         from datetime import time as _time
         def time_bonus(st) -> float:
             ft = st.get("first_limit_time")
-            if ft is None:
-                return 0
+            if ft is None: return 0
             t = ft.time()
             if t <= _time(9, 31):   return 0.25
             if t <= _time(10, 0):   return 0.15
@@ -311,55 +307,50 @@ class BoardTracker:
 
             daily_ret = (st["close"] / st["prev_close"] - 1) * 100 if st["prev_close"] > 0 else 0
             gap = st["gap_pct"]
-            at_limit = st["is_at_limit"]
             prices = st["prices"]
             prev_vol = self._prev_volume(conn, sym)
             today_vol = st.get("volume", 0)
             vol_ratio = today_vol / prev_vol if prev_vol > 0 else 0
-            turnover_ok = 0.10 <= vol_ratio <= 0.30 if prev_vol > 0 else True
 
-            # ── S1: 弱转强 (陈小群核心战法, 最先检测) ──
-            if ("S1", sym) not in self.emitted and st["yesterday_broken"]:
-                if 2.0 <= gap <= 5.0 and minutes_elapsed <= 5 and daily_ret >= 7.0:
-                    if vol_ratio >= 3.0:
-                        self._emit(sym, st, "S1_弱转强", 0.90, daily_ret, gap,
+            # ── 第1买点: 弱转强 (陈小群核心, 最优先) ──
+            if st["yesterday_broken"]:
+                if 2.0 <= gap <= 5.0 and minutes_elapsed <= 5 and daily_ret >= 7.0 and vol_ratio >= 3.0:
+                    if ("弱转强", sym) not in self.emitted:
+                        self._emit(sym, st, "弱转强", 0.90, daily_ret, gap,
                                    st["yesterday_board"] + 1,
-                                   f"弱转强: 昨烂板+今高开{gap:.1f}%+量{vol_ratio:.0f}x+{minutes_elapsed:.0f}min涨{daily_ret:.0f}%")
+                                   f"昨烂板+今高开{gap:.1f}%+量{vol_ratio:.0f}x+{minutes_elapsed:.0f}min涨{daily_ret:.0f}%")
 
-            # ── S2: 首阴反包 (陈小群经典战法) ──
-            if ("S2", sym) not in self.emitted and st["yesterday_broken"]:
-                if gap >= 3.0 and minutes_elapsed >= 15 and len(prices) >= 10:
-                    if turnover_ok:
+            # ── 第2买点: 首阴反包 ──
+            if st["yesterday_broken"]:
+                if gap >= 3.0 and minutes_elapsed >= 15 and len(prices) >= 10 and 0.10 <= vol_ratio <= 0.30:
+                    if ("首阴反包", sym) not in self.emitted:
                         recent = [p[1] for p in prices[-10:]]
                         ma = sum(recent) / len(recent)
                         if st["close"] > ma:
-                            self._emit(sym, st, "S2_首阴反包", 0.85, daily_ret, gap,
+                            self._emit(sym, st, "首阴反包", 0.85, daily_ret, gap,
                                        st["yesterday_board"] + 1,
-                                       f"首阴反包: 昨炸板+高开{gap:.1f}%+换手{vol_ratio:.0%}")
+                                       f"昨炸板+高开{gap:.1f}%+换手{vol_ratio:.0%}")
 
-            # ── S3/S4: 封板即时触发 ──
-            if at_limit and ("S3", sym) not in self.emitted and ("S4", sym) not in self.emitted:
-                if sym not in self.board_cache and conn:
-                    board = 1
-                    rows = conn.execute("""
-                        SELECT (a.close - b.close) / b.close as ret
-                        FROM daily a JOIN daily b ON a.symbol = b.symbol AND b.date = (
-                            SELECT MAX(date) FROM daily WHERE symbol = a.symbol AND date < a.date
-                        ) WHERE a.symbol = ? AND a.date < ? ORDER BY a.date DESC LIMIT 4
-                    """, (sym, today_str)).fetchall()
-                    for r in rows:
-                        if r[0] >= 0.095: board += 1
-                        else: break
-                    self.board_cache[sym] = board
+            # ── 封板信号: 陈小群只看 ≥2连板 (首板不打) ──
+            if st["is_at_limit"] and vol_ratio >= 0.10:
+                if ("连板", sym) not in self.emitted:
+                    if sym not in self.board_cache and conn:
+                        board = 1
+                        rows = conn.execute("""
+                            SELECT (a.close - b.close) / b.close as ret
+                            FROM daily a JOIN daily b ON a.symbol = b.symbol AND b.date = (
+                                SELECT MAX(date) FROM daily WHERE symbol = a.symbol AND date < a.date
+                            ) WHERE a.symbol = ? AND a.date < ? ORDER BY a.date DESC LIMIT 4
+                        """, (sym, today_str)).fetchall()
+                        for r in rows:
+                            if r[0] >= 0.095: board += 1
+                            else: break
+                        self.board_cache[sym] = board
 
-                board = self.board_cache.get(sym, 1)
-                _tb = time_bonus(st)
-                if board == 1:
-                    self._emit(sym, st, "S4_首板试探", 0.50 + _tb, daily_ret, gap, board,
-                               f"首板+跳空{gap:.1f}%")
-                elif board >= 2:
-                    if vol_ratio >= 0.10:
-                        self._emit(sym, st, "S3_二板接力", 0.70 + _tb, daily_ret, gap, board,
+                    board = self.board_cache.get(sym, 1)
+                    if board >= 2:
+                        _tb = time_bonus(st)
+                        self._emit(sym, st, "连板接力", 0.70 + _tb, daily_ret, gap, board,
                                    f"{board}连板+换手{vol_ratio:.0%}")
 
         return [s for s in self.all_signals if not s.get("_stale")]

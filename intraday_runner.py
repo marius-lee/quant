@@ -330,8 +330,7 @@ def run():
                 (date.today().isoformat(),)
             ).fetchall()
             for (sym,) in today_buys:
-                tracker.bought.add((sym, "B1"))
-                tracker.bought.add((sym, "B2"))
+                tracker.bought.add(sym)  # 今天已买入, 不再重复买
             tc2.close()
         except Exception:
             pass
@@ -421,7 +420,7 @@ def run():
                 if len(positions) >= max_pos:
                     break
                 sym, mode = s["symbol"], s["mode"]
-                if (sym, mode) in tracker.bought:
+                if sym in tracker.bought:
                     continue
                 entry_px = s["price"]
                 budget = capital * coeff * (0.5 if len(positions) == 0 else 0.3)
@@ -445,7 +444,7 @@ def run():
                             (sym, today_str))
                         sid_conn.commit()
                         sid_conn.close()
-                        tracker.bought.add((sym, mode))
+                        tracker.bought.add(sym)
                         logger.info(f"  💰 模拟买入 {sym} ({mode}): ¥{entry_px:.2f} × {shares}股 余额¥{capital:.0f}")
 
             # ── B1-B3: 盘中风控 (来源: 陈小群卖出纪律) ──
@@ -483,8 +482,7 @@ def run():
                                 pos["shares"], pos.get("board_count", 0),
                                 round(pnl, 2), round((px/pos["price"]-1)*100, 2), round(capital, 2))
                     # 释放买入名额
-                    for m in ("B1", "B2", "B3", "B4"):
-                        tracker.bought.discard((sym, m))
+                    tracker.bought.discard(sym)
                     positions.remove(pos)
                     trades_list.append({"symbol": sym, "side": "sell", "price": px,
                                        "shares": pos["shares"], "date": date.today().isoformat(),
@@ -513,8 +511,8 @@ def run():
                          "total_asset": total_asset, "pos_value": round(pos_value, 2),
                          "positions": positions_with_px,
                          "all_signals": tracker.all_signals,
-                         "final_signals": [s for s in new_signals if s['mode'] in ('S3_二板接力','S4_首板试探')],
-                         "golden_signals": [s for s in new_signals if s['mode'] in ('S1_弱转强','S2_首阴反包')]})
+                         "final_signals": [s for s in new_signals if s['mode'] in ('连板接力',)],
+                         "golden_signals": [s for s in new_signals if s['mode'] in ('弱转强','首阴反包')]})
 
             # 黄金半小时 5s, 盘中 30s
             if now.hour == 9 and now.minute >= 30 and now.hour < 10:

@@ -194,7 +194,7 @@ def run():
         mood = {"stage": "复苏", "coefficient": 0.5}
         is_retreat = False
         try:
-            from factor.market_mood import detect_mood
+            from factor.market_mood import smooth_stage as detect_mood
             import pandas as pd
             raw = pd.read_sql_query(
                 "SELECT symbol, date, close FROM daily WHERE date >= DATE('now', '-30 days')", conn)

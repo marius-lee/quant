@@ -8,7 +8,7 @@ import threading
 
 _lock = threading.Lock()
 _state = {
-    "status": "idle",
+    "status": "休市",
     "progress": "",
     "capital": 5000.0,
     "mood": {},

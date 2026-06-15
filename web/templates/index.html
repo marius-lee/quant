@@ -20,11 +20,20 @@
     <span id="status-dot" style="margin-left:auto"></span>
   </div>
 
-  <!-- 持仓 (有持仓时显示) -->
-  <div id="positions-panel">
-    <div class="section-title">💼 持仓 <span id="pos-count"></span></div>
-    <div id="position-list"></div>
-    <div id="exit-alerts"></div>
+  <!-- 两栏: 持仓(left) + 交易(right) -->
+  <div id="dual-panel">
+    <!-- 持仓 (有持仓时显示) -->
+    <div id="positions-panel">
+      <div class="section-title">💼 持仓 <span id="pos-count"></span></div>
+      <div id="position-list"></div>
+      <div id="exit-alerts"></div>
+    </div>
+
+    <!-- 最近交易 -->
+    <div id="trades-panel">
+      <div class="section-title">📋 最近交易</div>
+      <div id="trade-list"></div>
+    </div>
   </div>
 
   <!-- 买入信号 -->
@@ -32,12 +41,6 @@
     <div class="section-title">🎯 今日信号 <span id="signal-count"></span></div>
     <div id="signal-list"></div>
     <div id="no-signals" class="empty">监控中，等待信号触发...</div>
-  </div>
-
-  <!-- 最近交易 -->
-  <div id="trades-panel">
-    <div class="section-title">📋 最近交易</div>
-    <div id="trade-list"></div>
   </div>
 </div>
 

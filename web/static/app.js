@@ -28,16 +28,22 @@ function renderMood(state) {
   const m = map[stage]||{icon:'⏳',label:'计算中...'};
 
   // 盘中状态覆盖
-  if (status === 'live') {
-    const signals = state.all_signals || [];
-    m.icon = '🟢';
-    m.label = signals.length > 0 ? '监控中 · '+signals.length+'信号' : '监控中';
-  } else if (status === 'lunch') {
-    m.icon = '🍱'; m.label = '午休中 · 13:00恢复';
-  } else if (status === 'init') {
-    m.icon = '⏳'; m.label = (state.progress || '初始化...');
-  } else if (status === 'closed') {
-    m.icon = '🏁'; m.label = '今日收盘';
+  if (status === '盘中') {
+    var signals = state.all_signals || [];
+    var progress = state.progress || '';
+    if (progress) {
+      m.icon = '⏳'; m.label = progress;
+    } else {
+      m.icon = '🟢'; m.label = signals.length > 0 ? '盘中 · '+signals.length+'信号' : '盘中';
+    }
+  } else if (status === '盘前') {
+    m.icon = '🌅'; m.label = '盘前 · 等待开盘';
+  } else if (status === '午休') {
+    m.icon = '🍱'; m.label = '午间休市 · 13:00恢复';
+  } else if (status === '已收盘') {
+    m.icon = '🏁'; m.label = '已收盘';
+  } else if (status === '休市') {
+    m.icon = '🌙'; m.label = '休市';
   }
 
   document.getElementById('mood-icon').textContent = m.icon;

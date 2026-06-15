@@ -57,6 +57,23 @@ CREATE TABLE IF NOT EXISTS sim_trades (
 );
 CREATE INDEX IF NOT EXISTS idx_sim_date ON sim_trades(date);
 
+CREATE TABLE IF NOT EXISTS signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    time TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    price REAL,
+    score REAL,
+    board_count INTEGER DEFAULT 0,
+    gap_pct REAL,
+    daily_ret REAL,
+    reason TEXT,
+    is_bought INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_signals_date ON signals(date);
+CREATE INDEX IF NOT EXISTS idx_signals_mode ON signals(date, mode);
+
 -- ═══ results.db (web/db.py) — 分析结果 ═══
 -- 注: runs/picks 表已随 ML 策略移除而弃用
 -- get_conn() 仍提供共享连接 (paper/sim_broker/tracker 共用)

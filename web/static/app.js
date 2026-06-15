@@ -27,14 +27,16 @@ function renderMood(state) {
   };
   const m = map[stage]||{icon:'⏳',label:'计算中...'};
 
-  // 盘中状态覆盖
+  // 盘中：情绪+信号合并  非盘中：状态覆盖
   if (status === '盘中') {
     var signals = state.all_signals || [];
     var progress = state.progress || '';
     if (progress) {
       m.icon = '⏳'; m.label = progress;
     } else {
-      m.icon = '🟢'; m.label = signals.length > 0 ? '盘中 · '+signals.length+'信号' : '盘中';
+      var moodLabel = stage ? m.label : '';
+      var sigLabel = signals.length > 0 ? signals.length+'信号' : '';
+      m.label = [moodLabel, sigLabel].filter(Boolean).join(' · ') || '盘中';
     }
   } else if (status === '盘前') {
     m.icon = '🌅'; m.label = '盘前 · 等待开盘';
@@ -48,7 +50,7 @@ function renderMood(state) {
 
   document.getElementById('mood-icon').textContent = m.icon;
   document.getElementById('mood-label').textContent = m.label;
-  document.getElementById('status-dot').textContent = status==='live'?'🟢':'⚪';
+  document.getElementById('status-dot').textContent = status==='盘中'?'🟢':'⚪';
 }
 
 function renderPositions() {
@@ -66,11 +68,13 @@ function renderPositions() {
   count.textContent = ps.length+'只';
   list.innerHTML = ps.map(p => {
     const pnl = p.current_price ? ((p.current_price/p.price-1)*100) : 0;
+    const days = p.date ? Math.floor((Date.now()-new Date(p.date).getTime())/86400000) : 0;
+    const sealedBadge = p.has_sealed ? ' 🔒封板' : '';
     return '<div class="signal-card held">'+
-      '<div class="sig-symbol">'+p.symbol+' <span class="sig-mode">'+(p.board_count||0)+'连板</span></div>'+
+      '<div class="sig-symbol">'+p.symbol+' <span class="sig-mode">'+(p.board_count||0)+'连板 · '+days+'天</span></div>'+
       '<div class="sig-price">成本¥'+p.price.toFixed(2)+
         ' <span class="sig-ret '+(pnl>=0?'up':'down')+'">'+(pnl>=0?'+':'')+pnl.toFixed(1)+'%</span></div>'+
-      '<div class="sig-meta">'+p.date+' 买入 ×'+p.shares+'股 | 明早开盘自动卖出</div>'+
+      '<div class="sig-meta">'+p.date+' 买入 ×'+p.shares+'股'+sealedBadge+'</div>'+
     '</div>';
   }).join('');
 }

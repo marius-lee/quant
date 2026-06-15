@@ -328,10 +328,33 @@ def run():
 
         update_state({"status": "盘中", "progress": "拉取实时行情...", "capital": round(capital, 2), "mood": mood})
 
+        last_sector_scan = None  # 模块B: 板块龙头扫描间隔
+
         while is_trading_time():
             now = datetime.now()
             tracker.update()
             new_signals = tracker.scan_all_modes(conn=conn)
+
+            # ── 模块B: 板块龙头扫描 (每5分钟, efiance API慢) ──
+            if last_sector_scan is None or (now - last_sector_scan).total_seconds() >= 300:
+                try:
+                    limit_up_syms = [sym for sym, st in tracker.stocks.items()
+                                     if st["is_at_limit"] and not st["is_one_word"]]
+                    if len(limit_up_syms) >= 2:
+                        sector_info = tracker.get_sector_leaders(limit_up_syms)
+                        leaders = sector_info.get("leaders", {})
+                        # 给龙头信号加分
+                        for s in new_signals:
+                            if s["symbol"] in leaders:
+                                s["is_leader"] = True
+                                s["score"] = round(min(s["score"] + 0.20, 1.0), 3)
+                            s["sectors"] = sector_info.get("stock_sectors", {}).get(s["symbol"], [])
+                        last_sector_scan = now
+                except Exception:
+                    pass
+
+            # 按得分降序排列 → 龙头优先
+            new_signals.sort(key=lambda s: s.get("score", 0), reverse=True)
 
             # 持久化所有新信号 (无论是否成交)
             today_str = date.today().isoformat()

@@ -154,6 +154,13 @@ def api_record_trade():
 
 # ═══ 管理 API ═══
 
+@app.route("/api/review")
+def api_review():
+    """盘后复盘 — 信号+交易分析"""
+    from ops.review import generate_review
+    return jsonify(generate_review())
+
+
 @app.route("/api/state", methods=["POST"])
 def api_update_state():
     """intraday_runner 更新瞬态"""

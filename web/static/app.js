@@ -142,5 +142,32 @@ async function poll() {
   renderTrades(td.trades||[]);
 }
 
+async function loadReview() {
+  try {
+    const r = await (await fetch('/api/review')).json();
+    const m = r.signals.by_mode;
+    const sigs = Object.entries(m).map(([k,v]) =>
+      '<span style="margin-right:12px">'+k.replace('_',' ')+': <b>'+v.count+'</b> (买'+v.bought+')</span>'
+    ).join('');
+    const holds = (r.portfolio.holdings||[]).map(h =>
+      '<div class="trade-row '+(h.pnl_pct>=0?'buy':'sell')+'">'+
+        h.symbol+' 成本¥'+h.cost+' 现价¥'+h.current+
+        ' <b>'+(h.pnl_pct>=0?'+':'')+h.pnl_pct.toFixed(1)+'%</b>'+
+        ' ×'+h.shares+'股 ¥'+h.value+
+      '</div>'
+    ).join('');
+    document.getElementById('review-content').innerHTML =
+      '<div style="margin-bottom:8px">'+
+        '<div>📈 信号: '+sigs+'</div>'+
+        '<div style="margin-top:4px">💰 总资产: ¥'+r.portfolio.total_asset.toLocaleString()+
+        ' | 💵 可用: ¥'+r.portfolio.available_cash.toLocaleString()+
+        ' | 📊 持仓市值: ¥'+r.portfolio.positions_value.toLocaleString()+'</div>'+
+      '</div>'+
+      (holds?'<div style="margin-top:8px"><b>持仓估值</b>'+holds+'</div>':'');
+    document.getElementById('review-panel').style.display = 'block';
+  } catch(e) {}
+}
+
 poll();
 setInterval(poll, 3000);
+loadReview();

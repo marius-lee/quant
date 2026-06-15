@@ -6,7 +6,6 @@
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 body { background:var(--bg); color:var(--text); font:14px/1.5 -apple-system,sans-serif; padding:16px; max-width:800px; margin:0 auto; }
-@media (max-width:600px) { #dual-panel { flex-direction:column; } }
 
 /* Capital bar */
 #capital-bar { padding:14px 20px; background:var(--card); border-radius:12px; margin-bottom:12px; }
@@ -56,11 +55,12 @@ body { background:var(--bg); color:var(--text); font:14px/1.5 -apple-system,sans
 .pos-table .up { color:var(--up); font-weight:600; }
 .pos-table .down { color:var(--down); font-weight:600; }
 
-/* Two-column: 持仓 || 交易 */
-#dual-panel { display:flex; gap:12px; margin-bottom:8px; overflow:hidden; }
-#dual-panel > #positions-panel { flex:3; min-width:0; }
+/* Two-column: 持仓 || 交易 (窄屏堆叠) */
+#dual-panel { display:flex; gap:12px; margin-bottom:8px; }
+#dual-panel > #positions-panel { flex:3; min-width:0; overflow-x:auto; }
 #dual-panel > #trades-panel { flex:2; min-width:0; }
 #dual-panel .section-title { margin-top:0; }
+@media (max-width:800px) { #dual-panel { flex-direction:column; } }
 
 /* Trade rows */
 .trade-row { padding:6px 0; border-bottom:1px solid var(--border); font-size:13px; }

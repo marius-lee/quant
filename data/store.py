@@ -250,6 +250,33 @@ class DataStore:
         logger.info(f"[tushare] {ts_codes}: {len(rows)} rows (vol=手, amt=千元)")
         return rows
 
+    def _fetch_sina_daily(self, symbols: list, start_date: str) -> list:
+        """新浪日线: 收盘后即用(15:30), 免费无需注册, vol=股→/100→手, amt=元"""
+        import urllib.request, json as _json
+        rows = []
+        for sym in symbols:
+            code = f"sh{sym}" if sym.startswith(("6", "9")) else f"sz{sym}"
+            url = f"http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={code}&scale=240&datalen=2000"
+            try:
+                req = urllib.request.Request(url, headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Referer": "https://finance.sina.com.cn",
+                })
+                data = _json.loads(urllib.request.urlopen(req, timeout=10).read().decode("utf-8"))
+            except Exception:
+                continue
+            for bar in data:
+                d = bar["day"]
+                if d < start_date:
+                    continue
+                rows.append((sym, d,
+                    float(bar["open"]), float(bar["high"]),
+                    float(bar["low"]), float(bar["close"]),
+                    round(float(bar["volume"]) / 100),  # 股→手
+                    round(float(bar["volume"]) * float(bar["close"]) / 1000),  # 成交额(千元)
+                    float(bar.get("turnover", 0) or 0)))  # 换手率(仅部分股票有)
+        return rows
+
     def _fetch_tencent_daily(self, symbols: list, start_date: str) -> list:
         """腾讯财经逐只日线: vol=股→/100→手, amt用close×vol估算(元→/1000→千元)"""
         import urllib.request, json as _json
@@ -533,8 +560,10 @@ class DataStore:
             rows = None
             source = "none"
 
-            # 优先级: TickFlow → zzshare → tushare → akshare → 腾讯
+            # 优先级: 新浪 → TickFlow → zzshare → tushare → akshare → 腾讯
+            # 新浪收盘后即可用(15:30), TickFlow 次日才有
             for src_name, fetch_fn in [
+                ("sina",     lambda: self._fetch_sina_daily(chunk, batch_start)),
                 ("tickflow", lambda: self._fetch_tickflow_daily(chunk, batch_start)),
                 ("zzshare",  lambda: self._fetch_zzshare_daily(chunk, batch_start)),
                 ("tushare",  lambda: self._fetch_batch_tushare(pro, ",".join(_ts_code(s) for s in chunk), batch_start) if pro else None),

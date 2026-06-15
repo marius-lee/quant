@@ -269,14 +269,27 @@ class BoardTracker:
     def scan_all_modes(self, conn=None) -> list[dict]:
         """每次 update 后调用 — 检测 B1/B2/B3/B4，即时触发信号。
 
-        B1 首板试错: 首板封板 + 非一字 + gap>3%
+        B1 首板试错: 首板封板 + 非一字 + gap>3% (封板时间梯度加分)
         B2 二板定龙: 2连板封板 + 非一字 + gap>3%
-        B3 首阴反包: 昨日炸板 + gap>3% + 15分钟站稳均线
-        B4 分歧转一致: 昨日炸板 + gap>5% + 开盘5分钟冲7%+
+        B3 首阴反包: 昨日炸板 + gap>-3% + 15分钟站稳均线
+        B4 分歧转一致: 昨日炸板 + gap>3% + 开盘10分钟涨幅>5%
         """
         now = datetime.now()
         minutes_elapsed = (now - now.replace(hour=9, minute=30, second=0)).total_seconds() / 60
         today_str = date.today().isoformat()
+
+        # 封板时间加分 (来源: 45,458样本回测 — 越早次日溢价越高)
+        from datetime import time as _time
+        def time_bonus(st) -> float:
+            ft = st.get("first_limit_time")
+            if ft is None:
+                return 0
+            t = ft.time()
+            if t <= _time(9, 31):   return 0.25   # 秒板 +3.85%次日
+            if t <= _time(10, 0):   return 0.15   # 极早 +2.02%
+            if t <= _time(11, 30):  return 0.05   # 早盘 +1.89%
+            if t <= _time(14, 0):   return 0      # 午后 +1.92%
+            return -0.20                          # 尾盘 +0.97% 跌停率7.5%
 
         for sym, st in self.stocks.items():
             if st["open"] <= 0 or st["prev_close"] <= 0:
@@ -289,22 +302,22 @@ class BoardTracker:
             at_limit = st["is_at_limit"]
             prices = st["prices"]
 
-            # ── B4: 分歧转一致 (开盘5分钟触发, 最先检测) ──
+            # ── B4: 分歧转一致 (开盘10分钟触发, 最先检测) ──
             if ("B4", sym) not in self.emitted and st["yesterday_broken"]:
-                if gap >= 5.0 and minutes_elapsed <= 10 and daily_ret >= 7.0:
+                if gap >= 3.0 and minutes_elapsed <= 10 and daily_ret >= 5.0:
                     self._emit(sym, st, "B4_分歧转一致", 0.90, daily_ret, gap,
                                st["yesterday_board"] + 1,
-                               f"昨日烂板+高开{gap:.1f}%+{minutes_elapsed:.0f}min冲{daily_ret:.0f}%")
+                               f"昨日烂板+高开{gap:.1f}%+{minutes_elapsed:.0f}min涨{daily_ret:.0f}%")
 
-            # ── B3: 首阴反包 (15分钟后触发) ──
+            # ── B3: 首阴反包 (15分钟后触发, 允许低开-3%以上) ──
             if ("B3", sym) not in self.emitted and st["yesterday_broken"]:
-                if gap >= 3.0 and minutes_elapsed >= 15 and len(prices) >= 10:
+                if gap >= -3.0 and minutes_elapsed >= 15 and len(prices) >= 10:
                     recent = [p[1] for p in prices[-10:]]
                     ma = sum(recent) / len(recent)
                     if st["close"] > ma:
                         self._emit(sym, st, "B3_首阴反包", 0.85, daily_ret, gap,
                                    st["yesterday_board"] + 1,
-                                   f"昨日炸板+高开{gap:.1f}%+15分钟站稳均线")
+                                   f"昨日炸板+gap{gap:+.1f}%+15分钟站稳均线")
 
             # ── B1/B2: 封板即时触发 ──
             if at_limit and ("B1", sym) not in self.emitted and ("B2", sym) not in self.emitted:
@@ -323,11 +336,12 @@ class BoardTracker:
                     self.board_cache[sym] = board
 
                 board = self.board_cache.get(sym, 1)
+                _tb = time_bonus(st)
                 if board == 1:
-                    self._emit(sym, st, "B1_首板试错", 0.30, daily_ret, gap, board,
+                    self._emit(sym, st, "B1_首板试错", 0.50 + _tb, daily_ret, gap, board,
                                f"首板封板+跳空{gap:.1f}%")
                 elif board == 2:
-                    self._emit(sym, st, "B2_二板定龙", 0.50, daily_ret, gap, board,
+                    self._emit(sym, st, "B2_二板定龙", 0.70 + _tb, daily_ret, gap, board,
                                f"二板封板+跳空{gap:.1f}%")
 
         return [s for s in self.all_signals if not s.get("_stale")]

@@ -21,7 +21,7 @@ from pathlib import Path
 
 PLAN_FILE = ".claude/plan_approved"
 GRACE_HOURS = 2
-CODE_EXTENSIONS = {".py"}
+CODE_EXTENSIONS = {".py", ".css", ".js", ".html", ".yaml", ".yml", ".plist"}
 
 
 def deny(reason: str) -> None:

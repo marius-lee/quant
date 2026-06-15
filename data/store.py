@@ -1,12 +1,11 @@
 """SQLite 数据仓库 — 全A股 + 增量更新。
-
     首次: 下载全部A股列表 + 全部历史日线 → SQLite
     后续: 对比 SQLite 已有数据，只拉取增量日期
 """
-
 import sqlite3
 import time
 from datetime import datetime
+from utils.date import to_str, to_compact, today_str, DEFAULT_START_DATE
 
 import pandas as pd
 
@@ -46,7 +45,8 @@ class DataStore:
                 symbol    TEXT PRIMARY KEY,
                 name      TEXT,
                 market    TEXT,
-                list_date TEXT
+                list_date TEXT,
+                industry  TEXT
             );
             CREATE TABLE IF NOT EXISTS daily (
                 symbol   TEXT,
@@ -81,9 +81,9 @@ class DataStore:
         conn.commit()
 
     def _connect(self):
-        """获取共享连接。首次创建，之后复用同一条。"""
+        """获取共享连接。check_same_thread=False 允许 Flask 多线程复用。"""
         if self._conn is None:
-            self._conn = sqlite3.connect(self.db_path)
+            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.execute("PRAGMA busy_timeout=30000")
@@ -160,15 +160,62 @@ class DataStore:
             logger.warning(f"stock list akshare also failed: {e}")
             return 0
 
+    def sync_industry(self):
+        """拉取行业分类 — baostock 证监会行业分类（免费稳定，5529只）。"""
+        import baostock as bs
+        conn = self._connect()
+        try:
+            conn.execute("ALTER TABLE stocks ADD COLUMN industry TEXT")
+        except:
+            pass
+        try:
+            bs.login()
+            rs = bs.query_stock_industry()
+            df = rs.get_data()
+            bs.logout()
+            if df.empty:
+                return 0
+
+            updated = 0
+            for _, row in df.iterrows():
+                code = str(row.get("code", ""))
+                ind = str(row.get("industry", "")).strip()
+                if not ind:
+                    continue
+                # Convert "sh.600036"/"sz.000001" → "600036"/"000001"
+                sym = code.split(".")[-1] if "." in code else code
+                if len(sym) != 6:
+                    continue
+                conn.execute(
+                    "UPDATE stocks SET industry=? WHERE symbol=? AND industry IS NULL",
+                    (ind, sym)
+                )
+                updated += 1
+
+            conn.commit()
+            classified = conn.execute("SELECT COUNT(*) FROM stocks WHERE industry IS NOT NULL").fetchone()[0]
+            total = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
+            logger.info(f"industry sync done: {updated} updates, {classified}/{total} classified (baostock CSRC)")
+            return updated
+        except Exception as e:
+            try:
+                bs.logout()
+            except:
+                pass
+            logger.warning(f"industry sync failed: {e}")
+            return 0
+
     # ============================================================
     # 日线数据 — 增量更新（tushare 优先，失败回退 akshare）
     # ============================================================
 
     @staticmethod
+    @staticmethod
     def _norm_row(sym: str, date: str, o: float, h: float, l: float, c: float,
                   vol: float, amt: float, turnover: float = 0.0) -> tuple:
-        """标准化一行日线数据: 成交量→手, 成交额→千元, 精度4位小数。"""
-        return (sym, date, round(o, 4), round(h, 4), round(l, 4), round(c, 4),
+        """标准化一行日线数据: 日期→ISO(YYYY-MM-DD), 成交量→手, 成交额→千元, 精度4位小数。"""
+        from utils.date import to_str
+        return (sym, to_str(date), round(o, 4), round(h, 4), round(l, 4), round(c, 4),
                 round(vol, 4), round(amt, 4), round(turnover, 4))
 
     def _log_source_sample(self, source: str, rows: list, chunk: list):
@@ -188,7 +235,7 @@ class DataStore:
         df = pro.daily(
             ts_code=ts_codes,
             start_date=batch_start,
-            end_date=datetime.today().strftime("%Y%m%d"),
+            end_date=to_compact(datetime.today()),  # tushare API只接受YYYYMMDD, 不接受YYYY-MM-DD
         )
         if df is None or df.empty:
             return None
@@ -220,14 +267,14 @@ class DataStore:
                 if not kline:
                     continue
                 for row in kline:
-                    d = str(row[0]).replace("-", "")  # YYYY-MM-DD → YYYYMMDD
-                    if d < start_date:
+                    d = to_str(row[0])
+                    if to_compact(d) < to_compact(start_date):  # 腾讯API返回格式不定, compact归一化后字符串比较
                         continue
                     c = float(row[2])          # close
                     vol_raw = float(row[5])     # 股
                     amt_raw = c * vol_raw       # 元 (=close×volume)
                     rows.append(self._norm_row(
-                        sym, d.replace("-", ""),
+                        sym, d,  # d 已由 to_str() 归一化为 YYYY-MM-DD
                         float(row[1]), float(row[3]), float(row[4]), c,
                         vol_raw / 100,          # 股 → 手
                         amt_raw / 1000,         # 元 → 千元
@@ -245,7 +292,7 @@ class DataStore:
         except ImportError:
             raise RuntimeError("akshare not installed")
         rows = []
-        end_date = datetime.today().strftime("%Y%m%d")
+        end_date = to_compact(datetime.today())  # akshare API只接受YYYYMMDD
         for sym in symbols:
             try:
                 df = ak.stock_zh_a_hist(
@@ -256,7 +303,7 @@ class DataStore:
                 for _, row in df.iterrows():
                     rows.append(self._norm_row(
                         str(row["股票代码"]),
-                        str(row["日期"]).replace("-", ""),
+                        str(row["日期"]),  # _norm_row → to_str() 自动归一化
                         float(row.get("开盘", 0) or 0), float(row.get("最高", 0) or 0),
                         float(row.get("最低", 0) or 0), float(row.get("收盘", 0) or 0),
                         float(row.get("成交量", 0) or 0),          # 手 ✅
@@ -277,7 +324,7 @@ class DataStore:
         except ImportError:
             raise RuntimeError("zzshare not installed")
         rows = []
-        end_date = datetime.today().strftime("%Y%m%d")
+        end_date = to_compact(datetime.today())  # akshare API只接受YYYYMMDD
         for sym in symbols:
             try:
                 ts_code = _ts_code(sym)
@@ -286,7 +333,7 @@ class DataStore:
                     continue
                 for _, row in df.iterrows():
                     rows.append(self._norm_row(
-                        sym, str(row["trade_date"])[:10].replace("-", ""),
+                        sym, str(row["trade_date"])[:10],  # _norm_row → to_str() 归一化
                         float(row.get("open", 0) or 0), float(row.get("high", 0) or 0),
                         float(row.get("low", 0) or 0), float(row.get("close", 0) or 0),
                         float(row.get("vol", 0) or 0), float(row.get("amount", 0) or 0), 0.0))
@@ -322,8 +369,8 @@ class DataStore:
                 continue
             sym = code.split(".")[0]
             for _, row in df.iterrows():
-                d = str(row.get("trade_date", ""))[:10].replace("-", "")
-                if len(d) != 8:
+                d = str(row.get("trade_date", ""))[:10]  # _norm_row → to_str() 归一化
+                if len(d) < 8:  # 至少8位才算有效日期
                     continue
                 rows.append(self._norm_row(
                     sym, d,
@@ -336,70 +383,90 @@ class DataStore:
             logger.info(f"[tickflow] {len(symbols)} stocks: {len(rows)} rows (vol=手✅, amt/1000→千元)")
         return rows
 
-    def _fetch_baostock_turnover(self, symbols: list) -> list:
-        """Baostock 逐只获取换手率 — 老牌稳定免费无限制，覆盖1990年至今。
+    def backfill_turnover(self, limit: int = 0):
+        """Baostock 回填换手率 — 只更新 turnover=0 的行。limit=0 表示全部。"""
+        import baostock as bs
+        conn = self._connect()
+        sql = "SELECT DISTINCT symbol FROM daily WHERE turnover=0 OR turnover IS NULL"
+        if limit > 0:
+            sql += f" LIMIT {limit}"
+        symbols = [r[0] for r in conn.execute(sql).fetchall()]
+        if not symbols:
+            logger.info("turnover backfill: no missing data")
+            return 0
 
-        只返回 (symbol, date, turnover) 用于 UPDATE existing rows。
-        不返回 OHLCV（已有其他源负责）。
-        """
-        try:
-            import baostock as bs
-        except ImportError:
-            raise RuntimeError("baostock not installed (pip install baostock)")
-        rows = []
-        try:
-            bs.login()
-            for sym in symbols:
-                try:
-                    code = f"{'sh' if sym.startswith(('6','9','68')) else 'sz'}.{sym}"
-                    rs = bs.query_history_k_data_plus(
-                        code, "date,turn",
-                        start_date="2020-01-01",
-                        end_date=datetime.today().strftime("%Y-%m-%d"),
-                        frequency="d", adjustflag="2"
-                    )
-                    if rs.error_code != "0":
-                        continue
-                    df = rs.get_data()
-                    if df.empty:
-                        continue
-                    for _, row in df.iterrows():
-                        t = float(row["turn"]) if row["turn"] and row["turn"] != "" else 0.0
-                        if t > 0:
-                            rows.append((sym, str(row["date"]).replace("-", ""), t))
-                except Exception:
+        logger.info(f"turnover backfill: {len(symbols)} stocks, starting baostock...")
+        bs.login()
+        filled = 0
+        for sym in symbols:
+            try:
+                code = f"{'sh' if sym.startswith(('6','9','68')) else 'sz'}.{sym}"
+                rs = bs.query_history_k_data_plus(
+                    code, "date,turn",
+                    start_date="2020-01-01",
+                    end_date=datetime.today().strftime("%Y-%m-%d"),
+                    frequency="d", adjustflag="2"
+                )
+                if rs.error_code != "0":
                     continue
-        finally:
-            bs.logout()
-        return rows
+                df = rs.get_data()
+                if df.empty:
+                    continue
+                for _, row in df.iterrows():
+                    t = float(row["turn"]) if row["turn"] and row["turn"] != "" else 0.0
+                    if t > 0:
+                        d = row["date"][:10]  # YYYY-MM-DD, 与 daily.date 格式一致
+                        conn.execute(
+                            "UPDATE daily SET turnover=? WHERE symbol=? AND date=? AND (turnover=0 OR turnover IS NULL)",
+                            (round(t, 4), sym, d)
+                        )
+                        filled += 1
+            except Exception:
+                continue
+        bs.logout()
+        conn.commit()
+        logger.info(f"turnover backfill done: {filled} rows updated for {len(symbols)} stocks")
+        return filled
 
     def _analyze_daily_gaps(self, conn) -> dict:
-        """分析日线数据缺口: 每只股票的状态分类。
+        """分析日线数据缺口: 每只股票的状态分类 (增量版 — PK 覆盖索引)。"""
+        from datetime import date, timedelta, datetime
+        from utils.date import to_str
+        cutoff = to_str(date.today() - timedelta(days=2))
+        stale_days = 250
 
-        Returns: {
-            'missing': [sym, ...],      # 完全无日线数据
-            'stale_threshold': 250,       # 不足此天数视为需要补数据
-        }
-        """
+        # 单次查询: PK(symbol,date) 覆盖索引, GROUP BY symbol 只取首尾
         rows = conn.execute("""
-            SELECT s.symbol, s.market, COUNT(d.symbol) as days,
-                   COALESCE(MIN(d.date), '') as min_d,
-                   COALESCE(MAX(d.date), '') as max_d
-            FROM stocks s
-            LEFT JOIN daily d ON s.symbol = d.symbol
-            GROUP BY s.symbol
-            ORDER BY days ASC
+            SELECT symbol, MIN(date), MAX(date)
+            FROM daily GROUP BY symbol ORDER BY symbol
         """).fetchall()
 
-        missing = [r[0] for r in rows if r[2] == 0]
-        stale = [r[0] for r in rows if 0 < r[2] < 250]
-        full = [r[0] for r in rows if r[2] >= 250]
+        # 所有 stocks 符号
+        all_symbols = {r[0] for r in conn.execute("SELECT symbol FROM stocks").fetchall()}
+        have_data = set()
+
+        stale, full = [], []
+        for sym, min_d, max_d in rows:
+            have_data.add(sym)
+            if max_d < cutoff:
+                stale.append(sym)
+                continue
+            try:
+                d1 = datetime.strptime(min_d, "%Y-%m-%d")
+                d2 = datetime.strptime(max_d, "%Y-%m-%d")
+                est_trading = int((d2 - d1).days * 0.7)
+            except Exception:
+                est_trading = 0
+            if est_trading < stale_days:
+                stale.append(sym)
+            else:
+                full.append(sym)
+
+        missing = sorted(all_symbols - have_data)
 
         return {
-            "missing": missing,      # needs full backfill
-            "stale": stale,           # needs more data
-            "full": full,             # already sufficient
-            "total": len(missing) + len(stale) + len(full),
+            "missing": missing, "stale": stale, "full": full,
+            "total": len(all_symbols),
         }
 
     def update_daily(self, symbols: list = None,
@@ -416,7 +483,7 @@ class DataStore:
         """
         if start is None:
             from config.loader import get as cfg
-            start = cfg("data.start_date", "20200101")
+            start = cfg("data.start_date", DEFAULT_START_DATE)
 
         conn = self._connect()
 
@@ -457,10 +524,11 @@ class DataStore:
                 chunk
             ).fetchall()
             batch_start_map = {r[0]: r[1] for r in batch_maxes if r[1]}
+            # 来源: to_compact 归一化为8位数字串, 确保字符串比较正确
             batch_start = (min(batch_start_map.values())
-                          if batch_start_map else start.replace("-", ""))
-            if batch_start < start.replace("-", ""):
-                batch_start = start.replace("-", "")
+                          if batch_start_map else to_compact(start))
+            if to_compact(batch_start) < to_compact(start):
+                batch_start = start  # 保持 YYYY-MM-DD 给后续 API 用
 
             rows = None
             source = "none"
@@ -509,42 +577,8 @@ class DataStore:
 
         conn.commit()
 
-        # 汇总
-        src_summary = ", ".join(f"{k}={v}" for k, v in sorted(sources.items()))
-        logger.info(f"daily done: {total_new} rows, {len(symbols)} stocks, sources: {src_summary}")
-
-        # 3. Baostock 换手率回填（独立步骤，不阻塞主流程。耗时与0值行数成正比，量级大时不自动触发）
-        # 如需回填: store.backfill_turnover(symbols)
-        if False:  # disabled — 512万行时不可行，改为独立方法按需调用
-            turnover_fill = 0
-            try:
-                zero_to = conn.execute(
-                    "SELECT COUNT(*) FROM daily WHERE turnover=0 OR turnover IS NULL"
-                ).fetchone()[0]
-                if zero_to > 0:
-                    logger.info(f"turnover missing for {zero_to} rows, backfilling via Baostock...")
-                    # 按股票分组，只处理 turnover=0 的
-                    need_turnover = [r[0] for r in conn.execute(
-                        "SELECT DISTINCT symbol FROM daily WHERE turnover=0 OR turnover IS NULL LIMIT 500"
-                    ).fetchall()]
-                    for s in need_turnover:
-                        try:
-                            t_rows = self._fetch_baostock_turnover([s])
-                            for sym, date, turn in t_rows:
-                                conn.execute(
-                                    "UPDATE daily SET turnover=? WHERE symbol=? AND date=? AND (turnover=0 OR turnover IS NULL)",
-                                    (turn, sym, date)
-                                )
-                                turnover_fill += 1
-                        except Exception:
-                            continue
-                    conn.commit()
-                    logger.info(f"turnover backfill: {turnover_fill} rows updated via Baostock")
-            except Exception as e:
-                logger.warning(f"turnover backfill failed: {e}")
-
         total_rows = conn.execute("SELECT COUNT(*) FROM daily").fetchone()[0]
-        src_summary = ", ".join(f"{k}={v}" for k, v in sorted(sources.items()))
+        src_summary = ", ".join(f"{k}:{v}" for k, v in sources.items() if v > 0) if sources else "none"
         logger.info(f"daily done: {total_rows} rows total ({total_new} new, sources: {src_summary})")
         return total_new
 
@@ -552,10 +586,11 @@ class DataStore:
     # 读取数据
     # ============================================================
 
-    def get_daily(self, symbols: list, start: str = "20200101",
+    def get_daily(self, symbols: list, start: str = DEFAULT_START_DATE,
                   end: str = None) -> pd.DataFrame:
         """从 SQLite 读取日线，返回 (dates × stocks) 宽表 DataFrame。
         自动分块避免 SQLite 的 999 参数上限。"""
+        # 来源: SQLite SQLITE_MAX_VARIABLE_NUMBER=999, 900+99(date params)=999
         MAX_SYMBOLS = 900
         if len(symbols) <= MAX_SYMBOLS:
             return self._get_daily_chunk(symbols, start, end)
@@ -573,9 +608,9 @@ class DataStore:
             result = result.join(df, how='outer')
         return result
 
-    def _get_daily_chunk(self, symbols: list, start: str = "20200101",
+    def _get_daily_chunk(self, symbols: list, start: str = DEFAULT_START_DATE,
                           end: str = None) -> pd.DataFrame:
-        end = end or datetime.today().strftime("%Y%m%d")
+        end = end or to_str(datetime.today())
         placeholders = ",".join("?" for _ in symbols)
         conn = self._connect()
         df = pd.read_sql_query(
@@ -589,9 +624,10 @@ class DataStore:
         if df.empty:
             return pd.DataFrame()
         df["date"] = pd.to_datetime(df["date"])
-        return df.pivot(index="date", columns="symbol", values=[
+        result = df.pivot(index="date", columns="symbol", values=[
             "open", "high", "low", "close", "volume", "amount", "turnover"
         ])
+        return result.ffill()  # 停牌日填前一日价格，NaN 不进管线
 
     def get_stock_count(self) -> dict:
         conn = self._connect()
@@ -615,8 +651,9 @@ class DataStore:
         logger.info(f"fundamentals: PE={result['pe_count']} PB={result['pb_count']}")
         return result["pe_count"]
 
-    def sync_lhb_data(self, start: str = "20230101") -> int:
-        """增量同步龙虎榜数据 → lhb_detail 表。从 akshare 拉取，只写新日期。"""
+    def sync_lhb_data(self, start: str = DEFAULT_START_DATE) -> int:
+        """增量同步龙虎榜数据 → lhb_detail 表 (trade_date 为 YYYYMMDD 格式)。
+        来源: 龙虎榜制度始于1997年3月 (沪深交易所), 取值DEFAULT_START_DATE与全项目一致。"""
         try:
             import akshare as ak
         except ImportError:
@@ -625,13 +662,14 @@ class DataStore:
 
         conn = self._connect()
         max_date = conn.execute("SELECT MAX(trade_date) FROM lhb_detail").fetchone()[0]
+        # lhb_detail.trade_date 现在统一为 YYYY-MM-DD, 与 daily.date 一致
         daily_max = conn.execute("SELECT MAX(date) FROM daily").fetchone()[0]
-
-        end = datetime.today().strftime("%Y%m%d")
-        if max_date and daily_max and max_date >= daily_max:
-            logger.info(f"lhb up to date ({max_date} >= daily {daily_max}), skipping")
+        if max_date and daily_max and (max_date or "") >= (daily_max or ""):
+            logger.info(f"lhb up to date ({max_date} >= {daily_max}), skipping")
             return 0
-        start = max_date if max_date else "20230101"
+        # akshare API 要求 YYYYMMDD 格式 — 仅此处转换
+        start = to_compact(max_date) if max_date else to_compact(DEFAULT_START_DATE)
+        end = to_compact(datetime.today())
 
         logger.info(f"syncing LHB data: {start} → {end}")
         try:
@@ -657,7 +695,7 @@ class DataStore:
                         net_buy, buy_amt, sell_amt, reason)
                        VALUES (?,?,?,?,?,?,?,?,?)""",
                     (sym,
-                     str(row.get("上榜日", row.get("trade_date", row.get("日期", ""))))[:10].replace("-", ""),
+                     to_str(row.get("上榜日", row.get("trade_date", row.get("日期", "")))),
                      float(row.get("收盘价", 0) or 0),
                      float(row.get("涨跌幅", 0) or 0),
                      float(row.get("换手率", 0) or 0),
@@ -679,13 +717,13 @@ class DataStore:
         """拉取基准指数日线，返回 (date → return) Series"""
         if start is None:
             from config.loader import get as cfg
-            start = cfg("data.start_date", "20200101")
+            start = cfg("data.start_date", DEFAULT_START_DATE)
         import tushare as ts
         ts.set_token(self.token)
         pro = ts.pro_api()
         try:
-            df = pro.index_daily(ts_code=f"{code}.SH", start_date=start.replace('-',''),
-                                end_date=datetime.today().strftime("%Y%m%d"),
+            df = pro.index_daily(ts_code=f"{code}.SH", start_date=to_compact(start),  # tushare API只接受YYYYMMDD
+                                end_date=to_compact(datetime.today()),  # tushare API只接受YYYYMMDD, 不接受YYYY-MM-DD
                                 fields="trade_date,close")
             if df is None or df.empty:
                 return pd.Series()
@@ -721,7 +759,7 @@ if __name__ == "__main__":
 
     # 2. 增量更新日线（首次会全量拉取）
     print("\n=== 增量更新日线 ===")
-    store.update_daily(start="20200101")
+    store.update_daily(start=DEFAULT_START_DATE)
 
     # 3. 验证
     print("\n=== 数据统计 ===")

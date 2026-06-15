@@ -1,62 +1,45 @@
 <!DOCTYPE html><html lang="zh-CN"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>QuantA · 智能选股</title>
-<link rel="stylesheet" href="/static/style.css">
+<title>北极星 · ¥5000→¥100万</title>
+<link rel="stylesheet" href="/static/style.css?v=10">
 </head><body>
 
-<aside class="sidebar">
-  <div class="hd"><div class="logo">QUANTA<span>智能选股 · ¥5000→¥100万</span></div></div>
-  <nav class="nav">
-    <div class="nav-item on" onclick="switchPage('picks')"><span class="dot"></span>选股推荐</div>
-    <div class="nav-item" onclick="switchPage('tracking')"><span class="dot dim"></span>追踪回顾</div>
-    <div class="nav-item" onclick="switchPage('positions')"><span class="dot dim"></span>持仓监控</div>
-    <div class="nav-item" onclick="switchPage('trades')"><span class="dot dim"></span>交易记录</div>
-  </nav>
-  <div class="ft"><span class="live"></span><span id="statusText">系统运行中</span>
-    <select class="theme-select" id="themeSelect" onchange="setTheme(this.value)"></select>
-  </div>
-</aside>
-
-<main class="main">
-  <div class="topbar"><div class="title" id="pageTitle">选股推荐</div><div class="meta" id="headerMeta">等待数据...</div></div>
-  <div class="alert-bar" id="alertBar"><span class="msg" id="alertMsg"></span></div>
-
-  <!-- PAGE 1: 选股推荐 -->
-  <div class="page on" id="page-picks">
-    <div class="kpi-row" id="kpiBar"></div>
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-hd">推荐组合<span class="sub" id="recBadge">Top 3</span></div>
-        <div class="card-body"><table class="tbl" id="recTable"><thead><tr><th>#</th><th>趋势</th><th onclick="sortTbl('recTable',3)">代码 ▴</th><th>名称</th><th class="num" onclick="sortTbl('recTable',5)">得分 ▴</th><th class="num" onclick="sortTbl('recTable',6)">现价 ▴</th><th class="num" onclick="sortTbl('recTable',7)">5日涨跌 ▴</th><th class="num">波动</th></tr></thead><tbody></tbody></table></div>
-      </div>
-      <div class="card">
-        <div class="card-hd">追踪回顾<span class="sub" id="trackBadgeR">—</span></div>
-        <div class="card-body" id="trackPanelR"><div class="empty"><div class="icon">○</div>暂无回顾数据<br><span style="font-size:10px;color:var(--text-mute)">新推荐发布后自动追踪</span></div></div>
-      </div>
-    </div>
-    <div class="grid-2">
-      <div class="card"><div class="card-hd">回测指标</div><div class="card-body pad" id="backtestPanel"></div></div>
-      <div class="card"><div class="card-hd">因子重要性<span class="sub" id="factorBadge">—</span></div><div class="card-body pad" id="factorPanel"></div></div>
-    </div>
+<div id="app">
+  <!-- 本金 -->
+  <div id="capital-bar">
+    <span>💰</span>
+    <span id="capital-amount">¥5,000</span>
+    <span id="capital-return"></span>
   </div>
 
-  <!-- PAGE 2: 追踪回顾 -->
-  <div class="page" id="page-tracking">
-    <div class="kpi-row" id="trackKpi"></div>
-    <div class="card"><div class="card-hd">历史追踪<span class="sub" id="trackCount">0</span></div><div class="card-body"><table class="tbl" id="trackHistoryTable"><thead><tr><th>推荐日</th><th>追踪日</th><th class="num">数</th><th class="num">命中</th><th class="num">均收</th><th class="num">相关</th><th>明细</th></tr></thead><tbody></tbody></table></div></div>
+  <!-- 情绪 + 状态 -->
+  <div id="mood-bar">
+    <span id="mood-icon">⏳</span>
+    <span id="mood-label">等待开盘</span>
+    <span id="mood-position"></span>
+    <span id="status-dot" style="margin-left:auto"></span>
   </div>
 
-  <!-- PAGE 3: 持仓监控 -->
-  <div class="page" id="page-positions">
-    <div class="port-summary" id="portSummary"></div>
-    <div class="card"><div class="card-hd">当前持仓<span class="sub" id="posCount">0</span></div><div class="card-body"><table class="tbl" id="posTable"><thead><tr><th>代码</th><th>名称</th><th class="num">股数</th><th class="num">成本</th><th class="num">现价</th><th class="num">市值</th><th class="num" onclick="sortTbl('posTable',7)">盈亏 ▴</th><th>买入日</th></tr></thead><tbody></tbody></table></div></div>
+  <!-- 持仓 (有持仓时显示) -->
+  <div id="positions-panel">
+    <div class="section-title">💼 持仓 <span id="pos-count"></span></div>
+    <div id="position-list"></div>
+    <div id="exit-alerts"></div>
   </div>
 
-  <!-- PAGE 4: 交易记录 -->
-  <div class="page" id="page-trades">
-    <div class="card"><div class="card-hd">交易记录<span class="sub">推荐即买入</span></div><div class="card-body"><table class="tbl" id="tradeTable"><thead><tr><th>日期</th><th>代码</th><th>名称</th><th>方向</th><th class="num">股数</th><th class="num">价格</th><th class="num">金额</th><th class="num">费用</th></tr></thead><tbody></tbody></table></div></div>
+  <!-- 买入信号 -->
+  <div id="signals">
+    <div class="section-title">🎯 今日信号 <span id="signal-count"></span></div>
+    <div id="signal-list"></div>
+    <div id="no-signals" class="empty">监控中，等待信号触发...</div>
   </div>
-</main>
 
-<script src="/static/app.js"></script>
+  <!-- 最近交易 -->
+  <div id="trades-panel">
+    <div class="section-title">📋 最近交易</div>
+    <div id="trade-list"></div>
+  </div>
+</div>
+
+<script src="/static/app.js?v=9"></script>
 </body></html>

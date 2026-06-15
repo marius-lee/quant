@@ -9,7 +9,7 @@
 import sqlite3, os, json
 from datetime import datetime
 from backtest import compute_commission
-import pandas as pd
+from utils.date import to_str
 from config.loader import get as cfg
 from utils.logger import get_logger
 
@@ -64,7 +64,7 @@ def execute_simulation(result: dict, store=None):
     conn = _results_conn()
     conn.execute("PRAGMA journal_mode=WAL")
     run_id = conn.execute("SELECT MAX(id) FROM runs").fetchone()[0]
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = to_str(datetime.now())
     new_symbols = set(r["symbol"] for r in recs)
 
     # 卖出不再推荐的旧持仓
@@ -76,9 +76,9 @@ def execute_simulation(result: dict, store=None):
             price = 0.0
             if store:
                 try:
-                    raw = store.get_daily([sym], start=(datetime.now().replace(day=1) - pd.Timedelta(days=30)).strftime("%Y%m%d"))
-                    if not raw.empty and "close" in raw:
-                        price = float(raw["close"].iloc[-1, 0])
+                    raw = store.get_daily([sym], start=to_str(datetime.now().replace(day=1) - pd.Timedelta(days=30)))
+                    if not raw.empty and "close" in raw and sym in raw["close"].columns:
+                        price = float(raw["close"][sym].iloc[-1])
                 except Exception:
                     logger.warning(f"sim unable to get market price for {sym} from store")
             if price <= 0:
@@ -148,7 +148,7 @@ def get_positions(store=None) -> list:
         # 尝试获取最新价格
         if store:
             try:
-                raw = store.get_daily([p["symbol"]], start=datetime.now().strftime("%Y%m%d"))
+                raw = store.get_daily([p["symbol"]], start=to_str(datetime.now()))
                 if not raw.empty and "close" in raw:
                     latest_close = raw["close"].iloc[-1, 0] if not raw["close"].empty else p["cost_price"]
                 else:

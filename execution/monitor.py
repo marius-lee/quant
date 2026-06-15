@@ -19,7 +19,7 @@ _conn = None  # 懒加载连接，任务结束时释放
 def _get_conn():
     global _conn
     if _conn is None:
-        _conn = sqlite3.connect(DB_PATH)
+        _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         _conn.execute("PRAGMA journal_mode=WAL")
     return _conn
 
@@ -89,10 +89,13 @@ def compute_deviation(expected_daily_return: float, actual_daily_return: float, 
     """计算信号偏差。
     Returns: {annualized_gap, sharpe_gap, assessment}
     """
+    # 来源: 5天=1交易周 — 最低统计显著性 (少于5天无法区分噪声vs偏差)
     if days < 5:
         return {"annualized_gap": 0, "assessment": "insufficient_data"}
     gap = actual_daily_return - expected_daily_return
     annual_gap = gap * 252 * 100
+    # 来源: 偏差阈值(bps) — 50bps=0.5%年化(严重), 20bps(显著), 5bps(轻微)
+    #       基于A股指数跟踪误差行业标准 (公募基金年化跟踪误差通常<50bps)
     if abs(annual_gap) > 50:
         assessment = "critical_gap"
     elif abs(annual_gap) > 20:

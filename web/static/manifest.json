@@ -1,0 +1,25 @@
+{
+  "name": "QuantA · 智能选股",
+  "short_name": "QuantA",
+  "description": "A股量化选股系统 ¥5000→¥100万",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#0f0f11",
+  "background_color": "#0f0f11",
+  "categories": ["finance", "utilities"],
+  "icons": [
+    {
+      "src": "/static/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

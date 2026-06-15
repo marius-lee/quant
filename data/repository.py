@@ -6,6 +6,7 @@
 import pandas as pd
 from data.store import DataStore
 from utils.logger import get_logger
+from utils.date import DEFAULT_START_DATE
 
 logger = get_logger("data.repository")
 
@@ -16,23 +17,29 @@ class StockRepo:
     def __init__(self, store: DataStore):
         self.store = store
 
-    def get_qualified(self, min_days: int = None) -> list:
-        """返回合格股票列表（可配置ST/次新过滤，5000元资金可买性过滤）。
+    def get_qualified(self, min_days: int = None, capital: float = None) -> list:
+        """返回合格股票列表（可配置ST/次新过滤，资金规模自适应可买性过滤）。
 
-        config.yaml 控制:
-          - affordable.min_history_days: 最少交易日 (默认120，不排除次新)
-          - affordable.exclude_st: 是否排除ST (默认false，ST摘帽是弹性来源)
-          - affordable.exclude_star_st: 是否排除*ST (默认true)
-          - affordable.max_stock_price: 最高股价 (默认30元，5000元买得起)
-          - affordable.min_daily_amount: 最低日成交额 (默认500万)
+        max_price: capital / 100 (最低1手=100股)
+        min_daily_amount: (capital / max_positions) × 10
+          来源: 单笔持仓≤日均成交额10% (Portfolio123社区标准; QuantConnect实践)
+          例如 ¥5000÷3×10=¥16,667 — 小资金可进入机构无法交易的低流动性池
+
+        config.yaml 的 affordable.* 值作为 capital=None 时的静态回退。
         """
         from config.loader import get as cfg
         if min_days is None:
             min_days = cfg("affordable.min_history_days", 120)
         exclude_st = cfg("affordable.exclude_st", False)
         exclude_star_st = cfg("affordable.exclude_star_st", True)
-        max_price = cfg("affordable.max_stock_price", 30)
-        min_amount = cfg("affordable.min_daily_amount", 5_000_000)
+
+        if capital is not None and capital > 0:
+            max_positions = cfg("backtest.max_positions", 3)
+            max_price = capital / 100  # ¥5000÷100=¥50
+            min_amount = (capital / max_positions) * 10  # 单笔×10
+        else:
+            max_price = cfg("affordable.max_stock_price", 30)
+            min_amount = cfg("affordable.min_daily_amount", 5_000_000)
 
         conn = self.store._connect()
 
@@ -49,11 +56,7 @@ class StockRepo:
 
         where_clause = " AND ".join(conditions)
 
-        # 获取最近日期的收盘价用于可买性过滤
-        latest_date = conn.execute("SELECT MAX(date) FROM daily").fetchone()[0]
-        if not latest_date:
-            return []
-
+        # 拿每只股票各自的最新日期做可买性过滤 (不依赖全局 MAX(date))
         symbols = [r[0] for r in conn.execute(f"""
             SELECT d.symbol FROM daily d
             INNER JOIN stocks s ON s.symbol = d.symbol
@@ -61,16 +64,19 @@ class StockRepo:
             GROUP BY d.symbol HAVING COUNT(*) >= ?
             ORDER BY d.symbol
         """, (min_days,)).fetchall()]
+        n_after_days = len(symbols)
+        logger.info(f"stock filter: {n_after_days} with >= {min_days} days")
 
-        # 可买性过滤: 股价和日成交额约束
+        # 可买性过滤: 股价和日成交额约束 (每只股票用自己最新的日期)
         if not symbols:
             return []
         if max_price > 0 or min_amount > 0:
             placeholders = ",".join("?" for _ in symbols)
             df = pd.read_sql_query(
-                f"""SELECT symbol, close, amount FROM daily
-                    WHERE symbol IN ({placeholders}) AND date = ?
-                """, conn, params=symbols + [latest_date]
+                f"""SELECT d.symbol, d.close, d.amount FROM daily d
+                    WHERE d.symbol IN ({placeholders})
+                    AND d.date = (SELECT MAX(date) FROM daily WHERE symbol = d.symbol)
+                """, conn, params=symbols
             )
             affordable = set()
             for _, row in df.iterrows():
@@ -79,8 +85,11 @@ class StockRepo:
                 if min_amount > 0 and row["amount"] < min_amount:
                     continue
                 affordable.add(row["symbol"])
+            n_after_affordable = len(affordable)
+            logger.info(f"stock filter: ... → {n_after_affordable} with price<={max_price}, amount>={min_amount}")
             symbols = [s for s in symbols if s in affordable]
 
+        logger.info(f"stock filter: {len(symbols)} final qualified")
         return symbols
 
     def get_fundamentals(self, symbols: list) -> pd.DataFrame:
@@ -126,12 +135,17 @@ class FactorRepo:
 
     def load_batch(self, symbols: list, start_date: str = None,
                    end_date: str = None) -> pd.DataFrame:
-        """读取一批股票的全部历史因子，返回 (date,stock) × factor。
+        """读取一批股票的全部历史因子，返回 (date,stock) × factor (float32)。
 
         start_date/end_date: YYYY-MM-DD 格式，限制日期范围以控制内存。
-        自动分块以避免 SQLite 的 999 参数上限。
+        单日查询跳过 SQLite 参数分块（结果极小）。
         """
+        # 来源: SQLite参数上限=999 (SQLITE_MAX_VARIABLE_NUMBER默认)
+        #       900留99个给日期等额外参数
         MAX_PARAMS = 900
+        # 单日优化: 结果只有 len(symbols) 行，不需要分块
+        if start_date and end_date and start_date == end_date:
+            return self._load_batch_chunk(symbols, start_date, end_date)
         if len(symbols) <= MAX_PARAMS:
             return self._load_batch_chunk(symbols, start_date, end_date)
         frames = []
@@ -177,7 +191,9 @@ class FactorRepo:
             return pd.DataFrame()
         df["date"] = pd.to_datetime(df["date"])
         fc = [c for c in df.columns if c not in ("date", "stock")]
-        return df.set_index(["date", "stock"])[fc]
+        result = df.set_index(["date", "stock"])[fc]
+        # float32: 减半内存, 对已 winsorize 的因子无精度损失
+        return result.astype("float32")
 
     def save_batch(self, df: pd.DataFrame, mode: str = "append"):
         """写入一批因子数据"""
@@ -213,4 +229,4 @@ class PriceRepo:
 
     def get_ohlcv(self, symbols: list, start: str = None) -> dict:
         """返回原始 MultiIndex DataFrame（含 open/high/low/close/volume/amount）"""
-        return self.store.get_daily(symbols, start=start or "20200101")
+        return self.store.get_daily(symbols, start=start or DEFAULT_START_DATE)

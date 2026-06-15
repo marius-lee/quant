@@ -1,308 +1,175 @@
-"""量化选股 Web 服务 — 后台分析, 永不阻塞"""
-import json, os, threading, time
+"""量化选股 Web — 陈小群六模块体系前端。
 
-import pandas as pd
+状态: web/shared.py 内存共享 (intraday_runner 写入, Flask 读取)
+持久: data/trades.db (持仓/交易唯一真相源)
+"""
+
+import json, os, sqlite3
+from datetime import date, datetime
 from flask import Flask, jsonify, render_template
-from web.pipeline import RecommendationEngine
-from web.db import init_db, save_result, get_history
-from factor.compute import compute_factors
-from data.store import DataStore
 from utils.logger import get_logger
 
-logger = get_logger("app")
-from config.loader import get as cfg
-TOKEN = os.environ.get("TUSHARE_TOKEN") or cfg("data.tushare_token") or ""
-
+logger = get_logger("web.app")
 app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 
-engine = None
-_store = None
-_analysis_running = False
-_analysis_lock = threading.Lock()
-_store_lock = threading.Lock()
-_engine_lock = threading.Lock()
+TRADE_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "trades.db")
+
+from web.shared import get_state, update_state
 
 
-def get_store():
-    global _store
-    if _store is None:
-        with _store_lock:
-            if _store is None:
-                _store = DataStore(tushare_token=TOKEN)
-    return _store
-
-
-def get_engine():
-    global engine
-    if engine is None:
-        with _engine_lock:
-            if engine is None:
-                engine = RecommendationEngine(tushare_token=TOKEN)
-                init_db()
-    return engine
-
+# ═══ 核心 API ═══
 
 @app.route("/")
 def index():
     return render_template("index.html")
 
 
-@app.route("/api/latest")
-def latest():
-    """最新分析结果（读 SQLite, 永远不阻塞）"""
-    history = get_history(limit=1)
-    if history:
-        r = history[0]
-        return jsonify({
-            "ok": True, "run_at": r["run_at"], "n_stocks": r["n_stocks"],
-            "sharpe": r["sharpe"], "annual_return": r["annual_return"],
-            "max_drawdown": r["max_drawdown"], "win_rate": r["win_rate"],
-            "picks": r["picks"], "raw_json": r["raw_json"],
-        })
-    return jsonify({"ok": False, "msg": "暂无分析结果"})
+@app.route("/api/state")
+def api_state():
+    """当前完整状态: 情绪+信号+持仓+板块"""
+    return jsonify(get_state())
 
 
-@app.route("/api/run", methods=["POST"])
-def run_analysis():
-    """启动后台分析, 立即返回"""
-    global _analysis_running, _analysis_lock
-    with _analysis_lock:
-        if _analysis_running:
-            return jsonify({"ok": False, "msg": "分析进行中"})
-        _analysis_running = True
-
-    def _bg():
-        global _analysis_running
-        try:
-            t0 = time.time()
-            engine = get_engine()
-            compute_factors(engine.store)
-            result = engine.run()
-            save_result(result)
-            elapsed = time.time() - t0
-            m = result.get("metrics", {})
-            logger.info(f"analysis done: {elapsed:.0f}s sharpe={m.get('sharpe_ratio', 0):.3f}")
-            # 同步更新 auto_status.json，让 /api/auto-status 展示最新 alert
-            _sync_auto_status(result, elapsed)
-            # 追踪上一次推荐的表现
-            try:
-                from engine.tracker import init_tracking, track_previous_picks
-                init_tracking()
-                track_previous_picks(store=engine.store)
-            except Exception:
-                logger.exception("tracking failed")
-        except Exception:
-            logger.exception("analysis failed")
-        finally:
-            with _analysis_lock:
-                _analysis_running = False
-
-    threading.Thread(target=_bg, daemon=True).start()
-    return jsonify({"ok": True, "msg": "分析已启动"})
+@app.route("/api/mood")
+def api_mood():
+    """情绪周期"""
+    state = get_state()
+    return jsonify(state.get("mood", {}))
 
 
-@app.route("/api/auto-status")
-def auto_status():
-    f = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data/auto_status.json")
-    if os.path.exists(f):
-        with open(f) as fp:
-            return jsonify(json.load(fp))
-    return jsonify({"status": "unknown"})
+@app.route("/api/signals")
+def api_signals():
+    """当前信号列表"""
+    state = get_state()
+    return jsonify({
+        "golden": state.get("golden_signals", []),
+        "final": state.get("final_signals", []),
+        "timestamp": state.get("timestamp", ""),
+    })
 
 
-def _sync_auto_status(result: dict, elapsed: float):
-    """手动分析后同步 auto_status.json，确保 /api/auto-status 数据一致"""
-    import json as j
-    from datetime import datetime
-    f = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data/auto_status.json")
-    m = result.get("metrics", {})
-    recs = result.get("recommendations", [])
-    detail = f"完成 {result.get('n_stocks', '?')}只 夏普{m.get('sharpe_ratio', 0):.3f} 耗时{elapsed:.0f}s"
-    alerts = []
-    if recs:
-        top = recs[0]
-        alerts.append({
-            "type": "high_score",
-            "msg": f"高分信号! {top['symbol']} {top.get('name', '')} score={top['score']:.4f}"
-        })
-    payload = {"last_run": datetime.now().isoformat(), "status": "success", "detail": detail, "alerts": alerts}
-    tmp = f + ".tmp"
-    with open(tmp, 'w') as fp:
-        j.dump(payload, fp, ensure_ascii=False)
-    os.replace(tmp, f)
-
-
-@app.route("/api/track")
-def track():
-    """实时追踪：拿最近一次推荐的 top 20，对比当前最新价格。
-    与 /api/tracking (持久化追踪表，跨日对比命中率) 不同，本端点轻量、无状态。"""
-    try:
-        history = get_history(limit=1)
-        if not history:
-            return jsonify({"ok": False, "msg": "暂无记录"})
-        r = history[0]
-        symbols = [p["symbol"] for p in r["picks"][:20]]
-        prices = get_store().get_daily(symbols)
-        close_batch = prices["close"].sort_index() if not prices.empty and "close" in prices else pd.DataFrame()
-        tracked = []
-        for p in r["picks"][:20]:
-            sym, old = p["symbol"], p["price"]
-            if sym in close_batch.columns and old > 0:
-                new = float(close_batch[sym].iloc[-1])
-                chg = (new / old - 1)
-            else:
-                new, chg = 0, 0
-            tracked.append({
-                "symbol": sym, "name": p["name"],
-                "rec_price": old, "latest_price": round(new, 2),
-                "change_pct": round(chg * 100, 2),
-            })
-        avg = sum(t["change_pct"] for t in tracked) / len(tracked) if tracked else 0
-        win = sum(1 for t in tracked if t["change_pct"] > 0)
-        return jsonify({
-            "ok": True, "run_at": r["run_at"], "tracked": tracked,
-            "avg_change": round(avg, 2), "win_rate": f"{win}/{len(tracked)}",
-        })
-    except Exception as e:
-        logger.exception("/api/track failed")
-        return jsonify({"ok": False, "msg": str(e)})
-
-
-@app.route("/api/kline/<symbol>")
-def kline(symbol):
-    """返回单只股票最近120天的 OHLCV 数据"""
-    store = get_store()
-    conn = store._connect()
-    rows = conn.execute(
-        "SELECT date,open,high,low,close,volume FROM daily WHERE symbol=? ORDER BY date DESC LIMIT 120",
-        (symbol,)
-    ).fetchall()
-    if not rows:
-        return jsonify({"ok": False, "msg": "无数据"})
-    rows.reverse()
-    data = []
-    for r in rows:
-        data.append([
-            r[0][:4]+"-"+r[0][4:6]+"-"+r[0][6:],  # YYYYMMDD → YYYY-MM-DD
-            round(float(r[1] or 0), 2), round(float(r[4] or 0), 2),
-            round(float(r[3] or 0), 2), round(float(r[2] or 0), 2),
-            int(float(r[5] or 0)),
-        ])
-    return jsonify({"ok": True, "symbol": symbol, "data": data})
-
-
-@app.route("/api/history")
-def history():
-    return jsonify(get_history(limit=10))
-
-
-@app.route("/api/milestones")
-def milestones():
-    """北极星目标追踪: 5000→100万的阶段和里程碑"""
-    try:
-        from strategy.planner import get_stage, compute_milestones
-        # 从最近回测结果估算日收益率
-        history = get_history(limit=1)
-        if history:
-            m = history[0]
-            ann_ret = m.get("annual_return", 0) or 0
-            daily_ret = (1 + ann_ret) ** (1/252) - 1 if ann_ret > -1 else 0.005
-        else:
-            daily_ret = 0.005  # default: 0.5% daily (matches planner.py)
-
-        capital = 5000  # start
-        stage = get_stage(capital)
-        milestones = compute_milestones(capital, max(daily_ret, 0.001))
-
-        return jsonify({
-            "ok": True,
-            "current_stage": stage,
-            "milestones": milestones,
-            "estimated_daily_return": round(daily_ret * 100, 2),
-        })
-    except Exception as e:
-        return jsonify({"ok": False, "msg": str(e)})
-
-
-@app.route("/api/monitor")
-def monitor_summary():
-    """实盘偏差监控摘要"""
-    try:
-        from execution.monitor import get_monitor_summary, init_monitor_db
-        init_monitor_db()
-        return jsonify({"ok": True, **get_monitor_summary()})
-    except Exception as e:
-        return jsonify({"ok": False, "msg": str(e)})
-
-
-@app.route("/api/strategy-config")
-def strategy_config():
-    """当前策略配置（根据资金规模自动调整）"""
-    try:
-        from strategy.planner import get_strategy_config
-        config = get_strategy_config(5000)
-        return jsonify({"ok": True, "config": config})
-    except Exception as e:
-        return jsonify({"ok": False, "msg": str(e)})
-
-
-@app.route("/api/tracking")
-def tracking():
-    """推荐追踪分析: 历史推荐的实际表现"""
-    try:
-        from engine.tracker import init_tracking, get_tracking_history, get_tracking_stats
-        init_tracking()
-        stats = get_tracking_stats()
-        history = get_tracking_history(limit=10)
-        return jsonify({"ok": True, "stats": stats, "history": history})
-    except Exception as e:
-        return jsonify({"ok": False, "msg": str(e)})
-
-
-@app.route("/api/tracking/latest")
-def tracking_latest():
-    """最近一次追踪的详细结果"""
-    try:
-        from engine.tracker import init_tracking, get_tracking_history
-        init_tracking()
-        history = get_tracking_history(limit=1)
-        if history:
-            return jsonify({"ok": True, "tracking": history[0]})
-        return jsonify({"ok": False, "msg": "暂无追踪数据"})
-    except Exception as e:
-        return jsonify({"ok": False, "msg": str(e)})
+@app.route("/api/sectors")
+def api_sectors():
+    """板块热度"""
+    state = get_state()
+    return jsonify(state.get("sectors", []))
 
 
 @app.route("/api/positions")
-def positions():
-    """模拟持仓监控: 推荐即买入, 含最新估值和盈亏"""
+def api_positions():
+    """持仓 (从 trades.db 读取 — 唯一真相源)"""
+    positions = []
     try:
-        from engine.sim_broker import init_simulation, get_positions, get_portfolio_summary
-        init_simulation()
-        summary = get_portfolio_summary(store=get_store())
-        pos = get_positions(store=get_store())
-        return jsonify({"ok": True, "summary": summary, "positions": pos})
-    except Exception as e:
-        return jsonify({"ok": False, "msg": str(e)})
+        conn = sqlite3.connect(TRADE_DB)
+        buys = conn.execute("""
+            SELECT symbol, price, shares, board_count, date FROM sim_trades
+            WHERE side='buy' AND symbol NOT IN (
+                SELECT symbol FROM sim_trades WHERE side='sell'
+            )
+            ORDER BY date
+        """).fetchall()
+        for r in buys:
+            positions.append({
+                "symbol": r[0], "price": r[1], "shares": r[2],
+                "board_count": r[3], "date": r[4],
+            })
+        conn.close()
+    except Exception:
+        pass
+    return jsonify({"positions": positions, "exits": []})
 
 
 @app.route("/api/trades")
-def trades():
-    """模拟交易记录"""
+def api_trades():
+    """交易历史 + 当前持仓 (从 trades.db 读取)"""
+    trades = []
+    positions = []
     try:
-        from engine.sim_broker import init_simulation, get_trades
-        init_simulation()
-        return jsonify({"ok": True, "trades": get_trades(limit=50)})
-    except Exception as e:
-        return jsonify({"ok": False, "msg": str(e)})
+        conn = sqlite3.connect(TRADE_DB)
+        rows = conn.execute(
+            "SELECT date, symbol, side, price, shares, pnl, pnl_pct FROM sim_trades ORDER BY id"
+        ).fetchall()
+        trades = [{"date": r[0], "symbol": r[1], "side": r[2], "price": r[3],
+                    "shares": r[4], "pnl": r[5], "pnl_pct": r[6]} for r in rows]
+        buys = conn.execute("""
+            SELECT symbol, price, shares, board_count, date FROM sim_trades
+            WHERE side='buy' AND symbol NOT IN (
+                SELECT symbol FROM sim_trades WHERE side='sell'
+            )
+        """).fetchall()
+        positions = [{"symbol": r[0], "price": r[1], "shares": r[2],
+                       "board_count": r[3], "date": r[4]} for r in buys]
+        conn.close()
+    except Exception:
+        pass
+    return jsonify({"trades": trades, "positions": positions})
 
 
-def main():
-    stats = get_engine().store.get_stock_count()
-    logger.info(f"quant server started ({stats['stocks']} stocks/{stats['daily_rows']} rows)")
-    app.run(host="0.0.0.0", port=8521, debug=False)
+@app.route("/api/trade", methods=["POST"])
+def api_record_trade():
+    """记录一笔交易 → trades.db (唯一真相源)"""
+    from flask import request
+    data = request.get_json(force=True)
+    side = data.get("side")
+    symbol = data.get("symbol")
+    price = float(data.get("price", 0))
+    shares = int(data.get("shares", 0))
+    cost = float(data.get("cost", 0))
+
+    if not symbol or price <= 0 or shares < 100:
+        return jsonify({"ok": False, "error": "参数不完整"})
+
+    today = date.today().isoformat()
+    conn = sqlite3.connect(TRADE_DB)
+
+    if side == "buy":
+        conn.execute("""INSERT INTO sim_trades (date, symbol, side, price, shares, board_count)
+                        VALUES (?,?,?,?,?,?)""",
+                     (today, symbol, "buy", price, shares, data.get("board_count", 0)))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True})
+
+    elif side == "sell":
+        pnl = (price - cost) * shares
+        pnl_pct = round((price / cost - 1) * 100, 2) if cost > 0 else 0
+        # 计算 capital_after
+        sells = conn.execute("SELECT COALESCE(SUM(pnl),0) FROM sim_trades WHERE side='sell'").fetchone()[0]
+        buys_cost = conn.execute(
+            "SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy'"
+        ).fetchone()[0]
+        capital_after = 5000 + sells + pnl - buys_cost + (price * shares)
+        conn.execute("""INSERT INTO sim_trades (date, symbol, side, price, shares, pnl, pnl_pct, capital_after)
+                        VALUES (?,?,?,?,?,?,?,?)""",
+                     (today, symbol, "sell", price, shares, round(pnl, 2), pnl_pct, round(capital_after, 2)))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "pnl": round(pnl, 2), "pnl_pct": pnl_pct})
+
+    else:
+        conn.close()
+        return jsonify({"ok": False, "error": "side必须是buy或sell"})
+
+
+# ═══ 管理 API ═══
+
+@app.route("/api/state", methods=["POST"])
+def api_update_state():
+    """intraday_runner 更新瞬态"""
+    from flask import request
+    data = request.get_json(force=True)
+    data["timestamp"] = datetime.now().isoformat()
+    update_state(data)
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":
-    main()
+    import threading
+    from intraday_runner import run as intraday_run
+
+    monitor = threading.Thread(target=intraday_run, daemon=True, name="intraday")
+    monitor.start()
+    logger.info("日内监控线程已启动")
+
+    app.run(host="0.0.0.0", port=8521, debug=False)

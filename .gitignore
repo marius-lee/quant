@@ -14,3 +14,15 @@ data/auto_status.json
 .idea/
 *.swp
 *.swo
+config/config.yaml
+config/config.yaml
+
+# Database files (large binaries, not source code)
+*.db
+*.db-shm
+*.db-wal
+data/models/
+data/trade_calendar.json
+data/task_status.json
+data/t1_verify.db
+market.db

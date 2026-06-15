@@ -24,8 +24,7 @@ from utils.logger import get_logger
 logger = get_logger("engine.tracker")
 
 from web.db import get_conn as _results_conn
-from engine.backtest_runner import LIMIT_THRESHOLD
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "results.db")  # only used for DB_PATH reference
+LIMIT_THRESHOLD = 0.095  # 涨停阈值 (A股10%涨停板, 9.5%判定)
 
 
 def init_tracking():
@@ -138,7 +137,7 @@ def track_previous_picks(store=None) -> dict:
             continue
 
         sym_close = close_data[sym].dropna()
-        if len(sym_close) < 2:
+        if len(sym_close) < 1:
             continue
 
         entry_price = sym_close.iloc[0]
@@ -151,9 +150,9 @@ def track_previous_picks(store=None) -> dict:
         days = len(sym_close) - 1
         is_up = 1 if chg_pct > 0 else 0
 
-        # 涨停检测: 单日涨幅>=9.5%
+        # 涨停检测: 单日涨幅>=9.5% (handle single-row edge case)
         daily_chg = sym_close.pct_change()
-        is_limit = 1 if daily_chg.max() > LIMIT_THRESHOLD else 0
+        is_limit = 1 if (len(daily_chg) > 0 and daily_chg.max() > LIMIT_THRESHOLD) else 0
 
         excess = round(chg_pct - bench_compound, 2)
 
@@ -182,7 +181,14 @@ def track_previous_picks(store=None) -> dict:
     excess_avg = round(sum(r - bench_compound for r in returns_list) / n, 2) if n > 0 else 0
 
     # 得分-收益相关性: 高分股是否确实涨得更多?
-    score_corr = round(np.corrcoef(scores_list, returns_list)[0, 1], 4) if len(scores_list) >= 3 and len(set(scores_list)) > 1 else None
+    score_corr = None
+    if len(scores_list) >= 3 and len(set(scores_list)) > 1 and len(set(returns_list)) > 1:
+        try:
+            score_corr = round(float(np.corrcoef(scores_list, returns_list)[0, 1]), 4)
+            if np.isnan(score_corr):
+                score_corr = None
+        except Exception:
+            pass
 
     summary = {
         "track_date": today_str,
@@ -272,7 +278,7 @@ def _get_benchmark_return(store, start_date: str, end_date: str) -> float:
     if store is None:
         return 0.0
     try:
-        bench_returns = store.get_benchmark("000300", start=start_date.replace("-", ""))
+        bench_returns = store.get_benchmark("000300", start=to_str(start_date))
         if bench_returns.empty:
             return 0.0
         # 截取追踪时间段的收益序列
@@ -288,15 +294,38 @@ def _get_benchmark_return(store, start_date: str, end_date: str) -> float:
 
 
 def _get_recent_closes(store, symbols: list, start_date: str, end_date: str) -> pd.DataFrame:
-    """获取指定日期范围的收盘价"""
     if store is None:
         return None
     try:
-        raw = store.get_daily(symbols, start=start_date.replace("-", ""),
-                              end=end_date.replace("-", ""))
-        if raw.empty:
+        raw = store.get_daily(symbols)
+        if raw.empty or "close" not in raw:
             return None
-        return raw["close"].sort_index().dropna(how="all")
+        closes = raw["close"].sort_index().dropna(how="all")
+        if closes.empty or len(closes) < 2:
+            return None
+
+        start_dt = pd.to_datetime(start_date)
+        end_dt = pd.to_datetime(end_date)
+
+        # Find nearest actual data: entry = first close at or after rec_date, exit = last close
+        future = closes.loc[closes.index >= start_dt]
+        if not future.empty:
+            entry_date = future.index[0]
+        else:
+            # No data after rec_date — use last available close (slide backward)
+            past = closes.loc[closes.index <= start_dt]
+            entry_date = past.index[-1] if not past.empty else closes.index[0]
+
+        exit_date = closes.index[-1]
+        if entry_date not in closes.index:
+            return None
+        if exit_date < entry_date:
+            return None
+
+        period = closes.loc[entry_date:exit_date].dropna(axis=1, how="all")
+        if period.empty:
+            return None
+        return period
     except Exception as e:
         logger.warning(f"failed to get closes for tracking: {e}")
         return None

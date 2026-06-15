@@ -11,6 +11,8 @@ _state = {
     "status": "休市",
     "progress": "",
     "capital": 5000.0,
+    "total_asset": 5000.0,
+    "pos_value": 0,
     "mood": {},
     "golden_signals": [],
     "final_signals": [],

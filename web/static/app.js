@@ -7,9 +7,11 @@ async function get(path) {
 }
 
 function renderCapital(state) {
-  const capital = state.capital || 5000;
-  document.getElementById('capital-amount').textContent = '¥'+capital.toLocaleString();
-  const ret = ((capital/5000 - 1)*100);
+  const totalAsset = state.total_asset || state.capital || 5000;
+  const capital = state.capital || 0;
+  const ret = ((totalAsset/5000 - 1)*100);
+  document.getElementById('capital-amount').textContent = '¥'+totalAsset.toLocaleString();
+  document.getElementById('capital-available').textContent = '¥'+capital.toLocaleString();
   const el = document.getElementById('capital-return');
   el.textContent = (ret>=0?'+':'')+ret.toFixed(1)+'%';
   el.style.color = ret>=0 ? '#ef4444' : '#10b981';

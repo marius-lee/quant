@@ -5,11 +5,17 @@
 </head><body>
 
 <div id="app">
-  <!-- 本金 -->
+  <!-- 总资产 + 可用 -->
   <div id="capital-bar">
-    <span>💰</span>
-    <span id="capital-amount">¥5,000</span>
-    <span id="capital-return"></span>
+    <div class="capital-row">
+      <span>💰</span>
+      <span id="capital-amount">¥5,000</span>
+      <span id="capital-return"></span>
+    </div>
+    <div class="capital-row secondary">
+      <span>💵 可用</span>
+      <span id="capital-available">¥5,000</span>
+    </div>
   </div>
 
   <!-- 情绪 + 状态 -->

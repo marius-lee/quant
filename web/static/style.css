@@ -9,8 +9,10 @@ body { background:var(--bg); color:var(--text); font:14px/1.5 -apple-system,sans
 @media (max-width:600px) { #dual-panel { flex-direction:column; } }
 
 /* Capital bar */
-#capital-bar { display:flex; align-items:center; gap:12px; padding:16px 20px;
-  background:var(--card); border-radius:12px; margin-bottom:12px; }
+#capital-bar { padding:14px 20px; background:var(--card); border-radius:12px; margin-bottom:12px; }
+.capital-row { display:flex; align-items:center; gap:10px; }
+.capital-row.secondary { margin-top:4px; font-size:13px; color:var(--muted); }
+.capital-row.secondary span:last-child { color:var(--text); font-weight:600; }
 #capital-amount { font-size:28px; font-weight:800; }
 #capital-return { font-size:16px; margin-left:auto; font-weight:600; }
 

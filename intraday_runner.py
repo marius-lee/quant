@@ -332,7 +332,8 @@ def run():
 
         logger.info(f"追踪 {len(tracker.stocks)} 只股票 | 本金 ¥{capital:,.0f} | 仓位系数{mood['coefficient']:.0%} | {'可买' if can_buy else '禁买'}")
 
-        update_state({"status": "盘中", "progress": "拉取实时行情...", "capital": round(capital, 2), "mood": mood})
+        update_state({"status": "盘中", "progress": "拉取实时行情...", "capital": round(capital, 2),
+                     "total_asset": round(capital, 2), "pos_value": 0, "mood": mood})
 
         last_sector_scan = None  # 模块B: 板块龙头扫描间隔
 
@@ -457,7 +458,15 @@ def run():
                                        "pnl": round(pnl, 2), "pnl_pct": round(pnl_pct, 1)})
                     logger.info(f"  🔴 盘中卖出 {sym}: {sell_reason} ¥{px:.2f} PnL=¥{pnl:.0f}")
 
+            # 计算总资产: 现金 + 持仓市值
+            pos_value = sum(
+                p["shares"] * (tracker.stocks.get(p["symbol"], {}).get("close", p["price"]))
+                for p in positions
+            )
+            total_asset = round(capital + pos_value, 2)
+
             update_state({"status": "盘中", "progress": "", "capital": round(capital, 2),
+                         "total_asset": total_asset, "pos_value": round(pos_value, 2),
                          "all_signals": tracker.all_signals,
                          "final_signals": [s for s in new_signals if s['mode'] in ('B1_首板试错','B2_二板定龙')],
                          "golden_signals": [s for s in new_signals if s['mode'] in ('B3_首阴反包','B4_分歧转一致')]})

@@ -13,6 +13,7 @@ _state = {
     "capital": 5000.0,
     "total_asset": 5000.0,
     "pos_value": 0,
+    "positions": [],
     "mood": {},
     "golden_signals": [],
     "final_signals": [],

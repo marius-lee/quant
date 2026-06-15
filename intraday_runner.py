@@ -333,9 +333,16 @@ def run():
         logger.info(f"追踪 {len(tracker.stocks)} 只股票 | 本金 ¥{capital:,.0f} | 仓位系数{mood['coefficient']:.0%} | {'可买' if can_buy else '禁买'}")
 
         pos_value_init = sum(p["shares"] * p["price"] for p in positions)
+        positions_init = [{
+            "symbol": p["symbol"], "shares": p["shares"], "cost": p["price"],
+            "current": p["price"], "board_count": p.get("board_count", 0),
+            "date": p.get("date", ""), "has_sealed": p.get("has_sealed", False),
+            "pnl_pct": 0, "value": round(p["shares"] * p["price"], 2),
+        } for p in positions]
         update_state({"status": "盘中", "progress": "拉取实时行情...", "capital": round(capital, 2),
                      "total_asset": round(capital + pos_value_init, 2),
-                     "pos_value": round(pos_value_init, 2), "mood": mood})
+                     "pos_value": round(pos_value_init, 2), "mood": mood,
+                     "positions": positions_init})
 
         last_sector_scan = None  # 模块B: 板块龙头扫描间隔
         last_heartbeat = None
@@ -473,16 +480,27 @@ def run():
                                        "pnl": round(pnl, 2), "pnl_pct": round(pnl_pct, 1)})
                     logger.info(f"  🔴 盘中卖出 {sym}: {sell_reason} ¥{px:.2f} PnL=¥{pnl:.0f}")
 
-            # 计算总资产: 现金 + 持仓市值 (来源: 现价优先, 未加载时用成本价)
+            # 计算总资产 + 持仓明细 (来源: 实时价优先, 未加载时用成本价)
             pos_value = 0
+            positions_with_px = []
             for p in positions:
                 st = tracker.stocks.get(p["symbol"], {})
                 px = st.get("close", 0) if st.get("close", 0) > 0 else p["price"]
                 pos_value += p["shares"] * px
+                positions_with_px.append({
+                    "symbol": p["symbol"], "shares": p["shares"],
+                    "cost": p["price"], "current": round(px, 2),
+                    "board_count": p.get("board_count", 0),
+                    "date": p.get("date", ""),
+                    "has_sealed": p.get("has_sealed", False),
+                    "pnl_pct": round((px / p["price"] - 1) * 100, 2),
+                    "value": round(p["shares"] * px, 2),
+                })
             total_asset = round(capital + pos_value, 2)
 
             update_state({"status": "盘中", "progress": "", "capital": round(capital, 2),
                          "total_asset": total_asset, "pos_value": round(pos_value, 2),
+                         "positions": positions_with_px,
                          "all_signals": tracker.all_signals,
                          "final_signals": [s for s in new_signals if s['mode'] in ('B1_首板试错','B2_二板定龙')],
                          "golden_signals": [s for s in new_signals if s['mode'] in ('B3_首阴反包','B4_分歧转一致')]})

@@ -69,13 +69,18 @@ function renderPositions() {
   panel.style.display = 'block';
   count.textContent = ps.length+'只';
   list.innerHTML = ps.map(p => {
-    const pnl = p.current_price ? ((p.current_price/p.price-1)*100) : 0;
-    const days = p.date ? Math.floor((Date.now()-new Date(p.date).getTime())/86400000) : 0;
-    const sealedBadge = p.has_sealed ? ' 🔒封板' : '';
+    var days = p.date ? Math.floor((Date.now()-new Date(p.date).getTime())/86400000) : 0;
+    var sealedBadge = p.has_sealed ? ' 🔒封板' : '';
+    var cost = p.cost || p.price || 0;
+    var current = p.current || p.current_price || cost;
+    var pnl = ((current/cost - 1)*100) || 0;
+    var value = p.value || (p.shares * current);
     return '<div class="signal-card held">'+
       '<div class="sig-symbol">'+p.symbol+' <span class="sig-mode">'+(p.board_count||0)+'连板 · '+days+'天</span></div>'+
-      '<div class="sig-price">成本¥'+p.price.toFixed(2)+
-        ' <span class="sig-ret '+(pnl>=0?'up':'down')+'">'+(pnl>=0?'+':'')+pnl.toFixed(1)+'%</span></div>'+
+      '<div class="sig-price">成本¥'+cost.toFixed(2)+
+        ' 现价¥'+current.toFixed(2)+
+        ' <span class="sig-ret '+(pnl>=0?'up':'down')+'">'+(pnl>=0?'+':'')+pnl.toFixed(1)+'%</span>'+
+        ' 市值¥'+value.toLocaleString()+'</div>'+
       '<div class="sig-meta">'+p.date+' 买入 ×'+p.shares+'股'+sealedBadge+'</div>'+
     '</div>';
   }).join('');
@@ -133,7 +138,7 @@ function renderTrades(trades) {
 async function poll() {
   const state = await get('/state');
   const td = await get('/trades');
-  POSITIONS = td.positions || [];
+  POSITIONS = state.positions || td.positions || [];
   renderCapital(state);
   renderMood(state);
   renderPositions();
@@ -149,25 +154,13 @@ async function loadReview() {
     const sigs = Object.entries(m).map(([k,v]) =>
       '<span style="margin-right:12px">'+k.replace('_',' ')+': <b>'+v.count+'</b> (买'+v.bought+')</span>'
     ).join('');
-    const holds = (r.portfolio.holdings||[]).map(h => {
-      var hasClose = h.close && h.close > 0;
-      var pnl = hasClose ? ((h.close/h.cost-1)*100) : 0;
-      return '<div class="trade-row '+(hasClose?(pnl>=0?'buy':'sell'):'')+'">'+
-        h.symbol+' 成本¥'+h.cost+
-        (hasClose
-          ? ' 今收¥'+h.close+' <b>'+(pnl>=0?'+':'')+pnl.toFixed(1)+'%</b>'
-          : ' <span style="color:var(--muted)">等待日线同步</span>')+
-        ' ×'+h.shares+'股 ¥'+h.value+
-      '</div>';
-    }).join('');
     document.getElementById('review-content').innerHTML =
       '<div style="margin-bottom:8px">'+
         '<div>📈 信号: '+sigs+'</div>'+
         '<div style="margin-top:4px">💰 总资产: ¥'+r.portfolio.total_asset.toLocaleString()+
         ' | 💵 可用: ¥'+r.portfolio.available_cash.toLocaleString()+
-        ' | 📊 持仓市值: ¥'+r.portfolio.positions_value.toLocaleString()+'</div>'+
-      '</div>'+
-      (holds?'<div style="margin-top:8px"><b>持仓估值</b>'+holds+'</div>':'');
+        ' | 📊 已买: '+r.signals.bought+'/'+r.signals.total+'</div>'+
+      '</div>';
     document.getElementById('review-panel').style.display = 'block';
   } catch(e) {}
 }

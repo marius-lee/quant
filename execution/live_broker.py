@@ -132,7 +132,9 @@ def get_initial_capital() -> float:
     row = get_conn().execute(
         "SELECT value FROM live_config WHERE key='initial_capital'"
     ).fetchone()
-    return float(row[0]) if row else 5000.0
+    if row: return float(row[0])
+    from config.loader import get as cfg
+    return float(cfg("backtest.initial_capital", 5000))
 
 
 def set_initial_capital(amount: float):

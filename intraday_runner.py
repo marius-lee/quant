@@ -231,13 +231,13 @@ def run():
             pass
 
         # ── 从 trades.db 恢复状态 (唯一真相源) ──
-        capital = 5000.0
+        capital = float(cfg("backtest.initial_capital", 5000))
         positions = []
         trades_list = []
         try:
             tc = sqlite3.connect(TRADE_DB)
             # 计算可用资金: 5000 - 买入总支出 + 卖出总收入 (来源: 逐笔复算)
-            capital = 5000.0
+            capital = float(cfg("backtest.initial_capital", 5000))
             all_trades = tc.execute("SELECT side, price, shares FROM sim_trades ORDER BY id").fetchall()
             for side, price, shares in all_trades:
                 val = price * shares

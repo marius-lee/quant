@@ -95,7 +95,9 @@ def generate_review(target_date: str = None) -> dict:
     mc.close()
 
     # ── 汇总 ──
-    available_cash = 5000.0 - total_buy_cost + sum(sell_proceeds(r[1], r[2]) for r in sells)
+    from config.loader import get as cfg
+    base_capital = float(cfg("backtest.initial_capital", 5000))
+    available_cash = base_capital - total_buy_cost + sum(sell_proceeds(r[1], r[2]) for r in sells)
     total_asset = available_cash + positions_value
 
     return {

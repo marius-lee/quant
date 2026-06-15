@@ -139,7 +139,9 @@ def api_record_trade():
         buys_cost = conn.execute(
             "SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy'"
         ).fetchone()[0]
-        capital_after = 5000 + sells + pnl - buys_cost + (price * shares)
+        from config.loader import get as cfg
+        base = float(cfg("backtest.initial_capital", 5000))
+        capital_after = base + sells + pnl - buys_cost + (price * shares)
         conn.execute("""INSERT INTO sim_trades (date, symbol, side, price, shares, pnl, pnl_pct, capital_after)
                         VALUES (?,?,?,?,?,?,?,?)""",
                      (today, symbol, "sell", price, shares, round(pnl, 2), pnl_pct, round(capital_after, 2)))

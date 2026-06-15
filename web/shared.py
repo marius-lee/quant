@@ -11,16 +11,17 @@ _lock = threading.Lock()
 
 def _init_state() -> dict:
     """从 trades.db 初始化状态(单次调用)"""
+    from config.loader import get as cfg
     state = {
         "status": "休市", "progress": "", "mood": {},
         "golden_signals": [], "final_signals": [],
         "all_signals": [], "sectors": [], "summary": {}, "timestamp": "",
     }
+    base_capital = float(cfg("backtest.initial_capital", 5000))
     try:
         db = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "trades.db")
         conn = sqlite3.connect(db)
-        # 计算可用资金: 5000 - 买入总支出 + 卖出总收入
-        capital = 5000.0
+        capital = base_capital
         for side, price, shares in conn.execute("SELECT side, price, shares FROM sim_trades ORDER BY id").fetchall():
             val = price * shares
             if side == "buy":
@@ -46,8 +47,8 @@ def _init_state() -> dict:
         state["positions"] = positions
         conn.close()
     except Exception:
-        state["capital"] = 5000.0
-        state["total_asset"] = 5000.0
+        state["capital"] = base_capital
+        state["total_asset"] = base_capital
         state["pos_value"] = 0
         state["positions"] = []
     return state

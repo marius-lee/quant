@@ -68,22 +68,26 @@ function renderPositions() {
   }
   panel.style.display = 'block';
   count.textContent = ps.length+'只';
-  list.innerHTML = ps.map(p => {
-    var days = p.date ? Math.floor((Date.now()-new Date(p.date).getTime())/86400000) : 0;
-    var sealedBadge = p.has_sealed ? ' 🔒封板' : '';
+  var html = '<table class="pos-table"><thead><tr>'+
+    '<th>代码</th><th>数量</th><th>成本</th><th>现价</th><th>浮动盈亏</th><th>市值</th>'+
+  '</tr></thead><tbody>';
+  ps.forEach(p => {
     var cost = p.cost || p.price || 0;
     var current = p.current || p.current_price || cost;
     var pnl = ((current/cost - 1)*100) || 0;
     var value = p.value || (p.shares * current);
-    return '<div class="signal-card held">'+
-      '<div class="sig-symbol">'+p.symbol+' <span class="sig-mode">'+(p.board_count||0)+'连板 · '+days+'天</span></div>'+
-      '<div class="sig-price">成本¥'+cost.toFixed(2)+
-        ' 现价¥'+current.toFixed(2)+
-        ' <span class="sig-ret '+(pnl>=0?'up':'down')+'">'+(pnl>=0?'+':'')+pnl.toFixed(1)+'%</span>'+
-        ' 市值¥'+value.toLocaleString()+'</div>'+
-      '<div class="sig-meta">'+p.date+' 买入 ×'+p.shares+'股'+sealedBadge+'</div>'+
-    '</div>';
-  }).join('');
+    var cls = pnl>=0 ? 'up' : 'down';
+    html += '<tr>'+
+      '<td><b>'+p.symbol+'</b><div class="sub">'+(p.board_count||0)+'连板 · '+(p.date||'')+'</div></td>'+
+      '<td>'+p.shares+'股</td>'+
+      '<td>¥'+cost.toFixed(2)+'</td>'+
+      '<td>¥'+current.toFixed(2)+'</td>'+
+      '<td class="'+cls+'">'+(pnl>=0?'+':'')+pnl.toFixed(1)+'%</td>'+
+      '<td>¥'+value.toLocaleString()+'</td>'+
+    '</tr>';
+  });
+  html += '</tbody></table>';
+  list.innerHTML = html;
 }
 
 function renderSignals(state) {

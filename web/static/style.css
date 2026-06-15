@@ -47,6 +47,15 @@ body { background:var(--bg); color:var(--text); font:14px/1.5 -apple-system,sans
 .btn-buy { background:var(--accent); color:#fff; }
 .btn-sell { background:#ef4444; color:#fff; }
 
+/* Position table */
+.pos-table { width:100%; border-collapse:collapse; font-size:14px; }
+.pos-table th { text-align:left; color:var(--muted); font-weight:500; padding:8px 12px; border-bottom:2px solid var(--border); font-size:12px; }
+.pos-table td { padding:10px 12px; border-bottom:1px solid var(--border); white-space:nowrap; }
+.pos-table td:last-child, .pos-table th:last-child { text-align:right; }
+.pos-table .sub { font-size:11px; color:var(--muted); margin-top:2px; }
+.pos-table .up { color:var(--up); font-weight:600; }
+.pos-table .down { color:var(--down); font-weight:600; }
+
 /* Two-column: 持仓 || 交易 */
 #dual-panel { display:flex; gap:12px; margin-bottom:8px; }
 #dual-panel > * { flex:1; min-width:0; }

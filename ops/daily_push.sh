@@ -10,7 +10,7 @@ if git diff --quiet && git diff --cached --quiet && [ -z "$(git ls-files --other
     exit 0
 fi
 
-git add --all -- ':!*.db' ':!*.db-shm' ':!*.db-wal' ':!data/models/' ':!logs/'
+git add --all
 
 # 再次检查暂存区是否有内容
 if git diff --cached --quiet; then

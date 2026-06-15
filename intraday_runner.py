@@ -513,8 +513,8 @@ def run():
                          "total_asset": total_asset, "pos_value": round(pos_value, 2),
                          "positions": positions_with_px,
                          "all_signals": tracker.all_signals,
-                         "final_signals": [s for s in new_signals if s['mode'] in ('B1_首板试错','B2_二板定龙')],
-                         "golden_signals": [s for s in new_signals if s['mode'] in ('B3_首阴反包','B4_分歧转一致')]})
+                         "final_signals": [s for s in new_signals if s['mode'] in ('S3_二板接力','S4_首板试探')],
+                         "golden_signals": [s for s in new_signals if s['mode'] in ('S1_弱转强','S2_首阴反包')]})
 
             # 黄金半小时 5s, 盘中 30s
             if now.hour == 9 and now.minute >= 30 and now.hour < 10:

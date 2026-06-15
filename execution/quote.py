@@ -180,7 +180,8 @@ class BoardTracker:
         self.all_signals = []       # 全天所有信号 (B1/B2/B3/B4)
         self.emitted = set()        # 已触发的 (symbol, mode) 去重
         self.board_cache = {}       # symbol → board_count (首次封板时查DB缓存)
-        self.bought = set()         # 已模拟买入的 (symbol, mode) 避免重复买
+        self.bought = set()         # 已模拟买入的符号
+        self.prev_volumes = {}      # symbol → 前日成交量 (start_day时批量注入)
 
     def start_day(self, symbols: list[str], prev_close_map: dict = None):
         self.stocks = {}
@@ -270,13 +271,8 @@ class BoardTracker:
     # 首板不打 (陈小群: "首板看运气"), 二板是弱转强的载体
 
     def _prev_volume(self, conn, sym) -> int:
-        """查前日成交量"""
-        if conn is None:
-            return 0
-        row = conn.execute(
-            "SELECT volume FROM daily WHERE symbol=? ORDER BY date DESC LIMIT 1", (sym,)
-        ).fetchone()
-        return row[0] if row else 0
+        """查前日成交量 — 优先用 start_day 时注入的缓存"""
+        return self.prev_volumes.get(sym, 0)
 
     def scan_all_modes(self, conn=None) -> list[dict]:
         """每次 update 后调用 — 陈小群买点。

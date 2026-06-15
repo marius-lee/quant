@@ -195,11 +195,12 @@ def run():
 
         # 来源: 一条SQL替代4500条查询 — 昨收价批量加载
         rows = conn.execute("""
-            SELECT symbol, close FROM daily
+            SELECT symbol, close, volume FROM daily
             WHERE date = (SELECT MAX(date) FROM daily WHERE date < DATE('now') AND date LIKE '%-%-%')
         """).fetchall()
         prev_close_map = {r[0]: r[1] for r in rows if r[1]}
-        logger.info(f"昨收价加载: {len(prev_close_map)} 只")
+        prev_volume_map = {r[0]: r[2] for r in rows if r[2]}
+        logger.info(f"昨收价加载: {len(prev_close_map)} 只 — 昨日量: {len(prev_volume_map)} 只")
 
         # ── G1/G3: 情绪周期 (来源: 陈小群——情绪决定仓位系数) ──
         mood = {"stage": "复苏", "coefficient": 0.5}
@@ -322,6 +323,7 @@ def run():
         update_state({"status": "盘中", "progress": "初始化追踪器..."})
         tracker = BoardTracker(yesterday_state=yesterday)
         tracker.start_day(list(prev_close_map.keys()), prev_close_map)
+        tracker.prev_volumes = prev_volume_map  # 昨日量缓存
         # 恢复已买入状态 (从今日交易记录中读取)
         try:
             tc2 = sqlite3.connect(TRADE_DB)

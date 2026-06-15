@@ -15,13 +15,19 @@ from utils.logger import get_logger
 logger = get_logger("execution.monitor")
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "monitor.db")
-_conn = None  # 懒加载连接，任务结束时释放
+_conn = None
 def _get_conn():
     global _conn
     if _conn is None:
         _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         _conn.execute("PRAGMA journal_mode=WAL")
     return _conn
+
+def close():
+    global _conn
+    if _conn is not None:
+        _conn.close()
+        _conn = None
 
 
 def init_monitor_db():

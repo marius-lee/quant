@@ -181,4 +181,6 @@ if __name__ == "__main__":
     monitor.start()
     logger.info("日内监控线程已启动")
 
-    app.run(host="0.0.0.0", port=8521, debug=False)
+    from config.loader import get as cfg
+    port = int(cfg("web.port", 8521))
+    app.run(host="0.0.0.0", port=port, debug=False)

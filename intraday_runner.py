@@ -224,9 +224,15 @@ def run():
         trades_list = []
         try:
             tc = sqlite3.connect(TRADE_DB)
-            # 计算本金: 5000 + 所有已卖出交易的PnL总和
-            sells = tc.execute("SELECT pnl FROM sim_trades WHERE side='sell'").fetchall()
-            capital = 5000.0 + sum(r[0] for r in sells if r[0])
+            # 计算可用资金: 5000 - 买入总支出 + 卖出总收入 (来源: 逐笔复算)
+            capital = 5000.0
+            all_trades = tc.execute("SELECT side, price, shares FROM sim_trades ORDER BY id").fetchall()
+            for side, price, shares in all_trades:
+                val = price * shares
+                if side == "buy":
+                    capital -= val + max(val * 0.0003, 5)
+                else:
+                    capital += val - max(val * 0.0003, 5) - val * 0.001
             # 未卖出的持仓
             pos_rows = tc.execute("""
                 SELECT symbol, price, shares, board_count, date FROM sim_trades

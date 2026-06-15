@@ -176,8 +176,19 @@ def run():
 
         # ═══ 交易时段内: 初始化并监控 ═══
         logger.info(f"=== {date.today()} 开始监控 ===")
-        update_state({"status": "盘中", "progress": "加载行情..."})
 
+        # ── 同步昨日日线 (TickFlow次日凌晨更新, 开盘前拉取) ──
+        try:
+            from data.store import DataStore
+            store = DataStore(db_path=DB)
+            sync_start = (date.today() - timedelta(days=2)).isoformat()
+            n = store.update_daily(start=sync_start)
+            if n > 0:
+                logger.info(f"日线同步: +{n} 条")
+        except Exception as e:
+            logger.warning(f"日线同步失败: {e}")
+
+        update_state({"status": "盘中", "progress": "加载行情..."})
         conn = sqlite3.connect(DB)
         watchlist = get_watchlist(conn)
         yesterday = load_yesterday_state(conn)
@@ -513,15 +524,6 @@ def run():
 
         conn.close()
         tracker.reset()
-
-        # ── 同步今日日线 (收盘后 OHLCV 定稿) ──
-        try:
-            from data.store import DataStore
-            store = DataStore(db_path=DB)
-            n = store.update_daily(start=date.today().isoformat())
-            logger.info(f"日线同步: +{n} 条 (date={date.today()})")
-        except Exception as e:
-            logger.warning(f"日线同步失败: {e}")
 
         logger.info(f"=== 收盘 | 本金 ¥{capital:,.0f} ===")
         update_state({"status": "已收盘", "capital": round(capital, 2),

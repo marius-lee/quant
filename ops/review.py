@@ -55,18 +55,35 @@ def generate_review(target_date: str = None) -> dict:
     total_sell_pnl = sum(r[3] for r in sells if r[3])
     hold_symbols = [r[0] for r in buys if r[0] not in [s[0] for s in sells]]
 
-    # ── 当前持仓 (成本价; 今日日线收盘后同步,次日可见实时估值) ──
+    # ── 当前持仓估值 (依赖今日日线, 收盘同步后才准确) ──
+    today_close_exists = mc.execute(
+        "SELECT COUNT(*) FROM daily WHERE date=?", (target_date,)
+    ).fetchone()[0] > 0
+
     positions_value = 0
     hold_details = []
     for sym in hold_symbols:
         buy_info = next((b for b in buys if b[0] == sym), None)
-        if buy_info:
-            val = buy_info[2] * buy_info[1]  # 成本价估值
-            positions_value += val
-            hold_details.append({
-                "symbol": sym, "shares": buy_info[2], "cost": buy_info[1],
-                "board_count": buy_info[3], "value": round(val, 2),
-            })
+        if not buy_info:
+            continue
+        cost_val = buy_info[2] * buy_info[1]
+        positions_value += cost_val
+        detail = {
+            "symbol": sym, "shares": buy_info[2], "cost": buy_info[1],
+            "board_count": buy_info[3], "value": round(cost_val, 2),
+        }
+        if today_close_exists:
+            row = mc.execute(
+                "SELECT close FROM daily WHERE symbol=? AND date=?", (sym, target_date)
+            ).fetchone()
+            if row and row[0] > 0:
+                detail["close"] = round(row[0], 2)
+                detail["pnl_pct"] = round((row[0] / buy_info[1] - 1) * 100, 2)
+                detail["value"] = round(buy_info[2] * row[0], 2)
+        hold_details.append(detail)
+
+    if today_close_exists:
+        positions_value = sum(h.get("value", h["shares"] * h["cost"]) for h in hold_details)
 
     # ── 龙头信号 ──
     top_signals = tc.execute(

@@ -149,13 +149,17 @@ async function loadReview() {
     const sigs = Object.entries(m).map(([k,v]) =>
       '<span style="margin-right:12px">'+k.replace('_',' ')+': <b>'+v.count+'</b> (买'+v.bought+')</span>'
     ).join('');
-    const holds = (r.portfolio.holdings||[]).map(h =>
-      '<div class="trade-row '+(h.pnl_pct>=0?'buy':'sell')+'">'+
-        h.symbol+' 成本¥'+h.cost+' 现价¥'+h.current+
-        ' <b>'+(h.pnl_pct>=0?'+':'')+h.pnl_pct.toFixed(1)+'%</b>'+
+    const holds = (r.portfolio.holdings||[]).map(h => {
+      var hasClose = h.close && h.close > 0;
+      var pnl = hasClose ? ((h.close/h.cost-1)*100) : 0;
+      return '<div class="trade-row '+(hasClose?(pnl>=0?'buy':'sell'):'')+'">'+
+        h.symbol+' 成本¥'+h.cost+
+        (hasClose
+          ? ' 今收¥'+h.close+' <b>'+(pnl>=0?'+':'')+pnl.toFixed(1)+'%</b>'
+          : ' <span style="color:var(--muted)">等待日线同步</span>')+
         ' ×'+h.shares+'股 ¥'+h.value+
-      '</div>'
-    ).join('');
+      '</div>';
+    }).join('');
     document.getElementById('review-content').innerHTML =
       '<div style="margin-bottom:8px">'+
         '<div>📈 信号: '+sigs+'</div>'+

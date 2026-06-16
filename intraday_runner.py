@@ -12,7 +12,8 @@
 
 import time, sqlite3, os
 from datetime import datetime, date, timedelta
-from execution.quote import BoardTracker, is_trading_time
+from config.loader import get as cfg
+from execution.quote import BoardTracker, is_trading_time, fetch_quotes
 from execution.calendar import is_trading_day
 from utils.logger import get_logger
 
@@ -131,11 +132,18 @@ def run():
     logger.info("日内监控启动, 全天候运行中...")
     update_state({"status": "休市"})
 
-    last_sync_date = None
+    # 持久化: 避免重启重复同步
+    import json as _json
+    _sync_state_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", ".sync_state")
+    try:
+        with open(_sync_state_file) as f:
+            last_sync_date = date.fromisoformat(_json.load(f).get("date", ""))
+    except Exception:
+        last_sync_date = None
 
     while True:
-        # ── 每日日线同步 (无论何时启动, 每天一次) ──
-        if last_sync_date != date.today():
+        # ── 每日日线同步 (只在盘前, 盘中直接跳过) ──
+        if last_sync_date != date.today() and now.hour < 9:
             try:
                 from data.store import DataStore
                 n = DataStore(db_path=DB).update_daily(start=(date.today() - timedelta(days=2)).isoformat())
@@ -144,6 +152,11 @@ def run():
             except Exception:
                 pass
             last_sync_date = date.today()
+            try:
+                with open(_sync_state_file, "w") as f:
+                    _json.dump({"date": last_sync_date.isoformat()}, f)
+            except Exception:
+                pass
         now = datetime.now()
 
         # 非交易日 → 等明天
@@ -369,6 +382,17 @@ def run():
                 last_heartbeat = now
             new_signals = tracker.scan_all_modes(conn=conn)
 
+            # ── 持仓快速刷新 (每轮3-5s, 直接写tracker) ──
+            if positions:
+                try:
+                    pos_quotes = fetch_quotes([p["symbol"] for p in positions])
+                    for p in positions:
+                        q = pos_quotes.get(p["symbol"])
+                        if q and p["symbol"] in tracker.stocks:
+                            tracker.stocks[p["symbol"]]["close"] = q["price"]
+                except Exception:
+                    pass
+
             # ── 模块B: 板块龙头扫描 (每5分钟, efiance API慢) ──
             if last_sector_scan is None or (now - last_sector_scan).total_seconds() >= 300:
                 try:
@@ -414,40 +438,38 @@ def run():
                     pos["break_count"] = st["broken_count"]
                     pos["was_at_limit"] = st["is_at_limit"]
 
-            # 新信号 → 即时模拟买入 (来源: 陈小群——情绪系数控仓位)
+            # 新信号 → 买入 (全仓最优, 余额不够才跳下只)
             if can_buy:
-              max_pos = 2
-              coeff = mood.get("coefficient", 0.5)
               for s in new_signals:
-                if len(positions) >= max_pos:
-                    break
                 sym, mode = s["symbol"], s["mode"]
-                if sym in tracker.bought:
-                    continue
                 entry_px = s["price"]
-                budget = capital * coeff * (0.5 if len(positions) == 0 else 0.3)
-                shares = int(budget / entry_px / 100) * 100
-                if shares >= 100:
-                    cost = shares * entry_px
-                    fee = max(cost * 0.0003, 5)
-                    if cost + fee < capital:
-                        capital -= (cost + fee)
-                        positions.append({"symbol": sym, "price": entry_px, "shares": shares,
-                                         "date": today_str, "board_count": s.get("board_count", 0),
-                                         "has_sealed": True, "break_count": 0, "was_at_limit": True})
-                        trades_list.append({"symbol": sym, "side": "buy", "price": entry_px, "shares": shares,
-                                           "date": today_str})
-                        record_trade(today_str, sym, "buy", entry_px, shares,
-                                    s.get("board_count", 0), capital_after=round(capital, 2))
-                        # 标记信号已成交
-                        sid_conn = sqlite3.connect(TRADE_DB)
-                        sid_conn.execute(
-                            "UPDATE signals SET is_bought=1 WHERE symbol=? AND date=? AND is_bought=0 ORDER BY id DESC LIMIT 1",
-                            (sym, today_str))
-                        sid_conn.commit()
-                        sid_conn.close()
-                        tracker.bought.add(sym)
-                        logger.info(f"  💰 模拟买入 {sym} ({mode}): ¥{entry_px:.2f} × {shares}股 余额¥{capital:.0f}")
+                max_lots = int(capital / (entry_px * 100 + max(entry_px * 100 * 0.0003, 5)))
+                if max_lots < 1:
+                    continue
+                shares = max_lots * 100
+                cost = shares * entry_px
+                fee = max(cost * 0.0003, 5)
+                capital -= (cost + fee)
+                # 已有持仓 → 补仓 / 新股 → 新建
+                existing = next((p for p in positions if p["symbol"] == sym), None)
+                if existing:
+                    existing["shares"] += shares
+                    existing["board_count"] = max(existing["board_count"], s.get("board_count", 0))
+                else:
+                    positions.append({"symbol": sym, "price": entry_px, "shares": shares,
+                                     "date": today_str, "board_count": s.get("board_count", 0),
+                                     "has_sealed": True, "break_count": 0, "was_at_limit": True})
+                trades_list.append({"symbol": sym, "side": "buy", "price": entry_px, "shares": shares, "date": today_str})
+                record_trade(today_str, sym, "buy", entry_px, shares,
+                            s.get("board_count", 0), capital_after=round(capital, 2))
+                # 标记信号已成交 (SQLite不支持UPDATE...ORDER BY, 用子查询)
+                sid_conn = sqlite3.connect(TRADE_DB)
+                sid_conn.execute(
+                    "UPDATE signals SET is_bought=1 WHERE id=(SELECT id FROM signals WHERE symbol=? AND date=? AND is_bought=0 ORDER BY id DESC LIMIT 1)",
+                    (sym, today_str))
+                sid_conn.commit()
+                sid_conn.close()
+                logger.info(f"  💰 {'补仓' if existing else '买入'} {sym} ({mode}): ¥{entry_px:.2f} × {shares}股 余额¥{capital:.0f}")
 
             # ── B1-B3: 盘中风控 (来源: 陈小群卖出纪律) ──
             for pos in list(positions):
@@ -516,11 +538,11 @@ def run():
                          "final_signals": [s for s in new_signals if s['mode'] in ('连板接力',)],
                          "golden_signals": [s for s in new_signals if s['mode'] in ('弱转强','首阴反包')]})
 
-            # 黄金半小时 5s, 盘中 30s
+            # 黄金半小时 3s, 盘中 5s
             if now.hour == 9 and now.minute >= 30 and now.hour < 10:
-                time.sleep(5)
+                time.sleep(3)
             else:
-                time.sleep(30)
+                time.sleep(5)
 
         conn.close()
         tracker.reset()

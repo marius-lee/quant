@@ -139,6 +139,7 @@ function renderTrades(trades) {
   ).join('');
 }
 
+// v17
 async function poll() {
   const state = await get('/state');
   const td = await get('/trades');

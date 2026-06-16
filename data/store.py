@@ -560,25 +560,32 @@ class DataStore:
             rows = None
             source = "none"
 
-            # 优先级: 新浪 → TickFlow → zzshare → tushare → akshare → 腾讯
-            # 新浪收盘后即可用(15:30), TickFlow 次日才有
-            for src_name, fetch_fn in [
+            # 动态轮转: 记录每条每秒速度, 最快的排前面, 失败排最后
+            if not hasattr(self, '_source_speed'):
+                self._source_speed = {}
+            all_sources = [
                 ("sina",     lambda: self._fetch_sina_daily(chunk, batch_start)),
                 ("tickflow", lambda: self._fetch_tickflow_daily(chunk, batch_start)),
-                ("zzshare",  lambda: self._fetch_zzshare_daily(chunk, batch_start)),
-                ("tushare",  lambda: self._fetch_batch_tushare(pro, ",".join(_ts_code(s) for s in chunk), batch_start) if pro else None),
                 ("akshare",  lambda: self._fetch_akshare_daily(chunk, batch_start)),
                 ("tencent",  lambda: self._fetch_tencent_daily(chunk, batch_start)),
-            ]:
+            ]
+            ordered = sorted(all_sources, key=lambda x: self._source_speed.get(x[0], 999), reverse=True)
+            for src_name, fetch_fn in ordered:
                 if rows is not None:
                     break
                 try:
+                    t0 = __import__('time').time()
                     result = fetch_fn()
+                    elapsed = __import__('time').time() - t0
                     if result:
                         rows = result
                         source = src_name
-                except Exception as e:
-                    logger.debug(f"[{src_name}] unavailable: {e}")
+                        rps = len(result) / max(elapsed, 0.001)
+                        # 指数移动平均: 70%旧+30%新, 防单次波动
+                        old = self._source_speed.get(src_name, rps)
+                        self._source_speed[src_name] = old * 0.7 + rps * 0.3
+                except Exception:
+                    self._source_speed[src_name] = -1  # 失败排最后
                     continue
 
             if rows:

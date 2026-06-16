@@ -93,8 +93,7 @@ def fetch_quotes(symbols: list[str]) -> dict[str, dict]:
             if parsed:
                 result[parsed["symbol"]] = parsed
 
-        if i + _BATCH_SIZE < len(symbols):
-            time.sleep(0.5)
+        # 批次间不休眠, 最大化拉取速度
 
     return result
 
@@ -312,7 +311,7 @@ class BoardTracker:
             if st["yesterday_broken"]:
                 if 2.0 <= gap <= 5.0 and minutes_elapsed <= 5 and daily_ret >= 7.0 and vol_ratio >= 3.0:
                     if ("弱转强", sym) not in self.emitted:
-                        self._emit(sym, st, "弱转强", 0.90, daily_ret, gap,
+                        self._emit(sym, st, "弱转强", 0.50 + time_bonus(st), daily_ret, gap,
                                    st["yesterday_board"] + 1,
                                    f"昨烂板+今高开{gap:.1f}%+量{vol_ratio:.0f}x+{minutes_elapsed:.0f}min涨{daily_ret:.0f}%")
 
@@ -323,7 +322,7 @@ class BoardTracker:
                         recent = [p[1] for p in prices[-10:]]
                         ma = sum(recent) / len(recent)
                         if st["close"] > ma:
-                            self._emit(sym, st, "首阴反包", 0.85, daily_ret, gap,
+                            self._emit(sym, st, "首阴反包", 0.50 + time_bonus(st), daily_ret, gap,
                                        st["yesterday_board"] + 1,
                                        f"昨炸板+高开{gap:.1f}%+换手{vol_ratio:.0%}")
 
@@ -346,7 +345,7 @@ class BoardTracker:
                     board = self.board_cache.get(sym, 1)
                     if board >= 2:
                         _tb = time_bonus(st)
-                        self._emit(sym, st, "连板接力", 0.70 + _tb, daily_ret, gap, board,
+                        self._emit(sym, st, "连板接力", 0.50 + _tb, daily_ret, gap, board,
                                    f"{board}连板+换手{vol_ratio:.0%}")
 
         return [s for s in self.all_signals if not s.get("_stale")]

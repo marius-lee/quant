@@ -350,30 +350,19 @@ if __name__ == "__main__":
     logger.info("日内监控线程已启动")
 
     def _scheduler():
-        """策略调度: ETF周一,小市值周二,首日立即执行"""
-        etf_done, smallcap_done = False, False
+        """策略调度: 每日9:30执行ETF+小市值轮动"""
+        today_done = None
         _time.sleep(60)
         while True:
             try:
                 now = _dt.now()
                 if not is_trading_day() or now.hour < 9 or now.hour >= 15:
-                    _time.sleep(60); continue
-                tc = sqlite3.connect(TRADE_DB)
-                has_etf = tc.execute("SELECT COUNT(*) FROM sim_trades WHERE strategy='etf'").fetchone()[0] > 0
-                has_sc = tc.execute("SELECT COUNT(*) FROM sim_trades WHERE strategy='smallcap'").fetchone()[0] > 0
-                tc.close()
-                # 首日立即执行
-                if not has_etf:
-                    logger.info("ETF轮动: 首日执行"); _execute_etf(); etf_done = True
-                if not has_sc:
-                    logger.info("小市值轮动: 首日执行"); _execute_smallcap(); smallcap_done = True
-                # 常规调度
-                wd = now.weekday()
-                if wd == 0 and now.hour == 9 and 30 <= now.minute < 31 and not etf_done:
-                    if _execute_etf(): etf_done = True
-                if wd == 1 and now.hour == 9 and 30 <= now.minute < 31 and not smallcap_done:
-                    if _execute_smallcap(): smallcap_done = True
-                if wd >= 2: etf_done = smallcap_done = False
+                    today_done = None; _time.sleep(60); continue
+                if today_done != now.day and now.hour == 9 and 30 <= now.minute < 31:
+                    _execute_etf()
+                    _execute_smallcap()
+                    today_done = now.day
+                    logger.info("策略调度: ETF+小市值日频执行")
             except Exception:
                 pass
             _time.sleep(60)

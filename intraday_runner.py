@@ -481,6 +481,13 @@ def run():
             if can_buy:
               for s in new_signals:
                 sym, mode = s["symbol"], s["mode"]
+                # ── ST/*ST/退市过滤 (来源: 交易所规则, 2026-06-17加入) ──
+                try:
+                    name = fetch_quotes([sym]).get(sym, {}).get("name", "")
+                    if "ST" in name or "退" in name:
+                        continue
+                except Exception:
+                    pass
                 entry_px = s["price"]
                 max_lots = int(capital / (entry_px * 100 + max(entry_px * 100 * 0.0003, 5)))
                 if max_lots < 1:

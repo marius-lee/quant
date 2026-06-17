@@ -382,16 +382,33 @@ def run():
                 last_heartbeat = now
             new_signals = tracker.scan_all_modes(conn=conn)
 
-            # ── 持仓快速刷新 (每轮3-5s, 直接写tracker) ──
+            # ── 持仓快速刷新 (每轮3-5s, 补充tracker缺失字段) ──
             if positions:
                 try:
                     pos_quotes = fetch_quotes([p["symbol"] for p in positions])
                     for p in positions:
                         q = pos_quotes.get(p["symbol"])
-                        if q and p["symbol"] in tracker.stocks:
-                            tracker.stocks[p["symbol"]]["close"] = q["price"]
-                except Exception:
-                    pass
+                        if q:
+                            sym = p["symbol"]
+                            if sym not in tracker.stocks:
+                                tracker.stocks[sym] = {
+                                    "symbol": sym, "close": q["price"],
+                                    "open": q.get("open", q["price"]),
+                                    "high": q.get("high", q["price"]),
+                                    "prev_close": q.get("prev_close", p["price"]),
+                                    "is_at_limit": False, "is_one_word": False,
+                                    "broken_count": 0, "was_sealed": False,
+                                    "first_limit_time": None, "gap_pct": 0,
+                                    "volume": q.get("volume", 0), "prices": [],
+                                    "limit_price": 0, "limit_pct": 0.10,
+                                    "yesterday_broken": False, "yesterday_limit": False,
+                                    "yesterday_board": 0,
+                                }
+                            else:
+                                tracker.stocks[sym]["close"] = q["price"]
+                    logger.info("📊 持仓刷新: %s", [(p['symbol'], tracker.stocks[p['symbol']]['close']) for p in positions if p['symbol'] in tracker.stocks])
+                except Exception as e:
+                    logger.warning("📊 持仓刷新失败: %s", e)
 
             # ── 模块B: 板块龙头扫描 (每5分钟, efiance API慢) ──
             if last_sector_scan is None or (now - last_sector_scan).total_seconds() >= 300:

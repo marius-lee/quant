@@ -72,7 +72,7 @@ function renderPositions() {
     '<th>代码</th><th>数量</th><th>成本</th><th>现价</th><th>浮动盈亏</th><th>市值</th>'+
   '</tr></thead><tbody>';
   ps.forEach(p => {
-    var cost = p.cost || p.price || 0;
+    var cost = p.price || 0;
     var current = p.current || p.current_price || cost;
     var pnl = ((current/cost - 1)*100) || 0;
     var value = p.value || (p.shares * current);

@@ -35,7 +35,7 @@ def _init_state() -> dict:
             WHERE side='buy' AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell')
         """).fetchall():
             positions.append({
-                "symbol": r[0], "shares": r[2], "cost": r[1],
+                "symbol": r[0], "shares": r[2], "price": r[1],
                 "board_count": r[3], "date": r[4],
                 "current": r[1], "pnl_pct": 0,
                 "value": round(r[2] * r[1], 2),

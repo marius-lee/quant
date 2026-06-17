@@ -477,8 +477,23 @@ def run():
                     pos["break_count"] = st["broken_count"]
                     pos["was_at_limit"] = st["is_at_limit"]
 
-            # G4: 双跌停禁买 (来源: 陈小群——同板块≥2只跌停不做)
+            # G4: 双跌停禁买 (来源: 陈小群——≥2只跌停不做)
+            # G5: 成交量萎缩禁买 (来源: 陈小群——大盘连缩3天>20%不做)
             buy_blocked = False
+            try:
+                # 近3日成交量
+                vols = conn.execute("""
+                    SELECT SUM(volume) FROM daily
+                    WHERE date >= DATE('now', '-3 days') AND date < DATE('now')
+                    GROUP BY date ORDER BY date
+                """).fetchall()
+                if len(vols) >= 3:
+                    v = [r[0] for r in vols]
+                    if v[0] > 0 and v[-1] < v[0] * 0.8:
+                        buy_blocked = True
+                        logger.warning(f"  🚫 成交量萎缩禁买: {v[-1]/v[0]*100:.0f}%")
+            except Exception:
+                pass
             if can_buy:
                 try:
                     limit_downs = [sym for sym, st in tracker.stocks.items()
@@ -493,7 +508,6 @@ def run():
             # 新信号 → 买入 (陈小群: 不补仓, 持仓≤3只, 全仓最优)
             max_positions = int(cfg("backtest.max_positions", 3))
             if can_buy and not buy_blocked:
-            if can_buy:
               for s in new_signals:
                 if len(positions) >= max_positions:
                     break
@@ -610,7 +624,7 @@ def run():
                          "total_asset": total_asset, "pos_value": round(pos_value, 2),
                          "positions": positions_with_px,
                          "all_signals": tracker.all_signals,
-                         "final_signals": [s for s in new_signals if s['mode'] in ('连板接力',)],
+                         "final_signals": [s for s in new_signals if s['mode'] in ('连板接力','首板试探')],
                          "golden_signals": [s for s in new_signals if s['mode'] in ('弱转强','首阴反包')]})
 
             # 黄金半小时 3s, 盘中 5s

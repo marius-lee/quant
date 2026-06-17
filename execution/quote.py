@@ -343,10 +343,13 @@ class BoardTracker:
                         self.board_cache[sym] = board
 
                     board = self.board_cache.get(sym, 1)
+                    _tb = time_bonus(st)
                     if board >= 2:
-                        _tb = time_bonus(st)
                         self._emit(sym, st, "连板接力", 0.50 + _tb, daily_ret, gap, board,
                                    f"{board}连板+换手{vol_ratio:.0%}")
+                    else:
+                        self._emit(sym, st, "首板试探", 0.30 + _tb, daily_ret, gap, board,
+                                   f"首板+换手{vol_ratio:.0%}")
 
         return [s for s in self.all_signals if not s.get("_stale")]
 

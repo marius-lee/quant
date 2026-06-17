@@ -566,8 +566,6 @@ class DataStore:
             all_sources = [
                 ("sina",     lambda: self._fetch_sina_daily(chunk, batch_start)),
                 ("tickflow", lambda: self._fetch_tickflow_daily(chunk, batch_start)),
-                ("akshare",  lambda: self._fetch_akshare_daily(chunk, batch_start)),
-                ("tencent",  lambda: self._fetch_tencent_daily(chunk, batch_start)),
             ]
             ordered = sorted(all_sources, key=lambda x: self._source_speed.get(x[0], 999), reverse=True)
             for src_name, fetch_fn in ordered:

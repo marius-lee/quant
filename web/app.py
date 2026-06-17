@@ -163,14 +163,21 @@ def api_performance():
     import sqlite3
     tc = sqlite3.connect(TRADE_DB)
     sells = tc.execute("SELECT pnl FROM sim_trades WHERE side='sell'").fetchall()
-    total_pnl = sum(r[0] for r in sells if r[0])
+    realized_pnl = sum(r[0] for r in sells if r[0])
     win_trades = sum(1 for r in sells if r[0] and r[0] > 0)
     total_sells = len(sells)
     win_rate = round(win_trades / total_sells * 100, 1) if total_sells > 0 else 0
     buys = tc.execute("SELECT COUNT(*) FROM sim_trades WHERE side='buy'").fetchone()[0]
     tc.close()
+    # 未实现盈亏用实时总资产
+    from web.shared import get_state
+    total_asset = get_state().get("total_asset", 5000.0)
+    base = float(cfg("backtest.initial_capital", 5000))
+    total_pnl = round(total_asset - base, 2)
     return jsonify({
-        "total_pnl": round(total_pnl, 2),
+        "realized_pnl": round(realized_pnl, 2),
+        "unrealized_pnl": round(total_pnl - realized_pnl, 2),
+        "total_pnl": total_pnl,
         "total_sells": total_sells,
         "win_rate": win_rate,
         "total_buys": buys,

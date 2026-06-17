@@ -18,9 +18,12 @@ async function renderCapital(state) {
   // 绩效统计
   try {
     const perf = await (await fetch('/api/performance')).json();
-    document.getElementById('perf-stats').textContent =
-      '总盈亏: ¥'+(perf.total_pnl>=0?'+':'')+perf.total_pnl.toLocaleString()+
-      ' | 交易: '+perf.total_buys+'买 '+perf.total_sells+'卖'+
+    var cls = perf.total_pnl>=0 ? 'color:#ef4444' : 'color:#10b981';
+    document.getElementById('perf-stats').innerHTML =
+      '已实现: ¥'+(perf.realized_pnl>=0?'+':'')+perf.realized_pnl.toLocaleString()+
+      ' | 浮动: ¥'+(perf.unrealized_pnl>=0?'+':'')+perf.unrealized_pnl.toLocaleString()+
+      ' | <span style=\"'+cls+'\">总计: ¥'+(perf.total_pnl>=0?'+':'')+perf.total_pnl.toLocaleString()+'</span>'+
+      ' | '+perf.total_buys+'买 '+perf.total_sells+'卖'+
       ' | 胜率: '+perf.win_rate+'%';
   } catch(e) {}
 }

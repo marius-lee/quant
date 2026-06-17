@@ -23,16 +23,10 @@
   <div id="position-list"></div>
 </div>
 
-  <button class="btn-buy" onclick="execute()" style="margin-top:12px">⚡ 执行轮动</button>
 </div>
 
 <script>
-async function execute() {
-  if (!confirm('确定执行小市值轮动? 将清仓旧持仓并等权买入Top5')) return;
-  const r = await (await fetch('/api/smallcap/execute', {method:'POST'})).json();
-  alert(r.ok ? '执行完成! 买入 '+r.bought.length+'只' : '失败: '+r.error);
-  poll();
-}
+// 小市值轮动由调度线程自动执行(每周二9:00)
 async function poll() {
   const r = await (await fetch('/api/smallcap/state')).json();
   document.getElementById('capital-amount').textContent = '¥'+(r.capital||5000).toLocaleString();

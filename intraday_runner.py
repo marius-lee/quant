@@ -278,13 +278,23 @@ def run():
                         ma5_map[r[0]] = sum(row[0] for row in close_rows) / len(close_rows)
             except Exception:
                 pass  # MA5 失败不阻塞持仓恢复
+            # 合并同一股票的多笔买入 (加权平均成本)
+            _merged = {}
             for r in pos_rows:
                 sym, cost_price, shares, board, buy_date = r[0], r[1], r[2], r[3], r[4]
-                # 今日买入的 → 直接加入持仓
+                # 今日买入的 → 合并
                 if buy_date >= date.today().isoformat():
-                    positions.append({"symbol": sym, "price": cost_price, "shares": shares,
-                                     "board_count": board, "date": buy_date,
-                                     "has_sealed": False, "break_count": 0, "was_at_limit": False})
+                    if sym in _merged:
+                        m = _merged[sym]
+                        total_sh = m["shares"] + shares
+                        m["price"] = round((m["price"] * m["shares"] + cost_price * shares) / total_sh, 2)
+                        m["shares"] = total_sh
+                        m["board_count"] = max(m["board_count"], board)
+                        m["date"] = min(m["date"], buy_date)
+                    else:
+                        _merged[sym] = {"symbol": sym, "price": cost_price, "shares": shares,
+                                       "board_count": board, "date": buy_date,
+                                       "has_sealed": False, "break_count": 0, "was_at_limit": False}
                     continue
 
                 # 昨日持仓 → 条件卖出
@@ -320,11 +330,20 @@ def run():
                                 round((today_open/cost_price-1)*100, 2), round(capital, 2))
                     logger.info(f"  🔴 {sell_reason} {sym}: ¥{cost_price:.2f}→¥{today_open:.2f} PnL=¥{pnl:.0f}")
                 else:
-                    # A5: 持有
-                    positions.append({"symbol": sym, "price": cost_price, "shares": shares,
-                                     "board_count": board, "date": buy_date,
-                                     "has_sealed": False, "break_count": 0, "was_at_limit": False})
+                    # A5: 持有 → 合并
+                    if sym in _merged:
+                        m = _merged[sym]
+                        total_sh = m["shares"] + shares
+                        m["price"] = round((m["price"] * m["shares"] + cost_price * shares) / total_sh, 2)
+                        m["shares"] = total_sh
+                        m["board_count"] = max(m["board_count"], board)
+                        m["date"] = min(m["date"], buy_date)
+                    else:
+                        _merged[sym] = {"symbol": sym, "price": cost_price, "shares": shares,
+                                       "board_count": board, "date": buy_date,
+                                       "has_sealed": False, "break_count": 0, "was_at_limit": False}
                     logger.info(f"  🟢 继续持有 {sym}: cost=¥{cost_price:.2f} {board}连板 {days_held}天")
+            positions = list(_merged.values())
             # 加载所有历史交易
             all_trades = tc.execute("SELECT date, symbol, side, price, shares, pnl, pnl_pct FROM sim_trades ORDER BY id").fetchall()
             trades_list = [{"date": t[0], "symbol": t[1], "side": t[2], "price": t[3],
@@ -359,8 +378,9 @@ def run():
 
         pos_value_init = sum(p["shares"] * p["price"] for p in positions)
         positions_init = [{
-            "symbol": p["symbol"], "shares": p["shares"], "cost": p["price"],
-            "current": p["price"], "board_count": p.get("board_count", 0),
+            "symbol": p["symbol"], "name": "", "shares": p["shares"],
+            "price": p["price"], "current": p["price"],
+            "board_count": p.get("board_count", 0),
             "date": p.get("date", ""), "has_sealed": p.get("has_sealed", False),
             "pnl_pct": 0, "value": round(p["shares"] * p["price"], 2),
         } for p in positions]
@@ -382,12 +402,14 @@ def run():
                 last_heartbeat = now
             new_signals = tracker.scan_all_modes(conn=conn)
 
-            # ── 持仓快速刷新 (每轮3-5s, 补充tracker缺失字段) ──
+            # ── 持仓快速刷新 (每轮3-5s, 补充tracker+名称) ──
             if positions:
                 try:
                     pos_quotes = fetch_quotes([p["symbol"] for p in positions])
                     for p in positions:
                         q = pos_quotes.get(p["symbol"])
+                        if q:
+                            p["name"] = q.get("name", "")
                         if q:
                             sym = p["symbol"]
                             if sym not in tracker.stocks:
@@ -538,9 +560,9 @@ def run():
                 px = st.get("close", 0) if st.get("close", 0) > 0 else p["price"]
                 pos_value += p["shares"] * px
                 positions_with_px.append({
-                    "symbol": p["symbol"], "shares": p["shares"],
-                    "cost": p["price"], "current": round(px, 2),
-                    "board_count": p.get("board_count", 0),
+                    "symbol": p["symbol"], "name": p.get("name", ""),
+                    "shares": p["shares"], "price": p["price"],
+                    "current": round(px, 2), "board_count": p.get("board_count", 0),
                     "date": p.get("date", ""),
                     "has_sealed": p.get("has_sealed", False),
                     "pnl_pct": round((px / p["price"] - 1) * 100, 2),

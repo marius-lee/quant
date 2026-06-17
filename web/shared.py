@@ -28,18 +28,28 @@ def _init_state() -> dict:
                 capital -= val + max(val * 0.0003, 5)
             else:
                 capital += val - max(val * 0.0003, 5) - val * 0.001
-        # 持仓成本
-        positions = []
+        # 持仓 (合并同股票多笔买入, 加权平均成本)
+        merged = {}
         for r in conn.execute("""
             SELECT symbol, price, shares, board_count, date FROM sim_trades
             WHERE side='buy' AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell')
         """).fetchall():
-            positions.append({
-                "symbol": r[0], "shares": r[2], "price": r[1],
-                "board_count": r[3], "date": r[4],
-                "current": r[1], "pnl_pct": 0,
-                "value": round(r[2] * r[1], 2),
-            })
+            sym, px, sh, board, dt = r[0], r[1], r[2], r[3], r[4]
+            if sym in merged:
+                m = merged[sym]
+                total_sh = m["shares"] + sh
+                m["price"] = round((m["price"] * m["shares"] + px * sh) / total_sh, 2)
+                m["shares"] = total_sh
+                m["board_count"] = max(m["board_count"], board)
+                m["date"] = min(m["date"], dt)
+            else:
+                merged[sym] = {"symbol": sym, "shares": sh, "price": px,
+                               "board_count": board, "date": dt}
+        positions = [{"symbol": m["symbol"], "name": "", "shares": m["shares"],
+                       "price": m["price"], "board_count": m["board_count"],
+                       "date": m["date"], "current": m["price"], "pnl_pct": 0,
+                       "value": round(m["shares"] * m["price"], 2),}
+                     for m in merged.values()]
         pos_value = sum(p["value"] for p in positions)
         state["capital"] = round(capital, 2)
         state["total_asset"] = round(capital + pos_value, 2)

@@ -69,7 +69,7 @@ function renderPositions() {
   panel.style.display = 'block';
   count.textContent = ps.length+'只';
   var html = '<table class="pos-table"><thead><tr>'+
-    '<th>代码</th><th>数量</th><th>成本</th><th>现价</th><th>浮动盈亏</th><th>市值</th>'+
+    '<th>代码</th><th>名称</th><th>数量</th><th>成本</th><th>现价</th><th>盈亏</th><th>市值</th>'+
   '</tr></thead><tbody>';
   ps.forEach(p => {
     var cost = p.price || 0;
@@ -78,7 +78,8 @@ function renderPositions() {
     var value = p.value || (p.shares * current);
     var cls = pnl>=0 ? 'up' : 'down';
     html += '<tr>'+
-      '<td><b>'+p.symbol+'</b><div class="sub">'+(p.board_count||0)+'连板 · '+(p.date||'')+'</div></td>'+
+      '<td>'+p.symbol+'<div class="sub">'+(p.board_count||0)+'连板 · '+(p.date||'')+'</div></td>'+
+      '<td>'+(p.name||'')+'</td>'+
       '<td>'+p.shares+'股</td>'+
       '<td>¥'+cost.toFixed(2)+'</td>'+
       '<td>¥'+current.toFixed(2)+'</td>'+

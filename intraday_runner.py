@@ -80,7 +80,7 @@ def record_signal(date_str, time_str, symbol, mode, price, score=0, board_count=
     return sid
 
 
-from web.shared import update_state
+from web.shared import update_state, get_state
 
 
 def get_watchlist(conn) -> list:
@@ -236,7 +236,8 @@ def run():
             tc3 = sqlite3.connect(TRADE_DB)
             last_sells = tc3.execute(
                 "SELECT pnl FROM sim_trades WHERE side='sell' ORDER BY id DESC LIMIT 3").fetchall()
-            if len(last_sells) >= 2 and all(r[0] is not None and r[0] <= 0 for r in last_sells[:2]):
+            loss_threshold = -get_state()["total_asset"] * 0.05
+            if len(last_sells) >= 2 and all(r[0] is not None and r[0] < loss_threshold for r in last_sells[:2]):
                 freeze_until = date.today() + timedelta(days=3)
                 logger.warning(f"  连亏{len([r for r in last_sells if r[0] and r[0]<=0])}笔, 空仓至 {freeze_until}")
             tc3.close()

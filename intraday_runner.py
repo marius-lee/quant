@@ -295,7 +295,7 @@ def run():
                     else:
                         _merged[sym] = {"symbol": sym, "price": cost_price, "shares": shares,
                                        "board_count": board, "date": buy_date,
-                                       "has_sealed": False, "break_count": 0, "was_at_limit": False}
+                                       "has_sealed": False, "break_count": 0, "was_at_limit": False, "peak_price": cost_price}
                     continue
 
                 # 昨日持仓 → 条件卖出
@@ -342,7 +342,7 @@ def run():
                     else:
                         _merged[sym] = {"symbol": sym, "price": cost_price, "shares": shares,
                                        "board_count": board, "date": buy_date,
-                                       "has_sealed": False, "break_count": 0, "was_at_limit": False}
+                                       "has_sealed": False, "break_count": 0, "was_at_limit": False, "peak_price": cost_price}
                     logger.info(f"  🟢 继续持有 {sym}: cost=¥{cost_price:.2f} {board}连板 {days_held}天")
             positions = list(_merged.values())
             # 加载所有历史交易
@@ -468,15 +468,16 @@ def run():
                     existing.add((s["symbol"], s["mode"]))
             sig_conn.close()
 
-            # D: 更新持仓元数据 (封板/炸板追踪)
+            # D: 更新持仓元数据 (封板/炸板追踪 + 移动止盈最高价)
             for pos in positions:
                 sym = pos["symbol"]
                 st = tracker.stocks.get(sym)
-                if st:
+                if st and st.get("close", 0) > 0:
                     if st["is_at_limit"]:
                         pos["has_sealed"] = True
                     pos["break_count"] = st["broken_count"]
                     pos["was_at_limit"] = st["is_at_limit"]
+                    pos["peak_price"] = max(pos.get("peak_price", pos["price"]), st["close"])
 
             # G4: 双跌停禁买 (来源: 陈小群——≥2只跌停不做)
             # G5: 成交量萎缩禁买 (来源: 陈小群——大盘连缩3天>20%不做)
@@ -533,7 +534,8 @@ def run():
                 capital -= (cost + fee)
                 positions.append({"symbol": sym, "price": entry_px, "shares": shares,
                                  "date": today_str, "board_count": s.get("board_count", 0),
-                                 "has_sealed": True, "break_count": 0, "was_at_limit": True})
+                                 "has_sealed": True, "break_count": 0, "was_at_limit": True,
+                                 "peak_price": entry_px})
                 trades_list.append({"symbol": sym, "side": "buy", "price": entry_px, "shares": shares, "date": today_str})
                 record_trade(today_str, sym, "buy", entry_px, shares,
                             s.get("board_count", 0), capital_after=round(capital, 2))
@@ -585,6 +587,12 @@ def run():
                     vol_ratio = today_vol / prev_vol if prev_vol > 0 else 0
                     if 0 < vol_ratio < 0.08:
                         sell_reason = f"缩量加速({vol_ratio:.0%})"
+
+                # B6: 移动止盈 (来源: 陈小群+业界标准, 最高价回落5%→卖)
+                if not sell_reason:
+                    peak = pos.get("peak_price", pos["price"])
+                    if peak > pos["price"] and st["close"] < peak * 0.95:
+                        sell_reason = f"移动止盈(最高¥{peak:.2f}→现¥{st['close']:.2f})"
 
                 if sell_reason:
                     px = st["close"]

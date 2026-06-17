@@ -301,13 +301,86 @@ def api_smallcap_execute():
     return jsonify({"ok": True, "sold": sold, "bought": bought})
 
 
+def _execute_etf():
+    """ETF轮动执行(调度器调用)"""
+    from strategies.etf_rotation import get_signal, record_trade, STRATEGY as S
+    sig = get_signal()
+    if sig["action"] not in ("buy", "defense"): return False
+    conn = sqlite3.connect(TRADE_DB)
+    for r in conn.execute("SELECT symbol,price,shares FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)", (S,S)).fetchall():
+        record_trade(r[0], "", r[1], r[2], "sell")
+    t = sig["buy"]
+    row = conn.execute("SELECT close FROM daily WHERE symbol=? ORDER BY date DESC LIMIT 1",(t,)).fetchone()
+    if row:
+        bs = conn.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=?",(S,)).fetchone()[0]
+        ss = conn.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='sell' AND strategy=?",(S,)).fetchone()[0]
+        cap = 5000.0 - bs + ss
+        lots = int(cap / (row[0]*100 + max(row[0]*100*0.0003,5)))
+        if lots >= 1: record_trade(t, sig.get("name",""), row[0], lots*100, "buy")
+    conn.close()
+    return True
+
+
+def _execute_smallcap():
+    """小市值轮动执行(调度器调用)"""
+    from strategies.smallcap_rotation import get_signal, record_trade, STRATEGY as S
+    sig = get_signal()
+    if sig["action"] != "rotate": return False
+    conn = sqlite3.connect(TRADE_DB)
+    for r in conn.execute("SELECT symbol,price,shares FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)",(S,S)).fetchall():
+        record_trade(r[0], "", r[1], r[2], "sell")
+    picks = sig.get("picks",[])
+    if picks:
+        per = 5000.0 / len(picks)
+        for p in picks:
+            lots = int(per / (p["close"]*100 + max(p["close"]*100*0.0003,5)))
+            if lots >= 1: record_trade(p["symbol"], p.get("name",""), p["close"], lots*100, "buy")
+    conn.close()
+    return True
+
+
 if __name__ == "__main__":
-    import threading
+    import threading, time as _time
     from intraday_runner import run as intraday_run
+    from datetime import date as _date, datetime as _dt
+    from execution.calendar import is_trading_day
 
     monitor = threading.Thread(target=intraday_run, daemon=True, name="intraday")
     monitor.start()
     logger.info("日内监控线程已启动")
+
+    def _scheduler():
+        """策略调度: ETF周一,小市值周二,首日立即执行"""
+        etf_done, smallcap_done = False, False
+        _time.sleep(60)
+        while True:
+            try:
+                now = _dt.now()
+                if not is_trading_day() or now.hour < 9 or now.hour >= 15:
+                    _time.sleep(60); continue
+                tc = sqlite3.connect(TRADE_DB)
+                has_etf = tc.execute("SELECT COUNT(*) FROM sim_trades WHERE strategy='etf'").fetchone()[0] > 0
+                has_sc = tc.execute("SELECT COUNT(*) FROM sim_trades WHERE strategy='smallcap'").fetchone()[0] > 0
+                tc.close()
+                # 首日立即执行
+                if not has_etf:
+                    logger.info("ETF轮动: 首日执行"); _execute_etf(); etf_done = True
+                if not has_sc:
+                    logger.info("小市值轮动: 首日执行"); _execute_smallcap(); smallcap_done = True
+                # 常规调度
+                wd = now.weekday()
+                if wd == 0 and now.hour == 9 and 30 <= now.minute < 31 and not etf_done:
+                    if _execute_etf(): etf_done = True
+                if wd == 1 and now.hour == 9 and 30 <= now.minute < 31 and not smallcap_done:
+                    if _execute_smallcap(): smallcap_done = True
+                if wd >= 2: etf_done = smallcap_done = False
+            except Exception:
+                pass
+            _time.sleep(60)
+
+    scheduler = threading.Thread(target=_scheduler, daemon=True, name="scheduler")
+    scheduler.start()
+    logger.info("策略调度线程已启动")
 
     from config.loader import get as cfg
     port = int(cfg("web.port", 8521))

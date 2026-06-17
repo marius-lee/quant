@@ -222,6 +222,85 @@ def api_smallcap_state():
     return jsonify(get_state())
 
 
+@app.route("/api/etf/execute", methods=["POST"])
+def api_etf_execute():
+    """执行ETF轮动: 清仓→全买第1名"""
+    from strategies.etf_rotation import get_signal, record_trade, POOL, STRATEGY
+    import sqlite3
+    sig = get_signal()
+    if sig["action"] not in ("buy", "defense"):
+        return jsonify({"ok": False, "error": "信号不足,不执行"})
+
+    conn = sqlite3.connect(TRADE_DB)
+    # 清仓当前持仓
+    sold = []
+    for r in conn.execute(
+        "SELECT symbol,price,shares FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)",
+        (STRATEGY, STRATEGY)
+    ).fetchall():
+        pnl = record_trade(r[0], "", r[1], r[2], "sell")
+        sold.append({"symbol": r[0], "pnl": pnl})
+
+    # 买入新标的
+    target = sig["buy"]
+    name = sig.get("name", "")
+    row = conn.execute("SELECT close FROM daily WHERE symbol=? ORDER BY date DESC LIMIT 1", (target,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"ok": False, "error": f"无{target}日线数据"})
+
+    price = row[0]
+    # 计算可买手数
+    buys = conn.execute("SELECT SUM(price*shares) FROM sim_trades WHERE side='buy' AND strategy=?", (STRATEGY,)).fetchone()[0] or 0
+    sells = conn.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='sell' AND strategy=?", (STRATEGY,)).fetchone()[0]
+    capital = 5000.0 - buys + sells
+    lots = int(capital / (price * 100 + max(price * 100 * 0.0003, 5)))
+    if lots < 1:
+        conn.close()
+        return jsonify({"ok": False, "error": f"资金不足({capital:.0f}), 无法买{target}"})
+
+    record_trade(target, name, price, lots * 100, "buy")
+    conn.close()
+    return jsonify({"ok": True, "sold": sold, "bought": {"symbol": target, "price": price, "shares": lots * 100}})
+
+
+@app.route("/api/smallcap/execute", methods=["POST"])
+def api_smallcap_execute():
+    """执行小市值轮动: 清仓→买Top5"""
+    from strategies.smallcap_rotation import get_signal, record_trade, STRATEGY
+    import sqlite3
+    sig = get_signal()
+    if sig["action"] != "rotate":
+        return jsonify({"ok": False, "error": sig.get("reason", "非轮动信号")})
+
+    conn = sqlite3.connect(TRADE_DB)
+    # 清仓
+    sold = []
+    for r in conn.execute(
+        "SELECT symbol,price,shares FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)",
+        (STRATEGY, STRATEGY)
+    ).fetchall():
+        pnl = record_trade(r[0], "", r[1], r[2], "sell")
+        sold.append({"symbol": r[0], "pnl": pnl})
+
+    # 等权买入
+    picks = sig.get("picks", [])
+    if not picks:
+        conn.close()
+        return jsonify({"ok": False, "error": "无选股结果"})
+
+    per_stock = 5000.0 / len(picks)
+    bought = []
+    for p in picks:
+        lots = int(per_stock / (p["close"] * 100 + max(p["close"] * 100 * 0.0003, 5)))
+        if lots < 1:
+            continue
+        record_trade(p["symbol"], p.get("name", ""), p["close"], lots * 100, "buy")
+        bought.append({"symbol": p["symbol"], "price": p["close"], "shares": lots * 100})
+    conn.close()
+    return jsonify({"ok": True, "sold": sold, "bought": bought})
+
+
 if __name__ == "__main__":
     import threading
     from intraday_runner import run as intraday_run

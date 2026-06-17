@@ -23,7 +23,16 @@
   <div id="position-list"></div>
 </div>
 
+  <button class="btn-buy" onclick="execute()" style="margin-top:12px">⚡ 执行轮动</button>
+</div>
+
 <script>
+async function execute() {
+  if (!confirm('确定执行ETF轮动? 将清仓现有持仓并全仓买入信号第一名')) return;
+  const r = await (await fetch('/api/etf/execute', {method:'POST'})).json();
+  alert(r.ok ? '执行完成! 买入 '+r.bought.symbol+' ×'+r.bought.shares+'股' : '失败: '+r.error);
+  poll();
+}
 async function poll() {
   const r = await (await fetch('/api/etf/state')).json();
   document.getElementById('capital-amount').textContent = '¥'+(r.capital||5000).toLocaleString();

@@ -1,0 +1,51 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>ETF动量轮动 · ¥5000→¥100万</title>
+<link rel="stylesheet" href="/static/style.css?v=19">
+</head><body>
+
+<div id="app">
+  <div style="display:flex;gap:12px;margin-bottom:16px">
+    <a href="/" style="color:var(--muted)">陈小群</a>
+    <b>ETF轮动</b>
+    <a href="/smallcap" style="color:var(--muted)">小市值</a>
+  </div>
+
+  <div id="capital-bar">
+    <div class="capital-row"><span>💰</span><span id="capital-amount">¥5,000</span></div>
+    <div id="signal-info" style="font-size:13px;color:var(--muted);margin-top:4px"></div>
+  </div>
+
+  <div class="section-title">📊 ETF信号排名</div>
+  <div id="score-list"></div>
+
+  <div class="section-title">💼 当前持仓</div>
+  <div id="position-list"></div>
+</div>
+
+<script>
+async function poll() {
+  const r = await (await fetch('/api/etf/state')).json();
+  document.getElementById('capital-amount').textContent = '¥'+(r.capital||5000).toLocaleString();
+  const sig = r.signal || {};
+  document.getElementById('signal-info').innerHTML =
+    '信号: <b>'+(sig.action||'?')+'</b> → '+(sig.name||'')+' ('+(sig.reason||'')+') 得分: '+(sig.score||0);
+  // Scores
+  const scores = sig.scores || [];
+  document.getElementById('score-list').innerHTML = scores.map(s =>
+    '<div style="padding:6px 0;border-bottom:1px solid var(--border)">'+
+    s[0]+' '+s[1]+': <b style="color:'+(s[2]>=0?'var(--up)':'var(--down)')+'">'+(s[2]>=0?'+':'')+(s[2]*100).toFixed(1)+'%</b>'+
+    '</div>'
+  ).join('');
+  // Positions
+  const ps = r.positions || [];
+  document.getElementById('position-list').innerHTML = ps.length ? ps.map(p =>
+    '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'+
+    p.symbol+' ×'+p.shares+'股 成本¥'+p.price+
+    '</div>'
+  ).join('') : '<div class="empty">空仓</div>';
+}
+poll();
+setInterval(poll, 10000);
+</script>
+</body></html>

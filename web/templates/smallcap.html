@@ -1,0 +1,52 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>小市值轮动 · ¥5000→¥100万</title>
+<link rel="stylesheet" href="/static/style.css?v=19">
+</head><body>
+
+<div id="app">
+  <div style="display:flex;gap:12px;margin-bottom:16px">
+    <a href="/" style="color:var(--muted)">陈小群</a>
+    <a href="/etf" style="color:var(--muted)">ETF轮动</a>
+    <b>小市值</b>
+  </div>
+
+  <div id="capital-bar">
+    <div class="capital-row"><span>💰</span><span id="capital-amount">¥5,000</span></div>
+    <div id="signal-info" style="font-size:13px;color:var(--muted);margin-top:4px"></div>
+  </div>
+
+  <div class="section-title">📊 本周选股 (Top5小市值)</div>
+  <div id="pick-list"></div>
+
+  <div class="section-title">💼 当前持仓</div>
+  <div id="position-list"></div>
+</div>
+
+<script>
+async function poll() {
+  const r = await (await fetch('/api/smallcap/state')).json();
+  document.getElementById('capital-amount').textContent = '¥'+(r.capital||5000).toLocaleString();
+  const sig = r.signal || {};
+  document.getElementById('signal-info').innerHTML =
+    '操作: <b>'+sig.action+'</b> | 已实现盈亏: ¥'+(r.realized_pnl||0).toLocaleString()+
+    (sig.reason?' | '+sig.reason:'');
+  // Picks
+  const picks = sig.picks || [];
+  document.getElementById('pick-list').innerHTML = picks.length ? picks.map((p,i) =>
+    '<div style="padding:6px 0;border-bottom:1px solid var(--border)">'+
+    (i+1)+'. '+p.symbol+' '+p.name+' ¥'+p.close+
+    '</div>'
+  ).join('') : '<div class="empty">无信号 (可能空仓期)</div>';
+  // Positions
+  const ps = r.positions || [];
+  document.getElementById('position-list').innerHTML = ps.length ? ps.map(p =>
+    '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'+
+    p.symbol+' ×'+p.shares+'股 成本¥'+p.price+
+    '</div>'
+  ).join('') : '<div class="empty">空仓</div>';
+}
+poll();
+setInterval(poll, 30000);
+</script>
+</body></html>

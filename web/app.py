@@ -201,6 +201,27 @@ def api_update_state():
     return jsonify({"ok": True})
 
 
+# ═══ 策略路由: ETF轮动 / 小市值轮动 ═══
+
+@app.route("/etf")
+def etf_page():
+    return render_template("etf.html")
+
+@app.route("/smallcap")
+def smallcap_page():
+    return render_template("smallcap.html")
+
+@app.route("/api/etf/state")
+def api_etf_state():
+    from strategies.etf_rotation import get_state
+    return jsonify(get_state())
+
+@app.route("/api/smallcap/state")
+def api_smallcap_state():
+    from strategies.smallcap_rotation import get_state
+    return jsonify(get_state())
+
+
 if __name__ == "__main__":
     import threading
     from intraday_runner import run as intraday_run

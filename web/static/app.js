@@ -6,7 +6,7 @@ async function get(path) {
   return await r.json();
 }
 
-function renderCapital(state) {
+async function renderCapital(state) {
   const totalAsset = state.total_asset || state.capital || 5000;
   const capital = state.capital || 0;
   const ret = ((totalAsset/5000 - 1)*100);
@@ -15,6 +15,14 @@ function renderCapital(state) {
   const el = document.getElementById('capital-return');
   el.textContent = (ret>=0?'+':'')+ret.toFixed(1)+'%';
   el.style.color = ret>=0 ? '#ef4444' : '#10b981';
+  // 绩效统计
+  try {
+    const perf = await (await fetch('/api/performance')).json();
+    document.getElementById('perf-stats').textContent =
+      '总盈亏: ¥'+(perf.total_pnl>=0?'+':'')+perf.total_pnl.toLocaleString()+
+      ' | 交易: '+perf.total_buys+'买 '+perf.total_sells+'卖'+
+      ' | 胜率: '+perf.win_rate+'%';
+  } catch(e) {}
 }
 
 function renderMood(state) {
@@ -145,7 +153,7 @@ async function poll() {
   const state = await get('/state');
   const td = await get('/trades');
   POSITIONS = state.positions || td.positions || [];
-  renderCapital(state);
+  await renderCapital(state);
   renderMood(state);
   renderPositions();
   renderSignals(state);

@@ -157,6 +157,26 @@ def api_record_trade():
 
 # ═══ 管理 API ═══
 
+@app.route("/api/performance")
+def api_performance():
+    """累计绩效统计"""
+    import sqlite3
+    tc = sqlite3.connect(TRADE_DB)
+    sells = tc.execute("SELECT pnl FROM sim_trades WHERE side='sell'").fetchall()
+    total_pnl = sum(r[0] for r in sells if r[0])
+    win_trades = sum(1 for r in sells if r[0] and r[0] > 0)
+    total_sells = len(sells)
+    win_rate = round(win_trades / total_sells * 100, 1) if total_sells > 0 else 0
+    buys = tc.execute("SELECT COUNT(*) FROM sim_trades WHERE side='buy'").fetchone()[0]
+    tc.close()
+    return jsonify({
+        "total_pnl": round(total_pnl, 2),
+        "total_sells": total_sells,
+        "win_rate": win_rate,
+        "total_buys": buys,
+    })
+
+
 @app.route("/api/review")
 def api_review():
     """盘后复盘 — 信号+交易分析"""

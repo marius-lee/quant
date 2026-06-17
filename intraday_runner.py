@@ -477,11 +477,31 @@ def run():
                     pos["break_count"] = st["broken_count"]
                     pos["was_at_limit"] = st["is_at_limit"]
 
-            # 新信号 → 买入 (全仓最优, 余额不够才跳下只)
+            # G4: 双跌停禁买 (来源: 陈小群——同板块≥2只跌停不做)
+            buy_blocked = False
+            if can_buy:
+                try:
+                    limit_downs = [sym for sym, st in tracker.stocks.items()
+                                   if st.get("prev_close", 0) > 0 and st.get("close", 0) > 0
+                                   and (st["close"] / st["prev_close"] - 1) <= -0.095]
+                    if len(limit_downs) >= 2:
+                        buy_blocked = True
+                        logger.warning(f"  🚫 双跌停禁买: {len(limit_downs)}只跌停")
+                except Exception:
+                    pass
+
+            # 新信号 → 买入 (陈小群: 不补仓, 持仓≤3只, 全仓最优)
+            max_positions = int(cfg("backtest.max_positions", 3))
+            if can_buy and not buy_blocked:
             if can_buy:
               for s in new_signals:
+                if len(positions) >= max_positions:
+                    break
                 sym, mode = s["symbol"], s["mode"]
-                # ── ST/*ST/退市过滤 (来源: 交易所规则, 2026-06-17加入) ──
+                # ── 陈小群铁律: 不补仓, 已有持仓跳过 ──
+                if any(p["symbol"] == sym for p in positions):
+                    continue
+                # ── ST/*ST/退市过滤 ──
                 try:
                     name = fetch_quotes([sym]).get(sym, {}).get("name", "")
                     if "ST" in name or "退" in name:
@@ -496,26 +516,19 @@ def run():
                 cost = shares * entry_px
                 fee = max(cost * 0.0003, 5)
                 capital -= (cost + fee)
-                # 已有持仓 → 补仓 / 新股 → 新建
-                existing = next((p for p in positions if p["symbol"] == sym), None)
-                if existing:
-                    existing["shares"] += shares
-                    existing["board_count"] = max(existing["board_count"], s.get("board_count", 0))
-                else:
-                    positions.append({"symbol": sym, "price": entry_px, "shares": shares,
-                                     "date": today_str, "board_count": s.get("board_count", 0),
-                                     "has_sealed": True, "break_count": 0, "was_at_limit": True})
+                positions.append({"symbol": sym, "price": entry_px, "shares": shares,
+                                 "date": today_str, "board_count": s.get("board_count", 0),
+                                 "has_sealed": True, "break_count": 0, "was_at_limit": True})
                 trades_list.append({"symbol": sym, "side": "buy", "price": entry_px, "shares": shares, "date": today_str})
                 record_trade(today_str, sym, "buy", entry_px, shares,
                             s.get("board_count", 0), capital_after=round(capital, 2))
-                # 标记信号已成交 (SQLite不支持UPDATE...ORDER BY, 用子查询)
                 sid_conn = sqlite3.connect(TRADE_DB)
                 sid_conn.execute(
                     "UPDATE signals SET is_bought=1 WHERE id=(SELECT id FROM signals WHERE symbol=? AND date=? AND is_bought=0 ORDER BY id DESC LIMIT 1)",
                     (sym, today_str))
                 sid_conn.commit()
                 sid_conn.close()
-                logger.info(f"  💰 {'补仓' if existing else '买入'} {sym} ({mode}): ¥{entry_px:.2f} × {shares}股 余额¥{capital:.0f}")
+                logger.info(f"  💰 买入 {sym} ({mode}): ¥{entry_px:.2f} × {shares}股 余额¥{capital:.0f}")
 
             # ── B1-B3: 盘中风控 (来源: 陈小群卖出纪律) ──
             for pos in list(positions):
@@ -541,6 +554,22 @@ def run():
                 # B3: 反复烂板 (≥3次)
                 elif st["broken_count"] >= 3 and not st["is_at_limit"]:
                     sell_reason = f"反复烂板({st['broken_count']}次)"
+
+                # B4: 死亡换手 (来源: 陈小群——换手>60%清仓)
+                elif st.get("close", 0) > 0:
+                    today_vol = st.get("volume", 0)
+                    prev_vol = prev_volume_map.get(sym, 0)
+                    vol_ratio = today_vol / prev_vol if prev_vol > 0 else 0
+                    if vol_ratio > 0.60:
+                        sell_reason = f"死亡换手({vol_ratio:.0%})"
+
+                # B5: 缩量加速 (来源: 陈小群——换手<8%+涨停→次日分批卖)
+                if not sell_reason and st["is_at_limit"] and st.get("close", 0) > 0:
+                    today_vol = st.get("volume", 0)
+                    prev_vol = prev_volume_map.get(sym, 0)
+                    vol_ratio = today_vol / prev_vol if prev_vol > 0 else 0
+                    if 0 < vol_ratio < 0.08:
+                        sell_reason = f"缩量加速({vol_ratio:.0%})"
 
                 if sell_reason:
                     px = st["close"]

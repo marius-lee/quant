@@ -44,6 +44,16 @@ CREATE TABLE IF NOT EXISTS lhb_detail (
     PRIMARY KEY (symbol, trade_date)
 );
 
+-- ═══ 产业链映射 (来源: 券商2025-2026展望研报) ═══
+
+CREATE TABLE IF NOT EXISTS industry_chains (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chain_name TEXT NOT NULL,
+    level TEXT NOT NULL CHECK(level IN ('上游','中游','下游')),
+    sector_name TEXT NOT NULL,
+    UNIQUE(chain_name, level, sector_name)
+);
+
 -- ═══ trades.db (intraday_runner.py) — 模拟/实盘交易 ═══
 
 CREATE TABLE IF NOT EXISTS sim_trades (

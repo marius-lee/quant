@@ -447,6 +447,26 @@ def run():
                                 s["is_leader"] = True
                                 s["score"] = round(min(s["score"] + 0.20, 1.0), 3)
                             s["sectors"] = sector_info.get("stock_sectors", {}).get(s["symbol"], [])
+                        # 产业链扩散加分: 信号所在板块 → 上下游板块信号加权
+                        chains = {}
+                        try:
+                            cc = sqlite3.connect(TRADE_DB)
+                            for r in cc.execute("SELECT chain_name, level, sector_name FROM industry_chains").fetchall():
+                                chains.setdefault(r[0], {}).setdefault(r[1], []).append(r[2])
+                            cc.close()
+                            for s in new_signals:
+                                sectors = s.get("sectors", [])
+                                for chain, levels in chains.items():
+                                    bonus = 0
+                                    for lv, secs in levels.items():
+                                        if any(sec in sectors for sec in secs):
+                                            if lv == "中游": bonus = 0.10
+                                            elif lv in ("上游","下游"): bonus = 0.05
+                                    if bonus > 0:
+                                        old_score = s["score"]
+                                        s["score"] = round(min(old_score + bonus, 1.0), 3)
+                        except Exception:
+                            pass
                         last_sector_scan = now
                 except Exception:
                     pass

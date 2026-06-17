@@ -38,12 +38,18 @@ async function poll() {
   document.getElementById('capital-amount').textContent = '¥'+(r.capital||5000).toLocaleString();
   const sig = r.signal || {};
   document.getElementById('signal-info').innerHTML =
-    '信号: <b>'+(sig.action||'?')+'</b> → '+(sig.name||'')+' ('+(sig.reason||'')+') 得分: '+(sig.score||0);
-  // Scores
+    '信号: <b>'+sig.action+'</b> → '+sig.name+
+    ' | 年化: '+(sig.annual_ret?(sig.annual_ret>=0?'+':'')+(sig.annual_ret*100).toFixed(1)+'%':'?')+
+    ' | R²: '+(sig.r2?sig.r2.toFixed(2):'?')+
+    ' | 评分: '+sig.score+
+    (sig.reason?'<br>'+sig.reason:'');
   const scores = sig.scores || [];
   document.getElementById('score-list').innerHTML = scores.map(s =>
     '<div style="padding:6px 0;border-bottom:1px solid var(--border)">'+
-    s[0]+' '+s[1]+': <b style="color:'+(s[2]>=0?'var(--up)':'var(--down)')+'">'+(s[2]>=0?'+':'')+(s[2]*100).toFixed(1)+'%</b>'+
+    s[0]+' '+s[1]+
+    ': 年化<b style="color:'+(s[3]>=0?'var(--up)':'var(--down)')+'">'+(s[3]>=0?'+':'')+(s[3]*100).toFixed(1)+'%</b>'+
+    ' | R²=<b>'+s[4].toFixed(2)+'</b>'+
+    ' | 评分=<b>'+s[2].toFixed(4)+'</b>'+
     '</div>'
   ).join('');
   // Positions

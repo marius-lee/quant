@@ -1,5 +1,6 @@
-"""ETF动量轮动策略 — 每周一计算信号, 全仓最优ETF.
-来源: 聚宽社区 zfs1 (年化154%, 回撤10%), 适配¥5,000
+"""ETF动量轮动策略 — R²拟合优度加权, 每周一计算信号.
+来源: 聚宽社区 zfs1 (年化154%) + BigQuant 趋势稳健性动量 (夏普1.06)
+增强: 年化收益率 × R² 双因子评分, 过滤假趋势
 """
 import sqlite3, os
 from datetime import date, timedelta
@@ -18,8 +19,25 @@ POOL = [
 ]
 
 
+def _r_squared(prices: list) -> float:
+    """线性回归R² — 衡量趋势稳定性 (来源: BigQuant, >0.5有效)."""
+    n = len(prices)
+    if n < 5:
+        return 0
+    x = list(range(n))
+    x_mean = sum(x) / n
+    y_mean = sum(prices) / n
+    ss_xy = sum((xi - x_mean) * (yi - y_mean) for xi, yi in zip(x, prices))
+    ss_xx = sum((xi - x_mean) ** 2 for xi in x)
+    ss_yy = sum((yi - y_mean) ** 2 for yi in prices)
+    if ss_xx == 0 or ss_yy == 0:
+        return 0
+    r = ss_xy / (ss_xx ** 0.5 * ss_yy ** 0.5)
+    return r ** 2
+
+
 def get_signal() -> dict:
-    """计算当前信号: 排名第1的ETF, 附带风控检查."""
+    """R²加权评分: 年化收益率 × R², 过滤R²<0.3的假趋势."""
     conn = sqlite3.connect(DB)
     scores = []
     today = date.today()
@@ -27,29 +45,33 @@ def get_signal() -> dict:
     for code, name, _ in POOL:
         rows = conn.execute(
             "SELECT close FROM daily WHERE symbol=? AND date >= ? ORDER BY date",
-            (code, (today - timedelta(days=40)).isoformat())
+            (code, (today - timedelta(days=60)).isoformat())
         ).fetchall()
-        if len(rows) < 20:
+        if len(rows) < 30:
             continue
-        ret_20d = (rows[-1][0] - rows[-20][0]) / rows[-20][0] if rows[-20][0] > 0 else 0
-        scores.append((code, name, round(ret_20d, 4)))
+        prices = [r[0] for r in rows]
+        ret_30d = (prices[-1] - prices[0]) / prices[0] if prices[0] > 0 else 0
+        annual_ret = ret_30d * (252 / 30)  # 年化
+        r2 = _r_squared(prices[-30:])  # 最近30日R²
+        if r2 >= 0.3:  # 过滤假趋势
+            score = round(annual_ret * r2, 4)
+            scores.append((code, name, score, round(annual_ret, 3), round(r2, 3)))
 
     conn.close()
 
     if not scores:
-        return {"action": "hold", "reason": "数据不足"}
+        return {"action": "hold", "reason": "无有效趋势(R²均<0.3)"}
 
     scores.sort(key=lambda x: x[2], reverse=True)
     best = scores[0]
 
-    # 检查溢价率(简化: 跳过, ETF净值需额外数据源)
-    # 风控: 全部负收益→空仓国债
     if best[2] <= 0:
         return {"action": "defense", "buy": "511010", "name": "国债ETF",
-                "reason": f"全市场负收益(最佳{best[2]:.1%})"}
+                "reason": f"全市场负评分(最佳{best[2]:.3f})"}
 
     return {"action": "buy", "buy": best[0], "name": best[1],
-            "score": best[2], "scores": scores}
+            "score": best[2], "annual_ret": best[3], "r2": best[4],
+            "scores": [(s[0], s[1], s[2], s[3], s[4]) for s in scores]}
 
 
 def record_trade(symbol, name, price, shares, side="buy"):

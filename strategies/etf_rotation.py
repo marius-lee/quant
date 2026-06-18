@@ -141,11 +141,14 @@ def get_state() -> dict:
             "value": round(shares * current, 2),
         })
 
+    capital = 5000.0 + pnl - sum(r[1] * r[2] for r in pos)
+    pos_value = sum(p["value"] for p in positions)
     sig = get_signal()
     return {
         "positions": positions, "realized_pnl": round(pnl, 2),
         "signal": sig,
-        "capital": 5000.0 + pnl - sum(r[1] * r[2] for r in pos),
+        "capital": round(capital, 2),
+        "total_asset": round(capital + pos_value, 2),
     }
 
 

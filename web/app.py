@@ -86,22 +86,36 @@ def api_positions():
 
 @app.route("/api/trades")
 def api_trades():
-    """交易历史 + 当前持仓 (从 trades.db 读取)"""
+    """交易历史 + 当前持仓 (从 trades.db 读取). ?strategy=过滤"""
+    from flask import request
+    strategy = request.args.get("strategy", "")
     trades = []
     positions = []
     try:
         conn = sqlite3.connect(TRADE_DB)
-        rows = conn.execute(
-            "SELECT date, symbol, side, price, shares, pnl, pnl_pct FROM sim_trades ORDER BY id"
-        ).fetchall()
+        if strategy:
+            rows = conn.execute(
+                "SELECT date, symbol, side, price, shares, pnl, pnl_pct FROM sim_trades WHERE strategy=? ORDER BY id",
+                (strategy,)
+            ).fetchall()
+            buys = conn.execute("""
+                SELECT symbol, price, shares, board_count, date FROM sim_trades
+                WHERE side='buy' AND strategy=? AND symbol NOT IN (
+                    SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?
+                )
+            """, (strategy, strategy)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT date, symbol, side, price, shares, pnl, pnl_pct FROM sim_trades ORDER BY id"
+            ).fetchall()
+            buys = conn.execute("""
+                SELECT symbol, price, shares, board_count, date FROM sim_trades
+                WHERE side='buy' AND symbol NOT IN (
+                    SELECT symbol FROM sim_trades WHERE side='sell'
+                )
+            """).fetchall()
         trades = [{"date": r[0], "symbol": r[1], "side": r[2], "price": r[3],
                     "shares": r[4], "pnl": r[5], "pnl_pct": r[6]} for r in rows]
-        buys = conn.execute("""
-            SELECT symbol, price, shares, board_count, date FROM sim_trades
-            WHERE side='buy' AND symbol NOT IN (
-                SELECT symbol FROM sim_trades WHERE side='sell'
-            )
-        """).fetchall()
         positions = [{"symbol": r[0], "price": r[1], "shares": r[2],
                        "board_count": r[3], "date": r[4]} for r in buys]
         conn.close()
@@ -162,19 +176,28 @@ def api_record_trade():
 
 @app.route("/api/performance")
 def api_performance():
-    """累计绩效统计"""
-    import sqlite3
+    """累计绩效统计. ?strategy=chen|etf|smallcap|timing"""
+    from flask import request
+    from config.loader import get as cfg
+    strategy = request.args.get("strategy", "chen")
     tc = sqlite3.connect(TRADE_DB)
-    sells = tc.execute("SELECT pnl FROM sim_trades WHERE side='sell'").fetchall()
+    sells = tc.execute("SELECT pnl FROM sim_trades WHERE side='sell' AND strategy=?", (strategy,)).fetchall()
     realized_pnl = sum(r[0] for r in sells if r[0])
     win_trades = sum(1 for r in sells if r[0] and r[0] > 0)
     total_sells = len(sells)
     win_rate = round(win_trades / total_sells * 100, 1) if total_sells > 0 else 0
-    buys = tc.execute("SELECT COUNT(*) FROM sim_trades WHERE side='buy'").fetchone()[0]
+    buys = tc.execute("SELECT COUNT(*) FROM sim_trades WHERE side='buy' AND strategy=?", (strategy,)).fetchone()[0]
     tc.close()
-    # 未实现盈亏用实时总资产
-    from web.shared import get_state
-    total_asset = get_state().get("total_asset", 5000.0)
+    # 从对应策略 get_state() 取 total_asset
+    if strategy == "etf":
+        from strategies.etf_rotation import get_state as gs
+    elif strategy == "smallcap":
+        from strategies.smallcap_rotation import get_state as gs
+    elif strategy == "timing":
+        from strategies.market_timing import get_state as gs
+    else:
+        from web.shared import get_state as gs
+    total_asset = gs().get("total_asset", 5000.0)
     base = float(cfg("backtest.initial_capital", 5000))
     total_pnl = round(total_asset - base, 2)
     return jsonify({
@@ -364,7 +387,6 @@ def _execute_smallcap():
             if lots >= 1:
                 record_trade(p["symbol"], p.get("name",""), p["close"], lots*100, "buy")
                 capital -= cost_per_lot * lots
-            if lots >= 1: record_trade(p["symbol"], p.get("name",""), p["close"], lots*100, "buy")
     conn.close()
     return True
 

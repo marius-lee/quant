@@ -13,29 +13,54 @@
   </div>
 
   <div id="capital-bar">
-    <div class="capital-row"><span>💰</span><span id="capital-amount">¥5,000</span></div>
+    <div class="capital-row"><span>💰</span><span id="capital-amount">¥5,000</span><span id="capital-return"></span></div>
+    <div class="capital-row secondary"><span>💵 可用</span><span id="capital-available">¥5,000</span></div>
+    <div class="capital-row secondary"><span id="perf-stats" style="font-size:11px;color:var(--muted)"></span></div>
     <div id="signal-info" style="font-size:13px;color:var(--muted);margin-top:4px"></div>
   </div>
 
   <div class="section-title">💼 持仓</div>
   <div id="position-list"></div>
+
+  <div class="section-title">📋 最近交易</div>
+  <div id="trade-list"></div>
 </div>
 
 <script>
+var SR = 'timing';
 async function poll() {
   const r = await (await fetch('/api/timing/state')).json();
-  document.getElementById('capital-amount').textContent = '¥'+(r.capital||5000).toLocaleString();
-  const sig = r.signal||{};
+  var ta = r.total_asset || r.capital || 5000;
+  document.getElementById('capital-amount').textContent = '¥'+ta.toLocaleString();
+  var ret = ((ta/5000-1)*100);
+  var re = document.getElementById('capital-return');
+  re.textContent = (ret>=0?'+':'')+ret.toFixed(1)+'%';
+  re.style.color = ret>=0 ? '#ef4444' : '#10b981';
+  document.getElementById('capital-available').textContent = '¥'+(r.capital||0).toLocaleString();
+  // 绩效
+  try {
+    var p = await (await fetch('/api/performance?strategy='+SR)).json();
+    var cls = p.total_pnl>=0 ? 'color:#ef4444' : 'color:#10b981';
+    document.getElementById('perf-stats').innerHTML =
+      '已实现: ¥'+(p.realized_pnl>=0?'+':'')+p.realized_pnl.toLocaleString()+
+      ' | 浮动: ¥'+(p.unrealized_pnl>=0?'+':'')+p.unrealized_pnl.toLocaleString()+
+      ' | <span style=\"'+cls+'\">总计: ¥'+(p.total_pnl>=0?'+':'')+p.total_pnl.toLocaleString()+'</span>'+
+      ' | '+p.total_buys+'买 '+p.total_sells+'卖'+
+      ' | 胜率: '+p.win_rate+'%';
+  } catch(e) {}
+  // 信号
+  var sig = r.signal||{};
   var cls = sig.action==='buy'?'color:var(--up)':'color:var(--muted)';
   document.getElementById('signal-info').innerHTML =
     '信号: <b style=\"'+cls+'\">'+sig.action+'</b> | 20日涨幅: '+(sig.ret_20d?(sig.ret_20d>=0?'+':'')+(sig.ret_20d*100).toFixed(1)+'%':'?')+
     (sig.leader_ret?' | 龙头: '+sig.symbol+' +'+(sig.leader_ret*100).toFixed(1)+'%':'')+
     (sig.reason?' | '+sig.reason:'');
-  const ps = r.positions||[];
+  // 持仓
+  var ps = r.positions||[];
   if(ps.length) {
     document.getElementById('position-list').innerHTML = '<table class="pos-table"><thead><tr>'+
       '<th>代码</th><th>名称</th><th>数量</th><th>成本</th><th>现价</th><th>盈亏</th><th>市值</th></tr></thead><tbody>'+
-      ps.map(p=>{
+      ps.map(function(p){
         var pnl=p.pnl_pct||0; var cls2=pnl>=0?'up':'down';
         return '<tr><td>'+p.symbol+'</td><td>'+(p.name||'')+'</td><td>'+p.shares+'股</td>'+
           '<td>¥'+p.price.toFixed(2)+'</td><td>¥'+(p.current||p.price).toFixed(2)+'</td>'+
@@ -45,6 +70,18 @@ async function poll() {
   } else {
     document.getElementById('position-list').innerHTML = '<div class="empty">空仓</div>';
   }
+  // 交易
+  try {
+    var td = await (await fetch('/api/trades?strategy='+SR)).json();
+    var trs = td.trades || [];
+    document.getElementById('trade-list').innerHTML = trs.length ? trs.slice(-8).reverse().map(function(t){
+      return '<div class="trade-row '+t.side+'">'+
+        (t.side==='buy'?'🟢':'🔴')+' '+t.date+' '+t.symbol+' '+
+        (t.side==='buy'?'买入':'卖出')+' ¥'+t.price.toFixed(2)+' ×'+t.shares+'股'+
+        (t.pnl?' PnL ¥'+(t.pnl>=0?'+':'')+t.pnl:'')+
+        '</div>';
+    }).join('') : '<div class="empty">暂无交易</div>';
+  } catch(e) {}
 }
 poll();setInterval(poll,3000);
 </script>

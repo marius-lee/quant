@@ -1,6 +1,6 @@
 """数据访问层 — 所有 SQLite 查询收口于此。
 
-外部代码通过 StockRepo / FactorRepo 访问数据，不再写原始 SQL。
+外部代码通过 StockRepo / PriceRepo 访问数据，不再写原始 SQL。
 """
 
 import pandas as pd
@@ -125,95 +125,6 @@ class StockRepo:
             conn, params=symbols
         )
         return df
-
-
-class FactorRepo:
-    """因子缓存（factors 表）读写"""
-
-    def __init__(self, store: DataStore):
-        self.store = store
-
-    def load_batch(self, symbols: list, start_date: str = None,
-                   end_date: str = None) -> pd.DataFrame:
-        """读取一批股票的全部历史因子，返回 (date,stock) × factor (float32)。
-
-        start_date/end_date: YYYY-MM-DD 格式，限制日期范围以控制内存。
-        单日查询跳过 SQLite 参数分块（结果极小）。
-        """
-        # 来源: SQLite参数上限=999 (SQLITE_MAX_VARIABLE_NUMBER默认)
-        #       900留99个给日期等额外参数
-        MAX_PARAMS = 900
-        # 单日优化: 结果只有 len(symbols) 行，不需要分块
-        if start_date and end_date and start_date == end_date:
-            return self._load_batch_chunk(symbols, start_date, end_date)
-        if len(symbols) <= MAX_PARAMS:
-            return self._load_batch_chunk(symbols, start_date, end_date)
-        frames = []
-        for i in range(0, len(symbols), MAX_PARAMS):
-            df = self._load_batch_chunk(symbols[i:i + MAX_PARAMS], start_date, end_date)
-            if not df.empty:
-                frames.append(df)
-        return pd.concat(frames) if frames else pd.DataFrame()
-
-    def _load_batch_chunk(self, symbols: list, start_date: str = None,
-                          end_date: str = None) -> pd.DataFrame:
-        # 统一日期格式: factors 存 YYYY-MM-DD 字符串 (pandas to_sql 生成)
-        def _norm_date(d):
-            if d is None:
-                return None
-            s = str(d).split(" ")[0]  # pd.Timestamp 会产生 "2026-06-01 00:00:00"
-            if "-" not in s and len(s) == 8:
-                return f"{s[:4]}-{s[4:6]}-{s[6:]}"  # YYYYMMDD → YYYY-MM-DD
-            return s
-        start_date = _norm_date(start_date)
-        end_date = _norm_date(end_date)
-        conn = self.store._connect()
-        ph = ",".join("?" for _ in symbols)
-        params = symbols[:]
-        where = f"stock IN ({ph})"
-        if start_date and end_date and start_date == end_date:
-            where += " AND date LIKE ?"
-            params.append(f"{start_date}%")
-        else:
-            if start_date:
-                where += " AND date >= ?"
-                params.append(start_date)
-            if end_date:
-                where += " AND date < ?"
-                from datetime import datetime, timedelta
-                end_next = (datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
-                params.append(end_next)
-        df = pd.read_sql_query(
-            f"SELECT * FROM factors WHERE {where} ORDER BY date",
-            conn, params=params
-        )
-        if df.empty:
-            return pd.DataFrame()
-        df["date"] = pd.to_datetime(df["date"])
-        fc = [c for c in df.columns if c not in ("date", "stock")]
-        result = df.set_index(["date", "stock"])[fc]
-        # float32: 减半内存, 对已 winsorize 的因子无精度损失
-        return result.astype("float32")
-
-    def save_batch(self, df: pd.DataFrame, mode: str = "append"):
-        """写入一批因子数据"""
-        conn = self.store._connect()
-        df.to_sql("factors", conn, if_exists=mode, index=False, chunksize=30000)
-        conn.commit()
-
-    def max_date(self) -> str:
-        """缓存中最新的日期"""
-        conn = self.store._connect()
-        try:
-            return conn.execute("SELECT MAX(date) FROM factors").fetchone()[0]
-        except Exception:
-            logger.warning("failed to read factors max date")
-            return None
-
-    def ensure_index(self):
-        conn = self.store._connect()
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_factors_uniq ON factors(stock,date)")
-        conn.commit()
 
 
 class PriceRepo:

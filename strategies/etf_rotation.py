@@ -102,25 +102,48 @@ def record_trade(symbol, name, price, shares, side="buy"):
     return pnl
 
 
+def _get_realtime(symbols: list) -> dict:
+    """获取实时价格 (Sina API)."""
+    try:
+        from execution.quote import fetch_quotes
+        return fetch_quotes(symbols)
+    except Exception:
+        return {}
+
+
 def get_state() -> dict:
-    """返回当前策略状态."""
+    """返回当前策略状态(含实时价格)."""
     conn = sqlite3.connect(TRADE_DB)
-    # 当前持仓
     pos = conn.execute(
         "SELECT symbol, price, shares FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)",
         (STRATEGY, STRATEGY)
     ).fetchall()
-    # 已实现盈亏
     pnl = conn.execute(
         "SELECT COALESCE(SUM(pnl),0) FROM sim_trades WHERE side='sell' AND strategy=?",
         (STRATEGY,)
     ).fetchone()[0]
     conn.close()
 
+    # 实时价格 + 名称
+    name_map = {c: n for c, n, _ in POOL}
+    symbols = [r[0] for r in pos]
+    quotes = _get_realtime(symbols) if symbols else {}
+    positions = []
+    for r in pos:
+        sym, cost, shares = r[0], r[1], r[2]
+        q = quotes.get(sym, {})
+        current = q.get("price", cost) if q else cost
+        name = q.get("name", "") or name_map.get(sym, "")
+        positions.append({
+            "symbol": sym, "name": name, "shares": shares,
+            "price": cost, "current": round(current, 2),
+            "pnl_pct": round((current / cost - 1) * 100, 2),
+            "value": round(shares * current, 2),
+        })
+
     sig = get_signal()
     return {
-        "positions": [{"symbol": r[0], "price": r[1], "shares": r[2]} for r in pos],
-        "realized_pnl": round(pnl, 2),
+        "positions": positions, "realized_pnl": round(pnl, 2),
         "signal": sig,
         "capital": 5000.0 + pnl - sum(r[1] * r[2] for r in pos),
     }

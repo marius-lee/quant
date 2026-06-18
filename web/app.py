@@ -307,13 +307,17 @@ def api_smallcap_execute():
         conn.close()
         return jsonify({"ok": False, "error": "无选股结果"})
 
-    per_stock = 5000.0 / len(picks)
+    bs = conn.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=?",(STRATEGY,)).fetchone()[0]
+    ss = conn.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='sell' AND strategy=?",(STRATEGY,)).fetchone()[0]
+    capital = 5000.0 - bs + ss
     bought = []
     for p in picks:
-        lots = int(per_stock / (p["close"] * 100 + max(p["close"] * 100 * 0.0003, 5)))
+        cost_per_lot = p["close"] * 100 + max(p["close"] * 100 * 0.0003, 5)
+        lots = int(capital / cost_per_lot)
         if lots < 1:
             continue
         record_trade(p["symbol"], p.get("name", ""), p["close"], lots * 100, "buy")
+        capital -= cost_per_lot * lots
         bought.append({"symbol": p["symbol"], "price": p["close"], "shares": lots * 100})
     conn.close()
     return jsonify({"ok": True, "sold": sold, "bought": bought})
@@ -351,9 +355,15 @@ def _execute_smallcap():
         record_trade(r[0], "", r[1], r[2], "sell")
     picks = sig.get("picks",[])
     if picks:
-        per = 5000.0 / len(picks)
+        bs = conn.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=?",(S,)).fetchone()[0]
+        ss = conn.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='sell' AND strategy=?",(S,)).fetchone()[0]
+        capital = 5000.0 - bs + ss
         for p in picks:
-            lots = int(per / (p["close"]*100 + max(p["close"]*100*0.0003,5)))
+            cost_per_lot = p["close"]*100 + max(p["close"]*100*0.0003,5)
+            lots = int(capital / cost_per_lot)
+            if lots >= 1:
+                record_trade(p["symbol"], p.get("name",""), p["close"], lots*100, "buy")
+                capital -= cost_per_lot * lots
             if lots >= 1: record_trade(p["symbol"], p.get("name",""), p["close"], lots*100, "buy")
     conn.close()
     return True

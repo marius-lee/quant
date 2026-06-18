@@ -44,22 +44,17 @@ def get_signal() -> dict:
 
     conn.close()
 
-    # 按成交额升序 (近似市值排序)
+    # 按成交额升序 (近似市值排序), 只保留买得起的 (≤¥50/股)
     candidates.sort(key=lambda x: x["volume"] * x["close"])
-    top5 = candidates[:MAX_POSITIONS]
+    picks = []
+    for s in candidates:
+        if s["close"] <= 50:
+            picks.append({"symbol": s["symbol"], "name": s["name"], "close": s["close"]})
 
-    # 风控: 1月/4月空仓 (财报季)
     if today.month in (1, 4):
         return {"action": "defense", "reason": f"{today.month}月财报季空仓"}
 
-    # 风控: 全市场大跌 (上证指数周跌>5%)
-    # 简化: 跳过, 后续加
-
-    return {
-        "action": "rotate",
-        "picks": [{"symbol": s["symbol"], "name": s["name"], "close": s["close"]} for s in top5],
-        "count": len(top5),
-    }
+    return {"action": "rotate", "picks": picks[:20], "count": len(picks)}
 
 
 def record_trade(symbol, name, price, shares, side="buy"):

@@ -15,12 +15,13 @@ def _pick_leader() -> tuple:
     """从沪深300成分股中选近20日涨幅最高的龙头."""
     conn = sqlite3.connect(DB)
     today = date.today()
-    # 取成交额前300只作为沪深300近似
+    # 按 close×volume(市值近似) 取前300只, 来源: 沪深300编制规则
     rows = conn.execute("""
         SELECT symbol FROM daily
         WHERE date=(SELECT MAX(date) FROM daily WHERE date LIKE '%-%-%')
           AND symbol NOT LIKE '688%'
-        ORDER BY amount DESC LIMIT 300
+          AND close > 0 AND volume > 0
+        ORDER BY close * volume DESC LIMIT 300
     """).fetchall()
     candidates = []
     for (sym,) in rows:

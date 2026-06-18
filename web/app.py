@@ -216,6 +216,15 @@ def api_etf_state():
     from strategies.etf_rotation import get_state
     return jsonify(get_state())
 
+@app.route("/timing")
+def timing_page():
+    return render_template("timing.html")
+
+@app.route("/api/timing/state")
+def api_timing_state():
+    from strategies.market_timing import get_state
+    return jsonify(get_state())
+
 @app.route("/api/smallcap/state")
 def api_smallcap_state():
     from strategies.smallcap_rotation import get_state
@@ -363,6 +372,7 @@ if __name__ == "__main__":
                     tc = sqlite3.connect(TRADE_DB)
                     etf_done = tc.execute("SELECT COUNT(*) FROM sim_trades WHERE date=? AND strategy='etf'",(now.strftime("%Y-%m-%d"),)).fetchone()[0] > 0
                     sc_done = tc.execute("SELECT COUNT(*) FROM sim_trades WHERE date=? AND strategy='smallcap'",(now.strftime("%Y-%m-%d"),)).fetchone()[0] > 0
+                    tm_done = tc.execute("SELECT COUNT(*) FROM sim_trades WHERE date=? AND strategy='timing'",(now.strftime("%Y-%m-%d"),)).fetchone()[0] > 0
                     tc.close()
                     if not etf_done:
                         if _execute_etf():
@@ -370,6 +380,10 @@ if __name__ == "__main__":
                     if not sc_done:
                         if _execute_smallcap():
                             logger.info("小市值轮动: 日频执行完成")
+                    if not tm_done:
+                        from strategies.market_timing import execute as _execute_timing
+                        if _execute_timing():
+                            logger.info("大盘择时: 日频执行完成")
             except Exception:
                 pass
             _time.sleep(60)

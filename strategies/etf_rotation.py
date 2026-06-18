@@ -11,11 +11,11 @@ TRADE_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "tra
 
 # ETF池 (代码, 名称, 类型)
 POOL = [
-    ("513100", "纳指ETF", "海外科技"),
-    ("159915", "创业板ETF", "A股成长"),
-    ("518880", "黄金ETF", "避险"),
-    ("511010", "国债ETF", "防御"),
+    ("510300", "沪深300ETF", "大盘"),
+    ("510500", "中证500ETF", "中盘"),
+    ("159915", "创业板ETF", "成长"),
     ("510880", "红利ETF", "价值"),
+    ("511010", "国债ETF", "防御"),
 ]
 
 
@@ -53,25 +53,28 @@ def get_signal() -> dict:
         ret_30d = (prices[-1] - prices[0]) / prices[0] if prices[0] > 0 else 0
         annual_ret = ret_30d * (252 / 30)  # 年化
         r2 = _r_squared(prices[-30:])  # 最近30日R²
-        if r2 >= 0.3:  # 过滤假趋势
-            score = round(annual_ret * r2, 4)
-            scores.append((code, name, score, round(annual_ret, 3), round(r2, 3)))
+        score = round(annual_ret * r2, 4)
+        scores.append((code, name, score, round(annual_ret, 3), round(r2, 3)))
 
     conn.close()
 
     if not scores:
-        return {"action": "hold", "reason": "无有效趋势(R²均<0.3)"}
+        return {"action": "hold", "reason": "数据不足",
+                "annual_ret": 0, "r2": 0, "score": 0, "scores": []}
 
     scores.sort(key=lambda x: x[2], reverse=True)
     best = scores[0]
+    score_list = [(s[0], s[1], s[2], s[3], s[4]) for s in scores]
 
-    if best[2] <= 0:
+    if best[2] <= 0 or best[3] < 0:
         return {"action": "defense", "buy": "511010", "name": "国债ETF",
-                "reason": f"全市场负评分(最佳{best[2]:.3f})"}
+                "reason": "全市场无正收益趋势",
+                "annual_ret": best[3], "r2": best[4], "score": best[2],
+                "scores": score_list}
 
     return {"action": "buy", "buy": best[0], "name": best[1],
             "score": best[2], "annual_ret": best[3], "r2": best[4],
-            "scores": [(s[0], s[1], s[2], s[3], s[4]) for s in scores]}
+            "scores": score_list}
 
 
 def record_trade(symbol, name, price, shares, side="buy"):

@@ -306,18 +306,20 @@ def _execute_etf():
     from strategies.etf_rotation import get_signal, record_trade, STRATEGY as S
     sig = get_signal()
     if sig["action"] not in ("buy", "defense"): return False
-    conn = sqlite3.connect(TRADE_DB)
-    for r in conn.execute("SELECT symbol,price,shares FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)", (S,S)).fetchall():
+    mc = sqlite3.connect(os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db"))
+    tc = sqlite3.connect(TRADE_DB)
+    for r in tc.execute("SELECT symbol,price,shares FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)", (S,S)).fetchall():
         record_trade(r[0], "", r[1], r[2], "sell")
     t = sig["buy"]
-    row = conn.execute("SELECT close FROM daily WHERE symbol=? ORDER BY date DESC LIMIT 1",(t,)).fetchone()
+    row = mc.execute("SELECT close FROM daily WHERE symbol=? ORDER BY date DESC LIMIT 1",(t,)).fetchone()
     if row:
-        bs = conn.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=?",(S,)).fetchone()[0]
-        ss = conn.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='sell' AND strategy=?",(S,)).fetchone()[0]
+        bs = tc.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=?",(S,)).fetchone()[0]
+        ss = tc.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='sell' AND strategy=?",(S,)).fetchone()[0]
         cap = 5000.0 - bs + ss
         lots = int(cap / (row[0]*100 + max(row[0]*100*0.0003,5)))
         if lots >= 1: record_trade(t, sig.get("name",""), row[0], lots*100, "buy")
-    conn.close()
+    mc.close()
+    tc.close()
     return True
 
 
@@ -350,19 +352,24 @@ if __name__ == "__main__":
     logger.info("日内监控线程已启动")
 
     def _scheduler():
-        """策略调度: 每日9:30执行ETF+小市值轮动"""
-        today_done = None
+        """策略调度: 每日9:00-10:00间执行ETF+小市值, 各自独立重试直到成功"""
         _time.sleep(60)
         while True:
             try:
                 now = _dt.now()
                 if not is_trading_day() or now.hour < 9 or now.hour >= 15:
-                    today_done = None; _time.sleep(60); continue
-                if today_done != now.day and now.hour == 9 and 30 <= now.minute < 31:
-                    _execute_etf()
-                    _execute_smallcap()
-                    today_done = now.day
-                    logger.info("策略调度: ETF+小市值日频执行")
+                    _time.sleep(60); continue
+                if 9 <= now.hour < 15:
+                    tc = sqlite3.connect(TRADE_DB)
+                    etf_done = tc.execute("SELECT COUNT(*) FROM sim_trades WHERE date=? AND strategy='etf'",(now.strftime("%Y-%m-%d"),)).fetchone()[0] > 0
+                    sc_done = tc.execute("SELECT COUNT(*) FROM sim_trades WHERE date=? AND strategy='smallcap'",(now.strftime("%Y-%m-%d"),)).fetchone()[0] > 0
+                    tc.close()
+                    if not etf_done:
+                        if _execute_etf():
+                            logger.info("ETF轮动: 日频执行完成")
+                    if not sc_done:
+                        if _execute_smallcap():
+                            logger.info("小市值轮动: 日频执行完成")
             except Exception:
                 pass
             _time.sleep(60)

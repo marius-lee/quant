@@ -29,6 +29,7 @@ async function poll() {
   var cls = sig.action==='buy'?'color:var(--up)':'color:var(--muted)';
   document.getElementById('signal-info').innerHTML =
     '信号: <b style=\"'+cls+'\">'+sig.action+'</b> | 20日涨幅: '+(sig.ret_20d?(sig.ret_20d>=0?'+':'')+(sig.ret_20d*100).toFixed(1)+'%':'?')+
+    (sig.leader_ret?' | 龙头: '+sig.symbol+' +'+(sig.leader_ret*100).toFixed(1)+'%':'')+
     (sig.reason?' | '+sig.reason:'');
   const ps = r.positions||[];
   if(ps.length) {

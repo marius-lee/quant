@@ -235,7 +235,7 @@ def run():
         try:
             tc3 = sqlite3.connect(TRADE_DB)
             last_sells = tc3.execute(
-                "SELECT pnl FROM sim_trades WHERE side='sell' ORDER BY id DESC LIMIT 3").fetchall()
+                "SELECT pnl FROM sim_trades WHERE side='sell' AND strategy='chen' ORDER BY id DESC LIMIT 3").fetchall()
             loss_threshold = -get_state()["total_asset"] * 0.05
             if len(last_sells) >= 2 and all(r[0] is not None and r[0] < loss_threshold for r in last_sells[:2]):
                 freeze_until = date.today() + timedelta(days=3)
@@ -252,7 +252,7 @@ def run():
             tc = sqlite3.connect(TRADE_DB)
             # 计算可用资金: 5000 - 买入总支出 + 卖出总收入 (来源: 逐笔复算)
             capital = float(cfg("backtest.initial_capital", 5000))
-            all_trades = tc.execute("SELECT side, price, shares FROM sim_trades ORDER BY id").fetchall()
+            all_trades = tc.execute("SELECT side, price, shares FROM sim_trades WHERE strategy='chen' ORDER BY id").fetchall()
             for side, price, shares in all_trades:
                 val = price * shares
                 if side == "buy":
@@ -262,8 +262,8 @@ def run():
             # 未卖出的持仓
             pos_rows = tc.execute("""
                 SELECT symbol, price, shares, board_count, date FROM sim_trades
-                WHERE side='buy' AND symbol NOT IN (
-                    SELECT symbol FROM sim_trades WHERE side='sell'
+                WHERE side='buy' AND strategy='chen' AND symbol NOT IN (
+                    SELECT symbol FROM sim_trades WHERE side='sell' AND strategy='chen'
                 )
             """).fetchall()
 
@@ -346,7 +346,7 @@ def run():
                     logger.info(f"  🟢 继续持有 {sym}: cost=¥{cost_price:.2f} {board}连板 {days_held}天")
             positions = list(_merged.values())
             # 加载所有历史交易
-            all_trades = tc.execute("SELECT date, symbol, side, price, shares, pnl, pnl_pct FROM sim_trades ORDER BY id").fetchall()
+            all_trades = tc.execute("SELECT date, symbol, side, price, shares, pnl, pnl_pct FROM sim_trades WHERE strategy='chen' ORDER BY id").fetchall()
             trades_list = [{"date": t[0], "symbol": t[1], "side": t[2], "price": t[3],
                            "shares": t[4], "pnl": t[5], "pnl_pct": t[6]} for t in all_trades]
             tc.close()
@@ -361,7 +361,7 @@ def run():
         try:
             tc2 = sqlite3.connect(TRADE_DB)
             today_buys = tc2.execute(
-                "SELECT symbol FROM sim_trades WHERE side='buy' AND date=?",
+                "SELECT symbol FROM sim_trades WHERE side='buy' AND strategy='chen' AND date=?",
                 (date.today().isoformat(),)
             ).fetchall()
             for (sym,) in today_buys:

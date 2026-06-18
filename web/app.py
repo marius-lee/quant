@@ -16,6 +16,9 @@ app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
 TRADE_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "trades.db")
 
+import web.shared
+import importlib
+importlib.reload(web.shared)
 from web.shared import get_state, update_state
 
 
@@ -219,6 +222,12 @@ def api_etf_state():
 @app.route("/timing")
 def timing_page():
     return render_template("timing.html")
+
+@app.route("/api/debug")
+def api_debug():
+    from web.shared import _init_state
+    s = _init_state()
+    return jsonify({"capital": s["capital"], "total": s["total_asset"], "md5": "1db46253b1e90d0d31d0f5bc31d411a3"})
 
 @app.route("/api/timing/state")
 def api_timing_state():

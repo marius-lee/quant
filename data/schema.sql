@@ -84,6 +84,27 @@ CREATE TABLE IF NOT EXISTS signals (
 CREATE INDEX IF NOT EXISTS idx_signals_date ON signals(date);
 CREATE INDEX IF NOT EXISTS idx_signals_mode ON signals(date, mode);
 
+-- ═══ trade metrics (ops/performance.py) — Grinold & Kahn IC/IR/BR ═══
+
+CREATE TABLE IF NOT EXISTS strategy_metrics (
+    strategy         TEXT PRIMARY KEY,
+    ic_pearson_1d    REAL,
+    ic_pearson_3d    REAL,
+    ic_pearson_5d    REAL,
+    ic_pearson_20d   REAL,
+    ic_spearman_1d   REAL,
+    ic_spearman_3d   REAL,
+    ic_spearman_5d   REAL,
+    ic_spearman_20d  REAL,
+    ir_annualized    REAL,
+    br_bets_per_year REAL,
+    ir_implied       REAL,
+    n_signals        INTEGER,
+    n_trades         INTEGER,
+    data_quality     TEXT,
+    computed_at      TEXT
+);
+
 -- ═══ results.db (web/db.py) — 分析结果 ═══
 -- 注: runs/picks 表已随 ML 策略移除而弃用
 -- get_conn() 仍提供共享连接 (paper/sim_broker/tracker 共用)

@@ -10,12 +10,18 @@
 用法: PYTHONPATH=. python3 intraday_runner.py
 """
 
-import time, sqlite3, os
+import time, sqlite3, os, math
 from datetime import datetime, date, timedelta
 from config.loader import get as cfg
 from execution.quote import BoardTracker, is_trading_time, fetch_quotes
 from execution.calendar import is_trading_day
 from utils.logger import get_logger
+from ops.performance import (alpha_from_score, mcva_trailing_stop,
+                              RESIDUAL_VOL_DEFAULT, IC_PRIOR, BUY_COST, SELL_COST,
+                              kelly_fraction)
+from ops.liquidity import roll_spread, volatility_decompose
+from ops.position_sizers import (compute_lots_full_kelly, compute_lots_half_kelly,
+                                   compute_lots_wilson, compute_lots_fixed_ratio)
 
 logger = get_logger("intraday.runner")
 DB = "data/market.db"
@@ -58,12 +64,12 @@ def init_trade_db():
     conn.close()
 
 
-def record_trade(date_str, symbol, side, price, shares, board_count=0, pnl=None, pnl_pct=None, capital_after=None):
+def record_trade(date_str, symbol, side, price, shares, board_count=0, pnl=None, pnl_pct=None, capital_after=None, strategy="chen"):
     """写入永久交易记录。"""
     conn = sqlite3.connect(TRADE_DB)
-    conn.execute("""INSERT INTO sim_trades (date, symbol, side, price, shares, board_count, pnl, pnl_pct, capital_after)
-                    VALUES (?,?,?,?,?,?,?,?,?)""",
-                 (date_str, symbol, side, price, shares, board_count, pnl, pnl_pct, capital_after))
+    conn.execute("""INSERT INTO sim_trades (date, symbol, side, price, shares, board_count, pnl, pnl_pct, capital_after, strategy)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                 (date_str, symbol, side, price, shares, board_count, pnl, pnl_pct, capital_after, strategy))
     conn.commit()
     conn.close()
 
@@ -295,7 +301,8 @@ def run():
                     else:
                         _merged[sym] = {"symbol": sym, "price": cost_price, "shares": shares,
                                        "board_count": board, "date": buy_date,
-                                       "has_sealed": False, "break_count": 0, "was_at_limit": False, "peak_price": cost_price}
+                                       "has_sealed": False, "break_count": 0, "was_at_limit": False,
+                                       "peak_price": cost_price, "entry_alpha": alpha_from_score(0.50)}
                     continue
 
                 # 昨日持仓 → 条件卖出
@@ -342,7 +349,8 @@ def run():
                     else:
                         _merged[sym] = {"symbol": sym, "price": cost_price, "shares": shares,
                                        "board_count": board, "date": buy_date,
-                                       "has_sealed": False, "break_count": 0, "was_at_limit": False, "peak_price": cost_price}
+                                       "has_sealed": False, "break_count": 0, "was_at_limit": False,
+                                       "peak_price": cost_price, "entry_alpha": alpha_from_score(0.50)}
                     logger.info(f"  🟢 继续持有 {sym}: cost=¥{cost_price:.2f} {board}连板 {days_held}天")
             positions = list(_merged.values())
             # 加载所有历史交易
@@ -390,8 +398,40 @@ def run():
                      "pos_value": round(pos_value_init, 2), "mood": mood,
                      "positions": positions_init})
 
-        last_sector_scan = None  # 模块B: 板块龙头扫描间隔
+        last_sector_scan = None
         last_heartbeat = None
+
+        # ── 仓位算法竞技场: 5 track 并行 (来源: Kelly 1956, Chan 第6章, Wilson 1927, Ryan Jones) ──
+        tracks = {
+            "chen":           {"capital": capital, "positions": list(positions),
+                                "strategy": "chen", "sizer": None},
+            "chen_fullkelly": {"capital": 5000.0, "positions": [],
+                                "strategy": "chen_fullkelly", "sizer": "fullkelly"},
+            "chen_halfkelly": {"capital": 5000.0, "positions": [],
+                                "strategy": "chen_halfkelly", "sizer": "halfkelly"},
+            "chen_wilson":    {"capital": 5000.0, "positions": [],
+                                "strategy": "chen_wilson", "sizer": "wilson"},
+            "chen_fixedratio":{"capital": 5000.0, "positions": [],
+                                "strategy": "chen_fixedratio", "sizer": "fixedratio"},
+        }
+
+        # 恢复 sizer 昨日持仓
+        tc_pos = sqlite3.connect(TRADE_DB)
+        for tname, t in tracks.items():
+            if t["sizer"] is None:
+                continue  # chen 实盘已恢复
+            for r in tc_pos.execute("""
+                SELECT symbol, price, shares, board_count, date FROM sim_trades
+                WHERE side='buy' AND strategy=? AND symbol NOT IN (
+                    SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?
+                )
+            """, (t["strategy"], t["strategy"])).fetchall():
+                t["positions"].append({"symbol": r[0], "price": r[1], "shares": r[2],
+                                       "board_count": r[3] or 0, "date": r[4],
+                                       "has_sealed": False, "break_count": 0, "was_at_limit": False,
+                                       "peak_price": r[1], "entry_alpha": alpha_from_score(0.50)})
+                t["capital"] -= r[1] * r[2]  # 扣除已投入资金
+        tc_pos.close()
 
         while is_trading_time():
             now = datetime.now()
@@ -399,34 +439,39 @@ def run():
 
             # 心跳: 每5分钟确认存活
             if last_heartbeat is None or (now - last_heartbeat).total_seconds() >= 300:
-                logger.info(f"💓 {now.strftime('%H:%M')} | 信号{len(tracker.all_signals)} | 持仓{len(positions)} | ¥{capital:,.0f}")
+                total_pos = sum(len(t["positions"]) for t in tracks.values())
+                logger.info(f"💓 {now.strftime('%H:%M')} | 信号{len(tracker.all_signals)} | 总持仓{total_pos} | chen¥{tracks['chen']['capital']:,.0f}")
                 last_heartbeat = now
             new_signals = tracker.scan_all_modes(conn=conn)
 
-            # ── 持仓快速刷新 (每轮3-5s, 补充tracker+名称) ──
-            if positions:
+            # ── 持仓快速刷新 (每轮3-5s, 所有track共用tracker行情) ──
+            all_pos_symbols = set()
+            for t in tracks.values():
+                for p in t["positions"]:
+                    all_pos_symbols.add(p["symbol"])
+            if all_pos_symbols:
                 try:
-                    pos_quotes = fetch_quotes([p["symbol"] for p in positions])
-                    for p in positions:
-                        q = pos_quotes.get(p["symbol"])
-                        if q:
-                            p["name"] = q.get("name", "")
-                        if q:
-                            sym = p["symbol"]
-                            if sym not in tracker.stocks:
-                                tracker.stocks[sym] = {
-                                    "symbol": sym, "close": q["price"],
-                                    "open": q.get("open", q["price"]),
-                                    "high": q.get("high", q["price"]),
-                                    "prev_close": q.get("prev_close", p["price"]),
-                                    "is_at_limit": False, "is_one_word": False,
-                                    "broken_count": 0, "was_sealed": False,
-                                    "first_limit_time": None, "gap_pct": 0,
-                                    "volume": q.get("volume", 0), "prices": [],
-                                    "limit_price": 0, "limit_pct": 0.10,
-                                    "yesterday_broken": False, "yesterday_limit": False,
-                                    "yesterday_board": 0,
-                                }
+                    pos_quotes = fetch_quotes(list(all_pos_symbols))
+                    for t in tracks.values():
+                        for p in t["positions"]:
+                            q = pos_quotes.get(p["symbol"])
+                            if q:
+                                p["name"] = q.get("name", "")
+                                sym = p["symbol"]
+                                if sym not in tracker.stocks:
+                                    tracker.stocks[sym] = {
+                                        "symbol": sym, "close": q["price"],
+                                        "open": q.get("open", q["price"]),
+                                        "high": q.get("high", q["price"]),
+                                        "prev_close": q.get("prev_close", p["price"]),
+                                        "is_at_limit": False, "is_one_word": False,
+                                        "broken_count": 0, "was_sealed": False,
+                                        "first_limit_time": None, "gap_pct": 0,
+                                        "volume": q.get("volume", 0), "prices": [],
+                                        "limit_price": 0, "limit_pct": 0.10,
+                                        "yesterday_broken": False, "yesterday_limit": False,
+                                        "yesterday_board": 0,
+                                    }
                             else:
                                 tracker.stocks[sym]["close"] = q["price"]
                     logger.info("📊 持仓刷新: %s", [(p['symbol'], tracker.stocks[p['symbol']]['close']) for p in positions if p['symbol'] in tracker.stocks])
@@ -447,26 +492,9 @@ def run():
                                 s["is_leader"] = True
                                 s["score"] = round(min(s["score"] + 0.20, 1.0), 3)
                             s["sectors"] = sector_info.get("stock_sectors", {}).get(s["symbol"], [])
-                        # 产业链扩散加分: 信号所在板块 → 上下游板块信号加权
-                        chains = {}
-                        try:
-                            cc = sqlite3.connect(TRADE_DB)
-                            for r in cc.execute("SELECT chain_name, level, sector_name FROM industry_chains").fetchall():
-                                chains.setdefault(r[0], {}).setdefault(r[1], []).append(r[2])
-                            cc.close()
-                            for s in new_signals:
-                                sectors = s.get("sectors", [])
-                                for chain, levels in chains.items():
-                                    bonus = 0
-                                    for lv, secs in levels.items():
-                                        if any(sec in sectors for sec in secs):
-                                            if lv == "中游": bonus = 0.10
-                                            elif lv in ("上游","下游"): bonus = 0.05
-                                    if bonus > 0:
-                                        old_score = s["score"]
-                                        s["score"] = round(min(old_score + bonus, 1.0), 3)
-                        except Exception:
-                            pass
+                        # 产业链扩散加分 — 已暂停 (来源: Narang 4章 风险模型 — 无IC验证的方向性加分引入意外行业暴露)
+                        # 原逻辑: 中游+0.10/上下游+0.05。待行业IC可测量后重新评估方向。见 grinold-remaining-action-paths.md 路径G
+                        pass
                         last_sector_scan = now
                 except Exception:
                     pass
@@ -528,6 +556,13 @@ def run():
                     pass
 
             # 新信号 → 买入 (陈小群: 不补仓, 持仓≤3只, 全仓最优)
+            # 换手率追踪 (来源: Grinold 16章 — 限制换手率至一半可保留≥75%附加值)
+            daily_turnover = sum(t["shares"] * t["price"] for t in trades_list if t["side"] == "buy" and t["date"] == today_str)
+            turnover_cap = 2500.0  # ¥5,000 × 50%每日换手上限
+            if daily_turnover >= turnover_cap:
+                logger.debug(f"  🚫 换手率上限: ¥{daily_turnover:.0f}≥¥{turnover_cap:.0f}")
+                buy_blocked = True
+
             max_positions = int(cfg("backtest.max_positions", 3))
             if can_buy and not buy_blocked:
               for s in new_signals:
@@ -544,97 +579,194 @@ def run():
                         continue
                 except Exception:
                     pass
-                entry_px = s["price"]
-                max_lots = int(capital / (entry_px * 100 + max(entry_px * 100 * 0.0003, 5)))
-                if max_lots < 1:
+                # ── Harris流动性过滤 (来源: Harris 20章 — Roll隐含价差>2%跳过) ──
+                try:
+                    spread = roll_spread(sym, conn)
+                    if spread["valid"] and spread["spread_relative"] > 2.0:
+                        logger.debug(f"  🚫 价差过大 {sym}: {spread['spread_relative']:.1f}%")
+                        continue
+                except Exception:
+                    pass
+                # ── Harris磁吸效应过滤 (来源: Harris 28章 — >8%买入=恐惧驱动, 仓位减半) ──
+                magnet_warning = False
+                prev_close = s.get("prev_close", 0)
+                if prev_close > 0 and s.get("price", 0) > 0:
+                    day_pct = (s["price"] / prev_close - 1) * 100
+                    if day_pct > 8.0:
+                        magnet_warning = True
+                        logger.warning(f"  ⚠️ 磁吸 {sym}: 已涨{day_pct:.1f}%, 恐惧驱动→真突破概率低, 仓位减半(Harris 28章)")
+                # ── MCVA买入门禁 (来源: Grinold 14章 — 仅当Alpha>买入成本时执行) ──
+                # 用per-mode z-score标准化: 连板接力均分0.48/std0.15, 首板试探均分0.35/std0.12
+                # 来源: signals表222条实测 → mode_stats()
+                alpha_val = alpha_from_score(s.get("score", 0.50), mode=mode)
+                # ── Narang滑点估计 (来源: Narang 4-5章 — 高波动时上调成本, Harris 20章波动分解量化) ──
+                effective_buy_cost = BUY_COST
+                try:
+                    vol = volatility_decompose(sym, conn)
+                    if vol["valid"] and vol["transitory_ratio"] > 0.5:
+                        effective_buy_cost = BUY_COST * 1.5  # 临时波动>50%→滑点风险增大
+                except Exception:
+                    pass
+                if alpha_val <= effective_buy_cost:
+                    logger.debug(f"  🚫 MCVA过滤 {sym}({s.get('mode','')}): α={alpha_val:.4f}<{effective_buy_cost}")
                     continue
-                shares = max_lots * 100
-                cost = shares * entry_px
-                fee = max(cost * 0.0003, 5)
-                capital -= (cost + fee)
-                positions.append({"symbol": sym, "price": entry_px, "shares": shares,
+                s["alpha"] = round(alpha_val, 4)
+                entry_px = s["price"]
+                # ── 5 track 各自独立买入 (来源: 仓位算法竞技场) ──
+                for tname, track in tracks.items():
+                    tc2 = sqlite3.connect(TRADE_DB)
+                    tcap = track["capital"]
+                    tpos = track["positions"]
+                    if tname == "chen":
+                        # 实盘: MCVA+z-score+Kelly
+                        max_lots = int(tcap / (entry_px * 100 + max(entry_px * 100 * 0.0003, 5)))
+                        if magnet_warning: max_lots = max(1, max_lots // 2)
+                        dd_pct = max(0, 1.0 - tcap / 5000.0)
+                        kelly_f = kelly_fraction("chen", n_positions=len(tpos), drawdown_pct=dd_pct)
+                        if kelly_f > 0:
+                            max_lots = int(max_lots * kelly_f)
+                        else:
+                            z = (s.get("score", 0.50) - 0.40) / 0.10
+                            if z >= 3: pass
+                            elif z >= 2: max_lots = max(1, max_lots // 2)
+                            elif z >= 1: max_lots = max(1, max_lots // 4)
+                    elif track["sizer"] == "fullkelly":
+                        max_lots = compute_lots_full_kelly(tc2, tcap, entry_px)
+                    elif track["sizer"] == "halfkelly":
+                        max_lots = compute_lots_half_kelly(tc2, tcap, entry_px)
+                    elif track["sizer"] == "wilson":
+                        max_lots = compute_lots_wilson(tc2, tcap, entry_px)
+                    elif track["sizer"] == "fixedratio":
+                        max_lots = compute_lots_fixed_ratio(tc2, tcap, entry_px)
+                    else:
+                        max_lots = 0
+                    tc2.close()
+                    if max_lots < 1:
+                        continue
+                    # 已有持仓跳过
+                    if any(p["symbol"] == sym for p in tpos):
+                        continue
+                    if len(tpos) >= 3:
+                        continue
+                    shares = max_lots * 100
+                    cost = shares * entry_px
+                    fee = max(cost * 0.0003, 5)
+                    if tcap < cost + fee:
+                        continue
+                    track["capital"] -= (cost + fee)
+                    tpos.append({"symbol": sym, "price": entry_px, "shares": shares,
                                  "date": today_str, "board_count": s.get("board_count", 0),
                                  "has_sealed": True, "break_count": 0, "was_at_limit": True,
-                                 "peak_price": entry_px})
-                trades_list.append({"symbol": sym, "side": "buy", "price": entry_px, "shares": shares, "date": today_str})
-                record_trade(today_str, sym, "buy", entry_px, shares,
-                            s.get("board_count", 0), capital_after=round(capital, 2))
-                sid_conn = sqlite3.connect(TRADE_DB)
-                sid_conn.execute(
-                    "UPDATE signals SET is_bought=1 WHERE id=(SELECT id FROM signals WHERE symbol=? AND date=? AND is_bought=0 ORDER BY id DESC LIMIT 1)",
-                    (sym, today_str))
-                sid_conn.commit()
-                sid_conn.close()
-                logger.info(f"  💰 买入 {sym} ({mode}): ¥{entry_px:.2f} × {shares}股 余额¥{capital:.0f}")
+                                 "peak_price": entry_px,
+                                 "entry_alpha": s.get("alpha", alpha_from_score(s.get("score", 0.50), mode=mode))})
+                    if tname == "chen":
+                        trades_list.append({"symbol": sym, "side": "buy", "price": entry_px, "shares": shares, "date": today_str})
+                    record_trade(today_str, sym, "buy", entry_px, shares,
+                                s.get("board_count", 0), capital_after=round(track["capital"], 2), strategy=track["strategy"])
+                    if tname == "chen":
+                        sid_conn = sqlite3.connect(TRADE_DB)
+                        sid_conn.execute(
+                            "UPDATE signals SET is_bought=1 WHERE id=(SELECT id FROM signals WHERE symbol=? AND date=? AND is_bought=0 ORDER BY id DESC LIMIT 1)",
+                            (sym, today_str))
+                        sid_conn.commit()
+                        sid_conn.close()
+                    logger.info(f"  💰 [{tname}] 买入 {sym} ¥{entry_px:.2f}×{shares}股 余¥{track['capital']:.0f}")
 
-            # ── B1-B3: 盘中风控 (来源: 陈小群卖出纪律) ──
-            for pos in list(positions):
-                # T+1: 今天买的不能卖 (来源: A股交易规则)
-                if pos.get("date", "") >= date.today().isoformat():
-                    continue
-                sym = pos["symbol"]
-                st = tracker.stocks.get(sym)
-                if not st or st["close"] <= 0:
-                    continue
-                sell_reason = None
-                pnl_pct = (st["close"] / pos["price"] - 1) * 100
+            # ── B1-B7: 盘中风控 (所有track独立) ──
+            # ── B1-B7 卖出 (所有track独立执行) ──
+            for tname, track in tracks.items():
+                tcap = track["capital"]
+                tpos = track["positions"]
+                for pos in list(tpos):
+                    if pos.get("date", "") >= date.today().isoformat():
+                        continue
+                    sym = pos["symbol"]
+                    st = tracker.stocks.get(sym)
+                    if not st or st["close"] <= 0:
+                        continue
+                    sell_reason = None
+                    pnl_pct = (st["close"] / pos["price"] - 1) * 100
 
-                # B1: 硬止损 -5% (最高优先)
-                if pnl_pct <= -5:
-                    sell_reason = f"止损({pnl_pct:.1f}%)"
+                    if pnl_pct <= -5:
+                        sell_reason = f"止损({pnl_pct:.1f}%)"
+                    elif now.hour >= 14 and now.minute >= 30:
+                        if pos.get("was_at_limit") and not st["is_at_limit"] and pos.get("has_sealed"):
+                            sell_reason = f"尾盘炸板"
+                    elif st["broken_count"] >= 3 and not st["is_at_limit"]:
+                        sell_reason = f"反复烂板({st['broken_count']}次)"
+                    elif st.get("close", 0) > 0:
+                        today_vol = st.get("volume", 0)
+                        prev_vol = prev_volume_map.get(sym, 0)
+                        vol_ratio = today_vol / prev_vol if prev_vol > 0 else 0
+                        if vol_ratio > 0.60:
+                            sell_reason = f"死亡换手({vol_ratio:.0%})"
+                    if not sell_reason and st["is_at_limit"] and st.get("close", 0) > 0:
+                        today_vol = st.get("volume", 0)
+                        prev_vol = prev_volume_map.get(sym, 0)
+                        vol_ratio = today_vol / prev_vol if prev_vol > 0 else 0
+                        if 0 < vol_ratio < 0.08:
+                            sell_reason = f"缩量加速({vol_ratio:.0%})"
+                    if not sell_reason:
+                        peak = pos.get("peak_price", pos["price"])
+                        entry_alpha = pos.get("entry_alpha", alpha_from_score(0.50))
+                        daily_vol = RESIDUAL_VOL_DEFAULT / math.sqrt(252)
+                        pnl_pct_decimal = st["close"] / pos["price"] - 1
+                        if daily_vol > 0:
+                            z_now = pnl_pct_decimal / daily_vol
+                            alpha_now = RESIDUAL_VOL_DEFAULT * IC_PRIOR * z_now
+                            pos_val = pos["shares"] * st["close"]
+                            total_val = tcap
+                            for p2 in tpos:
+                                if p2["symbol"] in tracker.stocks:
+                                    total_val += p2["shares"] * tracker.stocks[p2["symbol"]]["close"]
+                                else:
+                                    total_val += p2["shares"] * p2["price"]
+                            pos_pct = pos_val / max(total_val, 1)
+                            dist = mcva_trailing_stop(entry_alpha, alpha_now, pos_pct)
+                            if dist < 0:
+                                sell_reason = f"MCVA止盈(α={alpha_now:.4f}<阈值 dist={dist:.4f})"
+                        if not sell_reason and peak > pos["price"] and st["close"] < peak * 0.95:
+                            sell_reason = f"移动止盈(最高¥{peak:.2f}→现¥{st['close']:.2f})"
+                        if not sell_reason:
+                            try:
+                                vol = volatility_decompose(sym, conn)
+                                if vol["valid"] and vol["transitory_ratio"] > 0.5:
+                                    tight_cost = SELL_COST * 0.67
+                                    risk_term = 2 * 0.10 * 0.05 * pos_pct * RESIDUAL_VOL_DEFAULT**2
+                                    if alpha_now < -(tight_cost + risk_term):
+                                        sell_reason = f"Harris临时波动({vol['transitory_ratio']:.0%}): 非知情驱动→预期逆转 α={alpha_now:.4f}"
+                            except Exception:
+                                pass
+                        if not sell_reason:
+                            board = pos.get("board_count", 0)
+                            max_hold = 10 if board >= 3 else 5
+                            if days_held >= max_hold:
+                                sell_reason = f"时间止({days_held}天>{max_hold}天, Narang三元退出)"
 
-                # B2: 尾盘炸板 (14:30后+封板→炸板)
-                elif now.hour >= 14 and now.minute >= 30:
-                    if pos.get("was_at_limit") and not st["is_at_limit"] and pos.get("has_sealed"):
-                        sell_reason = f"尾盘炸板"
+                    if sell_reason:
+                        px = st["close"]
+                        sell_val = pos["shares"] * px
+                        fee = max(sell_val * 0.0003, 5) + sell_val * 0.001
+                        pnl = sell_val - pos["shares"] * pos["price"] - fee
+                        tcap += sell_val - fee
+                        record_trade(date.today().isoformat(), sym, "sell", px,
+                                    pos["shares"], pos.get("board_count", 0),
+                                    round(pnl, 2), round((px/pos["price"]-1)*100, 2), round(tcap, 2),
+                                    strategy=track["strategy"])
+                        if tname == "chen":
+                            tracker.bought.discard(sym)
+                        tpos.remove(pos)
+                        if tname == "chen":
+                            trades_list.append({"symbol": sym, "side": "sell", "price": px,
+                                               "shares": pos["shares"], "date": date.today().isoformat(),
+                                               "pnl": round(pnl, 2), "pnl_pct": round(pnl_pct, 1)})
+                        logger.info(f"  🔴 [{tname}] 卖出 {sym}: {sell_reason} ¥{px:.2f} PnL=¥{pnl:.0f}")
+                track["capital"] = tcap  # 写回
 
-                # B3: 反复烂板 (≥3次)
-                elif st["broken_count"] >= 3 and not st["is_at_limit"]:
-                    sell_reason = f"反复烂板({st['broken_count']}次)"
-
-                # B4: 死亡换手 (来源: 陈小群——换手>60%清仓)
-                elif st.get("close", 0) > 0:
-                    today_vol = st.get("volume", 0)
-                    prev_vol = prev_volume_map.get(sym, 0)
-                    vol_ratio = today_vol / prev_vol if prev_vol > 0 else 0
-                    if vol_ratio > 0.60:
-                        sell_reason = f"死亡换手({vol_ratio:.0%})"
-
-                # B5: 缩量加速 (来源: 陈小群——换手<8%+涨停→次日分批卖)
-                if not sell_reason and st["is_at_limit"] and st.get("close", 0) > 0:
-                    today_vol = st.get("volume", 0)
-                    prev_vol = prev_volume_map.get(sym, 0)
-                    vol_ratio = today_vol / prev_vol if prev_vol > 0 else 0
-                    if 0 < vol_ratio < 0.08:
-                        sell_reason = f"缩量加速({vol_ratio:.0%})"
-
-                # B6: 移动止盈 (来源: 陈小群+业界标准, 最高价回落5%→卖)
-                if not sell_reason:
-                    peak = pos.get("peak_price", pos["price"])
-                    if peak > pos["price"] and st["close"] < peak * 0.95:
-                        sell_reason = f"移动止盈(最高¥{peak:.2f}→现¥{st['close']:.2f})"
-
-                if sell_reason:
-                    px = st["close"]
-                    sell_val = pos["shares"] * px
-                    fee = max(sell_val * 0.0003, 5) + sell_val * 0.001
-                    pnl = sell_val - pos["shares"] * pos["price"] - fee
-                    capital += sell_val - fee
-                    record_trade(date.today().isoformat(), sym, "sell", px,
-                                pos["shares"], pos.get("board_count", 0),
-                                round(pnl, 2), round((px/pos["price"]-1)*100, 2), round(capital, 2))
-                    # 释放买入名额
-                    tracker.bought.discard(sym)
-                    positions.remove(pos)
-                    trades_list.append({"symbol": sym, "side": "sell", "price": px,
-                                       "shares": pos["shares"], "date": date.today().isoformat(),
-                                       "pnl": round(pnl, 2), "pnl_pct": round(pnl_pct, 1)})
-                    logger.info(f"  🔴 盘中卖出 {sym}: {sell_reason} ¥{px:.2f} PnL=¥{pnl:.0f}")
-
-            # 计算总资产 + 持仓明细 (来源: 实时价优先, 未加载时用成本价)
+            # 计算总资产 + 持仓明细 (chen track 用于前端显示)
             pos_value = 0
             positions_with_px = []
-            for p in positions:
+            for p in tracks["chen"]["positions"]:
                 st = tracker.stocks.get(p["symbol"], {})
                 px = st.get("close", 0) if st.get("close", 0) > 0 else p["price"]
                 pos_value += p["shares"] * px
@@ -647,9 +779,10 @@ def run():
                     "pnl_pct": round((px / p["price"] - 1) * 100, 2),
                     "value": round(p["shares"] * px, 2),
                 })
-            total_asset = round(capital + pos_value, 2)
+            chen_cap = tracks["chen"]["capital"]
+            total_asset = round(chen_cap + pos_value, 2)
 
-            update_state({"status": "盘中", "progress": "", "capital": round(capital, 2),
+            update_state({"status": "盘中", "progress": "", "capital": round(chen_cap, 2),
                          "total_asset": total_asset, "pos_value": round(pos_value, 2),
                          "positions": positions_with_px,
                          "all_signals": tracker.all_signals,

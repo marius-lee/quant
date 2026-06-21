@@ -1,0 +1,87 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>仓位算法竞技场 · ¥5000→¥100万</title>
+<link rel="stylesheet" href="/static/style.css?v=20">
+</head><body>
+<div id="app">
+  <div style="display:flex;gap:12px;margin-bottom:16px">
+    <a href="/" style="color:var(--muted)">陈小群</a>
+    <a href="/etf" style="color:var(--muted)">ETF轮动</a>
+    <a href="/smallcap" style="color:var(--muted)">小市值</a>
+    <a href="/timing" style="color:var(--muted)">大盘择时</a>
+    <b>🏟️ 竞技场</b>
+  </div>
+
+  <div style="font-size:12px;color:var(--muted);margin-bottom:12px">
+    同一陈小群信号源, 5个独立仓位算法, 各¥5,000, 各自决策<br>
+    全Kelly=Kelly 1956 | 半Kelly=Chan第6章 | 威尔逊=Wilson 1927 | 固定比率=Ryan Jones
+  </div>
+
+  <div class="section-title">📊 仓位算法对比</div>
+  <div id="comparison-table"></div>
+  <div class="section-title">📋 最近交易</div>
+  <div id="trade-list"></div>
+</div>
+
+<script>
+var SIZERS = ["chen","chen_fullkelly","chen_halfkelly","chen_wilson","chen_fixedratio"];
+var LABELS = {"chen":"实盘","chen_fullkelly":"全Kelly","chen_halfkelly":"半Kelly","chen_wilson":"威尔逊","chen_fixedratio":"固定比率"};
+
+async function poll() {
+  var rows = [];
+  for (var s of SIZERS) {
+    try {
+      var p = await (await fetch('/api/performance?strategy='+s)).json();
+      var ic = null;
+      try { var r = await (await fetch('/api/performance/icir?strategy='+s)).json(); ic = r; } catch(e) {}
+      rows.push({
+        name: LABELS[s], strategy: s,
+        total_asset: (5000 + (p.total_pnl||0)),
+        return_pct: (((5000 + (p.total_pnl||0))/5000 - 1)*100),
+        realized: p.realized_pnl||0,
+        buys: p.total_buys||0, sells: p.total_sells||0, win_rate: p.win_rate||0,
+        kelly_f: ic ? ic.ir_implied : null,
+        drawdown: ic ? ic.risk_alerts : null
+      });
+    } catch(e) { rows.push({name:LABELS[s],strategy:s,error:1}); }
+  }
+  render(rows);
+}
+
+function render(rows) {
+  var maxAsset = Math.max.apply(null, rows.map(function(r){return r.total_asset||5000;}));
+
+  var html = '<table class="pos-table"><thead><tr>'+
+    '<th>算法</th><th>💰总资产</th><th>📈收益</th><th>已实现PnL</th><th>交易</th><th>胜率</th><th>⚡Kelly f</th><th>⚠️风险</th>'+
+    '</tr></thead><tbody>';
+
+  rows.forEach(function(r){
+    if (r.error) { html += '<tr><td>'+r.name+'</td><td colspan="7" class="empty">数据不足</td></tr>'; return; }
+    var cls = r.return_pct>=0?'up':'down';
+    var clsW = r.win_rate>=50?'up':'down';
+    var dd = r.drawdown || {};
+    var risk = '';
+    if (dd.drawdown_warning) risk += '⚠️回撤 ';
+    if (dd.model_breakdown) risk += '⚠️模型 ';
+    if (!risk) risk = '✓';
+
+    html += '<tr>'+
+      '<td><b>'+(r.strategy=='chen'?'⭐':'')+r.name+'</b></td>'+
+      '<td style="'+(r.total_asset==maxAsset?'color:var(--up);font-weight:bold':'')+'">¥'+r.total_asset.toLocaleString()+'</td>'+
+      '<td class="'+cls+'">'+(r.return_pct>=0?'+':'')+r.return_pct.toFixed(2)+'%</td>'+
+      '<td class="'+cls+'">'+(r.realized>=0?'+':'')+'¥'+r.realized.toLocaleString()+'</td>'+
+      '<td>'+r.buys+'买'+r.sells+'卖</td>'+
+      '<td class="'+clsW+'">'+r.win_rate+'%</td>'+
+      '<td>'+(r.kelly_f!=null?r.kelly_f.toFixed(3):'N/A')+'</td>'+
+      '<td>'+risk+'</td>'+
+      '</tr>';
+  });
+  html += '</tbody></table>';
+  html += '<div class="icir-footnote">来源: Kelly 1956 / Chan 第6章 / Wilson 1927 / Ryan Jones. 所有sizer独立运行, 互不干扰.</div>';
+  document.getElementById('comparison-table').innerHTML = html;
+}
+
+poll();
+setInterval(poll, 30000);
+</script>
+</body></html>

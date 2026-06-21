@@ -67,3 +67,9 @@ body { background:var(--bg); color:var(--text); font:14px/1.5 -apple-system,sans
   border-top:1px solid var(--border); color:var(--muted); font-size:12px; }
 #status-dot { font-size:10px; }
 #update-time { margin-left:auto; }
+
+/* Grinold IC/IR card */
+.icir-grid { display:flex; flex-wrap:wrap; gap:2px 14px; }
+.icir-item { display:inline-flex; align-items:center; gap:3px; }
+.icir-label { font-size:10px; }
+.icir-footnote { margin-top:2px; font-size:10px; }

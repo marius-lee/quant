@@ -188,16 +188,26 @@ def api_performance():
     win_rate = round(win_trades / total_sells * 100, 1) if total_sells > 0 else 0
     buys = tc.execute("SELECT COUNT(*) FROM sim_trades WHERE side='buy' AND strategy=?", (strategy,)).fetchone()[0]
     tc.close()
-    # 从对应策略 get_state() 取 total_asset
-    if strategy == "etf":
+    # 从对应策略 get_state() 或 sim_trades 直接计算 total_asset
+    if strategy.startswith("chen_"):
+        # sizer策略: 直接从 sim_trades 计算
+        bs = tc.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=?",
+                       (strategy,)).fetchone()[0]
+        ss = tc.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='sell' AND strategy=?",
+                       (strategy,)).fetchone()[0]
+        total_asset = round(5000.0 - bs + ss + realized_pnl, 2)
+    elif strategy == "etf":
         from strategies.etf_rotation import get_state as gs
+        total_asset = gs().get("total_asset", 5000.0)
     elif strategy == "smallcap":
         from strategies.smallcap_rotation import get_state as gs
+        total_asset = gs().get("total_asset", 5000.0)
     elif strategy == "timing":
         from strategies.market_timing import get_state as gs
+        total_asset = gs().get("total_asset", 5000.0)
     else:
         from web.shared import get_state as gs
-    total_asset = gs().get("total_asset", 5000.0)
+        total_asset = gs().get("total_asset", 5000.0)
     base = float(cfg("backtest.initial_capital", 5000))
     total_pnl = round(total_asset - base, 2)
     return jsonify({
@@ -208,6 +218,16 @@ def api_performance():
         "win_rate": win_rate,
         "total_buys": buys,
     })
+
+
+@app.route("/api/performance/icir")
+def api_performance_icir():
+    """Grinold & Kahn IC/IR/BR 指标. ?strategy=chen|etf|smallcap|timing &force=0|1"""
+    from flask import request
+    strategy = request.args.get("strategy", "chen")
+    force = request.args.get("force", "0") == "1"
+    from ops.performance import compute_strategy_metrics
+    return jsonify(compute_strategy_metrics(strategy, force=force))
 
 
 @app.route("/api/review")
@@ -245,6 +265,10 @@ def api_etf_state():
 @app.route("/timing")
 def timing_page():
     return render_template("timing.html")
+
+@app.route("/arena")
+def arena_page():
+    return render_template("arena.html")
 
 @app.route("/api/debug")
 def api_debug():

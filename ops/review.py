@@ -92,6 +92,19 @@ def generate_review(target_date: str = None) -> dict:
     ).fetchall()
 
     tc.close()
+
+    # ── 持仓暴露监控 (来源: Narang 4章/10章 — 暴露监控是风险模型的核心) ──
+    exposure = {"sectors": {}, "board_dist": {}, "note": "Narang 10章: 每日监控防止意外集中暴露"}
+    for h in hold_details:
+        sym = h["symbol"]
+        value = h.get("value", h["shares"] * h["cost"])
+        sec_row = mc.execute("SELECT industry FROM stocks WHERE symbol=?", (sym,)).fetchone()
+        sector = sec_row[0] if sec_row and sec_row[0] else "未知"
+        exposure["sectors"][sector] = exposure["sectors"].get(sector, 0) + value
+        board = h.get("board_count", 0)
+        label = f"{board}连板" if board > 0 else "非连板"
+        exposure["board_dist"][label] = exposure["board_dist"].get(label, 0) + value
+
     mc.close()
 
     # ── 汇总 ──
@@ -118,6 +131,7 @@ def generate_review(target_date: str = None) -> dict:
             "available_cash": round(available_cash, 2),
             "positions_value": round(positions_value, 2),
             "total_asset": round(total_asset, 2),
+            "exposure": exposure,
             "holdings": hold_details,
         },
         "top_signals": [{

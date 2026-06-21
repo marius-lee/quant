@@ -152,11 +152,38 @@ function renderTrades(trades) {
 }
 
 // v17
+async function renderGrinold() {
+  try {
+    const m = await (await fetch('/api/performance/icir?strategy=chen')).json();
+    var card = document.getElementById('icir-card');
+    if (!card) return;
+    var html = '<div class="icir-grid">';
+    var icLabels = [['IC₁', m.ic_pearson_1d], ['IC₃', m.ic_pearson_3d],
+                    ['IC₅', m.ic_pearson_5d], ['IC₂₀', m.ic_pearson_20d]];
+    icLabels.forEach(function(p){
+      var v = p[1]; var cls = v==null?'muted':(v>=0?'up':'down');
+      var txt = v!=null ? ((v>=0?'+':'')+v.toFixed(3)) : 'N/A';
+      html += '<span class="icir-item"><span class="icir-label">'+p[0]+'</span><span class="'+cls+'">'+txt+'</span></span>';
+    });
+    var ir = m.ir_annualized; var icls = ir==null?'muted':(ir>=0.5?'up':'down');
+    html += '<span class="icir-item"><span class="icir-label">IR</span><span class="'+icls+'">'+(ir!=null?((ir>=0?'+':'')+ir.toFixed(2)):'N/A')+'</span></span>';
+    var br = m.br_bets_per_year;
+    html += '<span class="icir-item"><span class="icir-label">BR/yr</span><span>'+(br!=null?br.toFixed(0):'N/A')+'</span></span>';
+    if (m.ir_implied != null) {
+      html += '<span class="icir-item"><span class="icir-label">IC×√BR</span><span>'+m.ir_implied.toFixed(2)+'</span></span>';
+    }
+    html += '</div>';
+    html += '<div class="icir-footnote">'+(m.data_quality||'')+' | '+m.n_signals+'信号 '+m.n_trades+'交易</div>';
+    card.innerHTML = html;
+  } catch(e) {}
+}
+
 async function poll() {
   const state = await get('/state');
   const td = await get('/trades');
   POSITIONS = state.positions || td.positions || [];
   await renderCapital(state);
+  renderGrinold();
   renderMood(state);
   renderPositions();
   renderSignals(state);

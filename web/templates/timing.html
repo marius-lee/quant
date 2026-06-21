@@ -1,7 +1,7 @@
 <!DOCTYPE html><html lang="zh-CN"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>大盘择时 · ¥5000→¥100万</title>
-<link rel="stylesheet" href="/static/style.css?v=19">
+<link rel="stylesheet" href="/static/style.css?v=20">
 </head><body>
 
 <div id="app">
@@ -10,12 +10,14 @@
     <a href="/etf" style="color:var(--muted)">ETF轮动</a>
     <a href="/smallcap" style="color:var(--muted)">小市值</a>
     <b>大盘择时</b>
+    <a href="/arena" style="color:var(--muted)">🏟️竞技场</a>
   </div>
 
   <div id="capital-bar">
     <div class="capital-row"><span>💰</span><span id="capital-amount">¥5,000</span><span id="capital-return"></span></div>
     <div class="capital-row secondary"><span>💵 可用</span><span id="capital-available">¥5,000</span></div>
     <div class="capital-row secondary"><span id="perf-stats" style="font-size:11px;color:var(--muted)"></span></div>
+    <div id="icir-card" style="font-size:11px;color:var(--muted);margin-top:4px"></div>
     <div id="signal-info" style="font-size:13px;color:var(--muted);margin-top:4px"></div>
   </div>
 
@@ -47,6 +49,15 @@ async function poll() {
       ' | <span style=\"'+cls+'\">总计: ¥'+(p.total_pnl>=0?'+':'')+p.total_pnl.toLocaleString()+'</span>'+
       ' | '+p.total_buys+'买 '+p.total_sells+'卖'+
       ' | 胜率: '+p.win_rate+'%';
+  } catch(e) {}
+  // Grinold IC/IR
+  try {
+    var m = await (await fetch('/api/performance/icir?strategy='+SR)).json();
+    document.getElementById('icir-card').innerHTML =
+      '<div class="icir-grid">'+
+      '<span class="icir-item"><span class="icir-label">IR</span><span>'+(m.ir_annualized!=null?((m.ir_annualized>=0?'+':'')+m.ir_annualized.toFixed(2)):'N/A')+'</span></span>'+
+      '<span class="icir-item"><span class="icir-label">BR/yr</span><span>'+(m.br_bets_per_year!=null?m.br_bets_per_year.toFixed(0):'N/A')+'</span></span>'+
+      '</div><div class="icir-footnote">'+(m.data_quality||'')+'</div>';
   } catch(e) {}
   // 信号
   var sig = r.signal||{};

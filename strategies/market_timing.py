@@ -92,7 +92,7 @@ def execute():
         if px > 0:
             bs = tc.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=?",(STRATEGY,)).fetchone()[0]
             ss = tc.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='sell' AND strategy=?",(STRATEGY,)).fetchone()[0]
-            cap = 5000.0 - bs + ss
+            cap = float(cfg("backtest.initial_capital", 5000)) - bs + ss
             lots = int(cap/(px*100+max(px*100*0.0003,5)))
             if lots >= 1: record_trade(sym, "", px, lots*100, "buy")
     elif sig["action"] == "sell" and pos:
@@ -126,7 +126,10 @@ def get_state() -> dict:
             for r in pos:
                 positions.append({"symbol":r[0],"name":"","shares":r[2],"price":r[1],
                                   "current":r[1],"pnl_pct":0,"value":round(r[2]*r[1],2)})
-    capital = 5000.0 + pnl - sum(r[1]*r[2] for r in pos)
+    cap_row = conn.execute(
+        "SELECT capital_after FROM sim_trades WHERE strategy=? AND capital_after IS NOT NULL ORDER BY id DESC LIMIT 1",
+        (STRATEGY,)).fetchone()
+    capital = round(cap_row[0], 2) if cap_row else float(cfg("backtest.initial_capital", 5000))
     pos_value = sum(p["value"] for p in positions)
     sig = get_signal()
     return {"positions":positions,"realized_pnl":round(pnl,2),"signal":sig,

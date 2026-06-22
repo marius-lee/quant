@@ -141,7 +141,10 @@ def get_state() -> dict:
             "value": round(shares * current, 2),
         })
 
-    capital = 5000.0 + pnl - sum(r[1] * r[2] for r in pos)
+    cap_row = conn.execute(
+        "SELECT capital_after FROM sim_trades WHERE strategy=? AND capital_after IS NOT NULL ORDER BY id DESC LIMIT 1",
+        (STRATEGY,)).fetchone()
+    capital = round(cap_row[0], 2) if cap_row else float(cfg("backtest.initial_capital", 5000))
     pos_value = sum(p["value"] for p in positions)
     sig = get_signal()
     return {

@@ -31,14 +31,14 @@ def generate_review(target_date: str = None) -> dict:
             "avg_board": round(avg_board or 0, 1), "bought": bought,
         }
 
-    # ── 交易统计 ──
+    # ── 交易统计 (按 strategy 分组, 5track竞技场独立核算) ──
     buys = tc.execute(
-        "SELECT symbol, price, shares, board_count FROM sim_trades WHERE side='buy' AND date=?",
+        "SELECT symbol, price, shares, board_count, strategy FROM sim_trades WHERE side='buy' AND date=?",
         (target_date,)
     ).fetchall()
 
     sells = tc.execute(
-        "SELECT symbol, price, shares, pnl, pnl_pct FROM sim_trades WHERE side='sell' AND date=?",
+        "SELECT symbol, price, shares, pnl, pnl_pct, strategy FROM sim_trades WHERE side='sell' AND date=?",
         (target_date,)
     ).fetchall()
 
@@ -50,10 +50,47 @@ def generate_review(target_date: str = None) -> dict:
         val = price * shares
         return val - max(val * 0.0003, 5) - val * 0.001
 
-    total_buy_cost = sum(buy_cost(r[1], r[2]) for r in buys)
-    total_sell_cost = sum(r[1] * r[2] for r in sells)
-    total_sell_pnl = sum(r[3] for r in sells if r[3])
-    hold_symbols = [r[0] for r in buys if r[0] not in [s[0] for s in sells]]
+    # ── 按策略分组核算 (来源: 5 track 仓位竞技场, 每track ¥5,000独立) ──
+    from config.loader import get as cfg
+    CHEN_TRACKS = {"chen"}
+
+    strats = set()
+    for b in buys: strats.add(b[4])
+    for s in sells: strats.add(s[5])
+
+    strat_capital = {}
+    strat_buys = {s: [] for s in strats}
+    strat_sells = {s: [] for s in strats}
+
+    for b in buys:
+        strat_buys[b[4]].append(b)
+    for s in sells:
+        strat_sells[s[5]].append(s)
+
+    # 计算每个策略的独立资金
+    for st in strats:
+        st_buys_sum = sum(buy_cost(b[1], b[2]) for b in strat_buys.get(st, []))
+        st_sells_sum = sum(sell_proceeds(s[1], s[2]) for s in strat_sells.get(st, []))
+        # 查找该策略在今日之前的 capital_after (用于推断起始资金)
+        row = tc.execute(
+            "SELECT capital_after FROM sim_trades WHERE strategy=? AND capital_after IS NOT NULL AND date < ? ORDER BY id DESC LIMIT 1",
+            (st, target_date)
+        ).fetchone()
+        if row:
+            init_cap = row[0]
+        else:
+            init_cap = float(cfg("backtest.initial_capital", 5000))
+        strat_capital[st] = init_cap - st_buys_sum + st_sells_sum
+
+    # 汇总 (buys/sells 保持原结构供后续使用)
+    buys_nostrat = [(b[0], b[1], b[2], b[3]) for b in buys]
+    sells_nostrat = [(s[0], s[1], s[2], s[3], s[4]) for s in sells]
+
+    total_buy_cost = sum(buy_cost(b[1], b[2]) for b in buys if b[4] in CHEN_TRACKS)
+    total_sell_cost = sum(s[1] * s[2] for s in sells if s[5] in CHEN_TRACKS)
+    total_sell_pnl = sum(s[3] for s in sells if s[5] in CHEN_TRACKS and s[3])
+    available_cash = sum(v for st, v in strat_capital.items() if st in CHEN_TRACKS)
+    hold_symbols = [r[0] for r in buys if r[4] in CHEN_TRACKS and r[0] not in [s[0] for s in sells if s[5] in CHEN_TRACKS]]
 
     # ── 当前持仓估值 (依赖今日日线, 收盘同步后才准确) ──
     today_close_exists = mc.execute(
@@ -108,9 +145,8 @@ def generate_review(target_date: str = None) -> dict:
     mc.close()
 
     # ── 汇总 ──
-    from config.loader import get as cfg
-    base_capital = float(cfg("backtest.initial_capital", 5000))
-    available_cash = base_capital - total_buy_cost + sum(sell_proceeds(r[1], r[2]) for r in sells)
+    chen_available = sum(strat_capital.get(st, 0) for st in CHEN_TRACKS)
+    chen_total = chen_available + positions_value
     total_asset = available_cash + positions_value
 
     return {
@@ -126,11 +162,15 @@ def generate_review(target_date: str = None) -> dict:
             "sells": len(sells),
             "total_cost": round(total_buy_cost, 2),
             "total_pnl": round(total_sell_pnl, 2),
+            "buys_by_strategy": {st: len(bs) for st, bs in strat_buys.items() if bs},
         },
         "portfolio": {
-            "available_cash": round(available_cash, 2),
+            "available_cash": round(chen_available, 2),
+            "all_tracks_cash": round(available_cash, 2),
             "positions_value": round(positions_value, 2),
             "total_asset": round(total_asset, 2),
+            "chen_total": round(chen_total, 2),
+            "track_breakdown": {st: round(v, 2) for st, v in strat_capital.items()},
             "exposure": exposure,
             "holdings": hold_details,
         },

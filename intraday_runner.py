@@ -26,6 +26,7 @@ from ops.position_sizers import (compute_lots_full_kelly, compute_lots_half_kell
 logger = get_logger("intraday.runner")
 DB = "data/market.db"
 TRADE_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "trades.db")
+BASE = float(cfg("backtest.initial_capital", 5000))
 
 
 def init_trade_db():
@@ -136,6 +137,46 @@ def run():
     """全天候运行 — 非交易时间休眠, 交易日自动激活。"""
     init_trade_db()
     logger.info("日内监控启动, 全天候运行中...")
+
+    def _push_idle_state(status):
+        """非交易时段状态推送: 从DB读取实际资金数据."""
+        tc_s = sqlite3.connect(TRADE_DB)
+        chen_cap = BASE
+        # 读取 chen track 的最新 capital_after
+        row = tc_s.execute(
+            "SELECT capital_after FROM sim_trades WHERE strategy='chen' AND capital_after IS NOT NULL ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if row:
+            chen_cap = row[0]
+        # 全部track资金: chen + 4变体独立核算
+        variant_strategies = ["chen_fullkelly", "chen_halfkelly", "chen_fixedratio", "chen_wilson"]
+        variant_cap = 0
+        for vs in variant_strategies:
+            vr = tc_s.execute(
+                "SELECT capital_after FROM sim_trades WHERE strategy=? AND capital_after IS NOT NULL ORDER BY id DESC LIMIT 1",
+                (vs,)
+            ).fetchone()
+            variant_cap += (vr[0] if vr else BASE)
+        all_cap = chen_cap + variant_cap
+        # 仅chen track的持仓和市值
+        chen_pos_val = 0
+        pos_list = []
+        for r in tc_s.execute(
+            "SELECT symbol, price, shares, strategy, board_count, date FROM sim_trades WHERE side='buy' AND strategy='chen' AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy='chen')"
+        ).fetchall():
+            val = r[1] * r[2]
+            chen_pos_val += val
+            pos_list.append({"symbol": r[0], "price": r[1], "shares": r[2], "strategy": r[3],
+                            "board_count": r[4] or 0, "date": r[5], "current": r[1],
+                            "pnl_pct": 0, "value": round(val, 2), "name": ""})
+        tc_s.close()
+        update_state({"status": status, "capital": round(chen_cap, 2),
+                     "all_tracks_capital": round(all_cap, 2),
+                     "total_asset": round(chen_cap + chen_pos_val, 2),
+                     "pos_value": round(chen_pos_val, 2),
+                     "positions": pos_list,
+                     "all_signals": [], "final_signals": [], "golden_signals": []})
+
     update_state({"status": "休市"})
 
     # 持久化: 避免重启重复同步
@@ -189,7 +230,7 @@ def run():
 
         # 午休: 11:30-13:00
         if (now.hour == 11 and now.minute >= 30) or (now.hour == 12):
-            update_state({"status": "午休", "all_signals": [], "final_signals": [], "golden_signals": []})
+            _push_idle_state("午休")
             target = now.replace(hour=13, minute=0, second=0)
             wait = (target - now).total_seconds()
             if wait > 0:
@@ -199,7 +240,7 @@ def run():
 
         # 盘后 → 等明天
         if now.hour >= 15:
-            update_state({"status": "已收盘", "all_signals": [], "final_signals": [], "golden_signals": []})
+            _push_idle_state("已收盘")
             logger.info("已收盘, 休眠至明早8:00")
             tomorrow = now.replace(hour=8, minute=0, second=0) + timedelta(days=1)
             time.sleep((tomorrow - now).total_seconds())
@@ -236,28 +277,31 @@ def run():
         except Exception:
             pass
 
-        # ── G2: 连亏空仓 (来源: 陈小群——连亏2笔强制空仓3天) ──
+        # ── G2: 单日回撤空仓 (来源: 陈小群——单日回撤>3%强制空仓3天) ──
         freeze_until = None
         try:
             tc3 = sqlite3.connect(TRADE_DB)
-            last_sells = tc3.execute(
-                "SELECT pnl FROM sim_trades WHERE side='sell' AND strategy='chen' ORDER BY id DESC LIMIT 3").fetchall()
-            loss_threshold = -get_state()["total_asset"] * 0.05
-            if len(last_sells) >= 2 and all(r[0] is not None and r[0] < loss_threshold for r in last_sells[:2]):
+            today_pnl = tc3.execute(
+                "SELECT COALESCE(SUM(pnl),0) FROM sim_trades WHERE side='sell' AND strategy='chen' AND date=?",
+                (date.today().isoformat(),)).fetchone()[0]
+            total_asset = BASE + tc3.execute(
+                "SELECT COALESCE(SUM(pnl),0) FROM sim_trades WHERE side='sell' AND strategy='chen' AND pnl IS NOT NULL"
+            ).fetchone()[0]
+            if total_asset > 0 and today_pnl < -total_asset * 0.03:
                 freeze_until = date.today() + timedelta(days=3)
-                logger.warning(f"  连亏{len([r for r in last_sells if r[0] and r[0]<=0])}笔, 空仓至 {freeze_until}")
+                logger.warning(f"  单日回撤 ¥{today_pnl:.0f} (>{total_asset*0.03:.0f}), 空仓至 {freeze_until}")
             tc3.close()
         except Exception:
             pass
 
         # ── 从 trades.db 恢复状态 (唯一真相源) ──
-        capital = float(cfg("backtest.initial_capital", 5000))
+        capital = BASE
         positions = []
         trades_list = []
         try:
             tc = sqlite3.connect(TRADE_DB)
             # 计算可用资金: 5000 - 买入总支出 + 卖出总收入 (来源: 逐笔复算)
-            capital = float(cfg("backtest.initial_capital", 5000))
+            capital = BASE
             all_trades = tc.execute("SELECT side, price, shares FROM sim_trades WHERE strategy='chen' ORDER BY id").fetchall()
             for side, price, shares in all_trades:
                 val = price * shares
@@ -353,6 +397,56 @@ def run():
                                        "peak_price": cost_price, "entry_alpha": alpha_from_score(0.50)}
                     logger.info(f"  🟢 继续持有 {sym}: cost=¥{cost_price:.2f} {board}连板 {days_held}天")
             positions = list(_merged.values())
+            # ── A1-A5: sizer tracks 开盘卖出 ──
+            for tname, track in tracks.items():
+                if tname == "chen":
+                    continue  # chen 实盘已处理
+                tpos = track["positions"]
+                _smerged = {}
+                for pos in tpos:
+                    sym = pos["symbol"]
+                    cost_price = pos["price"]
+                    shares = pos["shares"]
+                    board = pos.get("board_count", 0)
+                    buy_date_str = pos.get("date", "")
+                    if buy_date_str:
+                        days_held = (date.today() - date.fromisoformat(buy_date_str)).days
+                    else:
+                        days_held = 0
+                    today_open = prev_close_map.get(sym, cost_price)
+                    prev_close = prev_close_map.get(sym, cost_price)
+                    ma5 = ma5_map.get(sym, 0)
+                    sell_reason = None
+                    if is_retreat:
+                        sell_reason = f"退潮清仓({mood.get('stage','')})"
+                    elif ma5 > 0 and prev_close < ma5 and today_open < ma5:
+                        sell_reason = f"MA5破位"
+                    elif board < 3 and days_held >= 2:
+                        sell_reason = f"时间止损(跟风{days_held}天)"
+                    elif today_open < prev_close * 0.97 and today_open > 0:
+                        sell_reason = f"低开闪卖(-{(1-today_open/prev_close)*100:.0f}%)"
+                    if sell_reason:
+                        sell_val = shares * today_open
+                        pnl = sell_val - shares * cost_price - max(sell_val * 0.0003, 5) - sell_val * 0.001
+                        track["capital"] += sell_val - max(sell_val * 0.0003, 5) - sell_val * 0.001
+                        record_trade(date.today().isoformat(), sym, "sell", today_open,
+                                    shares, board, round(pnl, 2),
+                                    round((today_open/cost_price-1)*100, 2), round(track["capital"], 2),
+                                    strategy=track["strategy"])
+                    else:
+                        if sym in _smerged:
+                            m = _smerged[sym]
+                            total_sh = m["shares"] + shares
+                            m["price"] = round((m["price"] * m["shares"] + cost_price * shares) / total_sh, 2)
+                            m["shares"] = total_sh
+                            m["board_count"] = max(m["board_count"], board)
+                            m["date"] = min(m["date"], buy_date_str)
+                        else:
+                            _smerged[sym] = {"symbol": sym, "price": cost_price, "shares": shares,
+                                           "board_count": board, "date": buy_date_str,
+                                           "has_sealed": False, "break_count": 0, "was_at_limit": False,
+                                           "peak_price": cost_price, "entry_alpha": alpha_from_score(0.50)}
+                track["positions"] = list(_smerged.values())
             # 加载所有历史交易
             all_trades = tc.execute("SELECT date, symbol, side, price, shares, pnl, pnl_pct FROM sim_trades WHERE strategy='chen' ORDER BY id").fetchall()
             trades_list = [{"date": t[0], "symbol": t[1], "side": t[2], "price": t[3],
@@ -363,7 +457,7 @@ def run():
 
         update_state({"status": "盘中", "progress": "初始化追踪器..."})
         tracker = BoardTracker(yesterday_state=yesterday)
-        tracker.start_day(list(prev_close_map.keys()), prev_close_map)
+        tracker.start_day(list(prev_close_map.keys()), prev_close_map, conn=conn)
         tracker.prev_volumes = prev_volume_map  # 昨日量缓存
         # 恢复已买入状态 (从今日交易记录中读取)
         try:
@@ -377,10 +471,10 @@ def run():
             tc2.close()
         except Exception:
             pass
-        # G2+G3: 买前拦截 (来源: 陈小群——退潮不买/连亏空仓)
+        # G2+G3: 买前拦截 (来源: 陈小群——退潮不买/单日回撤>3%空仓3天)
         can_buy = not is_retreat and (freeze_until is None or date.today() >= freeze_until)
         if not can_buy:
-            reason = "退潮" if is_retreat else f"连亏空仓至{freeze_until}"
+            reason = "退潮" if is_retreat else f"单日回撤空仓至{freeze_until}"
             logger.warning(f"  🚫 禁止买入: {reason}")
 
         logger.info(f"追踪 {len(tracker.stocks)} 只股票 | 本金 ¥{capital:,.0f} | 仓位系数{mood['coefficient']:.0%} | {'可买' if can_buy else '禁买'}")
@@ -394,7 +488,8 @@ def run():
             "pnl_pct": 0, "value": round(p["shares"] * p["price"], 2),
         } for p in positions]
         update_state({"status": "盘中", "progress": "拉取实时行情...", "capital": round(capital, 2),
-                     "total_asset": round(capital + pos_value_init, 2),
+                     "all_tracks_capital": round(capital + BASE * 4, 2),  # chen + 4个变体track
+                     "total_asset": round(capital + BASE * 4 + pos_value_init, 2),
                      "pos_value": round(pos_value_init, 2), "mood": mood,
                      "positions": positions_init})
 
@@ -405,13 +500,13 @@ def run():
         tracks = {
             "chen":           {"capital": capital, "positions": list(positions),
                                 "strategy": "chen", "sizer": None},
-            "chen_fullkelly": {"capital": 5000.0, "positions": [],
+            "chen_fullkelly": {"capital": BASE, "positions": [],
                                 "strategy": "chen_fullkelly", "sizer": "fullkelly"},
-            "chen_halfkelly": {"capital": 5000.0, "positions": [],
+            "chen_halfkelly": {"capital": BASE, "positions": [],
                                 "strategy": "chen_halfkelly", "sizer": "halfkelly"},
-            "chen_wilson":    {"capital": 5000.0, "positions": [],
+            "chen_wilson":    {"capital": BASE, "positions": [],
                                 "strategy": "chen_wilson", "sizer": "wilson"},
-            "chen_fixedratio":{"capital": 5000.0, "positions": [],
+            "chen_fixedratio":{"capital": BASE, "positions": [],
                                 "strategy": "chen_fixedratio", "sizer": "fixedratio"},
         }
 
@@ -544,16 +639,7 @@ def run():
                         logger.warning(f"  🚫 成交量萎缩禁买: {v[-1]/v[0]*100:.0f}%")
             except Exception:
                 pass
-            if can_buy:
-                try:
-                    limit_downs = [sym for sym, st in tracker.stocks.items()
-                                   if st.get("prev_close", 0) > 0 and st.get("close", 0) > 0
-                                   and (st["close"] / st["prev_close"] - 1) <= -0.095]
-                    if len(limit_downs) >= 2:
-                        buy_blocked = True
-                        logger.warning(f"  🚫 双跌停禁买: {len(limit_downs)}只跌停")
-                except Exception:
-                    pass
+            # G4 禁买已移至 execution/quote.py scan_all_modes() — 信号生成时即过滤
 
             # 新信号 → 买入 (陈小群: 不补仓, 持仓≤3只, 全仓最优)
             # 换手率追踪 (来源: Grinold 16章 — 限制换手率至一半可保留≥75%附加值)
@@ -570,7 +656,7 @@ def run():
                     break
                 sym, mode = s["symbol"], s["mode"]
                 # ── 陈小群铁律: 不补仓, 已有持仓跳过 ──
-                if any(p["symbol"] == sym for p in positions):
+                if any(p["symbol"] == sym for p in tracks["chen"]["positions"]):
                     continue
                 # ── ST/*ST/退市过滤 ──
                 try:
@@ -621,7 +707,7 @@ def run():
                         # 实盘: MCVA+z-score+Kelly
                         max_lots = int(tcap / (entry_px * 100 + max(entry_px * 100 * 0.0003, 5)))
                         if magnet_warning: max_lots = max(1, max_lots // 2)
-                        dd_pct = max(0, 1.0 - tcap / 5000.0)
+                        dd_pct = max(0, 1.0 - tcap / BASE)
                         kelly_f = kelly_fraction("chen", n_positions=len(tpos), drawdown_pct=dd_pct)
                         if kelly_f > 0:
                             max_lots = int(max_lots * kelly_f)
@@ -659,17 +745,16 @@ def run():
                                  "has_sealed": True, "break_count": 0, "was_at_limit": True,
                                  "peak_price": entry_px,
                                  "entry_alpha": s.get("alpha", alpha_from_score(s.get("score", 0.50), mode=mode))})
-                    if tname == "chen":
-                        trades_list.append({"symbol": sym, "side": "buy", "price": entry_px, "shares": shares, "date": today_str})
+                    trades_list.append({"symbol": sym, "side": "buy", "price": entry_px, "shares": shares, "date": today_str, "strategy": track["strategy"]})
                     record_trade(today_str, sym, "buy", entry_px, shares,
                                 s.get("board_count", 0), capital_after=round(track["capital"], 2), strategy=track["strategy"])
-                    if tname == "chen":
-                        sid_conn = sqlite3.connect(TRADE_DB)
-                        sid_conn.execute(
-                            "UPDATE signals SET is_bought=1 WHERE id=(SELECT id FROM signals WHERE symbol=? AND date=? AND is_bought=0 ORDER BY id DESC LIMIT 1)",
-                            (sym, today_str))
-                        sid_conn.commit()
-                        sid_conn.close()
+                    # 标记信号为已买入 (所有track共用同一信号表)
+                    sid_conn = sqlite3.connect(TRADE_DB)
+                    sid_conn.execute(
+                        "UPDATE signals SET is_bought=1 WHERE id=(SELECT id FROM signals WHERE symbol=? AND date=? AND is_bought=0 ORDER BY id DESC LIMIT 1)",
+                        (sym, today_str))
+                    sid_conn.commit()
+                    sid_conn.close()
                     logger.info(f"  💰 [{tname}] 买入 {sym} ¥{entry_px:.2f}×{shares}股 余¥{track['capital']:.0f}")
 
             # ── B1-B7: 盘中风控 (所有track独立) ──
@@ -763,28 +848,39 @@ def run():
                         logger.info(f"  🔴 [{tname}] 卖出 {sym}: {sell_reason} ¥{px:.2f} PnL=¥{pnl:.0f}")
                 track["capital"] = tcap  # 写回
 
-            # 计算总资产 + 持仓明细 (chen track 用于前端显示)
-            pos_value = 0
-            positions_with_px = []
-            for p in tracks["chen"]["positions"]:
-                st = tracker.stocks.get(p["symbol"], {})
-                px = st.get("close", 0) if st.get("close", 0) > 0 else p["price"]
-                pos_value += p["shares"] * px
-                positions_with_px.append({
-                    "symbol": p["symbol"], "name": p.get("name", ""),
-                    "shares": p["shares"], "price": p["price"],
-                    "current": round(px, 2), "board_count": p.get("board_count", 0),
-                    "date": p.get("date", ""),
-                    "has_sealed": p.get("has_sealed", False),
-                    "pnl_pct": round((px / p["price"] - 1) * 100, 2),
-                    "value": round(p["shares"] * px, 2),
-                })
+            # ── 汇总全部 track 资金+持仓 ──
+            all_tracks_cap = sum(t["capital"] for t in tracks.values())
+            all_pos_value = 0
+            all_positions = []
+            for tname, t in tracks.items():
+                for p in t["positions"]:
+                    st = tracker.stocks.get(p["symbol"])
+                    px = st["close"] if st and st.get("close", 0) > 0 else p["price"]
+                    all_pos_value += p["shares"] * px
+                    all_positions.append({
+                        "symbol": p["symbol"], "name": p.get("name", ""),
+                        "shares": p["shares"], "price": p["price"],
+                        "current": round(px, 2), "board_count": p.get("board_count", 0),
+                        "date": p.get("date", ""), "strategy": tname,
+                        "pnl_pct": round((px / p["price"] - 1) * 100, 2),
+                        "value": round(p["shares"] * px, 2),
+                    })
+            total_asset = round(all_tracks_cap + all_pos_value, 2)
+            # 前端兼容: capital 显示 chen track 独立资金
             chen_cap = tracks["chen"]["capital"]
-            total_asset = round(chen_cap + pos_value, 2)
 
-            update_state({"status": "盘中", "progress": "", "capital": round(chen_cap, 2),
-                         "total_asset": total_asset, "pos_value": round(pos_value, 2),
-                         "positions": positions_with_px,
+            tc_today = sqlite3.connect(TRADE_DB)
+            today_signals = tc_today.execute(
+                "SELECT COUNT(DISTINCT symbol||mode) FROM signals WHERE date=?", (today_str,)
+            ).fetchone()[0]
+            tc_today.close()
+            update_state({"status": "盘中", "progress": "",
+                         "capital": round(chen_cap, 2),
+                         "all_tracks_capital": round(all_tracks_cap, 2),
+                         "total_asset": total_asset,
+                         "pos_value": round(all_pos_value, 2),
+                         "positions": all_positions,
+                         "today_signal_count": today_signals,
                          "all_signals": tracker.all_signals,
                          "final_signals": [s for s in new_signals if s['mode'] in ('连板接力','首板试探')],
                          "golden_signals": [s for s in new_signals if s['mode'] in ('弱转强','首阴反包')]})

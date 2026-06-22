@@ -84,6 +84,13 @@ CREATE TABLE IF NOT EXISTS signals (
 CREATE INDEX IF NOT EXISTS idx_signals_date ON signals(date);
 CREATE INDEX IF NOT EXISTS idx_signals_mode ON signals(date, mode);
 
+-- ═══ strategy config (每个策略独立本金) ═══
+
+CREATE TABLE IF NOT EXISTS strategy_config (
+    strategy        TEXT PRIMARY KEY,
+    initial_capital REAL NOT NULL DEFAULT 5000
+);
+
 -- ═══ trade metrics (ops/performance.py) — Grinold & Kahn IC/IR/BR ═══
 
 CREATE TABLE IF NOT EXISTS strategy_metrics (

@@ -16,6 +16,19 @@ app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
 TRADE_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "trades.db")
 
+def _capital(strategy: str, fallback: float = None) -> float:
+    """从 strategy_config 表读本金。如果表不存在则回退。"""
+    if fallback is None:
+        from config.loader import get as cfg
+        fallback = float(cfg("backtest.initial_capital", 5000))
+    try:
+        conn = sqlite3.connect(TRADE_DB)
+        row = conn.execute("SELECT initial_capital FROM strategy_config WHERE strategy=?", (strategy,)).fetchone()
+        conn.close()
+        return round(row[0], 2) if row else fallback
+    except Exception:
+        return fallback
+
 import web.shared
 import importlib
 importlib.reload(web.shared)
@@ -187,36 +200,28 @@ def api_performance():
     total_sells = len(sells)
     win_rate = round(win_trades / total_sells * 100, 1) if total_sells > 0 else 0
     buys = tc.execute("SELECT COUNT(*) FROM sim_trades WHERE side='buy' AND strategy=?", (strategy,)).fetchone()[0]
-    tc.close()
-    # 从对应策略 get_state() 或 sim_trades 直接计算 total_asset
-    if strategy.startswith("chen_"):
-        # sizer策略: 直接从 sim_trades 计算
-        bs = tc.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=?",
-                       (strategy,)).fetchone()[0]
-        ss = tc.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='sell' AND strategy=?",
-                       (strategy,)).fetchone()[0]
-        total_asset = round(5000.0 - bs + ss + realized_pnl, 2)
-    elif strategy == "etf":
-        from strategies.etf_rotation import get_state as gs
-        total_asset = gs().get("total_asset", 5000.0)
-    elif strategy == "smallcap":
-        from strategies.smallcap_rotation import get_state as gs
-        total_asset = gs().get("total_asset", 5000.0)
-    elif strategy == "timing":
-        from strategies.market_timing import get_state as gs
-        total_asset = gs().get("total_asset", 5000.0)
-    else:
-        from web.shared import get_state as gs
-        total_asset = gs().get("total_asset", 5000.0)
+    # 从 sim_trades 的 capital_after 读实际资金 (不硬编码, 不依赖可变state)
     base = float(cfg("backtest.initial_capital", 5000))
+    row = tc.execute(
+        "SELECT capital_after FROM sim_trades WHERE strategy=? AND capital_after IS NOT NULL ORDER BY id DESC LIMIT 1",
+        (strategy,)).fetchone()
+    capital = round(row[0], 2) if row else base
+    # 总资产 = 可用资金 + 持仓成本
+    position_cost = tc.execute(
+        "SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)",
+        (strategy, strategy)).fetchone()[0]
+    total_asset = round(capital + position_cost, 2)
+    tc.close()
     total_pnl = round(total_asset - base, 2)
     return jsonify({
         "realized_pnl": round(realized_pnl, 2),
         "unrealized_pnl": round(total_pnl - realized_pnl, 2),
         "total_pnl": total_pnl,
+        "total_asset": total_asset,
         "total_sells": total_sells,
         "win_rate": win_rate,
         "total_buys": buys,
+        "capital": round(capital, 2),
     })
 
 
@@ -315,10 +320,11 @@ def api_etf_execute():
         return jsonify({"ok": False, "error": f"无{target}日线数据"})
 
     price = row[0]
-    # 计算可买手数
-    buys = conn.execute("SELECT SUM(price*shares) FROM sim_trades WHERE side='buy' AND strategy=?", (STRATEGY,)).fetchone()[0] or 0
-    sells = conn.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='sell' AND strategy=?", (STRATEGY,)).fetchone()[0]
-    capital = 5000.0 - buys + sells
+    # 从 sim_trades 读当前资金
+    cap_row = conn.execute(
+        "SELECT capital_after FROM sim_trades WHERE strategy=? AND capital_after IS NOT NULL ORDER BY id DESC LIMIT 1",
+        (STRATEGY,)).fetchone()
+    capital = round(cap_row[0], 2) if cap_row else float(cfg("backtest.initial_capital", 5000))
     lots = int(capital / (price * 100 + max(price * 100 * 0.0003, 5)))
     if lots < 1:
         conn.close()
@@ -354,9 +360,10 @@ def api_smallcap_execute():
         conn.close()
         return jsonify({"ok": False, "error": "无选股结果"})
 
-    bs = conn.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=?",(STRATEGY,)).fetchone()[0]
-    ss = conn.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='sell' AND strategy=?",(STRATEGY,)).fetchone()[0]
-    capital = 5000.0 - bs + ss
+    cap_row = conn.execute(
+        "SELECT capital_after FROM sim_trades WHERE strategy=? AND capital_after IS NOT NULL ORDER BY id DESC LIMIT 1",
+        (STRATEGY,)).fetchone()
+    capital = round(cap_row[0], 2) if cap_row else float(cfg("backtest.initial_capital", 5000))
     bought = []
     for p in picks:
         cost_per_lot = p["close"] * 100 + max(p["close"] * 100 * 0.0003, 5)
@@ -384,7 +391,7 @@ def _execute_etf():
     if row:
         bs = tc.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=?",(S,)).fetchone()[0]
         ss = tc.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='sell' AND strategy=?",(S,)).fetchone()[0]
-        cap = 5000.0 - bs + ss
+        cap = _capital(S)
         lots = int(cap / (row[0]*100 + max(row[0]*100*0.0003,5)))
         if lots >= 1: record_trade(t, sig.get("name",""), row[0], lots*100, "buy")
     mc.close()
@@ -404,7 +411,7 @@ def _execute_smallcap():
     if picks:
         bs = conn.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=?",(S,)).fetchone()[0]
         ss = conn.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='sell' AND strategy=?",(S,)).fetchone()[0]
-        capital = 5000.0 - bs + ss
+        capital = _capital(S)
         for p in picks:
             cost_per_lot = p["close"]*100 + max(p["close"]*100*0.0003,5)
             lots = int(capital / cost_per_lot)

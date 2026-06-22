@@ -245,7 +245,7 @@ def compute_strategy_metrics(strategy: str = "chen",
                         "SELECT * FROM strategy_metrics WHERE strategy=?",
                         (strategy,)
                     ).fetchone()
-                    cols = [d[0] for d in tc.execute(
+                    cols = [d[1] for d in tc.execute(
                         "PRAGMA table_info(strategy_metrics)").fetchall()]
                     tc.close(); mc.close()
                     return dict(zip(cols, row))
@@ -274,13 +274,17 @@ def compute_strategy_metrics(strategy: str = "chen",
     # 数据质量评估 (来源: Grinold IR标准误≈1/√(2T), 表17-1)
     n_dates = ic.get("n_dates", 0)
     n_sig = ic.get("n_signals", 0)
-    years_of_history = max((datetime.strptime(
-        tc.execute("SELECT MAX(date) FROM sim_trades WHERE strategy=?",
-        (strategy,)).fetchone()[0], "%Y-%m-%d") - datetime.strptime(
-        tc.execute("SELECT MIN(date) FROM sim_trades WHERE strategy=?",
-        (strategy,)).fetchone()[0] if tc.execute(
-        "SELECT MIN(date) FROM sim_trades WHERE strategy=?",
-        (strategy,)).fetchone()[0] else "2026-01-01", "%Y-%m-%d")).days / 365.0, 0.0)
+    years_of_history = 0.0
+    try:
+        max_d = tc.execute("SELECT MAX(date) FROM sim_trades WHERE strategy=?",
+                          (strategy,)).fetchone()[0]
+        min_d = tc.execute("SELECT MIN(date) FROM sim_trades WHERE strategy=?",
+                          (strategy,)).fetchone()[0]
+        if max_d and min_d:
+            years_of_history = max((datetime.strptime(max_d, "%Y-%m-%d") -
+                                    datetime.strptime(min_d, "%Y-%m-%d")).days / 365.0, 0.0)
+    except Exception:
+        pass
     if years_of_history >= 1.0 and n_dates >= 60 and n_trades >= 20:
         quality = "sufficient"    # 可验证IR=0.5 (≈t≈2)
     elif years_of_history >= 0.08 and n_dates >= 5:  # ~1 month
@@ -354,7 +358,7 @@ def get_metrics(strategy: str = "chen") -> dict:
     if not row:
         tc.close()
         return {"strategy": strategy, "note": "尚未计算, 请先调用compute"}
-    cols = [d[0] for d in tc.execute(
+    cols = [d[1] for d in tc.execute(
         "PRAGMA table_info(strategy_metrics)").fetchall()]
     tc.close()
     return dict(zip(cols, row))
@@ -494,9 +498,16 @@ def kelly_fraction(strategy: str = "chen", tc: sqlite3.Connection = None,
     if close_db:
         tc.close()
 
+    from ops.position_sizers import (PRIOR_WINS, PRIOR_LOSSES,
+                                       PRIOR_AVG_WIN, PRIOR_AVG_LOSS)
+
     n_trades = len(rows)
     if n_trades < 3:
-        return 0
+        # 贝叶斯先验 (来源: Grinold "良好策略" 基准 + Chan 示例)
+        p_prior = PRIOR_WINS / (PRIOR_WINS + PRIOR_LOSSES)
+        b_prior = PRIOR_AVG_WIN / PRIOR_AVG_LOSS
+        f_raw = (b_prior * p_prior - (1 - p_prior)) / b_prior
+        return min(max(f_raw * 0.10, 0), 0.10)  # 先验驱动, 极度保守(×0.10)
 
     pnls = [r[0] for r in rows]
     wins = [p for p in pnls if p > 0]
@@ -539,7 +550,7 @@ def kelly_fraction(strategy: str = "chen", tc: sqlite3.Connection = None,
 
     # 黑色星期一检验 (来源: Chan 第6章 — 杠杆≤历史最大单日亏损倒数)
     if kelly_result > 0:
-        max_loss_pct = min(abs(p) / 5000.0 for p in pnls if p < 0) if losses else 0.10
+        max_loss_pct = min(abs(p) / float(cfg("backtest.initial_capital", 5000)) for p in pnls if p < 0) if losses else 0.10
         if max_loss_pct > 0:
             max_safe_leverage = 1.0 / max_loss_pct  # 承受一次最坏亏损
             kelly_result = min(kelly_result, max_safe_leverage)

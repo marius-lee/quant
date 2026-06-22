@@ -181,8 +181,11 @@ class BoardTracker:
         self.board_cache = {}       # symbol → board_count (首次封板时查DB缓存)
         self.bought = set()         # 已模拟买入的符号
         self.prev_volumes = {}      # symbol → 前日成交量 (start_day时批量注入)
+        self.stock_sector = {}      # symbol → industry (start_day时批量注入)
+        self.stock_circ_mv = {}     # symbol → 流通市值(元) (start_day时批量注入)
+        self.sector_g4_threshold = {}  # sector → G4禁买阈值 (start_day时批量注入)
 
-    def start_day(self, symbols: list[str], prev_close_map: dict = None):
+    def start_day(self, symbols: list[str], prev_close_map: dict = None, conn=None):
         self.stocks = {}
         for sym in symbols:
             prev_close = prev_close_map.get(sym, 0) if prev_close_map else 0
@@ -208,6 +211,28 @@ class BoardTracker:
             }
         self.update_count = 0
         self.golden_signals = []
+
+        # 加载行业+市值缓存 (来源: 陈小群 板块联动/市值过滤, 一天只查一次)
+        if conn:
+            for row in conn.execute("SELECT symbol, industry, circ_mv FROM stocks WHERE circ_mv IS NOT NULL").fetchall():
+                if row[1]: self.stock_sector[row[0]] = row[1]
+                if row[2]: self.stock_circ_mv[row[0]] = row[2]
+
+            # G4阈值: 日均跌停数四舍五入 (来源: 陈小群 "≥2只跌停" + market.db近60天统计)
+            rows = conn.execute("""
+                SELECT s.industry, COUNT(*) * 1.0 / 40 as avg_daily
+                FROM daily a
+                JOIN daily b ON a.symbol = b.symbol AND b.date = (SELECT MAX(date) FROM daily WHERE symbol = a.symbol AND date < a.date)
+                JOIN stocks s ON a.symbol = s.symbol
+                WHERE a.date >= DATE('now', '-60 days') AND b.close > 0 AND a.close > 0
+                  AND (a.close/b.close-1) <= -0.095 AND s.industry IS NOT NULL AND s.industry != ''
+                GROUP BY s.industry
+            """).fetchall()
+            for sec, avg_daily in rows:
+                self.sector_g4_threshold[sec] = max(2, round(avg_daily))
+            for sec in self.stock_sector.values():
+                if sec not in self.sector_g4_threshold:
+                    self.sector_g4_threshold[sec] = 2  # 无历史数据→默认2
 
     def update(self, symbols: list[str] = None, quotes_override: dict = None):
         """拉取行情。每30秒(盘中)/每5秒(黄金半小时)调用。
@@ -294,6 +319,34 @@ class BoardTracker:
             if t <= _time(14, 0):   return 0
             return -0.20
 
+        # ── 板块联动 (陈小群: 龙头带动≥5家涨停) — 从缓存统计 ──
+        hot_sectors = set()
+        limit_up_syms = [sym for sym, st in self.stocks.items()
+                       if st["is_at_limit"] and not st["is_one_word"]]
+        sector_counts = {}
+        for sym in limit_up_syms:
+            sec = self.stock_sector.get(sym, "")
+            if sec:
+                sector_counts[sec] = sector_counts.get(sec, 0) + 1
+        for sec, cnt in sector_counts.items():
+            if cnt >= 5:
+                hot_sectors.add(sec)
+
+        # ── G4: 板块跌停禁买 (阈值按板块历史日均跌停自动校准) ──
+        g4_blocked = set()
+        limit_downs = [(sym, st) for sym, st in self.stocks.items()
+                      if st.get("prev_close", 0) > 0 and st.get("close", 0) > 0
+                      and (st["close"] / st["prev_close"] - 1) <= -0.095]
+        ld_sector_counts = {}
+        for sym, _ in limit_downs:
+            sec = self.stock_sector.get(sym, "")
+            if sec:
+                ld_sector_counts[sec] = ld_sector_counts.get(sec, 0) + 1
+        for sec, cnt in ld_sector_counts.items():
+            threshold = self.sector_g4_threshold.get(sec, 2)
+            if cnt >= threshold:
+                g4_blocked.add(sec)
+
         for sym, st in self.stocks.items():
             if st["open"] <= 0 or st["prev_close"] <= 0:
                 continue
@@ -345,9 +398,22 @@ class BoardTracker:
                     board = self.board_cache.get(sym, 1)
                     _tb = time_bonus(st)
                     if board >= 2:
+                        # 陈小群: 连板接力需板块联动≥5家涨停 + 流通市值30-80亿
+                        sec = self.stock_sector.get(sym, "")
+                        mv = self.stock_circ_mv.get(sym, 0)
+                        if sec and sec not in hot_sectors:
+                            continue  # 板块不够热
+                        if mv > 0 and not (30 <= mv / 1e8 <= 80):  # 流通市值 30-80亿
+                            continue
                         self._emit(sym, st, "连板接力", 0.50 + _tb, daily_ret, gap, board,
                                    f"{board}连板+换手{vol_ratio:.0%}")
                     else:
+                        # 陈小群: 首板试探需9:35前涨停 + 流通值<30亿
+                        if now.hour == 9 and now.minute > 35:
+                            continue  # 9:35后不追首板
+                        mv = self.stock_circ_mv.get(sym, 0)
+                        if mv > 0 and mv / 1e8 >= 30:
+                            continue  # 流通值≥30亿不做首板试探
                         self._emit(sym, st, "首板试探", 0.30 + _tb, daily_ret, gap, board,
                                    f"首板+换手{vol_ratio:.0%}")
 

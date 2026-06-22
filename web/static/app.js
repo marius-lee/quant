@@ -7,17 +7,16 @@ async function get(path) {
 }
 
 async function renderCapital(state) {
-  const totalAsset = state.total_asset || state.capital || 5000;
-  const capital = state.capital || 0;
-  const ret = ((totalAsset/5000 - 1)*100);
-  document.getElementById('capital-amount').textContent = '¥'+totalAsset.toLocaleString();
-  document.getElementById('capital-available').textContent = '¥'+capital.toLocaleString();
-  const el = document.getElementById('capital-return');
-  el.textContent = (ret>=0?'+':'')+ret.toFixed(1)+'%';
-  el.style.color = ret>=0 ? '#ef4444' : '#10b981';
-  // 绩效统计
   try {
-    const perf = await (await fetch('/api/performance')).json();
+    const perf = await (await fetch('/api/performance?strategy=chen')).json();
+    const totalAsset = perf.total_asset || state.total_asset || 5000;
+    const capital = perf.capital || 0;
+    const ret = ((totalAsset/5000 - 1)*100);
+    document.getElementById('capital-amount').textContent = '¥'+totalAsset.toLocaleString();
+    document.getElementById('capital-available').textContent = '¥'+capital.toLocaleString();
+    const el = document.getElementById('capital-return');
+    el.textContent = (ret>=0?'+':'')+ret.toFixed(1)+'%';
+    el.style.color = ret>=0 ? '#ef4444' : '#10b981';
     var cls = perf.total_pnl>=0 ? 'color:#ef4444' : 'color:#10b981';
     document.getElementById('perf-stats').innerHTML =
       '已实现: ¥'+(perf.realized_pnl>=0?'+':'')+perf.realized_pnl.toLocaleString()+
@@ -48,7 +47,8 @@ function renderMood(state) {
       m.icon = '⏳'; m.label = progress;
     } else {
       var moodLabel = stage ? m.label : '';
-      var sigLabel = signals.length > 0 ? signals.length+'信号' : '';
+      var todaySig = state.today_signal_count || 0;
+      var sigLabel = todaySig > 0 ? todaySig+'信号' : '';
       m.label = [moodLabel, sigLabel].filter(Boolean).join(' · ') || '盘中';
     }
   } else if (status === '盘前') {
@@ -180,7 +180,7 @@ async function renderGrinold() {
 
 async function poll() {
   const state = await get('/state');
-  const td = await get('/trades');
+  const td = await get('/trades?strategy=chen');
   POSITIONS = state.positions || td.positions || [];
   await renderCapital(state);
   renderGrinold();

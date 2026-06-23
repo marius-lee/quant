@@ -229,10 +229,10 @@ class BoardTracker:
                 GROUP BY s.industry
             """).fetchall()
             for sec, avg_daily in rows:
-                self.sector_g4_threshold[sec] = max(2, round(avg_daily))
+                self.sector_g4_threshold[sec] = max(3, round(avg_daily))
             for sec in self.stock_sector.values():
                 if sec not in self.sector_g4_threshold:
-                    self.sector_g4_threshold[sec] = 2  # 无历史数据→默认2
+                    self.sector_g4_threshold[sec] = 3  # 无历史数据→默认3
 
     def update(self, symbols: list[str] = None, quotes_override: dict = None):
         """拉取行情。每30秒(盘中)/每5秒(黄金半小时)调用。
@@ -351,6 +351,9 @@ class BoardTracker:
             if st["open"] <= 0 or st["prev_close"] <= 0:
                 continue
             if st["is_one_word"]:
+                continue
+            # G4: 板块跌停禁买 — 在信号生成阶段即过滤
+            if self.stock_sector.get(sym, "") in g4_blocked:
                 continue
 
             daily_ret = (st["close"] / st["prev_close"] - 1) * 100 if st["prev_close"] > 0 else 0

@@ -65,42 +65,28 @@ def wilson_lower_bound(wins: float, n: float, z: float = 1.96) -> float:
     return max(0.0, center - margin)
 
 
-def compute_lots_full_kelly(strategy_tc, capital: float,
-                             entry_price: float) -> int:
-    """全 Kelly: f* = (bp-q)/b. 来源: Kelly 1956"""
-    p, b, _, _, _ = _effective_stats(strategy_tc, "chen_fullkelly")
-    if b <= 0 or p <= 0:
-        return 0
-    f = max(0.0, (b * p - (1 - p)) / b)
-    risk_capital = capital * f
-    lots = int(risk_capital / (entry_price * SHARES_PER_LOT + 5))
-    return max(0, min(lots, int(capital / (entry_price * SHARES_PER_LOT + 5))))
+def _from_f(strategy_tc, name: str, capital: float, price: float,
+            f_mult: float = 1.0, use_wilson: bool = False) -> int:
+    """模板: f* = (bp-q)/b → 转为手数"""
+    if use_wilson:
+        _, _, _, _, n_eff = _effective_stats(strategy_tc, name)
+        p_raw, b, _, _, _ = _effective_stats(strategy_tc, name)
+        p = wilson_lower_bound(p_raw * n_eff, n_eff)
+    else:
+        p, b, _, _, _ = _effective_stats(strategy_tc, name)
+    if b <= 0 or p <= 0: return 0
+    f = max(0.0, (b * p - (1 - p)) / b) * f_mult
+    lots = int(capital * f / (price * SHARES_PER_LOT + 5))
+    return max(0, min(lots, int(capital / (price * SHARES_PER_LOT + 5))))
 
+def compute_lots_full_kelly(tc, capital, price) -> int:
+    return _from_f(tc, "chen_fullkelly", capital, price, 1.0)
 
-def compute_lots_half_kelly(strategy_tc, capital: float,
-                             entry_price: float) -> int:
-    """半 Kelly: f*/2. 来源: Chan 第6章"""
-    p, b, _, _, _ = _effective_stats(strategy_tc, "chen_halfkelly")
-    if b <= 0 or p <= 0:
-        return 0
-    f = max(0.0, (b * p - (1 - p)) / b) / 2.0
-    risk_capital = capital * f
-    lots = int(risk_capital / (entry_price * SHARES_PER_LOT + 5))
-    return max(0, min(lots, int(capital / (entry_price * SHARES_PER_LOT + 5))))
+def compute_lots_half_kelly(tc, capital, price) -> int:
+    return _from_f(tc, "chen_halfkelly", capital, price, 0.5)
 
-
-def compute_lots_wilson(strategy_tc, capital: float,
-                         entry_price: float) -> int:
-    """威尔逊 95%CI 下界 → 半 Kelly. 来源: Wilson 1927 + Chan"""
-    _, _, _, _, n_eff = _effective_stats(strategy_tc, "chen_wilson")
-    p_raw, b, _, _, _ = _effective_stats(strategy_tc, "chen_wilson")
-    p_lower = wilson_lower_bound(p_raw * n_eff, n_eff)
-    if b <= 0 or p_lower <= 0:
-        return 0
-    f = max(0.0, (b * p_lower - (1 - p_lower)) / b) / 2.0
-    risk_capital = capital * f
-    lots = int(risk_capital / (entry_price * SHARES_PER_LOT + 5))
-    return max(0, min(lots, int(capital / (entry_price * SHARES_PER_LOT + 5))))
+def compute_lots_wilson(tc, capital, price) -> int:
+    return _from_f(tc, "chen_wilson", capital, price, 0.5, use_wilson=True)
 
 
 def compute_lots_fixed_ratio(strategy_tc, capital: float,

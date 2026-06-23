@@ -22,6 +22,7 @@ from ops.performance import (alpha_from_score, mcva_trailing_stop,
 from ops.liquidity import roll_spread, volatility_decompose
 from ops.position_sizers import (compute_lots_full_kelly, compute_lots_half_kelly,
                                    compute_lots_wilson, compute_lots_fixed_ratio)
+from execution.sell_chain import make_chain
 
 logger = get_logger("intraday.runner")
 DB = "data/market.db"
@@ -91,13 +92,17 @@ from web.shared import update_state, get_state
 
 
 def get_watchlist(conn) -> list:
-    """全市场监控池 — 所有主板+创业板最新交易日有交易的股票。"""
+    """监控池 — 排除ST/退市/科创板/北交所/B股, 价格¥2-¥100, 日成交>¥100万"""
     rows = conn.execute("""
-        SELECT DISTINCT symbol FROM daily
-        WHERE date = (SELECT MAX(date) FROM daily WHERE date LIKE '%-%-%')
-          AND symbol NOT LIKE '688%' AND symbol NOT LIKE '8%'
-          AND symbol NOT LIKE '4%' AND symbol NOT LIKE '92%'
-          AND symbol NOT LIKE '900%'
+        SELECT DISTINCT d.symbol FROM daily d
+        JOIN stocks s ON d.symbol = s.symbol
+        WHERE d.date = (SELECT MAX(date) FROM daily WHERE date LIKE '%-%-%')
+          AND d.symbol NOT LIKE '688%' AND d.symbol NOT LIKE '8%'
+          AND d.symbol NOT LIKE '4%' AND d.symbol NOT LIKE '92%'
+          AND d.symbol NOT LIKE '900%'
+          AND s.name NOT LIKE '%ST%' AND s.name NOT LIKE '%退%'
+          AND d.close BETWEEN 2 AND 100
+          AND d.amount > 1000000
     """).fetchall()
     return [r[0] for r in rows]
 
@@ -189,6 +194,7 @@ def run():
         last_sync_date = None
 
     while True:
+        now = datetime.now()
         # ── 每日日线同步 (只在盘前, 盘中直接跳过) ──
         if last_sync_date != date.today() and now.hour < 9:
             try:
@@ -204,7 +210,6 @@ def run():
                     _json.dump({"date": last_sync_date.isoformat()}, f)
             except Exception:
                 pass
-        now = datetime.now()
 
         # 非交易日 → 等明天
         if not is_trading_day(date.today()):
@@ -487,14 +492,15 @@ def run():
             "date": p.get("date", ""), "has_sealed": p.get("has_sealed", False),
             "pnl_pct": 0, "value": round(p["shares"] * p["price"], 2),
         } for p in positions]
-        update_state({"status": "盘中", "progress": "拉取实时行情...", "capital": round(capital, 2),
-                     "all_tracks_capital": round(capital + BASE * 4, 2),  # chen + 4个变体track
+        update_state({"status": "盘中", "progress": "", "capital": round(capital, 2),
+                     "all_tracks_capital": round(capital + BASE * 4, 2),
                      "total_asset": round(capital + BASE * 4 + pos_value_init, 2),
                      "pos_value": round(pos_value_init, 2), "mood": mood,
                      "positions": positions_init})
 
         last_sector_scan = None
         last_heartbeat = None
+        chain = make_chain()  # B1-B7 责任链 (来源: 陈小群 + Grinold + Harris + Narang)
 
         # ── 仓位算法竞技场: 5 track 并行 (来源: Kelly 1956, Chan 第6章, Wilson 1927, Ryan Jones) ──
         tracks = {
@@ -757,8 +763,7 @@ def run():
                     sid_conn.close()
                     logger.info(f"  💰 [{tname}] 买入 {sym} ¥{entry_px:.2f}×{shares}股 余¥{track['capital']:.0f}")
 
-            # ── B1-B7: 盘中风控 (所有track独立) ──
-            # ── B1-B7 卖出 (所有track独立执行) ──
+            # ── B1-B7: 责任链卖出 (所有track独立执行) ──
             for tname, track in tracks.items():
                 tcap = track["capital"]
                 tpos = track["positions"]
@@ -769,64 +774,10 @@ def run():
                     st = tracker.stocks.get(sym)
                     if not st or st["close"] <= 0:
                         continue
-                    sell_reason = None
-                    pnl_pct = (st["close"] / pos["price"] - 1) * 100
-
-                    if pnl_pct <= -5:
-                        sell_reason = f"止损({pnl_pct:.1f}%)"
-                    elif now.hour >= 14 and now.minute >= 30:
-                        if pos.get("was_at_limit") and not st["is_at_limit"] and pos.get("has_sealed"):
-                            sell_reason = f"尾盘炸板"
-                    elif st["broken_count"] >= 3 and not st["is_at_limit"]:
-                        sell_reason = f"反复烂板({st['broken_count']}次)"
-                    elif st.get("close", 0) > 0:
-                        today_vol = st.get("volume", 0)
-                        prev_vol = prev_volume_map.get(sym, 0)
-                        vol_ratio = today_vol / prev_vol if prev_vol > 0 else 0
-                        if vol_ratio > 0.60:
-                            sell_reason = f"死亡换手({vol_ratio:.0%})"
-                    if not sell_reason and st["is_at_limit"] and st.get("close", 0) > 0:
-                        today_vol = st.get("volume", 0)
-                        prev_vol = prev_volume_map.get(sym, 0)
-                        vol_ratio = today_vol / prev_vol if prev_vol > 0 else 0
-                        if 0 < vol_ratio < 0.08:
-                            sell_reason = f"缩量加速({vol_ratio:.0%})"
-                    if not sell_reason:
-                        peak = pos.get("peak_price", pos["price"])
-                        entry_alpha = pos.get("entry_alpha", alpha_from_score(0.50))
-                        daily_vol = RESIDUAL_VOL_DEFAULT / math.sqrt(252)
-                        pnl_pct_decimal = st["close"] / pos["price"] - 1
-                        if daily_vol > 0:
-                            z_now = pnl_pct_decimal / daily_vol
-                            alpha_now = RESIDUAL_VOL_DEFAULT * IC_PRIOR * z_now
-                            pos_val = pos["shares"] * st["close"]
-                            total_val = tcap
-                            for p2 in tpos:
-                                if p2["symbol"] in tracker.stocks:
-                                    total_val += p2["shares"] * tracker.stocks[p2["symbol"]]["close"]
-                                else:
-                                    total_val += p2["shares"] * p2["price"]
-                            pos_pct = pos_val / max(total_val, 1)
-                            dist = mcva_trailing_stop(entry_alpha, alpha_now, pos_pct)
-                            if dist < 0:
-                                sell_reason = f"MCVA止盈(α={alpha_now:.4f}<阈值 dist={dist:.4f})"
-                        if not sell_reason and peak > pos["price"] and st["close"] < peak * 0.95:
-                            sell_reason = f"移动止盈(最高¥{peak:.2f}→现¥{st['close']:.2f})"
-                        if not sell_reason:
-                            try:
-                                vol = volatility_decompose(sym, conn)
-                                if vol["valid"] and vol["transitory_ratio"] > 0.5:
-                                    tight_cost = SELL_COST * 0.67
-                                    risk_term = 2 * 0.10 * 0.05 * pos_pct * RESIDUAL_VOL_DEFAULT**2
-                                    if alpha_now < -(tight_cost + risk_term):
-                                        sell_reason = f"Harris临时波动({vol['transitory_ratio']:.0%}): 非知情驱动→预期逆转 α={alpha_now:.4f}"
-                            except Exception:
-                                pass
-                        if not sell_reason:
-                            board = pos.get("board_count", 0)
-                            max_hold = 10 if board >= 3 else 5
-                            if days_held >= max_hold:
-                                sell_reason = f"时间止({days_held}天>{max_hold}天, Narang三元退出)"
+                    ctx = {"now": now, "prev_volume_map": prev_volume_map,
+                           "track_positions": tpos, "track_capital": tcap,
+                           "conn": conn, "days_held": days_held}
+                    sell_reason = chain.check(pos, st, ctx)
 
                     if sell_reason:
                         px = st["close"]
@@ -850,24 +801,23 @@ def run():
 
             # ── 汇总全部 track 资金+持仓 ──
             all_tracks_cap = sum(t["capital"] for t in tracks.values())
-            all_pos_value = 0
-            all_positions = []
-            for tname, t in tracks.items():
-                for p in t["positions"]:
-                    st = tracker.stocks.get(p["symbol"])
-                    px = st["close"] if st and st.get("close", 0) > 0 else p["price"]
-                    all_pos_value += p["shares"] * px
-                    all_positions.append({
-                        "symbol": p["symbol"], "name": p.get("name", ""),
-                        "shares": p["shares"], "price": p["price"],
-                        "current": round(px, 2), "board_count": p.get("board_count", 0),
-                        "date": p.get("date", ""), "strategy": tname,
-                        "pnl_pct": round((px / p["price"] - 1) * 100, 2),
-                        "value": round(p["shares"] * px, 2),
-                    })
-            total_asset = round(all_tracks_cap + all_pos_value, 2)
-            # 前端兼容: capital 显示 chen track 独立资金
+            # 仅 chen track 持仓 → 陈小群页面
+            chen_pos_value = 0
+            chen_positions = []
+            for p in tracks["chen"]["positions"]:
+                st = tracker.stocks.get(p["symbol"])
+                px = st["close"] if st and st.get("close", 0) > 0 else p["price"]
+                chen_pos_value += p["shares"] * px
+                chen_positions.append({
+                    "symbol": p["symbol"], "name": p.get("name", ""),
+                    "shares": p["shares"], "price": p["price"],
+                    "current": round(px, 2), "board_count": p.get("board_count", 0),
+                    "date": p.get("date", ""),
+                    "pnl_pct": round((px / p["price"] - 1) * 100, 2),
+                    "value": round(p["shares"] * px, 2),
+                })
             chen_cap = tracks["chen"]["capital"]
+            total_asset = round(chen_cap + chen_pos_value, 2)
 
             tc_today = sqlite3.connect(TRADE_DB)
             today_signals = tc_today.execute(
@@ -878,8 +828,8 @@ def run():
                          "capital": round(chen_cap, 2),
                          "all_tracks_capital": round(all_tracks_cap, 2),
                          "total_asset": total_asset,
-                         "pos_value": round(all_pos_value, 2),
-                         "positions": all_positions,
+                         "pos_value": round(chen_pos_value, 2),
+                         "positions": chen_positions,
                          "today_signal_count": today_signals,
                          "all_signals": tracker.all_signals,
                          "final_signals": [s for s in new_signals if s['mode'] in ('连板接力','首板试探')],

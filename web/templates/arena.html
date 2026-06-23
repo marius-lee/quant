@@ -46,7 +46,7 @@ async function poll() {
         return_pct: (((5000 + (p.total_pnl||0))/5000 - 1)*100),
         realized: p.realized_pnl||0,
         buys: p.total_buys||0, sells: p.total_sells||0, win_rate: p.win_rate||0,
-        kelly_f: kf, drawdown: dd
+        kelly_f: p.kelly_f || kf, drawdown: dd
       });
     } catch(e) { rows.push({name:LABELS[s],strategy:s,error:1}); }
   }

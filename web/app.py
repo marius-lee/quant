@@ -211,9 +211,22 @@ def api_performance():
         "SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)",
         (strategy, strategy)).fetchone()[0]
     total_asset = round(capital + position_cost, 2)
+    # 实际 Kelly f (从策略自身交易数据计算, 非 IC/IR)
+    kelly_f = None
+    if total_sells >= 3:
+        wins = [r[0] for r in sells if r[0] and r[0] > 0]
+        losses = [r[0] for r in sells if r[0] and r[0] <= 0]
+        if wins and losses:
+            p = len(wins) / total_sells
+            avg_win = sum(wins) / len(wins)
+            avg_loss = abs(sum(losses) / len(losses))
+            b = avg_win / avg_loss if avg_loss > 0 else 0
+            if b > 0:
+                kelly_f = round(max(0, (b * p - (1 - p)) / b), 4)
     tc.close()
     total_pnl = round(total_asset - base, 2)
     return jsonify({
+        "kelly_f": kelly_f,
         "realized_pnl": round(realized_pnl, 2),
         "unrealized_pnl": round(total_pnl - realized_pnl, 2),
         "total_pnl": total_pnl,
@@ -377,49 +390,46 @@ def api_smallcap_execute():
     return jsonify({"ok": True, "sold": sold, "bought": bought})
 
 
-def _execute_etf():
-    """ETF轮动执行(调度器调用)"""
-    from strategies.etf_rotation import get_signal, record_trade, STRATEGY as S
-    sig = get_signal()
-    if sig["action"] not in ("buy", "defense"): return False
-    mc = sqlite3.connect(os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db"))
+def _execute_rotation(strategy_name: str, signal_check: callable, buy_targets: callable) -> bool:
+    """通用轮动策略执行 (外观模式: 合并ETF+小市值重复逻辑)"""
+    import importlib
+    mod = importlib.import_module(f"strategies.{strategy_name}_rotation")
+    sig = mod.get_signal()
+    if not signal_check(sig): return False
     tc = sqlite3.connect(TRADE_DB)
+    S = mod.STRATEGY
+    # 清仓
     for r in tc.execute("SELECT symbol,price,shares FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)", (S,S)).fetchall():
-        record_trade(r[0], "", r[1], r[2], "sell")
-    t = sig["buy"]
-    row = mc.execute("SELECT close FROM daily WHERE symbol=? ORDER BY date DESC LIMIT 1",(t,)).fetchone()
-    if row:
-        bs = tc.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=?",(S,)).fetchone()[0]
-        ss = tc.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='sell' AND strategy=?",(S,)).fetchone()[0]
-        cap = _capital(S)
-        lots = int(cap / (row[0]*100 + max(row[0]*100*0.0003,5)))
-        if lots >= 1: record_trade(t, sig.get("name",""), row[0], lots*100, "buy")
-    mc.close()
+        mod.record_trade(r[0], r[1], r[2], "sell")
+    # 买入
+    targets = buy_targets(sig)
+    capital = _capital(S)
+    for t in targets:
+        cost_per_lot = t["price"]*100 + max(t["price"]*100*0.0003, 5)
+        lots = int(capital / cost_per_lot)
+        if lots >= 1:
+            mod.record_trade(t["symbol"], t.get("name",""), t["price"], lots*100, "buy")
+            capital -= cost_per_lot * lots
     tc.close()
     return True
 
 
+def _execute_etf():
+    return _execute_rotation("etf",
+        lambda s: s["action"] in ("buy","defense"),
+        lambda s: [{"symbol": s["buy"], "name": s.get("name",""), "price": _etf_price(s["buy"])}])
+
+def _etf_price(symbol: str) -> float:
+    mc = sqlite3.connect(os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db"))
+    row = mc.execute("SELECT close FROM daily WHERE symbol=? ORDER BY date DESC LIMIT 1", (symbol,)).fetchone()
+    mc.close()
+    return row[0] if row else 0
+
+
 def _execute_smallcap():
-    """小市值轮动执行(调度器调用)"""
-    from strategies.smallcap_rotation import get_signal, record_trade, STRATEGY as S
-    sig = get_signal()
-    if sig["action"] != "rotate": return False
-    conn = sqlite3.connect(TRADE_DB)
-    for r in conn.execute("SELECT symbol,price,shares FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)",(S,S)).fetchall():
-        record_trade(r[0], "", r[1], r[2], "sell")
-    picks = sig.get("picks",[])
-    if picks:
-        bs = conn.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=?",(S,)).fetchone()[0]
-        ss = conn.execute("SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='sell' AND strategy=?",(S,)).fetchone()[0]
-        capital = _capital(S)
-        for p in picks:
-            cost_per_lot = p["close"]*100 + max(p["close"]*100*0.0003,5)
-            lots = int(capital / cost_per_lot)
-            if lots >= 1:
-                record_trade(p["symbol"], p.get("name",""), p["close"], lots*100, "buy")
-                capital -= cost_per_lot * lots
-    conn.close()
-    return True
+    return _execute_rotation("smallcap",
+        lambda s: s["action"] == "rotate",
+        lambda s: [{"symbol": p["symbol"], "name": p.get("name",""), "price": p["close"]} for p in s.get("picks",[])])
 
 
 if __name__ == "__main__":

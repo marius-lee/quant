@@ -550,6 +550,7 @@ def kelly_fraction(strategy: str = "chen", tc: sqlite3.Connection = None,
 
     # 黑色星期一检验 (来源: Chan 第6章 — 杠杆≤历史最大单日亏损倒数)
     if kelly_result > 0:
+        from config.loader import get as cfg
         max_loss_pct = min(abs(p) / float(cfg("backtest.initial_capital", 5000)) for p in pnls if p < 0) if losses else 0.10
         if max_loss_pct > 0:
             max_safe_leverage = 1.0 / max_loss_pct  # 承受一次最坏亏损

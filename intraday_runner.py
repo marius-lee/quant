@@ -23,6 +23,7 @@ from ops.liquidity import roll_spread, volatility_decompose
 from ops.position_sizers import (compute_lots_full_kelly, compute_lots_half_kelly,
                                    compute_lots_wilson, compute_lots_fixed_ratio)
 from execution.sell_chain import make_chain
+from ops.signal_algo import zscore_peaks, ma_inversion_score, longest_run
 
 logger = get_logger("intraday.runner")
 DB = "data/market.db"
@@ -679,6 +680,16 @@ def run():
                         continue
                 except Exception:
                     pass
+                # ── 趋势确认过滤 (来源: MA逆序+LIS/LDS, 程序员量化笔记) ──
+                try:
+                    mai = ma_inversion_score(sym, mc=conn)
+                    if mai < 50:
+                        continue  # 空头排列, 不买
+                    run = longest_run([r[0] for r in conn.execute(
+                        "SELECT close FROM daily WHERE symbol=? ORDER BY date DESC LIMIT 15", (sym,)).fetchall()[::-1]])
+                    if run["direction"] != "up" or not run["is_extending"]:
+                        continue  # 不在上升趋势, 不买
+                except Exception: pass
                 # ── Harris磁吸效应过滤 (来源: Harris 28章 — >8%买入=恐惧驱动, 仓位减半) ──
                 magnet_warning = False
                 prev_close = s.get("prev_close", 0)

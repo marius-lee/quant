@@ -4,6 +4,7 @@
 import math
 from ops.performance import RESIDUAL_VOL_DEFAULT, IC_PRIOR, SELL_COST, alpha_from_score, mcva_trailing_stop
 from ops.liquidity import volatility_decompose
+from ops.signal_algo import zscore_peaks
 
 
 class SellHandler:
@@ -66,6 +67,22 @@ class B6_MCVA(SellHandler):
             return f"移动止盈(最高¥{peak:.2f}→现¥{st['close']:.2f})"
         return None
 
+class B6z_ZScorePeak(SellHandler):
+    """z-score峰值检测: 近期出现峰值→趋势可能逆转→提前止盈 (来源: 程序员量化笔记)"""
+    def _check(self, pos, st, ctx):
+        try:
+            prices = st.get("prices", [])
+            if len(prices) < 10: return None
+            closes = [p[1] for p in prices[-20:]]
+            sigs, _, _ = zscore_peaks(closes, lag=5, threshold=3.0, influence=0.5)
+            if sigs and sigs[-1] == -1:  # 最近一个信号是向下峰值
+                pnl = (st["close"] / pos["price"] - 1) * 100
+                if pnl > 0:  # 盈利中才提前止盈
+                    return f"z-score峰值({pnl:.1f}%)"
+        except Exception: pass
+        return None
+
+
 class B6c_HarrisVolatility(SellHandler):
     def _check(self, pos, st, ctx):
         try:
@@ -101,7 +118,8 @@ def make_chain():
     b4 = B4_DeathTurnover()
     b5 = B5_ShrinkAccelerate()
     b6 = B6_MCVA()
+    b6z = B6z_ZScorePeak()
     b6c = B6c_HarrisVolatility()
     b7 = B7_TimeStop()
-    b1.then(b2).then(b3).then(b4).then(b5).then(b6).then(b6c).then(b7)
+    b1.then(b2).then(b3).then(b4).then(b5).then(b6).then(b6z).then(b6c).then(b7)
     return b1

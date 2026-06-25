@@ -255,7 +255,9 @@ class DataStore:
         import urllib.request, json as _json
         rows = []
         for sym in symbols:
-            code = f"sh{sym}" if sym.startswith(("6", "9")) else f"sz{sym}"
+            if sym.startswith('920'): code = f"bj{sym}"        # BSE 北京交易所 (来源: Sina API bj前缀)
+            elif sym.startswith(('6','9')): code = f"sh{sym}"  # 上海
+            else: code = f"sz{sym}"                             # 深圳
             url = f"http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={code}&scale=240&datalen=2000"
             try:
                 req = urllib.request.Request(url, headers={
@@ -378,7 +380,11 @@ class DataStore:
         except ImportError:
             raise RuntimeError("tickflow not installed (pip install tickflow)")
         rows = []
-        codes = [f"{s}.SH" if s.startswith(("6","9","68")) else f"{s}.SZ" for s in symbols]
+        def _tickflow_code(s):
+            if s.startswith('920'): return f"{s}.BJ"       # BSE 北京交易所
+            if s.startswith(('6','9','68')): return f"{s}.SH"  # 上海
+            return f"{s}.SZ"                               # 深圳
+        codes = [_tickflow_code(s) for s in symbols]
         try:
             dfs = tf.klines.batch(codes, period="1d", count=10000, as_dataframe=True, show_progress=False)
         except Exception:

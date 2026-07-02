@@ -896,11 +896,11 @@ class DataStore:
         if symbols:
             placeholders = ",".join("?" for _ in symbols)
             df = pd.read_sql_query(
-                f"SELECT symbol, pe, pb, total_mv, industry FROM stocks WHERE symbol IN ({placeholders})",
+                f"SELECT symbol, pe, pb, total_mv, roe, industry FROM stocks WHERE symbol IN ({placeholders})",
                 conn, params=symbols)
         else:
             df = pd.read_sql_query(
-                "SELECT symbol, pe, pb, total_mv, industry FROM stocks", conn)
+                "SELECT symbol, pe, pb, total_mv, roe, industry FROM stocks", conn)
         df = df.set_index("symbol")
         # 过滤负值PE/PB
         df.loc[df["pe"] <= 0, "pe"] = None

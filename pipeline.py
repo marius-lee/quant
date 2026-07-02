@@ -31,12 +31,13 @@ logger = get_logger("pipeline")
 LOT_SIZE = 100
 
 
-def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
+def run(date_str: str = None, capital: float = None, strategy: str = "quant", skip_pull: bool = False):
     """执行完整 Pipeline。
 
     date_str: 交易日期 (YYYY-MM-DD), None = 最近一个交易日
     capital: 本金, None = 从 strategy_config / config 读取
     strategy: 策略名前缀
+    skip_pull: 回测模式跳过增量数据拉取 (数据已在首次同步)
     """
     if date_str is None:
         date_str = datetime.today().strftime("%Y-%m-%d")
@@ -55,13 +56,16 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
     constructor = PortfolioConstructor()
 
     # ── Step 1: Data Update ──
-    try:
-        n_new = store.update_daily(start="2020-01-01")
-        results["steps"]["data"] = {"new_rows": n_new, "status": "ok"}
-        logger.info(f"[1/7] data: {n_new} new daily rows")
-    except Exception as e:
-        results["steps"]["data"] = {"error": str(e), "status": "failed"}
-        logger.warning(f"[1/7] data failed: {e}")
+    if not skip_pull:
+        try:
+            n_new = store.update_daily(start="2020-01-01")
+            results["steps"]["data"] = {"new_rows": n_new, "status": "ok"}
+            logger.info(f"[1/7] data: {n_new} new daily rows")
+        except Exception as e:
+            results["steps"]["data"] = {"error": str(e), "status": "failed"}
+            logger.warning(f"[1/7] data failed: {e}")
+    else:
+        results["steps"]["data"] = {"new_rows": 0, "status": "skipped (backtest mode)"}
 
     # ── Step 2: Get symbols + data ──
     try:

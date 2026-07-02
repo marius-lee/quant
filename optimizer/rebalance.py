@@ -109,12 +109,13 @@ def validate_orders(orders: list[Order], capital: float) -> tuple[bool, str]:
             return False, f"{o.symbol}: shares {o.shares} not multiple of {LOT_SIZE}"
 
     # 先卖后买，累计资金变化
+    # Order.cost: sell→fees(佣金+印花税+滑点), buy→成交额+佣金+滑点
     cash = capital
     for o in orders:
         if o.side == "sell":
-            cash += o.price * o.shares - o.cost
+            cash += o.price * o.shares - o.cost   # proceeds = price*shares - fees
         else:
-            cash -= o.price * o.shares + o.cost
+            cash -= o.cost  # buy_cost already = price*shares + fees, don't double-count
 
     if cash < -1:  # 允许 1 元容差
         return False, f"insufficient funds: need {-cash:.2f} more"

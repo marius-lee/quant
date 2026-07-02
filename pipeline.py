@@ -21,7 +21,7 @@ from risk.neutralize import neutralize
 from risk.covariance import covariance_matrix
 from risk.constraints import RiskLimits, apply_all_filters
 from optimizer.portfolio import PortfolioConstructor
-from optimizer.rebalance import compute_trades
+from optimizer.rebalance import compute_trades, validate_orders
 from execution.cost import CostModel
 from execution.engine import ExecutionEngine, Order
 from monitor.report import generate_report, push_to_web
@@ -205,7 +205,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         portfolio = constructor.construct(
             filtered["alpha"],
             filtered["close"],
-            total_capital,
+            cash,  # use actual CASH (not total_capital) — selling old positions raises cash separately
         )
         results["steps"]["optimizer"] = {
             "method": portfolio.method,
@@ -231,7 +231,12 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
             max_turnover_ratio=turnover_limit,
         )
         if orders:
-            engine.execute(orders, date_str, strategy)
+            is_valid, msg = validate_orders(orders, total_capital)
+            if not is_valid:
+                logger.warning(f"[6/7] validate_orders failed: {msg}, skipping")
+                orders = []
+            else:
+                engine.execute(orders, date_str, strategy)
 
         results["steps"]["execution"] = {
             "orders": len(orders),

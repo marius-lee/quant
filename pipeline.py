@@ -121,15 +121,12 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         if method == "ic_weighted":
             ic_map = load_ic_map_from_cache(factor_values)
             if not ic_map:
-                ic_map = {
-                    "reversal_5d":      0.050,
-                    "volatility_20d":   0.034,
-                    "turnover_rev_5d":  0.040,
-                    "max_ret_20d":      0.035,
-                    "gap_5d":           0.030,
-                    "momentum_10d":     0.058,  # A股反转效应 (flipped)
-                    "skewness_20d":     0.024,  # 负偏度溢价 (flipped)
-                }
+                # Fallback to equal_weight when IC cache is unavailable
+                from config.loader import get as cfg
+                logger.info('IC cache unavailable, falling back to equal_weight')
+                method = 'equal_weight'
+                ic_map = {}
+        if method == 'ic_weighted' and ic_map:
             alpha_raw = ic_weighted(factor_values, ic_map)
         else:
             alpha_raw = equal_weight(factor_values)

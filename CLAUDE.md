@@ -111,22 +111,22 @@ logger = get_logger("module.name")
 
 | File | Status |
 |------|--------|
-| `factor/base.py` | Interface only |
-| `factor/compute.py` | To implement |
-| `factor/evaluate.py` | To implement |
-| `factor/synth.py` | To implement |
-| `alpha/model.py` | To implement |
-| `risk/neutralize.py` | To implement |
-| `risk/covariance.py` | To implement |
-| `risk/constraints.py` | To implement |
-| `optimizer/portfolio.py` | To implement |
-| `optimizer/rebalance.py` | To implement |
-| `execution/engine.py` | To implement |
-| `execution/cost.py` | To implement |
-| `monitor/attribution.py` | To implement |
-| `monitor/report.py` | To implement |
-| `pipeline.py` | To implement |
-| `scheduler.py` | To implement |
+| `factor/base.py` | Done |
+| `factor/compute.py` | Done |
+| `factor/evaluate.py` | Done |
+| `factor/synth.py` | Done |
+| `alpha/model.py` | Done |
+| `risk/neutralize.py` | Done |
+| `risk/covariance.py` | Done |
+| `risk/constraints.py` | Done |
+| `optimizer/portfolio.py` | Done |
+| `optimizer/rebalance.py` | Done |
+| `execution/engine.py` | Done |
+| `execution/cost.py` | Done |
+| `monitor/attribution.py` | Done |
+| `monitor/report.py` | Done |
+| `pipeline.py` | Done |
+| `scheduler.py` | Done |
 
 ## Files to remove (legacy, post-migration)
 

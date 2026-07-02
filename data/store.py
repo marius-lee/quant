@@ -921,6 +921,22 @@ class DataStore:
             df = df.join(df_date, how="left")
         else:
             df["close_latest"] = None
+
+        # P2-2: derive ROE from PB/PE when roe column is NULL
+        null_roe = df["roe"].isna() | (df["roe"] <= 0)
+        if null_roe.any():
+            derived = df["pb"] / df["pe"].replace(0, None)
+            derived = derived.where((derived > 0) & (derived < 100))
+            df.loc[null_roe, "roe"] = derived.loc[null_roe]
+
+        # high52w: compute from daily table (MAX close over 252 trading days)
+        if date:
+            df_high52 = pd.read_sql_query(
+                "SELECT symbol, MAX(close) as high_52w FROM daily WHERE date >= date(?, '-365 days') AND date <= ? GROUP BY symbol",
+                conn, params=(date, date))
+            df_high52 = df_high52.set_index("symbol")
+            df["high_52w"] = df_high52["high_52w"]
+
         return df
 
 

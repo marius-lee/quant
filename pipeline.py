@@ -80,7 +80,9 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
             "fund_pb_valid": int(fundamentals["pb"].notna().sum()),
             "status": "ok",
         }
-        logger.info(f"[2/7] load: {len(symbols)} symbols, {data.shape[0]} days, fundamentals: PE/PB={fundamentals['pe'].notna().sum()}/{fundamentals['pb'].notna().sum()}")
+        pe_cnt = int(fundamentals["pe"].notna().sum()) if "pe" in fundamentals.columns else 0
+        pb_cnt = int(fundamentals["pb"].notna().sum()) if "pb" in fundamentals.columns else 0
+        logger.info(f"[2/7] load: {len(symbols)} symbols, {data.shape[0]} days, fundamentals: PE/PB={pe_cnt}/{pb_cnt}")
     except Exception as e:
         results["steps"]["load"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[2/7] load failed: {e}")
@@ -91,7 +93,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
     try:
         # 使用数据中实际存在的最新日期 (避免 date_str 不在 data.index 中)
         actual_date = date_str
-        if actual_date not in data.index:
+        if pd.Timestamp(actual_date) not in data.index:
             actual_date = data.index[-1].strftime("%Y-%m-%d")
             logger.info(f"[3/7] date adjusted: {date_str} → {actual_date}")
         factor_values = compute_all_factors(data, actual_date, fundamentals=fundamentals)

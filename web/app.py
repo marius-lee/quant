@@ -81,37 +81,25 @@ def api_factors():
 
 @app.route("/api/positions")
 def api_positions():
-    """持仓 (从 trades.db 读取 — 唯一真相源). ?strategy=过滤"""
+    """持仓 (从 trades.db 读取 — 通过 TradeRepo). ?strategy=过滤"""
     from flask import request
     strategy = request.args.get("strategy", "quant")
     positions = []
     try:
-        conn = sqlite3.connect(TRADE_DB)
-        buys = conn.execute("""
-            SELECT symbol, SUM(shares), SUM(price*shares)/SUM(shares), MIN(date)
-            FROM sim_trades WHERE side='buy' AND strategy=?
-            GROUP BY symbol
-        """, (strategy,)).fetchall()
-        sells = conn.execute("""
-            SELECT symbol, SUM(shares) FROM sim_trades
-            WHERE side='sell' AND strategy=?
-            GROUP BY symbol
-        """, (strategy,)).fetchall()
-        sell_map = {r[0]: r[1] for r in sells}
-        for sym, total_sh, avg_px, first_dt in buys:
-            net = max(0, total_sh - sell_map.get(sym, 0))
-            if net <= 0: continue
-            px = round(avg_px, 4) if avg_px else 0
+        from data.trade_repo import TradeRepo
+        repo = TradeRepo(TRADE_DB)
+        raw = repo.get_positions(strategy)
+        for p in raw:
+            px = p.get("price", 0)
             positions.append({
-                "symbol": sym, "price": px, "shares": net,
-                "board_count": 0, "date": first_dt,
+                "symbol": p["symbol"], "price": px, "shares": p["shares"],
+                "board_count": p.get("board_count", 0), "date": p.get("date", ""),
                 "current": px, "pnl_pct": 0,
-                "value": round(net * px, 2),
+                "value": round(p["shares"] * px, 2),
                 "name": "", "change_pct": 0,
             })
-        conn.close()
     except Exception:
-        logger.warning("api_positions: query failed (schema mismatch?)", exc_info=True)
+        logger.warning("api_positions: query failed", exc_info=True)
         return jsonify({"positions": [], "error": "internal"}), 500
     return jsonify({"positions": positions})
 

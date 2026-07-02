@@ -1,0 +1,155 @@
+{
+  "factors": [
+    "动量10d",
+    "波动率20d",
+    "偏度20d",
+    "BP比率",
+    "规模",
+    "ROE比率"
+  ],
+  "factor_keys": [
+    "momentum_10d",
+    "volatility_20d",
+    "skewness_20d",
+    "bp_ratio",
+    "size",
+    "roe_ratio"
+  ],
+  "ic": [
+    -0.0573,
+    0.0417,
+    0.0233,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "ic_ir": [
+    -0.36,
+    0.23,
+    0.21,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "decay": {
+    "动量10d": [
+      -0.0573,
+      -0.045,
+      -0.0022
+    ],
+    "波动率20d": [
+      0.0417,
+      0.0547,
+      0.0267
+    ],
+    "偏度20d": [
+      0.0233,
+      0.0563,
+      0.044
+    ],
+    "BP比率": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "规模": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "ROE比率": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "corr": [
+    [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "meta": {
+    "momentum_10d": {
+      "display": "动量10d",
+      "category": "动量",
+      "source": "Jegadeesh & Titman (1993)",
+      "n_periods": 86
+    },
+    "volatility_20d": {
+      "display": "波动率20d",
+      "category": "低波动",
+      "source": "Andersen et al. (2001)",
+      "n_periods": 85
+    },
+    "skewness_20d": {
+      "display": "偏度20d",
+      "category": "偏度",
+      "source": "Barberis & Huang (2008)",
+      "n_periods": 84
+    },
+    "bp_ratio": {
+      "display": "BP比率",
+      "category": "价值",
+      "source": "Fama & French (1992)",
+      "n_periods": 0
+    },
+    "size": {
+      "display": "规模",
+      "category": "规模",
+      "source": "Fama & French (1993)",
+      "n_periods": 0
+    },
+    "roe_ratio": {
+      "display": "ROE比率",
+      "category": "盈利",
+      "source": "Fama & French (2015)",
+      "n_periods": 0
+    }
+  },
+  "cached_at": "2026-07-02T15:25:12.183480"
+}

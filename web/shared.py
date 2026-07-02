@@ -53,8 +53,8 @@ def _init_state() -> dict:
         state["positions"] = positions
         conn.close()
     except Exception:
-        state["capital"] = base
-        state["total_asset"] = base
+        state["capital"] = float(cfg("backtest.initial_capital", 5000))
+        state["total_asset"] = float(cfg("backtest.initial_capital", 5000))
         state["pos_value"] = 0
         state["positions"] = []
     return state

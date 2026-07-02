@@ -64,7 +64,6 @@ def generate_report(
     positions_value = sum(
         p.get("price", 0) * p.get("shares", 0) for p in positions
     )
-    total_wealth = capital + positions_value
     total_wealth = cash_balance + positions_value
     total_return = (total_wealth - initial_capital) / initial_capital
 

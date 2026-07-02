@@ -54,6 +54,7 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
 
     results = []
     original_capital = capital  # 初始本金，全程不变，用于计算累计收益率
+    prev_total_wealth = capital  # 首个交易日前一日总资产=初始本金，避免 NameError
     for i, date_str in enumerate(rebalance_dates):
         t0 = time.time()
         try:
@@ -101,6 +102,7 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
     store.close()
 
     df = pd.DataFrame(results)
+    cum_return = 0.0  # 初始化，确保 bench 对比段可安全引用
     if not df.empty and "total_wealth" in df.columns:
         # 计算统计量
         daily_rets = df.set_index("date")["total_wealth"].pct_change().dropna()
@@ -130,7 +132,7 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
                 if "cumulative_return" in df.columns and not df.empty:
                     strategy_cum = df["cumulative_return"].dropna().iloc[-1] if not df["cumulative_return"].dropna().empty else 0
                 else:
-                    strategy_cum = cum_return if 'cum_return' in dir() else 0
+                    strategy_cum = cum_return  # 已在循环前初始化为 0.0
                 excess = strategy_cum - bench_cum
                 # Tracking error (annualized)
                 strategy_daily = df.set_index("date")["total_wealth"].pct_change().dropna()

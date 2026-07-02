@@ -50,8 +50,8 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
         logger.warning(f"Only {len(all_dates)} trading days, need >= 65 for factor lookback")
         all_dates = all_dates  # still try
 
-    # 每周调仓一次 (减少交易成本)
-    rebalance_dates = all_dates[::5]  # 每5个交易日一次
+    # 每2周调仓一次 (减少交易成本)
+    rebalance_dates = all_dates[::10]  # 每5个交易日一次
     logger.info(f"Backtest: {len(all_dates)} trading days, {len(rebalance_dates)} rebalance dates")
 
     results = []

@@ -331,14 +331,80 @@ def compute_hsgt_flow(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.S
 #  北向资金: hsgt_flow_5d              — 陆股通资金流 (数据待同步)
 #  流动性:   amihud_20d                — Amihud (2002) 非流动性溢价
 # ═══════════════════════════════════════════════════════════
-FACTOR_REGISTRY = {
-    "momentum_10d":     ("momentum",     10, compute_momentum),
-    "volatility_20d":   ("volatility",   20, compute_volatility),
-    "skewness_20d":     ("skewness",     20, compute_skewness),
 
-    "turnover_rev_5d":  ("turnover_rev", 5,  compute_turnover_reversal),
+# ═══════════════════════════════════════════════════════════
+# 12. 极端日收益 (MAX) — Bali, Cakici & Whitelaw (2011)
+# A 股实证 IC≈0.03-0.04, 出现过涨停/大阳线的股票后续跑输(彩票效应)
+# ═══════════════════════════════════════════════════════════
+
+def compute_max_return(data: "pd.DataFrame", date: str, window: int = 20) -> "pd.Series":
+    """极端日收益因子: max(daily_return[-window:]), 取负号。
+    高分 = 没有极端收益的股票 (非彩票型)。"""
+    close = data["close"]
+    ret = close.pct_change()
+    if date not in ret.index:
+        return pd.Series(np.nan, index=close.columns, name=f"max_ret_{window}d")
+    idx = ret.index.get_loc(date)
+    start = max(0, idx - window + 1)
+    max_ret = ret.iloc[start:idx + 1].max()
+    # 极端正收益 → 后续跑输 → 取负号: 低max_ret = 高分
+    return _cs_zscore(-max_ret).rename(f"max_ret_{window}d")
+
+
+# ═══════════════════════════════════════════════════════════
+# 13. 隔夜缺口 — A 股 T+1 独有异象, IC≈0.03-0.04
+# 持续低开的股票日内往往回补(恐慌性低开→盘中反弹)
+# ═══════════════════════════════════════════════════════════
+
+def compute_overnight_gap(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.Series":
+    """隔夜缺口因子: avg((open-prev_close)/prev_close, 5日), 取负号。
+    高分 = 持续低开的股票 (负缺口→即将回补)。"""
+    opn = data["open"]
+    close = data["close"]
+    # 计算隔夜缺口: (open_t - close_{t-1}) / close_{t-1}
+    gap = (opn - close.shift(1)) / close.shift(1)
+    if date not in gap.index:
+        return pd.Series(np.nan, index=close.columns, name=f"gap_{window}d")
+    idx = gap.index.get_loc(date)
+    start = max(0, idx - window + 1)
+    avg_gap = gap.iloc[start:idx + 1].mean()
+    # 负缺口(低开)→回补→高分: 取-gap使负缺口得高分
+    return _cs_zscore(-avg_gap).rename(f"gap_{window}d")
+
+
+# ═══════════════════════════════════════════════════════════
+# 14. 日内振幅 — 波动质量, IC≈0.02-0.03
+# 窄幅整理→潜在突破, 宽幅震荡→方向不明
+# ═══════════════════════════════════════════════════════════
+
+def compute_intraday_range(data: "pd.DataFrame", date: str, window: int = 20) -> "pd.Series":
+    """日内振幅因子: avg((high-low)/close, 20日), 取负号。
+    高分 = 窄幅整理 (低振幅→蓄势待发)。"""
+    h, l, c = data["high"], data["low"], data["close"]
+    rng = (h - l) / c
+    if date not in rng.index:
+        return pd.Series(np.nan, index=c.columns, name=f"range_{window}d")
+    idx = rng.index.get_loc(date)
+    start = max(0, idx - window + 1)
+    avg_range = rng.iloc[start:idx + 1].mean()
+    # 窄幅→高分: 取负号
+    return _cs_zscore(-avg_range).rename(f"range_{window}d")
+
+
+
+FACTOR_REGISTRY = {
+    # ── 6 动态因子: A 股实证最强 (全日频, 无基本面依赖) ──
+    "reversal_5d":      ("reversal",      5,  compute_reversal),
+    "volatility_20d":   ("volatility",   20, compute_volatility),
+    "turnover_rev_5d":  ("turnover_rev",  5,  compute_turnover_reversal),
+    "max_ret_20d":      ("max_ret",      20, compute_max_return),
+    "gap_5d":           ("overnight_gap", 5,  compute_overnight_gap),
+    "range_20d":        ("intraday_range",20, compute_intraday_range),
+    # ── 辅助/待启用 ──
+    "momentum_10d":     ("momentum",     10, compute_momentum),
+    "skewness_20d":     ("skewness",     20, compute_skewness),
     "idio_vol_20d":     ("idio_vol",     20, compute_idiosyncratic_vol),
-    "hsgt_flow_5d":    ("northbound",   5,  compute_hsgt_flow),
+    "hsgt_flow_5d":     ("northbound",   5,  compute_hsgt_flow),
     "amihud_20d":       ("liquidity",    20, compute_amihud),
 }
 
@@ -388,12 +454,11 @@ def compute_roe_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
 
 
 FUNDAMENTAL_FACTOR_REGISTRY = {
-    # 价值因子: Fama & French (1992, 2015)
+    # ── 静态因子: 季度更新, 作为辅助/行业中性化用 ──
+    # 不参与 alpha 合成 (IC 不稳定, 受财报滞后影响)
     "ep_ratio":      ("value_ep",       compute_ep_ratio),
     "bp_ratio":      ("value_bp",       compute_bp_ratio),
-    # 盈利能力: 高ROE → 高预期收益 (RMW)
     "roe_ratio":     ("profitability",  compute_roe_ratio),
-    # 行为因子
     "high52w_dist":  ("high52w",        compute_high52w_dist),
 }
 

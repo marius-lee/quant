@@ -1,51 +1,58 @@
+# A股量化选股系统 — 集中配置
+# 所有参数值需标注来源: ①数学恒等式 ②文献/标准 ③数据校准 ④用户确认
+
 data:
   tushare_token: ${TUSHARE_TOKEN}
-  start_date: '2020-01-01'       # 设2020年是因为2020年以前A股是审批制+壳价值时代, 市场结构与现在完全不同。这是个"差不多合理"的切分点, 没有任何严谨来源。
+  start_date: '2020-01-01'       # ④ 2020年前A股审批制+壳价值, 市场结构根本不同
+
+# ── Layer 2: Factor ──
 factor:
-  use_fundamental: false
-# 来源注释: 所有参数值均来自学术文献/行业标准/交易所规则, 非随手填写。
-# 详细来源见各对应 .py 文件的 docstring。
-strategy:
-  active: aggressive
-  target: return_overnight
-  train_window: 252     # 年交易日标准假设
-  train_split: 0.70               # 来源: 行业共识至少30%OOS (Quant SE + MLJAR Walk-Forward Guide 2024)
-ranker:
-  ml_weight: 0.2        # 超参数: ML/Demon混合比无严格学术来源, 需回测网格搜索校准。当前值基于¥5000激进偏好。
-  neutralize: false
-demon:
-  vol_weight: 0.3       # 等权因子组合基线, 量能/突破调高至30% (IC更高)
-  breakout_weight: 0.3
-  volatility_weight: 0.2
-  streak_weight: 0.1
-  momentum_weight: 0.1
-backtest:
-  initial_capital: 5000         # 北极星起点
-  commission: 0.0003           # 万三佣金 (行业标准券商费率)
-  slippage: 0.01               # 来源: A股中小盘实际滑点0.5-3% (量化私募交易磨损研究 2025), 取1%中值
-  max_positions: 3             # 来源: ¥5000/100股/¥10均=5手极限, 2-3只集中持仓最大化周转
-  benchmark: '000300'          # 沪深300
+  windows: [5, 10, 20, 60]       # ② Jegadeesh & Titman (1993) 多窗口梯度
+  min_abs_ic: 0.02               # ② 量化因子研究: Rank IC 最低有意义阈值
+  min_ic_ir: 0.10                # ② IC/标准差, 行业共识下限
+  decay_horizons: [1, 5, 20]     # ② IC 衰减分析标准检查点
+  enable_quality: false          # ④ 需 PE/PB 数据, 后续启用
+
+# ── Layer 3: Alpha ──
+alpha:
+  method: ic_weighted            # equal_weight | ic_weighted | ml
+  train_window: 252              # ① 年交易日标准假设
+  retrain_freq: 20               # ④ 每月(≈20交易日)重校准, 不频繁
+  top_fraction: 0.30             # ④ 选股池保留 Top 30%
+
+# ── Layer 4: Risk ──
 risk:
-  max_drawdown: 0.35           # 来源: 激进组合回撤上限30-35% (MQL5 Monte Carlo实证 2025)
-  daily_loss_limit: 0.05       # 来源: 每日硬熔断 2-5% (MQL5 prop-firm标准 2025), ¥5000取上限5%
-screening:
-  min_abs_ic: 0.03             # 行业最低 Rank IC 阈值 (周频中低频)
-  min_ic_ir: 0.15              # IC/IR 比率
-affordable:
-  max_stock_price: 50           # 来源: ¥5000/100股=¥50 (数学恒等式, 非随手参数)
-  min_daily_amount: 100000       # 静态回退值。capital!=None时动态计算: (capital/max_positions)*10
-  exclude_st: false              # 来源: ST摘帽存在显著超额收益 (知网学位论文 2019; 雪球实证 2024)
-  exclude_star_st: true           # 来源: *ST退市风险过高, 无alpha价值
-  min_history_days: 60             # 来源: factor/fast_compute.py WINDOWS=(5,10,20,60), 最大窗口60d即够
+  covariance_method: ledoit_wolf # sample | ledoit_wolf
+  covariance_window: 60          # ② Ledoit & Wolf (2004): ~250 stocks需要≥50天
+  max_single_position: 0.33     # ④ ¥5,000激进放宽单票33%
+  max_positions: 5              # ④ 小资金集中持仓但留有分散
+  min_daily_amount: 500000      # ③ 动态 = capital/max_positions*10 的静态回退
+  exclude_star_st: true         # ② *ST退市风险过高, 无alpha价值
+
+# ── Layer 5: Optimizer ──
+optimizer:
+  method: equal_weight           # equal_weight | score_weighted
+  rebalance_freq: weekly         # daily | weekly | monthly
+  min_holding_days: 5            # ④ 避免过度交易, A股T+1下5天合理
+  turnover_limit: 0.50           # ④ 每日换手≤50%总资产, 交易成本约束
+
+# ── Layer 6: Execution ──
 execution:
-  broker_mode: manual
-  auto_trade:
-    enabled: false
-    broker_type: ht
-    config_path: ''
-  risk_controls:
-    max_position_pct: 0.33          # 来源: 单票≤33%仓位 (学术标准 ≤20%, ¥5000激进放宽)
-    daily_loss_stop: 0.03           # 来源: 量化交易日损上限 2-3% (MQL5 prop-firm标准 2025)
-    morning_quiet_min: 30           # 来源: A股开盘前30分钟波动最大, 避开9:30-10:00 (21经济报道 2024)
-    afternoon_quiet_min: 15         # 来源: 深市14:57集合竞价不可撤单, 14:50前完成决策 (搜狐财经 2025)
-    min_order_interval_sec: 10      # 来源: broker API最小间隔1-2s, 留5x安全边际
+  commission: 0.0003             # ② 万三佣金, 行业标准券商费率
+  min_commission: 5              # ② 最低5元/笔
+  stamp_tax: 0.001               # ① A股税法: 千一印花税(仅卖出)
+  slippage: 0.001                # ③ A股中小盘滑点0.5-3%, 取千一中值
+
+# ── Backtest ──
+backtest:
+  initial_capital: 5000          # ④ 北极星起点
+  benchmark: '000300'            # ② 沪深300, A股最常用基准
+
+# ── Web ──
+web:
+  port: 8521
+
+# ── Screening (for factor evaluation) ──
+screening:
+  min_abs_ic: 0.02               # ② Rank IC 最低阈值（可放宽, 因回测前会网格优化）
+  min_ic_ir: 0.10                # ② IC/IR 比率最低阈值

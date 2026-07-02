@@ -1,70 +1,115 @@
-<!DOCTYPE html><html lang="zh-CN"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>北极星 · ¥5000→¥100万</title>
-<link rel="stylesheet" href="/static/style.css?v=21">
-</head><body>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>quant — A股量化选股系统</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
 
-<div id="app">
-  <div style="display:flex;gap:12px;margin-bottom:16px">
-    <b>陈小群</b>
-    <a href="/etf" style="color:var(--muted)">ETF轮动</a>
-    <a href="/smallcap" style="color:var(--muted)">小市值</a>
-    <a href="/timing" style="color:var(--muted)">大盘择时</a>
-    <a href="/arena" style="color:var(--muted)">🏟️竞技场</a>
-  </div>
-
-  <!-- 总资产 + 可用 -->
-  <div id="capital-bar">
-    <div class="capital-row">
-      <span>💰</span>
-      <span id="capital-amount">¥5,000</span>
-      <span id="capital-return"></span>
+<nav>
+  <div class="inner">
+    <a href="/" class="logo">quant</a>
+    <div class="tabs">
+      <button class="tab active" data-tab="overview">概览</button>
+      <button class="tab" data-tab="factors">因子</button>
+      <button class="tab" data-tab="portfolio">持仓</button>
+      <button class="tab" data-tab="performance">绩效</button>
     </div>
-    <div class="capital-row secondary">
-      <span>💵 可用</span>
-      <span id="capital-available">¥5,000</span>
+    <span id="nav-status" style="margin-left:auto;font-size:.78rem;color:var(--text-muted)"></span>
+  </div>
+</nav>
+
+<main>
+
+<!-- ════════════════ TAB: 概览 ════════════════ -->
+<section class="tab-content active" id="tab-overview">
+
+  <div class="kpi-strip" id="kpi-overview">
+    <div class="kpi"><div class="label">总资产</div><div class="value" id="kpi-total">—</div></div>
+    <div class="kpi"><div class="label">累计 PnL</div><div class="value" id="kpi-pnl">—</div><div class="sub" id="kpi-pnl-pct"></div></div>
+    <div class="kpi"><div class="label">胜率</div><div class="value" id="kpi-wr">—</div></div>
+    <div class="kpi"><div class="label">交易次数</div><div class="value" id="kpi-count">—</div></div>
+    <div class="kpi"><div class="label">可用资金</div><div class="value" id="kpi-cash">—</div></div>
+    <div class="kpi"><div class="label">持仓市值</div><div class="value" id="kpi-posval">—</div></div>
+  </div>
+
+  <div class="grid-2">
+    <div class="chart-box" id="chart-pnl"></div>
+    <div>
+      <div class="section">
+        <div class="section-header">
+          <h2>Alpha 候选池</h2>
+          <span class="meta" id="meta-signals">—</span>
+        </div>
+        <div id="table-signals"></div>
+      </div>
     </div>
-    <div class="capital-row secondary">
-      <span id="perf-stats" style="font-size:11px;color:var(--muted)"></span>
+  </div>
+
+</section>
+
+<!-- ════════════════ TAB: 因子 ════════════════ -->
+<section class="tab-content" id="tab-factors">
+
+  <div class="kpi-strip" id="kpi-factors">
+    <div class="kpi"><div class="label">有效因子</div><div class="value" id="kpi-nfactors">—</div></div>
+    <div class="kpi"><div class="label">均值 |IC|</div><div class="value" id="kpi-ic-mean">—</div></div>
+    <div class="kpi"><div class="label">均值 IC_IR</div><div class="value" id="kpi-ic-ir">—</div></div>
+    <div class="kpi"><div class="label">因子数</div><div class="value" id="kpi-factor-count">12</div></div>
+  </div>
+
+  <div class="grid-2">
+    <div class="chart-box" id="chart-ic-trend"></div>
+    <div class="chart-box" id="chart-ic-decay"></div>
+  </div>
+  <div class="chart-box section" id="chart-correlation" style="min-height:400px"></div>
+
+</section>
+
+<!-- ════════════════ TAB: 持仓 ════════════════ -->
+<section class="tab-content" id="tab-portfolio">
+
+  <div class="section">
+    <div class="section-header">
+      <h2>当前持仓</h2>
+      <span class="meta" id="meta-positions">—</span>
     </div>
-    <div id="icir-card" style="font-size:11px;color:var(--muted);margin-top:4px"></div>
+    <div id="table-positions"></div>
   </div>
 
-  <!-- 情绪 + 状态 -->
-  <div id="mood-bar">
-    <span id="mood-icon">⏳</span>
-    <span id="mood-label">等待开盘</span>
-    <span id="mood-position"></span>
-    <span id="status-dot" style="margin-left:auto"></span>
+  <div class="grid-2">
+    <div class="chart-box" id="chart-exposure-sector"></div>
+    <div class="chart-box" id="chart-exposure-risk"></div>
   </div>
 
-  <!-- 持仓 -->
-  <div id="positions-panel">
-    <div class="section-title">💼 持仓 <span id="pos-count"></span></div>
-    <div id="position-list"></div>
-    <div id="exit-alerts"></div>
+</section>
+
+<!-- ════════════════ TAB: 绩效 ════════════════ -->
+<section class="tab-content" id="tab-performance">
+
+  <div class="section">
+    <div class="section-header"><h2>交易记录</h2></div>
+    <div id="table-trades"></div>
   </div>
 
-  <!-- 买入信号 -->
-  <div id="signals">
-    <div class="section-title">🎯 今日信号 <span id="signal-count"></span></div>
-    <div id="signal-list"></div>
-    <div id="no-signals" class="empty">监控中，等待信号触发...</div>
+  <div class="grid-2">
+    <div class="chart-box" id="chart-attribution"></div>
+    <div>
+      <div class="section">
+        <div class="section-header"><h2>累计统计</h2></div>
+        <div id="stats-performance" class="kpi-strip" style="grid-template-columns:1fr 1fr;margin-bottom:0"></div>
+      </div>
+    </div>
   </div>
 
-  <!-- 最近交易 -->
-  <div id="trades-panel">
-    <div class="section-title">📋 最近交易</div>
-    <div id="trade-list"></div>
-  </div>
-</div>
+</section>
 
-  <!-- 复盘 -->
-  <div id="review-panel" style="display:none">
-    <div class="section-title">📊 今日复盘</div>
-    <div id="review-content"></div>
-  </div>
-</div>
+</main>
 
-<script src="/static/app.js?v=21"></script>
-</body></html>
+<script defer src="/static/plotly.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

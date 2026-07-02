@@ -526,7 +526,7 @@ class DataStore:
                         logger.info(f"stock {sym}: industry='{industry}', items={list(info_dict.keys())[:5]}")
                 except Exception as e:
                     if idx < 3:
-                        logger.debug(f"stock {sym} industry query failed: {e}")
+                        logger.info(f"stock {sym} industry query failed: {e}")
                     continue
                 time.sleep(0.8)  # akshare rate limit
             conn.commit()

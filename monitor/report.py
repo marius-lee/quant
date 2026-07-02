@@ -67,8 +67,8 @@ def generate_report(
         p.get("price", 0) * p.get("shares", 0) for p in positions
     )
     total_wealth = cash_balance + positions_value
-    logger.info(f"[report] {report_date}: cash=¥{cash_balance:.0f} pos=¥{positions_value:.0f} total=¥{total_wealth:.0f} return={total_return*100:.1f}%")
     total_return = (total_wealth - initial_capital) / initial_capital
+    logger.info(f"[report] {report_date}: cash=¥{cash_balance:.0f} pos=¥{positions_value:.0f} total=¥{total_wealth:.0f} return={total_return*100:.1f}%")
 
     report = {
         "date": report_date,

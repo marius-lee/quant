@@ -487,10 +487,11 @@ class DataStore:
         return filled
 
     def _sync_industry_akshare(self, conn) -> int:
-        """akshare 同花顺行业分类回退。
+        """akshare 逐只查询行业回退 — 仅针对 industry IS NULL 的股票。
 
-        baostock 不可用时 (Python 3.14) 的替代方案。
-        逐个行业板块拉取成分股 → 写入 stocks.industry。
+        stock_board_industry_cons_ths() 批量API不稳定，改用 stock_individual_info_em()
+        逐只查询行业，只对未分类的317只股票。
+        每只 ~1秒，总共 ~5分钟。
         """
         try:
             import akshare as ak
@@ -498,61 +499,42 @@ class DataStore:
             logger.warning("akshare not installed — industry sync skipped")
             return 0
         try:
-            df_ind = ak.stock_board_industry_name_ths()
-            if df_ind is None or df_ind.empty:
-                logger.warning("akshare industry list returned empty")
+            missing = [r[0] for r in conn.execute(
+                "SELECT symbol FROM stocks WHERE industry IS NULL"
+            ).fetchall()]
+            if not missing:
+                logger.info("industry sync: no unclassified stocks")
                 return 0
-            logger.info(f"THS industry list: {len(df_ind)} industries, cols={df_ind.columns.tolist()}, sample={df_ind.head(2).to_dict()}")
+            logger.info(f"industry sync: {len(missing)} unclassified stocks via akshare individual")
+            import time
             updated = 0
-            sample_cols = None
-            # 前3个行业打印样本列名，帮助调试
-            for idx, (_, ind_row) in enumerate(df_ind.iterrows()):
-                ind_name = str(ind_row.get("name", "")).strip()
-                if not ind_name:
-                    continue
+            for idx, sym in enumerate(missing):
                 try:
-                    # 尝试 name 和 code 两种参数格式
-                    ind_code = str(ind_row.get("code", ind_row.get("代码", ""))).strip()
-                    df_cons = None
-                    for param in [ind_name, ind_code]:
-                        if not param:
-                            continue
-                        try:
-                            df_cons = ak.stock_board_industry_cons_ths(symbol=param)
-                            if df_cons is not None and not df_cons.empty:
-                                break
-                        except Exception:
-                            continue
-                    if idx < 3 and df_cons is not None and not df_cons.empty:
-                        sample_cols = df_cons.columns.tolist()
-                        logger.info(f"THS industry '{ind_name}': param_tried={[ind_name, ind_code][:2]}, cols={sample_cols}, rows={len(df_cons)}")
-                    elif idx < 3:
-                        logger.info(f"THS industry '{ind_name}': params={[ind_name, ind_code][:2]}, df_cons EMPTY")
-                    if df_cons is None or df_cons.empty:
+                    info = ak.stock_individual_info_em(symbol=sym)
+                    if info is None or info.empty:
                         continue
-                    for _, cons_row in df_cons.iterrows():
-                        # akshare 可能返回中文列名 "代码" 或英文 "code"
-                        sym = str(cons_row.get("code", cons_row.get("代码", cons_row.get("stock_code", "")))).strip()
-                        # 去掉可能的市场前缀/后缀: "sh600036", "600036.SH" → "600036"
-                        if "." in sym:
-                            sym = sym.split(".")[-1]
-                        if not sym.isdigit() or len(sym) < 6:
-                            sym = sym[-6:]  # 取最后6位
-                        if len(sym) != 6:
-                            continue
+                    # stock_individual_info_em 返回 行×列 格式, industry在'值'列中
+                    info_dict = dict(zip(info['item'], info['value']))
+                    industry = str(info_dict.get('行业', info_dict.get('industry', ''))).strip()
+                    if industry:
                         conn.execute(
-                            "UPDATE stocks SET industry=? WHERE symbol=? AND industry IS NULL",
-                            (ind_name, sym)
+                            "UPDATE stocks SET industry=? WHERE symbol=?",
+                            (industry, sym)
                         )
                         updated += 1
-                except Exception:
+                    if idx < 3:
+                        logger.info(f"stock {sym}: industry='{industry}', items={list(info_dict.keys())[:5]}")
+                except Exception as e:
+                    if idx < 3:
+                        logger.debug(f"stock {sym} industry query failed: {e}")
                     continue
+                time.sleep(0.8)  # akshare rate limit
             conn.commit()
             classified = conn.execute(
                 "SELECT COUNT(*) FROM stocks WHERE industry IS NOT NULL"
             ).fetchone()[0]
             total = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
-            logger.info(f"industry sync (akshare THS): {updated} updates, {classified}/{total}")
+            logger.info(f"industry sync (akshare individual): {updated} updates, {classified}/{total}")
             return updated
         except Exception as e:
             logger.warning(f"akshare industry sync failed: {e}")

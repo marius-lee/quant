@@ -7,26 +7,23 @@ import threading, sqlite3, os
 _lock = threading.Lock()
 
 def _init_state() -> dict:
-    """从 trades.db 恢复初始状态。"""
+    """从 trades.db 恢复初始状态。使用 capital_after 列 (执行引擎写入的准确值)。"""
     from config.loader import get as cfg
     state = {"status": "休市", "progress": "",
              "mood": {},
              "signals": [], "sectors": [],
              "summary": {}, "timestamp": ""}
-    base = float(cfg("backtest.initial_capital", 5000))
     try:
         db = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "trades.db")
         conn = sqlite3.connect(db)
-        # 默认策略 "quant"
-        capital = base
-        for side, price, shares in conn.execute(
-            "SELECT side, price, shares FROM sim_trades WHERE strategy='quant' ORDER BY id"
-        ).fetchall():
-            val = price * shares
-            if side == "buy":
-                capital -= val + max(val * 0.0003, 5)
-            else:
-                capital += val - max(val * 0.0003, 5) - val * 0.001
+        # 从 capital_after 读取最近一次交易的现金余额 (唯一真相源)
+        row = conn.execute(
+            "SELECT capital_after FROM sim_trades WHERE strategy='quant' AND capital_after IS NOT NULL ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if row:
+            capital = round(row[0], 2)
+        else:
+            capital = float(cfg("backtest.initial_capital", 5000))
         merged = {}
         for r in conn.execute("""
             SELECT symbol, price, shares, board_count, date FROM sim_trades

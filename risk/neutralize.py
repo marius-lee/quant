@@ -1,4 +1,6 @@
 """风险中性化 — 截面回归取残差，消除行业和市值 bias。
+from utils.logger import get_logger
+logger = get_logger("risk.neutralize")
 
 风控层不对 alpha 加分，只做减法和约束。
 
@@ -113,6 +115,9 @@ def neutralize(
     返回: 中性化后的得分
     """
     result = scores.copy()
+    ind_flag = "Y" if industries is not None else "N"
+    sz_flag = "Y" if market_caps is not None else "N"
+    logger.info(f"[neutralize] industry={ind_flag} size={sz_flag}")
     
     if industries is not None:
         result = industry_neutralize(result, industries)

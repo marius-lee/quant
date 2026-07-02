@@ -1,4 +1,6 @@
 """绩效归因 — Brinson 分解 + 因子暴露分解。
+from utils.logger import get_logger
+logger = get_logger("monitor.attribution")
 
 将组合总收益分解为:
   配置收益 (Allocation): 组合行业权重 vs 基准行业权重的差异带来的收益
@@ -50,6 +52,7 @@ def brinson_attribution(
     interaction = ((Wp - Wb) * (Rp - Rb)).sum()
 
     total = allocation + selection + interaction
+    logger.debug(f"[brinson] allocation={allocation:.4f} selection={selection:.4f} interaction={interaction:.4f} total={total:.4f}")
 
     return {
         "allocation": round(allocation, 6),

@@ -12,6 +12,7 @@ from collections import defaultdict
 import pandas as pd
 import numpy as np
 
+from config.loader import get as cfg
 from data.store import DataStore
 from execution.engine import ExecutionEngine
 from data.benchmark import sync_benchmark
@@ -67,7 +68,7 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
             # P0-2: On every trading day, check stop-loss first
             current_positions = engine.get_positions("quant")
             if current_positions:
-                stop_loss_pct = pipeline.cfg("risk.stop_loss_pct", 0.15)
+                stop_loss_pct = cfg("risk.stop_loss_pct", 0.15)
                 prices_for_sl = {}
                 try:
                     # Get today's close prices for all held symbols

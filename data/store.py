@@ -561,7 +561,7 @@ class DataStore:
         """).fetchall()
 
         # 所有 stocks 符号
-        all_symbols = {r[0] for r in conn.execute("SELECT symbol FROM stocks").fetchall()}
+        all_symbols = {r[0] for r in conn.execute("SELECT symbol FROM stocks WHERE market!=\"BJ\"").fetchall()}
         have_data = set()
 
         stale, full = [], []

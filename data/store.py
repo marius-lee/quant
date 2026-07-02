@@ -786,6 +786,28 @@ class DataStore:
         ).fetchall()
         return {r[0]: r[1] for r in rows}
 
+    def get_fundamentals(self, symbols: list = None) -> pd.DataFrame:
+        """读取基本面数据: PE, PB, 总市值, 行业分类。
+
+        symbols: 股票列表, None = 全部
+        返回: DataFrame(index=symbol, columns=[pe, pb, total_mv, industry])
+              pe/pb 已过滤负值 (设为 NaN)
+        """
+        conn = self._connect()
+        if symbols:
+            placeholders = ",".join("?" for _ in symbols)
+            df = pd.read_sql_query(
+                f"SELECT symbol, pe, pb, total_mv, industry FROM stocks WHERE symbol IN ({placeholders})",
+                conn, params=symbols)
+        else:
+            df = pd.read_sql_query(
+                "SELECT symbol, pe, pb, total_mv, industry FROM stocks", conn)
+        df = df.set_index("symbol")
+        # 过滤负值PE/PB
+        df.loc[df["pe"] <= 0, "pe"] = None
+        df.loc[df["pb"] <= 0, "pb"] = None
+        return df
+
 
 if __name__ == "__main__":
     import os

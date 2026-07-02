@@ -256,21 +256,55 @@ def compute_skewness(data: pd.DataFrame, date: str, window: int = 20) -> pd.Seri
 #   downside_vol_20d, vol_ratio_5d, turnover_chg_5d, amihud_20d.
 FACTOR_REGISTRY = {
     "momentum_10d":     ("momentum",  10, compute_momentum),
-    "momentum_20d":     ("momentum",  20, compute_momentum),
     "volatility_20d":   ("volatility",20, compute_volatility),
     "skewness_20d":     ("skewness",  20, compute_skewness),
 }
 
+# ═══════════════════════════════════════════════════════════
+# 7. 基本面因子 — Fama & French (1992, 1993, 2015)
+# ═══════════════════════════════════════════════════════════
+
+def compute_ep_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
+    """EP 比率 (1/PE) — 价值因子。低PE = 高EP = 高分。
+    来源: Fama & French (1992) — 价值因子 (HML)
+    """
+    ep = 1.0 / fundamentals["pe"]
+    ep = ep.replace([np.inf, -np.inf], np.nan)
+    return _cs_zscore(ep).rename("ep_ratio")
+
+
+def compute_bp_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
+    """BP 比率 (1/PB) — 价值因子。低PB = 高BP = 高分。
+    来源: Fama & French (1992) — 账面市值比
+    """
+    bp = 1.0 / fundamentals["pb"]
+    bp = bp.replace([np.inf, -np.inf], np.nan)
+    return _cs_zscore(bp).rename("bp_ratio")
+
+
+def compute_size(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
+    """规模因子 — -log(总市值)。小市值 = 高分。
+    来源: Fama & French (1993) — 市值因子 (SMB), A股小盘溢价
+    """
+    size = -np.log(fundamentals["total_mv"])
+    size = size.replace([np.inf, -np.inf], np.nan)
+    return _cs_zscore(size).rename("size")
+
+
+FUNDAMENTAL_FACTOR_REGISTRY = {
+    "bp_ratio":   ("value",    compute_bp_ratio),
+}
 
 def get_factor_names() -> list:
-    """返回所有已注册因子名。"""
-    return list(FACTOR_REGISTRY.keys())
+    """返回所有已注册因子名 (价格 + 基本面)。"""
+    return list(FACTOR_REGISTRY.keys()) + list(FUNDAMENTAL_FACTOR_REGISTRY.keys())
 
 
-def compute_all_factors(data: pd.DataFrame, date: str) -> dict:
+def compute_all_factors(data: pd.DataFrame, date: str,
+                      fundamentals: pd.DataFrame = None) -> dict:
     """批量计算所有已注册因子 → {factor_name: Series(index=symbol)}。
     
-    用于 pipeline 一次性计算全部因子, 避免重复读取 data。
+    价格因子从 data 计算, 基本面因子从 fundamentals 计算。
     """
     results = {}
     for name, (cat, win, fn) in FACTOR_REGISTRY.items():
@@ -278,6 +312,14 @@ def compute_all_factors(data: pd.DataFrame, date: str) -> dict:
             results[name] = fn(data, date, win)
         except Exception as e:
             from utils.logger import get_logger
-            get_logger("factor.compute").warning(f"factor {name} failed: {e}")
+            get_logger("factor.compute").warning(f"price factor {name} failed: {e}")
             results[name] = pd.Series(dtype=float)
+    if fundamentals is not None and not fundamentals.empty:
+        for name, (cat, fn) in FUNDAMENTAL_FACTOR_REGISTRY.items():
+            try:
+                results[name] = fn(fundamentals, date)
+            except Exception as e:
+                from utils.logger import get_logger
+                get_logger("factor.compute").warning(f"fundamental factor {name} failed: {e}")
+                results[name] = pd.Series(dtype=float)
     return results

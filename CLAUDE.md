@@ -40,7 +40,7 @@ PYTHONPATH=. python3 -m pytest tests/ -v
 
 ### Layer 2: Factor (`factor/`)
 - `base.py` — **Factor** 抽象基类: `compute(data) → Series`, `evaluate(values, returns) → dict`
-- `compute.py` — 因子计算：动量(10/20d)、波动率(20d)、偏度(20d) — 4因子精炼版
+- `compute.py` — 因子计算：momentum_10d, volatility_20d, skewness_20d, bp_ratio — 4因子，覆盖动量/低波/偏度/价值
 - `evaluate.py` — 截面 Rank IC + IC_IR + 衰减分析 + 相关性矩阵
 - `synth.py` — 因子合成：`equal_weight()` / `ic_weighted()`
 
@@ -112,7 +112,7 @@ logger = get_logger("module.name")
 | File | Status |
 |------|--------|
 | `factor/base.py` | Done |
-| `factor/compute.py` | Done |
+| `factor/compute.py` | Done (4因子: 动量+低波+偏度+价值) |
 | `factor/evaluate.py` | Done |
 | `factor/synth.py` | Done |
 | `alpha/model.py` | Done |

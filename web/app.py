@@ -88,20 +88,29 @@ def api_positions():
     try:
         conn = sqlite3.connect(TRADE_DB)
         buys = conn.execute("""
-            SELECT symbol, price, shares, board_count, date FROM sim_trades
+            SELECT symbol, price, shares, date FROM sim_trades
             WHERE side='buy' AND strategy=? AND symbol NOT IN (
                 SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?
             )
             ORDER BY date
         """, (strategy, strategy)).fetchall()
+        merged = {}
         for r in buys:
-            sym, px, sh, board, dt = r[0], r[1], r[2], r[3], r[4]
+            sym, px, sh, dt = r[0], r[1], r[2], r[3]
+            if sym in merged:
+                m = merged[sym]; total_sh = m["shares"] + sh
+                m["price"] = round((m["price"] * m["shares"] + px * sh) / total_sh, 4)
+                m["shares"] = total_sh
+                m["date"] = min(m["date"], dt)
+            else:
+                merged[sym] = {"symbol": sym, "price": px, "shares": sh, "date": dt}
+        for m in merged.values():
             positions.append({
-                "symbol": sym, "price": px, "shares": sh,
-                "board_count": board, "date": dt,
+                "symbol": m["symbol"], "price": m["price"], "shares": m["shares"],
+                "board_count": 0, "date": m["date"],
                 "current": px,          # 盘后用成本价; 交易时段前端用实时行情覆盖
                 "pnl_pct": 0,           # 同上
-                "value": round(sh * px, 2),
+                "value": round(m["shares"] * m["price"], 2),
                 "name": "",             # 前端可补; 后端暂不查stocks表
                 "change_pct": 0,
             })

@@ -47,6 +47,26 @@ def api_state():
     return jsonify(get_state())
 
 
+@app.route("/api/factors")
+def api_factors():
+    """因子评估数据 — 为前端因子分析 Tab 提供 IC/IR/衰减/相关性。
+
+    数据来源: factor/stats_cache.py → data/factor_cache.json (24h 过期)
+    首次访问时自动计算 (约 30s), 后续 24h 内秒出。
+    ?refresh=true 强制重新计算。
+    """
+    from flask import request
+    from factor.stats_cache import get_cached_factor_stats
+    force = request.args.get("refresh", "false").lower() == "true"
+    try:
+        stats = get_cached_factor_stats(force_refresh=force)
+        return jsonify(stats)
+    except Exception as e:
+        from utils.logger import get_logger
+        get_logger("web.app").warning(f"Factor stats failed: {e}")
+        return jsonify({"error": str(e), "factors": [], "ic": [], "ic_ir": []})
+
+
 @app.route("/api/positions")
 def api_positions():
     """持仓 (从 trades.db 读取 — 唯一真相源). ?strategy=过滤"""

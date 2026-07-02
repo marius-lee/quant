@@ -58,23 +58,55 @@ class ExecutionEngine:
         conn.close()
 
     def get_capital(self, strategy: str = "quant") -> float:
-        """获取当前策略资金 (从最后一笔交易的 capital_after)。"""
+        """获取当前策略总资产 (现金 + 持仓市值)。"""
         conn = sqlite3.connect(self.db_path)
-        row = conn.execute(
-            "SELECT capital_after FROM sim_trades WHERE strategy=? ORDER BY id DESC LIMIT 1",
-            (strategy,)
-        ).fetchone()
-        if row:
-            val = row[0]
+        try:
+            row = conn.execute(
+                "SELECT capital_after FROM sim_trades WHERE strategy=? ORDER BY id DESC LIMIT 1",
+                (strategy,)
+            ).fetchone()
+            if row and row[0] is not None:
+                cash = row[0]
+                # 加上持仓市值
+                positions = conn.execute("""
+                    SELECT symbol, price, shares FROM sim_trades
+                    WHERE side='buy' AND strategy=? AND symbol NOT IN (
+                        SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?
+                    )
+                """, (strategy, strategy)).fetchall()
+                pos_value = sum(p[1] * p[2] for p in positions)
+                return cash + pos_value
+            # 无交易记录: 回退到 strategy_config
+            row2 = conn.execute(
+                "SELECT initial_capital FROM strategy_config WHERE strategy=?",
+                (strategy,)
+            ).fetchone()
+            if row2 and row2[0] is not None:
+                return row2[0]
+        finally:
             conn.close()
-            return val
-        # 回退到初始资金
-        row = conn.execute(
-            "SELECT initial_capital FROM strategy_config WHERE strategy=?", (strategy,)
-        ).fetchone()
-        conn.close()
-        if row:
-            return row[0]
+        from config.loader import get as cfg
+        return cfg("backtest.initial_capital", 5000)
+
+    def get_cash(self, strategy: str = "quant") -> float:
+        """获取当前现金余额 (不含持仓市值)。用于执行引擎成本计算。"""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT capital_after FROM sim_trades WHERE strategy=? ORDER BY id DESC LIMIT 1",
+                (strategy,)
+            ).fetchone()
+            if row and row[0] is not None:
+                return row[0]
+            # 无交易记录: 回退到 strategy_config
+            row2 = conn.execute(
+                "SELECT initial_capital FROM strategy_config WHERE strategy=?",
+                (strategy,)
+            ).fetchone()
+            if row2 and row2[0] is not None:
+                return row2[0]
+        finally:
+            conn.close()
         from config.loader import get as cfg
         return cfg("backtest.initial_capital", 5000)
 
@@ -102,7 +134,7 @@ class ExecutionEngine:
 
         返回: 执行的订单数
         """
-        capital = self.get_capital(strategy)
+        capital = self.get_cash(strategy)  # 现金余额, 用于交易成本计算
         conn = sqlite3.connect(self.db_path)
 
         executed = 0

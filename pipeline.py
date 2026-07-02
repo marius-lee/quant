@@ -86,6 +86,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
     except Exception as e:
         results["steps"]["load"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[2/7] load failed: {e}")
+        store.close()
         return results
 
     # ── Step 3: Factor + Alpha ──
@@ -106,6 +107,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
     except Exception as e:
         results["steps"]["factor"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[3/7] factor failed: {e}")
+        store.close()
         return results
 
     # ── Step 4: Risk ──
@@ -140,6 +142,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
     except Exception as e:
         results["steps"]["risk"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[4/7] risk failed: {e}")
+        store.close()
         return results
 
     # ── Step 5: Optimizer ──
@@ -156,6 +159,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
     except Exception as e:
         results["steps"]["optimizer"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[5/7] optimizer failed: {e}")
+        store.close()
         return results
 
     # ── Step 6: Execution ──

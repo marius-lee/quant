@@ -201,7 +201,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
 
 
     # ── Stop-Loss: 任一持仓从成本价跌超 5% 立即平仓 ──
-    stop_loss_pct = cfg("risk.stop_loss_pct", 0.05)
+    stop_loss_pct = cfg("risk.stop_loss_pct", 0.15)
     stopped = 0
     for p in current_positions:
         cost_basis = p.get("price", 0)

@@ -95,10 +95,13 @@ def compute_factor_stats(
     except ImportError:
         logger.info("tqdm not installed, computing without progress bar")
         date_iter = eval_dates
+    # Load fundamentals for fundamental factor computation
+    fundamentals = store.get_fundamentals(symbols)
+
     for d in date_iter:
         date_str = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10]
         try:
-            fv = compute_all_factors(data, date_str)
+            fv = compute_all_factors(data, date_str, fundamentals=fundamentals)
             for name in factor_names:
                 if name in fv and not fv[name].dropna().empty:
                     factor_values_by_date[name][date_str] = fv[name]

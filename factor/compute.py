@@ -302,8 +302,42 @@ def compute_high52w_dist(fundamentals: "pd.DataFrame", date: str) -> "pd.Series"
     return _cs_zscore(-dist).rename("high52w_dist")
 
 
+
+# ═══════════════════════════════════════════════════════════
+# 11. 北向资金净流入 — 陆股通 A 股最可靠因子 IC≈0.04-0.06
+# ═══════════════════════════════════════════════════════════
+
+def compute_hsgt_flow(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.Series":
+    """北向资金净流入因子: avg_net_buy(N日)/circ_mv, z-scored。
+    数据源: data/northbound.py → northbound_flow 表 (需先运行 sync_northbound)。
+    """
+    from data.northbound import get_northbound_flow
+    symbols = list(data["close"].columns)
+    flow = get_northbound_flow(symbols, date, window=window)
+    if flow.empty:
+        return pd.Series(np.nan, index=symbols, name=f"hsgt_flow_{window}d")
+    return _cs_zscore(flow).rename(f"hsgt_flow_{window}d")
+
+
 # ═══════════════════════════════════════════════════════════
 # 因子注册表
+
+# ═══════════════════════════════════════════════════════════
+# 11. 北向资金净流入 — 陆股通 A 股最可靠因子 IC≈0.04-0.06
+# ═══════════════════════════════════════════════════════════
+
+def compute_hsgt_flow(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.Series":
+    """北向资金净流入因子: avg_net_buy(N日)/circ_mv, z-scored。
+    数据源: data/northbound.py → northbound_flow 表 (需先运行 sync_northbound)。
+    """
+    from data.northbound import get_northbound_flow
+    symbols = list(data["close"].columns)
+    flow = get_northbound_flow(symbols, date, window=window)
+    if flow.empty:
+        return pd.Series(np.nan, index=symbols, name=f"hsgt_flow_{window}d")
+    return _cs_zscore(flow).rename(f"hsgt_flow_{window}d")
+
+
 # ═══════════════════════════════════════════════════════════
 # 因子注册表 — 供 FactorEvaluator 扫描
 # ═══════════════════════════════════════════════════════════
@@ -323,6 +357,7 @@ FACTOR_REGISTRY = {
     # 新增因子 (2026-07)
     "turnover_rev_5d":  ("turnover_rev", 5,  compute_turnover_reversal),
     "idio_vol_20d":     ("idio_vol",     20, compute_idiosyncratic_vol),
+    "hsgt_flow_5d":    ("northbound",   5,  compute_hsgt_flow),
 }
 
 # ═══════════════════════════════════════════════════════════
@@ -375,7 +410,6 @@ FUNDAMENTAL_FACTOR_REGISTRY = {
     "roe_ratio":     ("profitability",  compute_roe_ratio),
     # 新增因子 (2026-07)
     "high52w_dist":  ("high52w",        compute_high52w_dist),
-    # "hsgt_flow_5d": ("northbound",     compute_hsgt_flow),      # 需北向资金数据源
 }
 
 def get_factor_names() -> list:

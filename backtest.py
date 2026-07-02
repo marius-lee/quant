@@ -116,6 +116,40 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
                 f"\n  Sharpe (est): {sharpe:.3f}"
             )
 
+    # ── Benchmark comparison ──
+    try:
+        bench_code = "000300"  # 沪深300
+        bench_returns = store.get_benchmark(bench_code, start=start_date)
+        if not bench_returns.empty:
+            # Align benchmark returns to backtest dates
+            bench_dates = [r["date"] for r in results if "date" in r]
+            bench_aligned = bench_returns.reindex(pd.to_datetime(bench_dates)).dropna()
+            if len(bench_aligned) > 1:
+                bench_cum = (1 + bench_aligned).prod() - 1
+                # Excess return (alpha)
+                if "cumulative_return" in df.columns and not df.empty:
+                    strategy_cum = df["cumulative_return"].dropna().iloc[-1] if not df["cumulative_return"].dropna().empty else 0
+                else:
+                    strategy_cum = cum_return if 'cum_return' in dir() else 0
+                excess = strategy_cum - bench_cum
+                # Tracking error (annualized)
+                strategy_daily = df.set_index("date")["total_wealth"].pct_change().dropna()
+                common_idx = strategy_daily.index.intersection(bench_aligned.index)
+                te_daily = strategy_daily.loc[common_idx] - bench_aligned.loc[common_idx]
+                tracking_err = float(te_daily.std() * np.sqrt(252)) if len(te_daily) > 1 else 0.0
+                # Information ratio
+                ir = float(te_daily.mean() / te_daily.std() * np.sqrt(252)) if te_daily.std() > 0 else 0.0
+
+                logger.info(
+                    f"\n=== Benchmark ({bench_code}) ==="
+                    f"\n  Benchmark return: {bench_cum*100:+.1f}%"
+                    f"\n  Excess return (α): {excess*100:+.1f}%"
+                    f"\n  Tracking error (ann): {tracking_err*100:.1f}%"
+                    f"\n  Information ratio: {ir:.3f}"
+                )
+    except Exception as e:
+        logger.warning(f"Benchmark comparison failed: {e}")
+
     return df
 
 

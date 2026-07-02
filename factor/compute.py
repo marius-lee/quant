@@ -36,21 +36,6 @@ def _cs_zscore(series: pd.Series, min_count: int = 30) -> pd.Series:
     return (series - series.mean()) / series.std(ddof=1)
 
 
-def _rolling_apply(close: pd.DataFrame, window: int, fn) -> pd.Series:
-    """逐标的滚动窗口应用函数, 返回最近一期的因子值 Series(index=symbol)。
-    
-    对每个标的, 取最近 window 个交易日的数据, 调用 fn(series) → scalar。
-    """
-    results = {}
-    for sym in close.columns:
-        ts = close[sym].dropna()
-        if len(ts) < window:
-            results[sym] = np.nan
-            continue
-        results[sym] = fn(ts.iloc[-window:])
-    return pd.Series(results)
-
-
 # ═══════════════════════════════════════════════════════════
 # 1. 动量因子 — Jegadeesh & Titman (1993)
 # ═══════════════════════════════════════════════════════════

@@ -158,31 +158,18 @@ function renderPNLChart() {
 // ═══════════════════════════════════════════
 async function loadFactors() {
   try {
-    const perf = await fetchJSON(API + '/state');
-    const fd = perf?.factors?.length ? perf.factors : generateDemoFactors();
-    renderFactorKPIs(fd);
-    renderICTrend(fd);
-    renderICDecay(fd);
-    renderCorrelation(fd);
+    const fd = await fetchJSON(API + '/factors');
+    if (fd && fd.factors && fd.factors.length) {
+      renderFactorKPIs(fd);
+      renderICTrend(fd);
+      renderICDecay(fd);
+      renderCorrelation(fd);
+    }
   } catch (e) {
     console.warn('factors error:', e.message);
-    const demo = generateDemoFactors();
-    renderFactorKPIs(demo);
-    renderICTrend(demo);
-    renderICDecay(demo);
-    renderCorrelation(demo);
   }
 }
 
-function generateDemoFactors() {
-  return {
-    factors: ['动量5d', '动量20d', '反转5d', '波动率20d', '量比5d', 'Amihud20d'],
-    ic: [0.032, 0.028, -0.018, -0.022, 0.025, -0.015],
-    ic_ir: [0.35, 0.28, -0.15, -0.20, 0.22, -0.12],
-    decay: { '动量5d': [0.032,0.018,0.005], '动量20d':[0.028,0.022,0.015], '反转5d':[-0.018,-0.005,-0.001], '波动率20d':[-0.022,-0.015,-0.008], '量比5d':[0.025,0.012,0.003], 'Amihud20d':[-0.015,-0.010,-0.006] },
-    corr: [[1,0.6,-0.3,-0.4,0.3,-0.2],[0.6,1,-0.1,-0.3,0.4,-0.1],[-0.3,-0.1,1,0.2,-0.5,0.3],[-0.4,-0.3,0.2,1,-0.2,0.4],[0.3,0.4,-0.5,-0.2,1,-0.3],[-0.2,-0.1,0.3,0.4,-0.3,1]],
-  };
-}
 
 function renderFactorKPIs(fd) {
   const ics = fd.ic || [];

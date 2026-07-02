@@ -34,7 +34,7 @@ optimizer:
   method: equal_weight           # equal_weight | score_weighted
   rebalance_freq: weekly         # daily | weekly | monthly
   min_holding_days: 5            # ④ 避免过度交易, A股T+1下5天合理
-  turnover_limit: 0.50           # ④ 每日换手≤50%总资产, 交易成本约束
+  turnover_limit: 1.00           # ④ 小资金阶段允许100%换手, 需配合T+1约束
 
 # ── Layer 6: Execution ──
 execution:

@@ -243,7 +243,7 @@ def api_quotes():
 
 @app.route("/api/performance")
 def api_performance():
-    """累计绩效统计. ?strategy=quant"""
+    """累计绩效统计. ?strategy=quant&quotes=true (quotes=true 用市价估值)"""
     from flask import request
     from config.loader import get as cfg
     strategy = request.args.get("strategy", "quant")
@@ -262,10 +262,38 @@ def api_performance():
     position_cost = tc.execute(
         "SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)",
         (strategy, strategy)).fetchone()[0]
-    total_asset = round(capital + position_cost, 2)
+
+    # 估值: ?quotes=true → 市价; 默认 → 账面成本
+    use_quotes = request.args.get("quotes", "").lower() == "true"
+    position_market_value = position_cost  # 默认用成本
+    valuation_method = "book_cost"
+    if use_quotes:
+        try:
+            pos_symbols = [r[0] for r in tc.execute(
+                "SELECT symbol FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)",
+                (strategy, strategy)).fetchall()]
+            from execution.quote import fetch_quotes
+            quotes = fetch_quotes(pos_symbols)
+            if quotes:
+                pos_share_map = dict(tc.execute(
+                    "SELECT symbol, SUM(shares) FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?) GROUP BY symbol",
+                    (strategy, strategy)).fetchall())
+                mv = 0.0
+                for sym, shares in pos_share_map.items():
+                    if sym in quotes:
+                        mv += quotes[sym]["price"] * shares
+                    elif not sym.startswith(("4","8","92")):
+                        mv += position_cost / len(pos_share_map) if pos_share_map else 0
+                if mv > 0:
+                    position_market_value = round(mv, 2)
+                    valuation_method = "market"
+        except Exception:
+            pass  # 报价不可用时回退到账面成本
+
+    total_asset = round(capital + position_market_value, 2)
     total_pnl = round(total_asset - base, 2)
     tc.close()
-    return jsonify({
+    result = {
         "realized_pnl": round(realized_pnl, 2),
         "total_pnl": total_pnl,
         "total_asset": total_asset,
@@ -273,7 +301,9 @@ def api_performance():
         "win_rate": win_rate,
         "total_buys": buys,
         "capital": round(capital, 2),
-    })
+        "valuation_method": valuation_method,
+    }
+    return jsonify(result)
 
 
 if __name__ == "__main__":

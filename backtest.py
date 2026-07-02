@@ -53,14 +53,12 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
     logger.info(f"Backtest: {len(all_dates)} trading days, {len(rebalance_dates)} rebalance dates")
 
     results = []
-    initial_cap = capital
+    original_capital = capital  # 初始本金，全程不变，用于计算累计收益率
     for i, date_str in enumerate(rebalance_dates):
         t0 = time.time()
         try:
-            engine = ExecutionEngine()  # fresh engine to read current DB
-            cap_before = engine.get_capital("quant")
-            positions_before = engine.get_positions("quant")
 
+            # pipeline.run() needs capital for generate_report's initial_capital reference
             result = pipeline.run(date_str=date_str, capital=capital, strategy="quant")
 
             # 计算当日总资产
@@ -69,9 +67,10 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
             positions_after = engine.get_positions("quant")
             pos_value = sum(p["price"] * p["shares"] for p in positions_after)
 
-            day_return = (total_wealth - initial_cap) / initial_cap if initial_cap > 0 else 0
-            # Track cumulative capital
-            initial_cap = total_wealth  # for next day comparison
+            # 累计收益率 (全期, 基于初始本金)
+            cumulative_return = (total_wealth - original_capital) / original_capital if original_capital > 0 else 0
+            daily_return = (total_wealth - prev_total_wealth) / prev_total_wealth if prev_total_wealth > 0 else 0
+            prev_total_wealth = total_wealth
 
             optimizer_info = result["steps"].get("optimizer", {})
             exec_info = result["steps"].get("execution", {})
@@ -81,7 +80,8 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
                 "cash": round(total_wealth - pos_value, 2),
                 "positions_value": round(pos_value, 2),
                 "total_wealth": round(total_wealth, 2),
-                "return": round(day_return, 6),
+                "cumulative_return": round(cumulative_return, 6),
+                "daily_return": round(daily_return, 6),
                 "positions": optimizer_info.get("positions", 0),
                 "orders": exec_info.get("orders", 0),
                 "elapsed": round(time.time() - t0, 1),
@@ -89,7 +89,7 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
 
             logger.info(
                 f"[{i+1}/{len(rebalance_dates)}] {date_str}: "
-                f"wealth=¥{total_wealth:,.2f}, return={day_return*100:+.2f}%, "
+                f"wealth=¥{total_wealth:,.2f}, return={cumulative_return*100:+.2f}%, "
                 f"{optimizer_info.get('positions',0)} pos, {result['elapsed_sec']}s"
             )
 

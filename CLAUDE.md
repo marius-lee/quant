@@ -40,7 +40,7 @@ PYTHONPATH=. python3 -m pytest tests/ -v
 
 ### Layer 2: Factor (`factor/`)
 - `base.py` — **Factor** 抽象基类: `compute(data) → Series`, `evaluate(values, returns) → dict`
-- `compute.py` — 因子计算：动量(5/10/20/60d)、反转(5d)、波动率(20d)、量比(5/20d)、Amihud(20d)、偏度(20d)
+- `compute.py` — 因子计算：动量(10/20d)、波动率(20d)、偏度(20d) — 4因子精炼版
 - `evaluate.py` — 截面 Rank IC + IC_IR + 衰减分析 + 相关性矩阵
 - `synth.py` — 因子合成：`equal_weight()` / `ic_weighted()`
 

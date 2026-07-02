@@ -109,25 +109,25 @@ class TradeRepo:
 
 **职责**: 计算时序/横截面因子，评估因子的预测能力（IC/IR/相关性/衰减），合成复合因子。因子上报 Alpha 层。
 
-因子层不做选股决策，只回答一个问题：「这个因子在历史上预测收益的能力有多强？」
 
-### 因子分类
 
-| 类别 | 因子 | 窗口 | 学术来源 |
-|------|------|------|---------|
-| 动量 | 价格动量 | 5/10/20/60d | Jegadeesh & Titman (1993) |
-| 反转 | 短期反转 | 5d | Lehmann (1990) |
-| 波动率 | 已实现波动率、下行波动率 | 20d | Andersen et al. (2001) |
-| 成交量 | 量比、换手率变化 | 5/20d | Gervais, Kaniel & Mingelegrin (2001) |
-| 流动性 | Amihud 非流动性 | 20d | Amihud (2002) |
-| 偏度 | 收益率偏度 | 20d | Barberis & Huang (2008) |
 
-窗口和因子种类可扩展，全部配置驱动。
 
-### 模块清单
 
-| 文件 | 职责 | 对外接口 |
-|------|------|---------|
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 | `factor/base.py` | Factor 抽象基类 | `Factor.compute(data) → pd.Series` |
 | `factor/compute.py` | 因子计算函数（纯函数、向量化） | `compute_momentum(close, window) → Series` 等 |
 | `factor/evaluate.py` | 截面 Rank IC + 衰减分析 + 相关性矩阵 | `rank_ic(factor, fwd) → float` |

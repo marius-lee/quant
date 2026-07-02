@@ -115,30 +115,31 @@ class DataStore:
         )
 
         # 尝试 tushare
-        try:
-            import tushare as ts
-            ts.set_token(self.token)
-            pro = ts.pro_api()
-            df = pro.stock_basic(exchange="", list_status="L",
-                fields="ts_code,symbol,name,list_date,market")
-            if df is not None and not df.empty:
-                for _, row in df.iterrows():
-                    sym = row["symbol"]
-                    exchange = row.get("market", "")
-                    if exchange == "SHSE": market = "SH"
-                    elif exchange == "SZSE": market = "SZ"
-                    elif exchange == "BJSE": market = "BJ"
-                    else: market = "SH"
-                    if sym not in existing:
-                        conn.execute(
-                            "INSERT OR IGNORE INTO stocks(symbol,name,market,list_date) VALUES(?,?,?,?)",
-                            (sym, row["name"], market, row.get("list_date", "")))
-                conn.commit()
-                total = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
-                logger.info(f"stock list (tushare): {total} total")
-                return total
-        except Exception as e:
-            logger.warning(f"stock list tushare failed: {e}, trying akshare")
+        if self.token:
+            try:
+                import tushare as ts
+                ts.set_token(self.token)
+                pro = ts.pro_api()
+                df = pro.stock_basic(exchange="", list_status="L",
+                    fields="ts_code,symbol,name,list_date,market")
+                if df is not None and not df.empty:
+                    for _, row in df.iterrows():
+                        sym = row["symbol"]
+                        exchange = row.get("market", "")
+                        if exchange == "SHSE": market = "SH"
+                        elif exchange == "SZSE": market = "SZ"
+                        elif exchange == "BJSE": market = "BJ"
+                        else: market = "SH"
+                        if sym not in existing:
+                            conn.execute(
+                                "INSERT OR IGNORE INTO stocks(symbol,name,market,list_date) VALUES(?,?,?,?)",
+                                (sym, row["name"], market, row.get("list_date", "")))
+                    conn.commit()
+                    total = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
+                    logger.info(f"stock list (tushare): {total} total")
+                    return total
+            except Exception as e:
+                logger.warning(f"stock list tushare failed: {e}, trying akshare")
 
         # 回退 akshare
         try:
@@ -168,13 +169,27 @@ class DataStore:
             return 0
 
     def sync_industry(self):
-        """拉取行业分类 — baostock 证监会行业分类（免费稳定，5529只）。"""
-        import baostock as bs
+        """拉取行业分类 — baostock 证监会行业分类 (需 Python ≤3.12; akshare 回退)。
+
+        注意: baostock 当前不支持 Python 3.14。数据已分类时直接跳过。
+        """
         conn = self._connect()
         try:
             conn.execute("ALTER TABLE stocks ADD COLUMN industry TEXT")
         except sqlite3.OperationalError:
             pass
+        classified = conn.execute(
+            "SELECT COUNT(*) FROM stocks WHERE industry IS NOT NULL"
+        ).fetchone()[0]
+        if classified > 0:
+            logger.info(f"industry sync skipped: {classified} already classified")
+            return 0
+        # baostock attempt
+        try:
+            import baostock as bs
+        except ImportError:
+            logger.info("baostock not available (Python 3.14?), trying akshare...")
+            return self._sync_industry_akshare(conn)
         try:
             bs.login()
             rs = bs.query_stock_industry()
@@ -182,14 +197,12 @@ class DataStore:
             bs.logout()
             if df.empty:
                 return 0
-
             updated = 0
             for _, row in df.iterrows():
                 code = str(row.get("code", ""))
                 ind = str(row.get("industry", "")).strip()
                 if not ind:
                     continue
-                # Convert "sh.600036"/"sz.000001" → "600036"/"000001"
                 sym = code.split(".")[-1] if "." in code else code
                 if len(sym) != 6:
                     continue
@@ -198,19 +211,21 @@ class DataStore:
                     (ind, sym)
                 )
                 updated += 1
-
             conn.commit()
-            classified = conn.execute("SELECT COUNT(*) FROM stocks WHERE industry IS NOT NULL").fetchone()[0]
+            classified = conn.execute(
+                "SELECT COUNT(*) FROM stocks WHERE industry IS NOT NULL"
+            ).fetchone()[0]
             total = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
-            logger.info(f"industry sync done: {updated} updates, {classified}/{total} classified (baostock CSRC)")
+            logger.info(f"industry sync done (baostock): {updated} updates, {classified}/{total}")
             return updated
         except Exception as e:
             try:
                 bs.logout()
             except Exception:
-                logger.warning(f"tushare init failed (token may be invalid): will skip tushare source")
-            logger.warning(f"industry sync failed: {e}")
-            return 0
+                pass
+            logger.warning(f"baostock industry sync failed: {e}, trying akshare...")
+            return self._sync_industry_akshare(conn)
+
 
     # ============================================================
     # 日线数据 — 增量更新（tushare 优先，失败回退 akshare）
@@ -467,6 +482,54 @@ class DataStore:
         logger.info(f"turnover backfill done: {filled} rows updated for {len(symbols)} stocks")
         return filled
 
+
+    def _sync_industry_akshare(self, conn) -> int:
+        """akshare 同花顺行业分类回退。
+
+        baostock 不可用时 (Python 3.14) 的替代方案。
+        逐个行业板块拉取成分股 → 写入 stocks.industry。
+        """
+        try:
+            import akshare as ak
+        except ImportError:
+            logger.warning("akshare not installed — industry sync skipped")
+            return 0
+        try:
+            df_ind = ak.stock_board_industry_name_ths()
+            if df_ind is None or df_ind.empty:
+                logger.warning("akshare industry list returned empty")
+                return 0
+            updated = 0
+            for _, ind_row in df_ind.iterrows():
+                ind_name = str(ind_row.get("name", "")).strip()
+                if not ind_name:
+                    continue
+                try:
+                    df_cons = ak.stock_board_industry_cons_ths(symbol=ind_name)
+                    if df_cons is None or df_cons.empty:
+                        continue
+                    for _, cons_row in df_cons.iterrows():
+                        sym = str(cons_row.get("code", "")).strip()
+                        if len(sym) != 6:
+                            continue
+                        conn.execute(
+                            "UPDATE stocks SET industry=? WHERE symbol=? AND industry IS NULL",
+                            (ind_name, sym)
+                        )
+                        updated += 1
+                except Exception:
+                    continue
+            conn.commit()
+            classified = conn.execute(
+                "SELECT COUNT(*) FROM stocks WHERE industry IS NOT NULL"
+            ).fetchone()[0]
+            total = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
+            logger.info(f"industry sync (akshare THS): {updated} updates, {classified}/{total}")
+            return updated
+        except Exception as e:
+            logger.warning(f"akshare industry sync failed: {e}")
+            return 0
+
     def _analyze_daily_gaps(self, conn) -> dict:
         """分析日线数据缺口: 每只股票的状态分类 (增量版 — PK 覆盖索引)。"""
         from datetime import date, timedelta, datetime
@@ -577,7 +640,8 @@ class DataStore:
                 self._source_speed = {}
             all_sources = [
                 ("sina",     lambda: self._fetch_sina_daily(chunk, batch_start)),
-                ("tickflow", lambda: self._fetch_tickflow_daily(chunk, batch_start)),
+                ("tencent",  lambda: self._fetch_tencent_daily(chunk, batch_start)),
+                ("akshare",  lambda: self._fetch_akshare_daily(chunk, batch_start)),
             ]
             ordered = sorted(all_sources, key=lambda x: self._source_speed.get(x[0], 999), reverse=True)
             for src_name, fetch_fn in ordered:

@@ -25,7 +25,7 @@ risk:
   covariance_method: ledoit_wolf # sample | ledoit_wolf
   covariance_window: 60          # ② Ledoit & Wolf (2004): ~250 stocks需要≥50天
   max_single_position: 1.00     # ④ ¥5,000: 全仓不设上限
-  stop_loss_pct: 0.15             # ⑤ 持仓跌5%立即平仓, 防止单票暴雷
+  stop_loss_pct: 0.15             # ④ 持仓跌15%立即平仓, 防止单票暴雷
   max_positions: 1              # ④ ¥5,000: 全仓1只, 不稀释alpha
   min_daily_amount: 500000      # ③ 动态 = capital/max_positions*10 的静态回退
   exclude_star_st: true         # ② *ST退市风险过高, 无alpha价值

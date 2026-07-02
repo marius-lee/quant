@@ -35,6 +35,7 @@ class ExecutionEngine:
 
     def _ensure_schema(self):
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS sim_trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,6 +54,15 @@ class ExecutionEngine:
                 strategy TEXT PRIMARY KEY,
                 initial_capital REAL NOT NULL
             );
+        """)
+        # P0-1: 复合索引消除全表扫描
+        conn.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_st_strategy_id
+                ON sim_trades(strategy, id);
+            CREATE INDEX IF NOT EXISTS idx_st_positions
+                ON sim_trades(strategy, side, symbol);
+            CREATE INDEX IF NOT EXISTS idx_st_t1_check
+                ON sim_trades(symbol, side, date, strategy);
         """)
         conn.commit()
         conn.close()

@@ -68,14 +68,10 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
     # ── Step 2: Get symbols + data ──
     try:
         conn = store._connect()
+        # 获取所有有日线数据的股票 (不按日期筛选，确保大盘停牌日也能覆盖)
         symbols = [r[0] for r in conn.execute(
-            "SELECT DISTINCT symbol FROM daily WHERE date >= ? ORDER BY date DESC LIMIT 1000",
-            (date_str,)
+            "SELECT DISTINCT symbol FROM daily"
         ).fetchall()]
-        if not symbols:
-            symbols = [r[0] for r in conn.execute(
-                "SELECT DISTINCT symbol FROM daily ORDER BY date DESC LIMIT 500"
-            ).fetchall()]
         # Get enough history for factor computation (need 60+ days)
         data = store.get_daily(symbols, start="2026-01-01", end=date_str)
         # 基本面数据 — 用于价值因子计算和市值中性化
@@ -120,13 +116,19 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
         # 用 fundamentals 中的真实总市值做中性化 (缺失值回退到 price × 1e8 估算)
         mcap_real = fundamentals["total_mv"].reindex(prices.index)
         mcap_real = mcap_real.fillna(prices * 1e8)
-        alpha_neut = neutralize(alpha, market_caps=mcap_real)
+        # 行业中性化 — 使用 fundamentals 中的行业分类
+        industries = fundamentals["industry"].reindex(prices.index) if "industry" in fundamentals.columns else None
+        alpha_neut = neutralize(alpha, industries=industries, market_caps=mcap_real)
 
         log_ret = np.log(close_df).diff().dropna(how="all")
         cov = covariance_matrix(log_ret, method="ledoit_wolf", window=60)
 
+        # amount 在数据库中单位为千元，filter_by_liquidity 内部会 ×1000 转为元
         candidates = pd.DataFrame({
-            "alpha": alpha_neut, "close": prices, "amount": data["amount"].iloc[-5:].mean()
+            "alpha": alpha_neut,
+            "close": prices,
+            "amount": data["amount"].loc[risk_date] if risk_date in data["amount"].index
+                      else data["amount"].iloc[-1]
         })
         filtered = apply_all_filters(candidates.reindex(prices.index))
         results["steps"]["risk"] = {

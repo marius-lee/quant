@@ -88,31 +88,26 @@ def api_positions():
     try:
         conn = sqlite3.connect(TRADE_DB)
         buys = conn.execute("""
-            SELECT symbol, price, shares, date FROM sim_trades
-            WHERE side='buy' AND strategy=? AND symbol NOT IN (
-                SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?
-            )
-            ORDER BY date
-        """, (strategy, strategy)).fetchall()
-        merged = {}
-        for r in buys:
-            sym, px, sh, dt = r[0], r[1], r[2], r[3]
-            if sym in merged:
-                m = merged[sym]; total_sh = m["shares"] + sh
-                m["price"] = round((m["price"] * m["shares"] + px * sh) / total_sh, 4)
-                m["shares"] = total_sh
-                m["date"] = min(m["date"], dt)
-            else:
-                merged[sym] = {"symbol": sym, "price": px, "shares": sh, "date": dt}
-        for m in merged.values():
+            SELECT symbol, SUM(shares), SUM(price*shares)/SUM(shares), MIN(date)
+            FROM sim_trades WHERE side='buy' AND strategy=?
+            GROUP BY symbol
+        """, (strategy,)).fetchall()
+        sells = conn.execute("""
+            SELECT symbol, SUM(shares) FROM sim_trades
+            WHERE side='sell' AND strategy=?
+            GROUP BY symbol
+        """, (strategy,)).fetchall()
+        sell_map = {r[0]: r[1] for r in sells}
+        for sym, total_sh, avg_px, first_dt in buys:
+            net = max(0, total_sh - sell_map.get(sym, 0))
+            if net <= 0: continue
+            px = round(avg_px, 4) if avg_px else 0
             positions.append({
-                "symbol": m["symbol"], "price": m["price"], "shares": m["shares"],
-                "board_count": 0, "date": m["date"],
-                "current": px,          # 盘后用成本价; 交易时段前端用实时行情覆盖
-                "pnl_pct": 0,           # 同上
-                "value": round(m["shares"] * m["price"], 2),
-                "name": "",             # 前端可补; 后端暂不查stocks表
-                "change_pct": 0,
+                "symbol": sym, "price": px, "shares": net,
+                "board_count": 0, "date": first_dt,
+                "current": px, "pnl_pct": 0,
+                "value": round(net * px, 2),
+                "name": "", "change_pct": 0,
             })
         conn.close()
     except Exception:

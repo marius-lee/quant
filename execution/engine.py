@@ -79,12 +79,22 @@ class ExecutionEngine:
                 cash = row[0]
                 # 加上持仓市值
                 positions = conn.execute("""
-                    SELECT symbol, price, shares FROM sim_trades
-                    WHERE side='buy' AND strategy=? AND symbol NOT IN (
-                        SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?
-                    )
-                """, (strategy, strategy)).fetchall()
-                pos_value = sum(p[1] * p[2] for p in positions)
+                    SELECT symbol, SUM(shares) as net_shares,
+                           SUM(price * shares) / SUM(shares) as avg_price
+                    FROM sim_trades
+                    WHERE side='buy' AND strategy=?
+                    GROUP BY symbol
+                """, (strategy,)).fetchall()
+                sells = conn.execute("""
+                    SELECT symbol, SUM(shares) FROM sim_trades
+                    WHERE side='sell' AND strategy=?
+                    GROUP BY symbol
+                """, (strategy,)).fetchall()
+                sell_map = {r[0]: r[1] for r in sells}
+                pos_value = sum(
+                    round(p[1], 4) * max(0, p[0] - sell_map.get(p[0], 0))
+                    for p in positions if p[1] is not None
+                )
                 return cash + pos_value
             # 无交易记录: 回退到 strategy_config
             row2 = conn.execute(
@@ -204,34 +214,42 @@ class ExecutionEngine:
         return executed
 
     def get_positions(self, strategy: str = "quant") -> list[dict]:
-        """获取当前持仓列表。
+        """获取当前持仓列表 — 净额法 (买入-卖出>0)。
 
-        多笔买入同一股票时自动合并: 加权均价, 总股数。
+        P0-3 fix: 旧实现用 'symbol NOT IN (SELECT symbol FROM sells)' 会在部分卖出
+        时丢失全部剩余持仓。现改为 SUM(buys) - SUM(sells) = net > 0。
         """
         conn = sqlite3.connect(self.db_path)
+        # 加权均价: SUM(price*shares)/SUM(shares) per symbol
         buys = conn.execute("""
-            SELECT symbol, price, shares, date, board_count FROM sim_trades
-            WHERE side='buy' AND strategy=? AND symbol NOT IN (
-                SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?
-            )
-            ORDER BY date
-        """, (strategy, strategy)).fetchall()
+            SELECT symbol, SUM(shares) as total_shares,
+                   SUM(price * shares) / SUM(shares) as avg_price,
+                   MIN(date) as first_buy, MAX(board_count) as boards
+            FROM sim_trades
+            WHERE side='buy' AND strategy=?
+            GROUP BY symbol
+        """, (strategy,)).fetchall()
+        
+        sells = conn.execute("""
+            SELECT symbol, SUM(shares) as total_sold
+            FROM sim_trades
+            WHERE side='sell' AND strategy=?
+            GROUP BY symbol
+        """, (strategy,)).fetchall()
+        sell_map = {r[0]: r[1] for r in sells}
         conn.close()
 
-        merged = {}
-        for r in buys:
-            sym, px, sh, dt, board = r[0], r[1], r[2], r[3], r[4]
-            if sym in merged:
-                m = merged[sym]
-                total_sh = m["shares"] + sh
-                m["price"] = round((m["price"] * m["shares"] + px * sh) / total_sh, 4)
-                m["shares"] = total_sh
-                m["board_count"] = max(m["board_count"], board or 0)
-                m["date"] = min(m["date"], dt)
-            else:
-                merged[sym] = {"symbol": sym, "price": px, "shares": sh,
-                               "date": dt, "board_count": board or 0}
-        return list(merged.values())
+        positions = []
+        for sym, total_sh, avg_px, first_dt, boards in buys:
+            sold = sell_map.get(sym, 0)
+            net = total_sh - sold
+            if net > 0:
+                positions.append({
+                    "symbol": sym, "price": round(avg_px, 4),
+                    "shares": net, "date": first_dt,
+                    "board_count": boards or 0
+                })
+        return positions
 
     def get_trades(self, strategy: str = "quant", limit: int = 50) -> list[dict]:
         """获取最近交易记录。"""

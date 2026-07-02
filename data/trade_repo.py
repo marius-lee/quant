@@ -25,11 +25,15 @@ class TradeRepo:
     # ── 持仓 ──
     def get_positions(self, strategy: str) -> list[dict]:
         c = self._conn()
-        rows = c.execute(
-            "SELECT symbol, price, shares, board_count, date FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)",
-            (strategy, strategy)).fetchall()
+        buys = c.execute(
+            "SELECT symbol, SUM(shares), SUM(price*shares)/SUM(shares), MAX(board_count), MIN(date) FROM sim_trades WHERE side='buy' AND strategy=? GROUP BY symbol",
+            (strategy,)).fetchall()
+        sells = c.execute(
+            "SELECT symbol, SUM(shares) FROM sim_trades WHERE side='sell' AND strategy=? GROUP BY symbol",
+            (strategy,)).fetchall()
+        sell_map = {r[0]: r[1] for r in sells}
         c.close()
-        return [{"symbol": r[0], "price": r[1], "shares": r[2], "board_count": r[3] or 0, "date": r[4]} for r in rows]
+        return [{"symbol": r[0], "price": round(r[2],4) if r[2] else 0, "shares": max(0, r[1] - sell_map.get(r[0], 0)), "board_count": r[3] or 0, "date": r[4]} for r in buys if r[1] > sell_map.get(r[0], 0)]
 
     def get_position_cost(self, strategy: str) -> float:
         c = self._conn()

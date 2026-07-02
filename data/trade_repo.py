@@ -24,8 +24,6 @@ class TradeRepo:
             (strategy,)).fetchone()
         c.close()
         return round(row[0], 2) if row else fallback
-        if row is None:
-            logger.info(f"[cash] no records for {strategy}, returning fallback={fallback}")
 
     # ── 持仓 ──
     def get_positions(self, strategy: str) -> list[dict]:
@@ -40,13 +38,6 @@ class TradeRepo:
         c.close()
         return [{"symbol": r[0], "price": round(r[2],4) if r[2] else 0, "shares": max(0, r[1] - sell_map.get(r[0], 0)), "board_count": r[3] or 0, "date": r[4]} for r in buys if r[1] > sell_map.get(r[0], 0)]
 
-    def get_position_cost(self, strategy: str) -> float:
-        c = self._conn()
-        row = c.execute(
-            "SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)",
-            (strategy, strategy)).fetchone()
-        c.close()
-        return row[0]
 
     # ── 交易记录 ──
     def record_trade(self, date_str: str, symbol: str, side: str, price: float, shares: int, strategy: str = "chen", board_count: int = 0, capital_after: float = None, pnl: float = None, pnl_pct: float = None):

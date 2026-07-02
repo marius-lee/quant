@@ -9,7 +9,6 @@
 
 import numpy as np
 import pandas as pd
-from typing import Optional, Union
 
 
 def equal_weight(factor_values: dict) -> pd.Series:
@@ -73,17 +72,3 @@ def ic_weighted(
     return composite
 
 
-def synthesize(
-    factor_values: dict,
-    ic_scores: Optional[dict] = None,
-    method: str = "ic_weighted",
-) -> pd.Series:
-    """统一的因子合成入口。
-    
-    method: equal_weight | ic_weighted
-    
-    若 method=ic_weighted 但未提供 ic_scores, 自动回退 equal_weight。
-    """
-    if method == "ic_weighted" and ic_scores:
-        return ic_weighted(factor_values, ic_scores)
-    return equal_weight(factor_values)

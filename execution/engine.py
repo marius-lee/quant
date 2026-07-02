@@ -10,6 +10,7 @@ from datetime import date as date_type
 from typing import Optional
 from dataclasses import dataclass
 from execution.cost import CostModel
+from data.trade_repo import TradeRepo
 
 
 TRADE_DB_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "trades.db")
@@ -109,26 +110,8 @@ class ExecutionEngine:
         return cfg("backtest.initial_capital", 5000)
 
     def get_cash(self, strategy: str = "quant") -> float:
-        """获取当前现金余额 (不含持仓市值)。用于执行引擎成本计算。"""
-        conn = sqlite3.connect(self.db_path)
-        try:
-            row = conn.execute(
-                "SELECT capital_after FROM sim_trades WHERE strategy=? ORDER BY id DESC LIMIT 1",
-                (strategy,)
-            ).fetchone()
-            if row and row[0] is not None:
-                return row[0]
-            # 无交易记录: 回退到 strategy_config
-            row2 = conn.execute(
-                "SELECT initial_capital FROM strategy_config WHERE strategy=?",
-                (strategy,)
-            ).fetchone()
-            if row2 and row2[0] is not None:
-                return row2[0]
-        finally:
-            conn.close()
-        from config.loader import get as cfg
-        return cfg("backtest.initial_capital", 5000)
+        """获取当前现金余额 — 委托 TradeRepo。"""
+        return TradeRepo(self.db_path).get_cash(strategy)
 
     def set_initial_capital(self, strategy: str, capital: float):
         """设置策略初始资金。"""
@@ -214,53 +197,9 @@ class ExecutionEngine:
         return executed
 
     def get_positions(self, strategy: str = "quant") -> list[dict]:
-        """获取当前持仓列表 — 净额法 (买入-卖出>0)。
-
-        P0-3 fix: 旧实现用 'symbol NOT IN (SELECT symbol FROM sells)' 会在部分卖出
-        时丢失全部剩余持仓。现改为 SUM(buys) - SUM(sells) = net > 0。
-        """
-        conn = sqlite3.connect(self.db_path)
-        # 加权均价: SUM(price*shares)/SUM(shares) per symbol
-        buys = conn.execute("""
-            SELECT symbol, SUM(shares) as total_shares,
-                   SUM(price * shares) / SUM(shares) as avg_price,
-                   MIN(date) as first_buy, MAX(board_count) as boards
-            FROM sim_trades
-            WHERE side='buy' AND strategy=?
-            GROUP BY symbol
-        """, (strategy,)).fetchall()
-        
-        sells = conn.execute("""
-            SELECT symbol, SUM(shares) as total_sold
-            FROM sim_trades
-            WHERE side='sell' AND strategy=?
-            GROUP BY symbol
-        """, (strategy,)).fetchall()
-        sell_map = {r[0]: r[1] for r in sells}
-        conn.close()
-
-        positions = []
-        for sym, total_sh, avg_px, first_dt, boards in buys:
-            sold = sell_map.get(sym, 0)
-            net = total_sh - sold
-            if net > 0:
-                positions.append({
-                    "symbol": sym, "price": round(avg_px, 4),
-                    "shares": net, "date": first_dt,
-                    "board_count": boards or 0
-                })
-        return positions
+        """获取当前持仓列表 — 委托 TradeRepo。"""
+        return TradeRepo(self.db_path).get_positions(strategy)
 
     def get_trades(self, strategy: str = "quant", limit: int = 50) -> list[dict]:
-        """获取最近交易记录。"""
-        conn = sqlite3.connect(self.db_path)
-        rows = conn.execute(
-            "SELECT date, symbol, side, price, shares, pnl, capital_after FROM sim_trades WHERE strategy=? ORDER BY id DESC LIMIT ?",
-            (strategy, limit),
-        ).fetchall()
-        conn.close()
-        return [
-            {"date": r[0], "symbol": r[1], "side": r[2], "price": r[3],
-             "shares": r[4], "pnl": r[5], "capital_after": r[6]}
-            for r in rows
-        ]
+        """获取最近交易记录 — 委托 TradeRepo。"""
+        return TradeRepo(self.db_path).get_trades(strategy, limit)

@@ -225,7 +225,7 @@ def compute_skewness(data: pd.DataFrame, date: str, window: int = 20) -> pd.Seri
     start = max(0, idx - window + 1)
     window_ret = log_ret.iloc[start:idx + 1]
     skew = window_ret.skew()
-    # A股正偏度溢价: 正偏度→高分→低未来收益(IC<0), 符合Barberis # 负偏度 → 高分 (premium for negative skewness) Huang(2008)
+    # 负偏度溢价 (Barberis & Huang 2008): 负偏度→高分→高未来收益
     return _cs_zscore(-skew).rename(f"skewness_{window}d")  # 负偏度溢价: 负偏度→高分→高收益
 
 
@@ -453,6 +453,8 @@ def compute_roe_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
     来源: Fama & French (2015) — 盈利能力因子 (RMW)
     使用 stocks.roe 列 (EPS / BVPS 推导)，过滤 ROE>100 极端值。
     """
+    if "roe" not in fundamentals.columns or fundamentals["roe"].isna().all():
+        return pd.Series(np.nan, index=fundamentals.index, name="roe_ratio")
     roe = fundamentals["roe"].astype(float)
     # 过滤极端 ROE: 负值 或 >100 视为数据错误
     roe = roe.where((roe > 0) & (roe < 100))

@@ -14,6 +14,18 @@ app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
+# 启动时异步预热因子评估缓存 (首次 /api/factors 请求免等待)
+import threading
+def _warm_factor_cache():
+    try:
+        from factor.stats_cache import get_cached_factor_stats
+        logger.info("warming factor cache (background)...")
+        get_cached_factor_stats(force_refresh=True)
+        logger.info("factor cache warmup complete")
+    except Exception as e:
+        logger.warning(f"factor cache warmup skipped: {e}")
+threading.Thread(target=_warm_factor_cache, daemon=True).start()
+
 TRADE_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "trades.db")
 
 def _capital(strategy: str, fallback: float = None) -> float:

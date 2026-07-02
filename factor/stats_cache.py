@@ -96,7 +96,7 @@ def compute_factor_stats(
         logger.info("tqdm not installed, computing without progress bar")
         date_iter = eval_dates
     # Load fundamentals for fundamental factor computation
-    fundamentals = store.get_fundamentals(symbols)
+    fundamentals = store.get_fundamentals(symbols, date=end_date)
 
     for d in date_iter:
         date_str = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10]

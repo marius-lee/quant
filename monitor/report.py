@@ -8,7 +8,7 @@ from monitor.attribution import compute_sharpe, compute_max_drawdown, compute_wi
 
 def generate_report(
     report_date: str,
-    capital: float,
+    cash_balance: float,
     positions: list[dict],
     trades: list[dict],
     pnl_total: float = 0.0,
@@ -65,12 +65,13 @@ def generate_report(
         p.get("price", 0) * p.get("shares", 0) for p in positions
     )
     total_wealth = capital + positions_value
+    total_wealth = cash_balance + positions_value
     total_return = (total_wealth - initial_capital) / initial_capital
 
     report = {
         "date": report_date,
         "capital": {
-            "cash": round(capital, 2),
+            "cash": round(cash_balance, 2),
             "positions_value": round(positions_value, 2),
             "total_wealth": round(total_wealth, 2),
         },

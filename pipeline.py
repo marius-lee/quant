@@ -13,6 +13,7 @@ import pandas as pd
 
 from data.store import DataStore
 from data.trade_repo import TradeRepo
+
 from factor.compute import compute_all_factors
 from factor.synth import equal_weight
 from risk.neutralize import neutralize
@@ -49,7 +50,6 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
 
     # ── Step 0: Init ──
     store = DataStore()
-    repo = TradeRepo()
     engine = ExecutionEngine()
     cost_model = CostModel()
     constructor = PortfolioConstructor()
@@ -190,7 +190,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
         positions = engine.get_positions(strategy)
         trades = engine.get_trades(strategy, limit=50)
         # get_capital() = total wealth (cash + positions_value)
-        # get_cash() = cash only → correct for generate_report's capital param
+        # get_cash() = cash only → correct for generate_report's cash_balance param
         total_wealth = engine.get_capital(strategy)
         cash_balance = engine.get_cash(strategy)
 

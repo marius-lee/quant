@@ -502,6 +502,7 @@ class DataStore:
             if df_ind is None or df_ind.empty:
                 logger.warning("akshare industry list returned empty")
                 return 0
+            logger.info(f"THS industry list: {len(df_ind)} industries, cols={df_ind.columns.tolist()}, sample={df_ind.head(2).to_dict()}")
             updated = 0
             sample_cols = None
             # 前3个行业打印样本列名，帮助调试
@@ -510,10 +511,23 @@ class DataStore:
                 if not ind_name:
                     continue
                 try:
-                    df_cons = ak.stock_board_industry_cons_ths(symbol=ind_name)
+                    # 尝试 name 和 code 两种参数格式
+                    ind_code = str(ind_row.get("code", ind_row.get("代码", ""))).strip()
+                    df_cons = None
+                    for param in [ind_name, ind_code]:
+                        if not param:
+                            continue
+                        try:
+                            df_cons = ak.stock_board_industry_cons_ths(symbol=param)
+                            if df_cons is not None and not df_cons.empty:
+                                break
+                        except Exception:
+                            continue
                     if idx < 3 and df_cons is not None and not df_cons.empty:
                         sample_cols = df_cons.columns.tolist()
-                        logger.info(f"THS industry '{ind_name}': cols={sample_cols}, rows={len(df_cons)}")
+                        logger.info(f"THS industry '{ind_name}': param_tried={[ind_name, ind_code][:2]}, cols={sample_cols}, rows={len(df_cons)}")
+                    elif idx < 3:
+                        logger.info(f"THS industry '{ind_name}': params={[ind_name, ind_code][:2]}, df_cons EMPTY")
                     if df_cons is None or df_cons.empty:
                         continue
                     for _, cons_row in df_cons.iterrows():

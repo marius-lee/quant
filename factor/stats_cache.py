@@ -360,3 +360,22 @@ def load_ic_map_from_cache(factor_values: dict = None) -> dict:
 
     logger.info(f"IC weights loaded from cache: {len(ic_map)} factors")
     return ic_map
+
+
+def force_refresh_cache(n_symbols: int = 500) -> dict:
+    """P1-2: 强制刷新 factor_cache.json — 删除旧缓存并重新计算。
+
+    用于: 基本面数据更新后、新的 turnover 回填完成后、每日定时任务。
+    n_symbols: 参与评估的股票数 (默认 500, 越大越准但越慢)。
+
+    返回: compute_factor_stats() 的输出 dict。
+    """
+    import os, time
+    if os.path.exists(CACHE_FILE):
+        os.remove(CACHE_FILE)
+        logger.info(f"Old factor cache deleted: {CACHE_FILE}")
+
+    logger.info(f"Refreshing factor cache with {n_symbols} stocks...")
+    stats = compute_factor_stats(n_symbols=n_symbols, lookback=120)
+    logger.info(f"Factor cache refresh complete: {len(stats.get('factors', []))} factors")
+    return stats

@@ -240,14 +240,24 @@ def compute_skewness(data: pd.DataFrame, date: str, window: int = 20) -> pd.Seri
 def compute_turnover_reversal(data: "pd.DataFrame", date: str, short: int = 5,
                               long: int = 20) -> "pd.Series":
     """换手率反转: -(avg_turnover(short)/avg_turnover(long) - 1).
-    高换手→低分(散户追涨效应)。数据字段: daily.turnover(单位:%)"""
+    高换手→低分(散户追涨效应)。数据字段: daily.turnover(单位:%)。
+    若 turnover 覆盖率 <50 stocks，自动退化为成交量反转 (volume 覆盖率 100%)。"""
     to = data["turnover"]
     if date not in to.index:
         return pd.Series(np.nan, index=to.columns, name=f"turnover_rev_{short}d")
     idx = to.index.get_loc(date)
     s = to.iloc[max(0,idx-short+1):idx+1].mean()
     l = to.iloc[max(0,idx-long+1):idx+1].mean()
-    return _cs_zscore(-(s / l.replace(0, np.nan) - 1)).rename(f"turnover_rev_{short}d")
+    result = -(s / l.replace(0, np.nan) - 1)
+    # 若有效 turnover 不足 50 只股票, 改用量比 fallback
+    if result.dropna().count() < 50:
+        vol = data["volume"]
+        if date in vol.index:
+            vidx = vol.index.get_loc(date)
+            vs = vol.iloc[max(0,vidx-short+1):vidx+1].mean()
+            vl = vol.iloc[max(0,vidx-long+1):vidx+1].mean()
+            result = -(vs / vl.replace(0, np.nan) - 1)
+    return _cs_zscore(result).rename(f"turnover_rev_{short}d")
 
 
 # ═══════════════════════════════════════════════════════════

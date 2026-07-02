@@ -183,11 +183,14 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
     try:
         positions = engine.get_positions(strategy)
         trades = engine.get_trades(strategy, limit=50)
-        current_capital = engine.get_capital(strategy)
+        # get_capital() = total wealth (cash + positions_value)
+        # get_cash() = cash only → correct for generate_report's capital param
+        total_wealth = engine.get_capital(strategy)
+        cash_balance = engine.get_cash(strategy)
 
         report = generate_report(
-            date_str, current_capital, positions, trades,
-            pnl_total=current_capital - capital,
+            date_str, cash_balance, positions, trades,
+            pnl_total=total_wealth - capital,
             initial_capital=capital,
         )
         push_to_web(report)

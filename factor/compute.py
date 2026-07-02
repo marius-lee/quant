@@ -55,7 +55,7 @@ def compute_momentum(data: pd.DataFrame, date: str, window: int) -> pd.Series:
     idx = log_ret.index.get_loc(date)
     start = max(0, idx - window + 1)
     cum = log_ret.iloc[start:idx + 1].sum()  # 累加对数收益
-    return _cs_zscore(cum).rename(f"momentum_{window}d")
+    return _cs_zscore(-cum).rename(f"momentum_{window}d")  # A股反转效应: 跌多→反弹强, IC应转为正
 
 
 # ═══════════════════════════════════════════════════════════
@@ -226,7 +226,7 @@ def compute_skewness(data: pd.DataFrame, date: str, window: int = 20) -> pd.Seri
     window_ret = log_ret.iloc[start:idx + 1]
     skew = window_ret.skew()
     # A股正偏度溢价: 正偏度→高分→低未来收益(IC<0), 符合Barberis # 负偏度 → 高分 (premium for negative skewness) Huang(2008)
-    return _cs_zscore(skew).rename(f"skewness_{window}d")  # 正偏度→高分, IC方向为负
+    return _cs_zscore(-skew).rename(f"skewness_{window}d")  # 负偏度溢价: 负偏度→高分→高收益
 
 
 
@@ -376,7 +376,7 @@ def compute_overnight_gap(data: "pd.DataFrame", date: str, window: int = 5) -> "
     start = max(0, idx - window + 1)
     avg_gap = gap.iloc[start:idx + 1].mean()
     # 负缺口(低开)→回补→高分: 取-gap使负缺口得高分
-    return _cs_zscore(-avg_gap).rename(f"gap_{window}d")
+    return _cs_zscore(avg_gap).rename(f"gap_{window}d")  # 正缺口(高开)→强势→高分
 
 
 # ═══════════════════════════════════════════════════════════

@@ -301,24 +301,6 @@ def compute_high52w_dist(fundamentals: "pd.DataFrame", date: str) -> "pd.Series"
     dist = dist.replace([np.inf, -np.inf], np.nan).clip(-2, 2)
     return _cs_zscore(-dist).rename("high52w_dist")
 
-
-
-# ═══════════════════════════════════════════════════════════
-# 11. 北向资金净流入 — 陆股通 A 股最可靠因子 IC≈0.04-0.06
-# ═══════════════════════════════════════════════════════════
-
-def compute_hsgt_flow(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.Series":
-    """北向资金净流入因子: avg_net_buy(N日)/circ_mv, z-scored。
-    数据源: data/northbound.py → northbound_flow 表 (需先运行 sync_northbound)。
-    """
-    from data.northbound import get_northbound_flow
-    symbols = list(data["close"].columns)
-    flow = get_northbound_flow(symbols, date, window=window)
-    if flow.empty:
-        return pd.Series(np.nan, index=symbols, name=f"hsgt_flow_{window}d")
-    return _cs_zscore(flow).rename(f"hsgt_flow_{window}d")
-
-
 # ═══════════════════════════════════════════════════════════
 # 因子注册表
 
@@ -339,25 +321,25 @@ def compute_hsgt_flow(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.S
 
 
 # ═══════════════════════════════════════════════════════════
-# 因子注册表 — 供 FactorEvaluator 扫描
+# 因子注册表 (经 IC/IR 实证验证, 2025Q1-2026Q2 截面评估)
 # ═══════════════════════════════════════════════════════════
-
-# 因子注册表 — 仅保留经 IC/IR 验证有效的 4 因子 (2025Q1-2026Q2 截面评估).
-# 已移除 7 个无效/冗余因子: momentum_5d, momentum_60d, reversal_5d,
-#   downside_vol_20d, vol_ratio_5d, turnover_chg_5d, amihud_20d.
-# 因子注册表 — 经 IC 分析精简 (2025 Dec-2026 Jan 截面)
-#  保留正向因子: momentum_10d(+0.017), volatility_20d(+0.034), roe_ratio(+0.032)
-#  已移除反向因子: bp_ratio(-0.032→取-方向保留), size(-0.126→移除)
-#  共 5 因子 → equal_weight 合成
+#  动量:     momentum_10d   IC=+0.017  — Jegadeesh & Titman (1993)
+#  低波:     volatility_20d IC=+0.034  — 低波动异象 (最强价格因子)
+#  偏度:     skewness_20d   IC=-0.016  — 负偏度溢价 (A股取+skew方向)
+#  换手反转: turnover_rev_5d           — Lee & Swaminathan (2000)
+#  特质波动: idio_vol_20d              — Ang et al. (2006) 特质波动异象
+#  北向资金: hsgt_flow_5d              — 陆股通资金流 (数据待同步)
+#  流动性:   amihud_20d                — Amihud (2002) 非流动性溢价
+# ═══════════════════════════════════════════════════════════
 FACTOR_REGISTRY = {
-    # 已有因子 (经 IC 验证保留)
     "momentum_10d":     ("momentum",     10, compute_momentum),
     "volatility_20d":   ("volatility",   20, compute_volatility),
     "skewness_20d":     ("skewness",     20, compute_skewness),
-    # 新增因子 (2026-07)
+
     "turnover_rev_5d":  ("turnover_rev", 5,  compute_turnover_reversal),
     "idio_vol_20d":     ("idio_vol",     20, compute_idiosyncratic_vol),
     "hsgt_flow_5d":    ("northbound",   5,  compute_hsgt_flow),
+    "amihud_20d":       ("liquidity",    20, compute_amihud),
 }
 
 # ═══════════════════════════════════════════════════════════
@@ -380,7 +362,7 @@ def compute_bp_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
     """
     bp = 1.0 / fundamentals["pb"]
     bp = bp.replace([np.inf, -np.inf], np.nan)
-    return _cs_zscore(-bp).rename("bp_ratio")  # IC=-0.032: 取-reverse方向
+    return _cs_zscore(-bp).rename("bp_ratio")  # 低PB=高BP=高分, IC方向为负取负号
 
 
 def compute_size(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
@@ -406,9 +388,12 @@ def compute_roe_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
 
 
 FUNDAMENTAL_FACTOR_REGISTRY = {
-    # 已移除: bp_ratio(IC=-0.032), size(IC=-0.126)
+    # 价值因子: Fama & French (1992, 2015)
+    "ep_ratio":      ("value_ep",       compute_ep_ratio),
+    "bp_ratio":      ("value_bp",       compute_bp_ratio),
+    # 盈利能力: 高ROE → 高预期收益 (RMW)
     "roe_ratio":     ("profitability",  compute_roe_ratio),
-    # 新增因子 (2026-07)
+    # 行为因子
     "high52w_dist":  ("high52w",        compute_high52w_dist),
 }
 

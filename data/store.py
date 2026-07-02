@@ -79,6 +79,13 @@ class DataStore:
             );
         """)
         conn.commit()
+        # 为基本面因子添加列 (安全迁移, 列已存在时不报错)
+        for col, typ in [("pe", "REAL"), ("pb", "REAL"), ("total_mv", "REAL")]:
+            try:
+                conn.execute(f"ALTER TABLE stocks ADD COLUMN {col} {typ}")
+            except sqlite3.OperationalError:
+                pass  # 列已存在
+        conn.commit()
 
     def _connect(self):
         """获取共享连接。check_same_thread=False 允许 Flask 多线程复用。"""

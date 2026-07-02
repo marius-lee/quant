@@ -1,4 +1,6 @@
 """组合构建器 — 资本自适应分配 (等权 / 得分倾斜 / 均值-方差)。"""
+from utils.logger import get_logger
+logger = get_logger("optimizer.portfolio")
 
 import numpy as np
 import pandas as pd
@@ -61,8 +63,10 @@ class PortfolioConstructor:
         """资本自适应组合构建。"""
         common = alpha.dropna().index.intersection(prices.dropna().index)
         if len(common) == 0:
+            logger.warning(f"[portfolio] empty common universe, returning zero portfolio")
             return TargetPortfolio(pd.Series(dtype=int), capital, "equal_weight", 0.0)
         a = alpha.loc[common].sort_values(ascending=False)
+        logger.info(f"[portfolio] capital=¥{capital:,.0f} → {"greedy" if capital < self.equal_weight_cap else "weighted" if capital < self.weighted_cap else "mean_var"} tier")
         p = prices.loc[common]
         if capital < self.equal_weight_cap:
             return self._equal_weight_greedy(a, p, capital)

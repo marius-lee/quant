@@ -1,6 +1,9 @@
 """TradeRepository — sim_trades 统一数据访问层.
 消除跨8个文件的10+重复SQL查询.
 """
+
+from utils.logger import get_logger
+logger = get_logger("data.trade_repo")
 import sqlite3, os
 
 TRADE_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "trades.db")
@@ -21,6 +24,8 @@ class TradeRepo:
             (strategy,)).fetchone()
         c.close()
         return round(row[0], 2) if row else fallback
+        if row is None:
+            logger.info(f"[cash] no records for {strategy}, returning fallback={fallback}")
 
     # ── 持仓 ──
     def get_positions(self, strategy: str) -> list[dict]:
@@ -45,6 +50,7 @@ class TradeRepo:
 
     # ── 交易记录 ──
     def record_trade(self, date_str: str, symbol: str, side: str, price: float, shares: int, strategy: str = "chen", board_count: int = 0, capital_after: float = None, pnl: float = None, pnl_pct: float = None):
+        logger.info(f"[trade] {date_str} {side} {symbol} {shares}@{price}")
         c = self._conn()
         c.execute("INSERT INTO sim_trades (date,symbol,side,price,shares,board_count,pnl,pnl_pct,capital_after,strategy) VALUES (?,?,?,?,?,?,?,?,?,?)",
                   (date_str, symbol, side, price, shares, board_count, pnl, pnl_pct, capital_after, strategy))

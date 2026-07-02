@@ -1,4 +1,6 @@
 """监控报告 — 日/周绩效报告生成 + Web 状态推送。"""
+from utils.logger import get_logger
+logger = get_logger("monitor.report")
 
 import json
 from typing import Optional
@@ -65,6 +67,7 @@ def generate_report(
         p.get("price", 0) * p.get("shares", 0) for p in positions
     )
     total_wealth = cash_balance + positions_value
+    logger.info(f"[report] {report_date}: cash=¥{cash_balance:.0f} pos=¥{positions_value:.0f} total=¥{total_wealth:.0f} return={total_return*100:.1f}%")
     total_return = (total_wealth - initial_capital) / initial_capital
 
     report = {
@@ -96,6 +99,7 @@ def generate_report(
 
 
 def push_to_web(report: dict):
+    logger.debug(f"[web-push] pushing report to shared state")
     """推送报告到 Web 前端 (通过 web/shared.py 内存共享)。"""
     try:
         from web.shared import update_state

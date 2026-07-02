@@ -204,20 +204,34 @@ class ExecutionEngine:
         return executed
 
     def get_positions(self, strategy: str = "quant") -> list[dict]:
-        """获取当前持仓列表。"""
+        """获取当前持仓列表。
+
+        多笔买入同一股票时自动合并: 加权均价, 总股数。
+        """
         conn = sqlite3.connect(self.db_path)
         buys = conn.execute("""
-            SELECT symbol, price, shares, date FROM sim_trades
+            SELECT symbol, price, shares, date, board_count FROM sim_trades
             WHERE side='buy' AND strategy=? AND symbol NOT IN (
                 SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?
             )
             ORDER BY date
         """, (strategy, strategy)).fetchall()
         conn.close()
-        return [
-            {"symbol": r[0], "price": r[1], "shares": r[2], "date": r[3]}
-            for r in buys
-        ]
+
+        merged = {}
+        for r in buys:
+            sym, px, sh, dt, board = r[0], r[1], r[2], r[3], r[4]
+            if sym in merged:
+                m = merged[sym]
+                total_sh = m["shares"] + sh
+                m["price"] = round((m["price"] * m["shares"] + px * sh) / total_sh, 4)
+                m["shares"] = total_sh
+                m["board_count"] = max(m["board_count"], board or 0)
+                m["date"] = min(m["date"], dt)
+            else:
+                merged[sym] = {"symbol": sym, "price": px, "shares": sh,
+                               "date": dt, "board_count": board or 0}
+        return list(merged.values())
 
     def get_trades(self, strategy: str = "quant", limit: int = 50) -> list[dict]:
         """获取最近交易记录。"""

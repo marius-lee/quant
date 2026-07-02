@@ -1,8 +1,4 @@
 """风险中性化 — 截面回归取残差，消除行业和市值 bias。
-from utils.logger import get_logger
-logger = get_logger("risk.neutralize")
-
-风控层不对 alpha 加分，只做减法和约束。
 
 方法:
   industry_neutralize  — 行业内排名 → 消除行业 beta
@@ -13,6 +9,9 @@ logger = get_logger("risk.neutralize")
   ② Fama & French (1993) — 三因子模型中的市值效应
   ② BARRA 风险模型 — 行业中性化标准做法
 """
+
+from utils.logger import get_logger
+logger = get_logger("risk.neutralize")
 
 import numpy as np
 import pandas as pd

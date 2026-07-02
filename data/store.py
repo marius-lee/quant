@@ -210,7 +210,6 @@ class DataStore:
     # ============================================================
 
     @staticmethod
-    @staticmethod
     def _norm_row(sym: str, date: str, o: float, h: float, l: float, c: float,
                   vol: float, amt: float, turnover: float = 0.0) -> tuple:
         """标准化一行日线数据: 日期→ISO(YYYY-MM-DD), 成交量→手, 成交额→千元, 精度4位小数。"""
@@ -686,10 +685,14 @@ class DataStore:
 
     def sync_fundamentals(self) -> int:
         """同步 PE/PB/市值 — 批量PE+市值, 逐只补PB, 多源容错"""
-        from data.fundamental import sync_all
-        result = sync_all(self._connect(), max_pb_fetch=-1)
-        logger.info(f"fundamentals: PE={result['pe_count']} PB={result['pb_count']}")
-        return result["pe_count"]
+        try:
+            from data.fundamental import sync_all
+            result = sync_all(self._connect(), max_pb_fetch=-1)
+            logger.info(f"fundamentals: PE={result['pe_count']} PB={result['pb_count']}")
+            return result["pe_count"]
+        except (ImportError, ModuleNotFoundError):
+            logger.warning("fundamentals sync skipped: data/fundamental.py not found")
+            return 0
 
     def sync_lhb_data(self, start: str = DEFAULT_START_DATE) -> int:
         """增量同步龙虎榜数据 → lhb_detail 表 (trade_date 为 YYYYMMDD 格式)。

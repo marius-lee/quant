@@ -276,7 +276,7 @@ def _empty_result() -> dict:
     }
 
 
-def get_cached_factor_stats(force_refresh: bool = False) -> dict:
+def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = 200) -> dict:
     """获取缓存的因子评估数据。缓存过期或 force_refresh=True 时重新计算。
 
     返回: compute_factor_stats() 的输出格式
@@ -296,7 +296,7 @@ def get_cached_factor_stats(force_refresh: bool = False) -> dict:
 
     # 重新计算
     logger.info("computing factor stats (this may take ~30s)...")
-    stats = compute_factor_stats(n_symbols=200, lookback=90)
+    stats = compute_factor_stats(n_symbols=n_symbols, lookback=90)
 
     # 缓存到文件
     try:
@@ -379,6 +379,6 @@ def force_refresh_cache(n_symbols: int = 500) -> dict:
         logger.info(f"Old factor cache deleted: {CACHE_FILE}")
 
     logger.info(f"Refreshing factor cache with {n_symbols} stocks...")
-    stats = get_cached_factor_stats(force_refresh=True)
+    stats = get_cached_factor_stats(force_refresh=True, n_symbols=n_symbols)
     logger.info(f"Factor cache refresh complete: {len(stats.get('factors', []))} factors")
     return stats

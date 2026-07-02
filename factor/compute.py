@@ -200,7 +200,7 @@ def compute_amihud(data: pd.DataFrame, date: str, window: int = 20) -> pd.Series
     valid_mask = (p_slice.count() >= min_valid) & (a_slice.count() >= min_valid)
     illiq = illiq.where(valid_mask)
     
-    series = pd.Series(results)
+    series = illiq
     # 高分=高非流动性=高预期收益
     return _cs_zscore(series).rename(f"amihud_{window}d")
 

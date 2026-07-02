@@ -111,7 +111,6 @@ def _fetch_value_em(conn: sqlite3.Connection, symbols: list, sleep_ms: int = 200
         WHERE eps IS NOT NULL AND bvps IS NOT NULL AND bvps != 0
           AND (roe IS NULL OR roe = 0)
     """)
-    print()  # newline after progress line
     conn.commit()
     roe_valid = conn.execute("SELECT COUNT(*) FROM stocks WHERE roe IS NOT NULL").fetchone()[0]
     logger.info(f"ROE derived (EPS/BVPS): {roe_valid} stocks (P2-2: direct fetch not yet available)")

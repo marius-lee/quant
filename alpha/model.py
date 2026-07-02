@@ -92,19 +92,21 @@ class AlphaModel:
         data: pd.DataFrame,
         date: str,
         ic_scores: Optional[dict] = None,
+        fundamentals: Optional[pd.DataFrame] = None,
     ) -> pd.Series:
         """在指定日期截面上计算 alpha 得分。
         
         data: 由 DataStore.get_daily() 返回的宽表 DataFrame
         date: 预测日期 (YYYY-MM-DD)
         ic_scores: {factor_name: IC_mean} — 若提供则用于 IC 加权合成
+        fundamentals: 基本面数据 DataFrame (pe, pb, total_mv, industry)
         
         返回: Series(index=symbol, value=alpha_score)。高分 = 值得买。
         """
         self._n_calls += 1
         
-        # 1. 计算所有因子值
-        factor_values = compute_all_factors(data, date)
+        # 1. 计算所有因子值 (价格因子 + 基本面因子)
+        factor_values = compute_all_factors(data, date, fundamentals=fundamentals)
         
         # 2. 合并为 DataFrame
         df = pd.DataFrame(factor_values).dropna(how="all")

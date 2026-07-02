@@ -95,9 +95,15 @@ def api_positions():
             ORDER BY date
         """, (strategy, strategy)).fetchall()
         for r in buys:
+            sym, px, sh, board, dt = r[0], r[1], r[2], r[3], r[4]
             positions.append({
-                "symbol": r[0], "price": r[1], "shares": r[2],
-                "board_count": r[3], "date": r[4],
+                "symbol": sym, "price": px, "shares": sh,
+                "board_count": board, "date": dt,
+                "current": px,          # 盘后用成本价; 交易时段前端用实时行情覆盖
+                "pnl_pct": 0,           # 同上
+                "value": round(sh * px, 2),
+                "name": "",             # 前端可补; 后端暂不查stocks表
+                "change_pct": 0,
             })
         conn.close()
     except Exception:

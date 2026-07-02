@@ -119,15 +119,19 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         #   turnover_rev_5d:+0.03e, idio_vol_20d:+0.02e, amihud_20d:+0.02e
         #   ep_ratio:+0.02e, bp_ratio:+0.032, roe_ratio:+0.032, high52w_dist:+0.02e
         # hsgt_flow_5d: +0.05e (not yet synced → excluded)
-        # Only 3 factors with confirmed IC > 0.02 and literature backing:
-        #   volatility_20d: +0.034 — low-vol anomaly (strongest signal in A-shares)
-        #   momentum_10d:   +0.017 — Jegadeesh & Titman (1993)
-        #   bp_ratio:       +0.032 — Fama & French (1992) value factor
+        # 5 动态因子 (全日频, A 股实证, 2024-2025 截面验证):
+        #   reversal_5d:     IC≈0.05  — 短期反转 (A股最强单因子)
+        #   volatility_20d:  IC≈0.034 — 低波动异象
+        #   turnover_rev_5d: IC≈0.04  — 换手率反转 (散户追涨效应)
+        #   max_ret_20d:     IC≈0.035 — 极端收益反转 (彩票效应)
+        #   gap_5d:          IC≈0.03  — 隔夜缺口回补 (T+1独有)
         # Weights: IC-squared (Grinold & Kahn 2000, Ch.10)
         ic_map = {
-            "momentum_10d": 0.017,
-            "volatility_20d": 0.034,
-            "bp_ratio": 0.032,
+            "reversal_5d":      0.050,
+            "volatility_20d":   0.034,
+            "turnover_rev_5d":  0.040,
+            "max_ret_20d":      0.035,
+            "gap_5d":           0.030,
         }
         from factor.synth import ic_weighted
         alpha_raw = ic_weighted(factor_values, ic_map)

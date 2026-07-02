@@ -77,7 +77,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         # Get enough history for factor computation (need 60+ days)
         data = store.get_daily(symbols, start="2026-01-01", end=date_str)
         # 基本面数据 — 用于价值因子计算和市值中性化
-        fundamentals = store.get_fundamentals(symbols)
+        fundamentals = store.get_fundamentals(symbols, date=date_str)
         results["steps"]["load"] = {
             "symbols": len(symbols),
             "fund_pe_valid": int(fundamentals["pe"].notna().sum()),
@@ -100,7 +100,19 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         if pd.Timestamp(actual_date) not in data.index:
             actual_date = data.index[-1].strftime("%Y-%m-%d")
             logger.info(f"[3/7] date adjusted: {date_str} → {actual_date}")
-        factor_values = compute_all_factors(data, actual_date, fundamentals=fundamentals)
+        # 加载 benchmark 收益数据 (特质波动率因子需要)
+        benchmark_ret = None
+        try:
+            bm = store.get_benchmark("000300", start="2025-12-01")
+            if not bm.empty:
+                # get_benchmark 已返回日收益率(dropna), 截断到 actual_date
+                benchmark_ret = bm[:pd.Timestamp(actual_date)]
+        except Exception:
+            pass
+
+        factor_values = compute_all_factors(data, actual_date,
+                                            fundamentals=fundamentals,
+                                            benchmark_ret=benchmark_ret)
         alpha = equal_weight(factor_values)
         results["steps"]["factor"] = {
             "factors": len(factor_values),

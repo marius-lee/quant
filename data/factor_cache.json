@@ -3,31 +3,35 @@
     "动量10d",
     "波动率20d",
     "偏度20d",
-    "BP比率",
-    "规模",
-    "ROE比率"
+    "turnover_rev_5d",
+    "idio_vol_20d",
+    "ROE比率",
+    "high52w_dist"
   ],
   "factor_keys": [
     "momentum_10d",
     "volatility_20d",
     "skewness_20d",
-    "bp_ratio",
-    "size",
-    "roe_ratio"
+    "turnover_rev_5d",
+    "idio_vol_20d",
+    "roe_ratio",
+    "high52w_dist"
   ],
   "ic": [
     -0.0581,
     0.0415,
-    0.0243,
+    -0.0243,
     0.0,
+    0.0415,
     0.0,
     0.0
   ],
   "ic_ir": [
     -0.37,
     0.23,
-    0.22,
+    -0.22,
     0.0,
+    0.23,
     0.0,
     0.0
   ],
@@ -43,21 +47,26 @@
       0.0259
     ],
     "偏度20d": [
-      0.0243,
-      0.0568,
-      0.0457
+      -0.0243,
+      -0.0568,
+      -0.0457
     ],
-    "BP比率": [
+    "turnover_rev_5d": [
       0.0,
       0.0,
       0.0
     ],
-    "规模": [
-      0.0,
-      0.0,
-      0.0
+    "idio_vol_20d": [
+      0.0415,
+      0.0549,
+      0.0259
     ],
     "ROE比率": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "high52w_dist": [
       0.0,
       0.0,
       0.0
@@ -70,9 +79,20 @@
       0.0,
       0.0,
       0.0,
+      0.0,
       0.0
     ],
     [
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
       0.0,
       1.0,
       0.0,
@@ -83,6 +103,7 @@
     [
       0.0,
       0.0,
+      0.0,
       1.0,
       0.0,
       0.0,
@@ -92,6 +113,7 @@
       0.0,
       0.0,
       0.0,
+      0.0,
       1.0,
       0.0,
       0.0
@@ -101,10 +123,12 @@
       0.0,
       0.0,
       0.0,
+      0.0,
       1.0,
       0.0
     ],
     [
+      0.0,
       0.0,
       0.0,
       0.0,
@@ -132,24 +156,30 @@
       "source": "Barberis & Huang (2008)",
       "n_periods": 85
     },
-    "bp_ratio": {
-      "display": "BP比率",
-      "category": "价值",
-      "source": "Fama & French (1992)",
-      "n_periods": 0
+    "turnover_rev_5d": {
+      "display": "turnover_rev_5d",
+      "category": "未知",
+      "source": "—",
+      "n_periods": 12
     },
-    "size": {
-      "display": "规模",
-      "category": "规模",
-      "source": "Fama & French (1993)",
-      "n_periods": 0
+    "idio_vol_20d": {
+      "display": "idio_vol_20d",
+      "category": "未知",
+      "source": "—",
+      "n_periods": 86
     },
     "roe_ratio": {
       "display": "ROE比率",
       "category": "盈利",
       "source": "Fama & French (2015)",
       "n_periods": 0
+    },
+    "high52w_dist": {
+      "display": "high52w_dist",
+      "category": "未知",
+      "source": "—",
+      "n_periods": 0
     }
   },
-  "cached_at": "2026-07-02T18:11:20.729331"
+  "cached_at": "2026-07-02T18:21:43.115137"
 }

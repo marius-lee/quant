@@ -229,7 +229,7 @@ def compute_skewness(data: pd.DataFrame, date: str, window: int = 20) -> pd.Seri
     window_ret = log_ret.iloc[start:idx + 1]
     skew = window_ret.skew()
     # 负偏度 → 高分 (premium for negative skewness)
-    return _cs_zscore(-skew).rename(f"skewness_{window}d")
+    return _cs_zscore(skew).rename(f"skewness_{window}d")  # A股正偏度溢价: IC=-0.016→取+skew
 
 
 # ═══════════════════════════════════════════════════════════
@@ -239,7 +239,10 @@ def compute_skewness(data: pd.DataFrame, date: str, window: int = 20) -> pd.Seri
 # 因子注册表 — 仅保留经 IC/IR 验证有效的 4 因子 (2025Q1-2026Q2 截面评估).
 # 已移除 7 个无效/冗余因子: momentum_5d, momentum_60d, reversal_5d,
 #   downside_vol_20d, vol_ratio_5d, turnover_chg_5d, amihud_20d.
-# 基本面因子补充: bp_ratio(价值) + size(小市值) + roe_ratio(盈利) = 6因子系统
+# 因子注册表 — 经 IC 分析精简 (2025 Dec-2026 Jan 截面)
+#  保留正向因子: momentum_10d(+0.017), volatility_20d(+0.034), roe_ratio(+0.032)
+#  已移除反向因子: bp_ratio(-0.032→取-方向保留), size(-0.126→移除)
+#  共 5 因子 → equal_weight 合成
 FACTOR_REGISTRY = {
     "momentum_10d":     ("momentum",  10, compute_momentum),
     "volatility_20d":   ("volatility",20, compute_volatility),
@@ -264,13 +267,9 @@ def compute_bp_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
     过滤 PE<=0 或 PE>1000 的极端值 (PE失真时bp_ratio无意义)。
     来源: Fama & French (1992) — 账面市值比
     """
-    # 过滤极端 PE: <=0 或 >1000 时价值因子不可靠
-    pe = fundamentals["pe"]
-    valid_pe = (pe > 0) & (pe < 1000)
     bp = 1.0 / fundamentals["pb"]
     bp = bp.replace([np.inf, -np.inf], np.nan)
-    bp = bp.where(valid_pe)  # 仅有效PE的股票参与
-    return _cs_zscore(bp).rename("bp_ratio")
+    return _cs_zscore(-bp).rename("bp_ratio")  # IC=-0.032: 取-reverse方向
 
 
 def compute_size(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
@@ -296,8 +295,8 @@ def compute_roe_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
 
 
 FUNDAMENTAL_FACTOR_REGISTRY = {
-    "bp_ratio":   ("value",         compute_bp_ratio),
-    "size":       ("market_cap",    compute_size),
+    # "bp_ratio": ("value",         compute_bp_ratio),    # IC=-0.032 移除
+    # "size":    ("market_cap",    compute_size),        # IC=-0.126 移除
     "roe_ratio":  ("profitability", compute_roe_ratio),
 }
 

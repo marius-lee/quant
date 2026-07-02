@@ -274,8 +274,17 @@ async function loadPortfolio() {
               change_pct: q.change_pct || 0,
             };
           }
-          // 无实时行情: 用成本价作为现价 (盘后/非交易日)
-          return { ...p, current: p.current || p.price, value: p.value || roundNum(p.shares * (p.current || p.price), 2) };
+          // 无实时行情: 用成本价作为现价, PnL=0 (盘后/非交易日)
+          const fallbackPrice = p.current || p.price;
+          const fallbackPnl = p.price > 0 ? ((fallbackPrice / p.price) - 1) * 100 : 0;
+          return {
+            ...p,
+            current: fallbackPrice,
+            pnl_pct: roundNum(fallbackPnl, 2),
+            value: p.value || roundNum(p.shares * fallbackPrice, 2),
+            change_pct: 0,
+            name: p.name || '',
+          };
         });
       } catch (e) {
         console.warn('quotes fetch failed, using cached prices');

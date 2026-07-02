@@ -205,7 +205,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         portfolio = constructor.construct(
             filtered["alpha"],
             filtered["close"],
-            cash,  # use actual CASH (not total_capital) — selling old positions raises cash separately
+            total_capital,  # full wealth (cash + position_value) — old positions fund new buys
         )
         results["steps"]["optimizer"] = {
             "method": portfolio.method,
@@ -231,7 +231,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
             max_turnover_ratio=turnover_limit,
         )
         if orders:
-            is_valid, msg = validate_orders(orders, total_capital)
+            is_valid, msg = validate_orders(orders, engine.get_cash(strategy))
             if not is_valid:
                 logger.warning(f"[6/7] validate_orders failed: {msg}, skipping")
                 orders = []

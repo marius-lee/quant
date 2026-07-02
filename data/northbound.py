@@ -125,13 +125,14 @@ def get_northbound_flow(symbols: list, date: str, window: int = 5) -> pd.Series:
             HAVING COUNT(*) >= ?
         """, conn, params=symbols + [date, max(1, window//2)])
         
-        # 除以流通市值做标准化 (从 stocks 表取)
+        # 除以流通市值做标准化 (从 stocks 表取, circ_mv NULL→total_mv fallback)
         mv_df = pd.read_sql_query(f"""
-            SELECT symbol, circ_mv FROM stocks WHERE symbol IN ({placeholders})
+            SELECT symbol, COALESCE(circ_mv, total_mv) as mv 
+            FROM stocks WHERE symbol IN ({placeholders})
         """, conn, params=symbols)
         
         df = df.merge(mv_df, on="symbol", how="left")
-        df["flow_ratio"] = df["avg_net_buy"] / df["circ_mv"].replace(0, np.nan)
+        df["flow_ratio"] = df["avg_net_buy"] / df["mv"].replace(0, np.nan)
         
         return pd.Series(df["flow_ratio"].values, index=df["symbol"]).dropna()
     finally:

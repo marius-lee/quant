@@ -80,7 +80,14 @@ class DataStore:
         """)
         conn.commit()
         # 为基本面因子添加列 (安全迁移, 列已存在时不报错)
-        for col, typ in [("pe", "REAL"), ("pb", "REAL"), ("total_mv", "REAL")]:
+        fund_cols = [
+            ("pe", "REAL"), ("pb", "REAL"), ("total_mv", "REAL"),
+            ("roe", "REAL"), ("high_52w", "REAL"), ("low_52w", "REAL"),
+            ("circ_mv", "REAL"), ("eps", "REAL"), ("bvps", "REAL"),
+            ("div_yield", "REAL"), ("turnover_rate", "REAL"),
+            ("pe_ttm", "REAL"), ("cfps", "REAL"),
+        ]
+        for col, typ in fund_cols:
             try:
                 conn.execute(f"ALTER TABLE stocks ADD COLUMN {col} {typ}")
             except sqlite3.OperationalError:
@@ -893,7 +900,7 @@ class DataStore:
         返回: DataFrame(index=symbol, columns=[pe,pb,total_mv,roe,industry,high_52w,close_latest])
         """
         conn = self._connect()
-        base_cols = "symbol, pe, pb, total_mv, roe, industry, high_52w"
+        base_cols = "symbol, pe, pb, total_mv, roe, industry, high_52w, eps, bvps"
         if symbols:
             placeholders = ",".join("?" for _ in symbols)
             df = pd.read_sql_query(

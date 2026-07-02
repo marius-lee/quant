@@ -24,8 +24,8 @@ alpha:
 risk:
   covariance_method: ledoit_wolf # sample | ledoit_wolf
   covariance_window: 60          # ② Ledoit & Wolf (2004): ~250 stocks需要≥50天
-  max_single_position: 0.33     # ④ ¥5,000激进放宽单票33%
-  max_positions: 5              # ④ 小资金集中持仓但留有分散
+  max_single_position: 0.40     # ④ ¥5,000: 单票40%, 1,667×0.4=667, 仓位更集中
+  max_positions: 3              # ④ ¥5,000: 3只→每只~1,667, 换手可控
   min_daily_amount: 500000      # ③ 动态 = capital/max_positions*10 的静态回退
   exclude_star_st: true         # ② *ST退市风险过高, 无alpha价值
   exclude_markets: [BJ]        # ④ 北交所需50万保证金, 未开通权限

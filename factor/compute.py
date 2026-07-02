@@ -232,6 +232,78 @@ def compute_skewness(data: pd.DataFrame, date: str, window: int = 20) -> pd.Seri
     return _cs_zscore(skew).rename(f"skewness_{window}d")  # A股正偏度溢价: IC=-0.016→取+skew
 
 
+
+# ═══════════════════════════════════════════════════════════
+# 8. 换手率反转 — Lee & Swaminathan (2000), A股实证IC≈0.03-0.05
+# ═══════════════════════════════════════════════════════════
+
+def compute_turnover_reversal(data: "pd.DataFrame", date: str, short: int = 5,
+                              long: int = 20) -> "pd.Series":
+    """换手率反转: -(avg_turnover(short)/avg_turnover(long) - 1).
+    高换手→低分(散户追涨效应)。数据字段: daily.turnover(单位:%)"""
+    to = data["turnover"]
+    if date not in to.index:
+        return pd.Series(np.nan, index=to.columns, name=f"turnover_rev_{short}d")
+    idx = to.index.get_loc(date)
+    s = to.iloc[max(0,idx-short+1):idx+1].mean()
+    l = to.iloc[max(0,idx-long+1):idx+1].mean()
+    return _cs_zscore(-(s / l.replace(0, np.nan) - 1)).rename(f"turnover_rev_{short}d")
+
+
+# ═══════════════════════════════════════════════════════════
+# 9. 特质波动率 — Ang et al. (2006), 低特质波动异象
+# ═══════════════════════════════════════════════════════════
+
+def compute_idiosyncratic_vol(data: "pd.DataFrame", date: str, window: int = 20,
+                              benchmark_ret: Optional["pd.Series"] = None) -> "pd.Series":
+    """特质波动率: std(残差) 对沪深300回归, 取负号。无bm时退化为总波动率。"""
+    close = data["close"]
+    log_ret = _log_returns(close)
+    if date not in log_ret.index:
+        return pd.Series(np.nan, index=close.columns, name=f"idio_vol_{window}d")
+    idx = log_ret.index.get_loc(date)
+    start = max(0, idx - window + 1)
+    wr = log_ret.iloc[start:idx+1]
+    if benchmark_ret is not None and not benchmark_ret.empty:
+        common = wr.index.intersection(benchmark_ret.index)
+        if len(common) >= 10:
+            wr, bm = wr.loc[common], benchmark_ret.loc[common]
+            bm_c = bm.values - bm.values.mean()
+            bm_var = np.dot(bm_c, bm_c)
+            if bm_var > 0:
+                vols = {}
+                for sym in wr.columns:
+                    ri = wr[sym].dropna().values
+                    if len(ri) < 10: continue
+                    ri_c = ri - ri.mean()
+                    beta = np.dot(ri_c, bm_c[:len(ri_c)]) / bm_var
+                    resid = ri_c - beta * bm_c[:len(ri_c)]
+                    vols[sym] = np.std(resid)
+                result = pd.Series(vols) * np.sqrt(252)
+            else:
+                result = wr.std() * np.sqrt(252)
+        else:
+            result = wr.std() * np.sqrt(252)
+    else:
+        result = wr.std() * np.sqrt(252)
+    return _cs_zscore(-result).rename(f"idio_vol_{window}d")
+
+
+# ═══════════════════════════════════════════════════════════
+# 10. 52周高点距离 — George & Hwang (2004), A股IC≈0.02-0.04
+# ═══════════════════════════════════════════════════════════
+
+def compute_high52w_dist(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
+    """接近52周高点→高分。dist = 1 - close_latest/high_52w, 取负号。
+    数据字段: stocks.high_52w, stocks.close_latest(当日收盘)"""
+    # close_latest 需要从 daily 表补, fundamentals 里只有 stocks 静态字段
+    dist = 1.0 - fundamentals["close_latest"] / fundamentals["high_52w"]
+    dist = dist.replace([np.inf, -np.inf], np.nan).clip(-2, 2)
+    return _cs_zscore(-dist).rename("high52w_dist")
+
+
+# ═══════════════════════════════════════════════════════════
+# 因子注册表
 # ═══════════════════════════════════════════════════════════
 # 因子注册表 — 供 FactorEvaluator 扫描
 # ═══════════════════════════════════════════════════════════
@@ -244,9 +316,13 @@ def compute_skewness(data: pd.DataFrame, date: str, window: int = 20) -> pd.Seri
 #  已移除反向因子: bp_ratio(-0.032→取-方向保留), size(-0.126→移除)
 #  共 5 因子 → equal_weight 合成
 FACTOR_REGISTRY = {
-    "momentum_10d":     ("momentum",  10, compute_momentum),
-    "volatility_20d":   ("volatility",20, compute_volatility),
-    "skewness_20d":     ("skewness",  20, compute_skewness),
+    # 已有因子 (经 IC 验证保留)
+    "momentum_10d":     ("momentum",     10, compute_momentum),
+    "volatility_20d":   ("volatility",   20, compute_volatility),
+    "skewness_20d":     ("skewness",     20, compute_skewness),
+    # 新增因子 (2026-07)
+    "turnover_rev_5d":  ("turnover_rev", 5,  compute_turnover_reversal),
+    "idio_vol_20d":     ("idio_vol",     20, compute_idiosyncratic_vol),
 }
 
 # ═══════════════════════════════════════════════════════════
@@ -295,9 +371,11 @@ def compute_roe_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
 
 
 FUNDAMENTAL_FACTOR_REGISTRY = {
-    # "bp_ratio": ("value",         compute_bp_ratio),    # IC=-0.032 移除
-    # "size":    ("market_cap",    compute_size),        # IC=-0.126 移除
-    "roe_ratio":  ("profitability", compute_roe_ratio),
+    # 已移除: bp_ratio(IC=-0.032), size(IC=-0.126)
+    "roe_ratio":     ("profitability",  compute_roe_ratio),
+    # 新增因子 (2026-07)
+    "high52w_dist":  ("high52w",        compute_high52w_dist),
+    # "hsgt_flow_5d": ("northbound",     compute_hsgt_flow),      # 需北向资金数据源
 }
 
 def get_factor_names() -> list:
@@ -306,15 +384,20 @@ def get_factor_names() -> list:
 
 
 def compute_all_factors(data: pd.DataFrame, date: str,
-                      fundamentals: pd.DataFrame = None) -> dict:
+                      fundamentals: pd.DataFrame = None,
+                      benchmark_ret: Optional["pd.Series"] = None) -> dict:
     """批量计算所有已注册因子 → {factor_name: Series(index=symbol)}。
     
     价格因子从 data 计算, 基本面因子从 fundamentals 计算。
+    benchmark_ret 用于特质波动率因子(对指数回归取残差)。
     """
     results = {}
     for name, (cat, win, fn) in FACTOR_REGISTRY.items():
         try:
-            results[name] = fn(data, date, win)
+            if 'idio_vol' in name and benchmark_ret is not None:
+                results[name] = fn(data, date, win, benchmark_ret=benchmark_ret)
+            else:
+                results[name] = fn(data, date, win)
         except Exception as e:
             from utils.logger import get_logger
             get_logger("factor.compute").warning(f"price factor {name} failed: {e}")

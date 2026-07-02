@@ -885,26 +885,35 @@ class DataStore:
         ).fetchall()
         return {r[0]: r[1] for r in rows}
 
-    def get_fundamentals(self, symbols: list = None) -> pd.DataFrame:
-        """读取基本面数据: PE, PB, 总市值, 行业分类。
+    def get_fundamentals(self, symbols: list = None, date: str = None) -> pd.DataFrame:
+        """读取基本面数据: PE, PB, 总市值, ROE, 行业, 52周高点, 最新收盘价。
 
         symbols: 股票列表, None = 全部
-        返回: DataFrame(index=symbol, columns=[pe, pb, total_mv, industry])
-              pe/pb 已过滤负值 (设为 NaN)
+        date: 交易日期, 用于获取当日最新收盘价(high52w_dist 因子需要)
+        返回: DataFrame(index=symbol, columns=[pe,pb,total_mv,roe,industry,high_52w,close_latest])
         """
         conn = self._connect()
+        base_cols = "symbol, pe, pb, total_mv, roe, industry, high_52w"
         if symbols:
             placeholders = ",".join("?" for _ in symbols)
             df = pd.read_sql_query(
-                f"SELECT symbol, pe, pb, total_mv, roe, industry FROM stocks WHERE symbol IN ({placeholders})",
+                f"SELECT {base_cols} FROM stocks WHERE symbol IN ({placeholders})",
                 conn, params=symbols)
         else:
             df = pd.read_sql_query(
-                "SELECT symbol, pe, pb, total_mv, roe, industry FROM stocks", conn)
+                f"SELECT {base_cols} FROM stocks", conn)
         df = df.set_index("symbol")
         # 过滤负值PE/PB
         df.loc[df["pe"] <= 0, "pe"] = None
         df.loc[df["pb"] <= 0, "pb"] = None
+        # 加入最新收盘价 (从 daily 表取指定日期的 close)
+        if date:
+            df_date = pd.read_sql_query(
+                "SELECT symbol, close FROM daily WHERE date=?", conn, params=(date,))
+            df_date = df_date.set_index("symbol").rename(columns={"close": "close_latest"})
+            df = df.join(df_date, how="left")
+        else:
+            df["close_latest"] = None
         return df
 
 

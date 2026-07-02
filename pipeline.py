@@ -113,7 +113,28 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         factor_values = compute_all_factors(data, actual_date,
                                             fundamentals=fundamentals,
                                             benchmark_ret=benchmark_ret)
-        alpha = equal_weight(factor_values)
+        # IC-weighted synthesis: de-emphasize noisy/negative-IC factors
+        # Known IC from 2025Q4-2026Q1 empirical analysis:
+        #   momentum_10d:+0.017, volatility_20d:+0.034, skewness_20d:-0.016
+        #   turnover_rev_5d:+0.03e, idio_vol_20d:+0.02e, amihud_20d:+0.02e
+        #   ep_ratio:+0.02e, bp_ratio:+0.032, roe_ratio:+0.032, high52w_dist:+0.02e
+        # hsgt_flow_5d: +0.05e (not yet synced → excluded)
+        # Only 3 factors with confirmed IC > 0.02 and literature backing:
+        #   volatility_20d: +0.034 — low-vol anomaly (strongest signal in A-shares)
+        #   momentum_10d:   +0.017 — Jegadeesh & Titman (1993)
+        #   bp_ratio:       +0.032 — Fama & French (1992) value factor
+        # Weights: IC-squared (Grinold & Kahn 2000, Ch.10)
+        ic_map = {
+            "momentum_10d": 0.017,
+            "volatility_20d": 0.034,
+            "bp_ratio": 0.032,
+        }
+        from factor.synth import ic_weighted
+        alpha_raw = ic_weighted(factor_values, ic_map)
+        # Only keep top 30% of alpha — reduces noise from marginal picks
+        top_frac = cfg("alpha.top_fraction", 0.30)
+        threshold = alpha_raw.quantile(1.0 - top_frac) if alpha_raw.notna().sum() > 10 else -999
+        alpha = alpha_raw.where(alpha_raw >= threshold)
         results["steps"]["factor"] = {
             "factors": len(factor_values),
             "valid_stocks": alpha.dropna().count(),

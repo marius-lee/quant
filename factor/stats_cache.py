@@ -376,6 +376,6 @@ def force_refresh_cache(n_symbols: int = 500) -> dict:
         logger.info(f"Old factor cache deleted: {CACHE_FILE}")
 
     logger.info(f"Refreshing factor cache with {n_symbols} stocks...")
-    stats = compute_factor_stats(n_symbols=n_symbols, lookback=120)
+    stats = get_cached_factor_stats(force_refresh=True)
     logger.info(f"Factor cache refresh complete: {len(stats.get('factors', []))} factors")
     return stats

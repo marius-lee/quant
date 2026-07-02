@@ -12,12 +12,12 @@ import numpy as np
 import pandas as pd
 
 from data.store import DataStore
-from data.trade_repo import TradeRepo
 from config.loader import get as cfg
 
 from factor.compute import compute_all_factors
 from factor.synth import ic_weighted, equal_weight
 from risk.neutralize import neutralize
+
 from factor.stats_cache import load_ic_map_from_cache
 from risk.covariance import covariance_matrix
 from risk.constraints import RiskLimits, apply_all_filters
@@ -198,7 +198,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
     total_capital = round(cash + position_value, 2)
 
 
-    # ── Stop-Loss: 任一持仓从成本价跌超 5% 立即平仓 ──
+    # ── Stop-Loss: 任一持仓从成本价跌超15%立即平仓 ──
     stop_loss_pct = cfg("risk.stop_loss_pct", 0.15)
     stopped = 0
     for p in current_positions:

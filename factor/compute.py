@@ -462,11 +462,12 @@ def compute_roe_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
 
 FUNDAMENTAL_FACTOR_REGISTRY = {
     # ── 静态因子: 季度更新, 作为辅助/行业中性化用 ──
-    # 不参与 alpha 合成 (IC 不稳定, 受财报滞后影响)
+    # 参与 alpha 合成 — 从 fundamentals (PE/PB/总市值/ROE/52周高低) 计算
     "ep_ratio":      ("value_ep",       compute_ep_ratio),
     "bp_ratio":      ("value_bp",       compute_bp_ratio),
     "roe_ratio":     ("profitability",  compute_roe_ratio),
     "high52w_dist":  ("high52w",        compute_high52w_dist),
+    "size":          ("size_smb",       compute_size),
 }
 
 def get_factor_names() -> list:

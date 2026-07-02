@@ -191,12 +191,15 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
             initial_capital=capital,
         )
         push_to_web(report)
+        cap = report["capital"]
         results["steps"]["monitor"] = {
-            "capital": report["capital"],
+            "cash": cap["cash"],
+            "positions_value": cap["positions_value"],
+            "total_wealth": cap["total_wealth"],
             "total_return": report["metrics"]["total_return_pct"],
             "status": "ok",
         }
-        logger.info(f"[7/7] monitor: capital=¥{report['capital']:,.2f}, return={report['metrics']['total_return_pct']}%")
+        logger.info(f"[7/7] monitor: wealth=¥{cap['total_wealth']:,.2f} (cash=¥{cap['cash']:,.2f} + pos=¥{cap['positions_value']:,.2f}), return={report['metrics']['total_return_pct']}%")
     except Exception as e:
         results["steps"]["monitor"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[7/7] monitor failed: {e}")

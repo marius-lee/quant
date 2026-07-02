@@ -32,8 +32,6 @@ def generate_report(
       "trades": list[dict],
     }
     """
-    total_return = (capital - initial_capital) / initial_capital
-
     # 从交易历史估算收益率序列 (简化: 用每日 capital_after 推算)
     daily_returns = []
     if trades:
@@ -62,9 +60,20 @@ def generate_report(
         if t.get("pnl", 0):
             realized += t.get("pnl", 0)
 
+    # 计算持仓市值
+    positions_value = sum(
+        p.get("price", 0) * p.get("shares", 0) for p in positions
+    )
+    total_wealth = capital + positions_value
+    total_return = (total_wealth - initial_capital) / initial_capital
+
     report = {
         "date": report_date,
-        "capital": round(capital, 2),
+        "capital": {
+            "cash": round(capital, 2),
+            "positions_value": round(positions_value, 2),
+            "total_wealth": round(total_wealth, 2),
+        },
         "pnl": {
             "total": round(pnl_total, 2),
             "realized": round(realized, 2),

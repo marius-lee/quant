@@ -78,6 +78,16 @@ def _fetch_pe_mv_akshare(conn: sqlite3.Connection) -> int:
 
     conn.commit()
     logger.info(f"PE/MV bulk: {updated} stocks updated (akshare)")
+
+    # 派生 ROE = EPS / BVPS (会计恒等式)
+    conn.execute("""
+        UPDATE stocks SET roe = ROUND(eps / NULLIF(bvps, 0) * 100, 2)
+        WHERE eps IS NOT NULL AND bvps IS NOT NULL AND bvps != 0
+          AND (roe IS NULL OR roe = 0)
+    """)
+    conn.commit()
+    roe_valid = conn.execute("SELECT COUNT(*) FROM stocks WHERE roe IS NOT NULL").fetchone()[0]
+    logger.info(f"ROE derived (EPS/BVPS): {roe_valid} stocks")
     return updated
 
 

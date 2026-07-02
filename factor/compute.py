@@ -261,10 +261,15 @@ def compute_ep_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
 
 def compute_bp_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
     """BP 比率 (1/PB) — 价值因子。低PB = 高BP = 高分。
+    过滤 PE<=0 或 PE>1000 的极端值 (PE失真时bp_ratio无意义)。
     来源: Fama & French (1992) — 账面市值比
     """
+    # 过滤极端 PE: <=0 或 >1000 时价值因子不可靠
+    pe = fundamentals["pe"]
+    valid_pe = (pe > 0) & (pe < 1000)
     bp = 1.0 / fundamentals["pb"]
     bp = bp.replace([np.inf, -np.inf], np.nan)
+    bp = bp.where(valid_pe)  # 仅有效PE的股票参与
     return _cs_zscore(bp).rename("bp_ratio")
 
 
@@ -279,14 +284,14 @@ def compute_size(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
 
 def compute_roe_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
     """ROE 盈利能力因子 — 盈利能力溢价。高分 = 高ROE = 高预期收益。
-    
+
     来源: Fama & French (2015) — 盈利能力因子 (RMW)
-    计算: ROE ≈ PB/PE = (Price/Book) / (Price/Earnings) = Earnings/Book
-    由于 PE/PB 来自同一截面，用 PB/PE 推算 ROE。
+    使用 stocks.roe 列 (EPS / BVPS 推导)，过滤 ROE>100 极端值。
     """
-    roe = fundamentals["pb"] / fundamentals["pe"]
+    roe = fundamentals["roe"].astype(float)
+    # 过滤极端 ROE: 负值 或 >100 视为数据错误
+    roe = roe.where((roe > 0) & (roe < 100))
     roe = roe.replace([np.inf, -np.inf], np.nan)
-    # 高ROE = 高分
     return _cs_zscore(roe).rename("roe_ratio")
 
 

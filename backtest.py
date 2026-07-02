@@ -28,6 +28,7 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
     返回: DataFrame(index=date, columns=[cash, positions_value, total_wealth, return])
     """
     import pipeline
+    from optimizer.rebalance import Order as PipelineOrder  # P0-2: for daily stop-loss
 
     # 清理旧交易记录
     if os.path.exists(TRADE_DB):
@@ -57,9 +58,53 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
     results = []
     original_capital = capital  # 初始本金，全程不变，用于计算累计收益率
     prev_total_wealth = capital  # 首个交易日前一日总资产=初始本金，避免 NameError
-    for i, date_str in enumerate(rebalance_dates):
+    prev_wealth_for_daily = capital  # P0-2: 用于日频止损间的 wealth 追踪
+    
+    sl_checks = 0  # P0-2: 止损触发计数
+    for day_idx, date_str in enumerate(all_dates):
         t0 = time.time()
         try:
+            # P0-2: On every trading day, check stop-loss first
+            current_positions = engine.get_positions("quant")
+            if current_positions:
+                stop_loss_pct = pipeline.cfg("risk.stop_loss_pct", 0.15)
+                prices_for_sl = {}
+                try:
+                    # Get today's close prices for all held symbols
+                    syms = [p["symbol"] for p in current_positions]
+                    daily_sl = store.get_daily(syms, start=date_str, end=date_str)
+                    if not daily_sl.empty:
+                        close_sl = daily_sl["close"]
+                        if date_str in close_sl.index:
+                            prices_for_sl = close_sl.loc[date_str].to_dict()
+                except Exception:
+                    pass
+                for p in current_positions:
+                    cost_basis = p.get("price", 0)
+                    current_px = prices_for_sl.get(p["symbol"], None)
+                    if current_px is None or current_px <= 0 or cost_basis <= 0:
+                        continue
+                    drop = (current_px - cost_basis) / cost_basis
+                    if drop <= -stop_loss_pct:
+                        shares = int(p["shares"])
+                        if shares > 0:
+                            logger.warning(f"[SL-DAILY] {date_str}: {p['symbol']} drop={drop:.1%}, selling {shares} shares")
+                            engine.execute([PipelineOrder(symbol=p["symbol"], side="sell", shares=shares, price=current_px, cost=0)], date_str, "quant")
+                            sl_checks += 1
+            
+            # Only run full pipeline on rebalance dates
+            if date_str not in rebalance_dates:
+                # Non-rebalance day: just record wealth  
+                total_wealth = engine.get_capital("quant")
+                daily_return = (total_wealth - prev_wealth_for_daily) / prev_wealth_for_daily if prev_wealth_for_daily > 0 else 0
+                prev_wealth_for_daily = total_wealth
+                results.append({
+                    "date": date_str,
+                    "wealth": round(total_wealth, 2),
+                    "daily_return": round(daily_return, 6),
+                    "type": "daily_check",
+                })
+                continue
 
             # pipeline.run() needs capital for generate_report's initial_capital reference
             result = pipeline.run(date_str=date_str, capital=capital, strategy="quant", skip_pull=True)
@@ -91,7 +136,7 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
             })
 
             logger.info(
-                f"[{i+1}/{len(rebalance_dates)}] {date_str}: "
+                f"[{rebalance_dates.index(date_str)+1}/{len(rebalance_dates)}] {date_str}: "
                 f"wealth=¥{total_wealth:,.2f}, return={cumulative_return*100:+.2f}%, "
                 f"{optimizer_info.get('positions',0)} pos, {result['elapsed_sec']}s"
             )
@@ -105,6 +150,10 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
 
     df = pd.DataFrame(results)
     cum_return = 0.0  # 初始化，确保 bench 对比段可安全引用
+    if not df.empty and "wealth" in df.columns:
+        # P0-2: daily results use "wealth" column; rebalance results use "total_wealth"
+        if "total_wealth" not in df.columns:
+            df["total_wealth"] = df["wealth"]
     if not df.empty and "total_wealth" in df.columns:
         # 计算统计量
         daily_rets = df.set_index("date")["total_wealth"].pct_change().dropna()

@@ -225,8 +225,8 @@ def compute_skewness(data: pd.DataFrame, date: str, window: int = 20) -> pd.Seri
     start = max(0, idx - window + 1)
     window_ret = log_ret.iloc[start:idx + 1]
     skew = window_ret.skew()
-    # 负偏度 → 高分 (premium for negative skewness)
-    return _cs_zscore(skew).rename(f"skewness_{window}d")  # A股正偏度溢价: IC=-0.016→取+skew
+    # A股正偏度溢价: 正偏度→高分→低未来收益(IC<0), 符合Barberis # 负偏度 → 高分 (premium for negative skewness) Huang(2008)
+    return _cs_zscore(skew).rename(f"skewness_{window}d")  # 正偏度→高分, IC方向为负
 
 
 
@@ -435,7 +435,7 @@ def compute_bp_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
     """
     bp = 1.0 / fundamentals["pb"]
     bp = bp.replace([np.inf, -np.inf], np.nan)
-    return _cs_zscore(-bp).rename("bp_ratio")  # 低PB=高BP=高分, IC方向为负取负号
+    return _cs_zscore(-bp).rename("bp_ratio")  # A股成长溢价: 低BP(高PB=成长股)→高分, IC正向
 
 
 def compute_size(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":

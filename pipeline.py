@@ -147,7 +147,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
 
     # ── Step 5: Optimizer ──
     try:
-        current_capital = engine.get_capital(strategy)
+        current_capital = engine.get_cash(strategy)  # 可用现金, 非总资产(已含持仓市值)
         portfolio = constructor.construct(filtered["alpha"], filtered["close"], current_capital)
         results["steps"]["optimizer"] = {
             "method": portfolio.method,
@@ -166,7 +166,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
     try:
         current_positions = engine.get_positions(strategy)
         current_lots = pd.Series({p["symbol"]: p["shares"] // LOT_SIZE for p in current_positions}, dtype=int)
-        current_capital = engine.get_capital(strategy)
+        current_capital = engine.get_cash(strategy)  # 可用现金, 用于验证订单可行性
 
         orders = compute_trades(
             portfolio.lots, current_lots, prices, cost_model, capital=current_capital

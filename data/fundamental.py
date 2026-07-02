@@ -56,6 +56,7 @@ def _fetch_value_em(conn: sqlite3.Connection, symbols: list, sleep_ms: int = 200
     updated = 0
     skipped = 0
     total = len(symbols)
+    t_start = time.time()
     for i, sym in enumerate(symbols):
         if i > 0 and i % 50 == 0:
             elapsed = time.time() - t_start
@@ -95,10 +96,12 @@ def _fetch_value_em(conn: sqlite3.Connection, symbols: list, sleep_ms: int = 200
                     params,
                 )
                 updated += 1
+                print(f"\r{updated}/{total}", end="", flush=True)
         except Exception:
             skipped += 1
             continue
 
+    print()  # newline after progress line
     conn.commit()
     logger.info(f"stock_value_em done: {updated} updated, {skipped} skipped (of {total})")
 
@@ -108,6 +111,7 @@ def _fetch_value_em(conn: sqlite3.Connection, symbols: list, sleep_ms: int = 200
         WHERE eps IS NOT NULL AND bvps IS NOT NULL AND bvps != 0
           AND (roe IS NULL OR roe = 0)
     """)
+    print()  # newline after progress line
     conn.commit()
     roe_valid = conn.execute("SELECT COUNT(*) FROM stocks WHERE roe IS NOT NULL").fetchone()[0]
     logger.info(f"ROE derived (EPS/BVPS): {roe_valid} stocks (P2-2: direct fetch not yet available)")

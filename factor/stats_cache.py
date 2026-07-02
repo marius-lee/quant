@@ -305,3 +305,58 @@ def get_cached_factor_stats(force_refresh: bool = False) -> dict:
         logger.warning(f"Factor cache write failed: {e}")
 
     return stats
+
+
+def load_ic_map_from_cache(factor_values: dict = None) -> dict:
+    """P1-3: 从 factor_cache.json 加载 IC 权重, 替代 pipeline 硬编码。
+
+    优先使用绝对值最大的 IC 值; 过滤 IC<0.01 的无效因子。
+    返回: {factor_name: abs(IC)} 字典，归一化为权重。
+    factor_values: 可选，用于过滤只包含当前有效因子的权重。
+    """
+    if not os.path.exists(CACHE_FILE):
+        logger.info("IC cache not found, falling back to hardcoded weights")
+        return {}
+
+    try:
+        with open(CACHE_FILE, "r") as f:
+            cache = json.load(f)
+    except Exception as e:
+        logger.warning(f"IC cache read failed: {e}")
+        return {}
+
+    # Check cache freshness
+    if "generated_at" in cache:
+        age = time.time() - cache.get("generated_at", 0)
+        if age > CACHE_TTL_SEC:
+            logger.info(f"IC cache expired ({age/3600:.0f}h > 24h)")
+            return {}
+
+    ic_list = cache.get("ic", [])
+    factor_keys = cache.get("factor_keys", [])
+
+    if not ic_list or len(ic_list) != len(factor_keys):
+        return {}
+
+    # 格式: {EnglishKey: abs(IC)}, 过滤 IC<0.01 的无意义因子
+    ic_map = {}
+    min_ic = 0.01
+    for key, ic_val in zip(factor_keys, ic_list):
+        abs_ic = abs(ic_val) if isinstance(ic_val, (int, float)) else 0
+        if abs_ic >= min_ic:
+            ic_map[key] = abs_ic
+
+    if not ic_map:
+        return {}
+
+    # 归一化为 IC-weighted 权重
+    total = sum(ic_map.values())
+    if total > 0:
+        ic_map = {k: v / total for k, v in ic_map.items()}
+
+    # P1-3: 过滤因子：若传入了 factor_values，只保留实际计算出的因子
+    if factor_values and ic_map:
+        ic_map = {k: v for k, v in ic_map.items() if k in factor_values}
+
+    logger.info(f"IC weights loaded from cache: {len(ic_map)} factors")
+    return ic_map

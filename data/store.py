@@ -503,16 +503,27 @@ class DataStore:
                 logger.warning("akshare industry list returned empty")
                 return 0
             updated = 0
-            for _, ind_row in df_ind.iterrows():
+            sample_cols = None
+            # 前3个行业打印样本列名，帮助调试
+            for idx, (_, ind_row) in enumerate(df_ind.iterrows()):
                 ind_name = str(ind_row.get("name", "")).strip()
                 if not ind_name:
                     continue
                 try:
                     df_cons = ak.stock_board_industry_cons_ths(symbol=ind_name)
+                    if idx < 3 and df_cons is not None and not df_cons.empty:
+                        sample_cols = df_cons.columns.tolist()
+                        logger.info(f"THS industry '{ind_name}': cols={sample_cols}, rows={len(df_cons)}")
                     if df_cons is None or df_cons.empty:
                         continue
                     for _, cons_row in df_cons.iterrows():
-                        sym = str(cons_row.get("code", "")).strip()
+                        # akshare 可能返回中文列名 "代码" 或英文 "code"
+                        sym = str(cons_row.get("code", cons_row.get("代码", cons_row.get("stock_code", "")))).strip()
+                        # 去掉可能的市场前缀/后缀: "sh600036", "600036.SH" → "600036"
+                        if "." in sym:
+                            sym = sym.split(".")[-1]
+                        if not sym.isdigit() or len(sym) < 6:
+                            sym = sym[-6:]  # 取最后6位
                         if len(sym) != 6:
                             continue
                         conn.execute(

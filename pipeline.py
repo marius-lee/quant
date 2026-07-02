@@ -68,7 +68,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
         conn = store._connect()
         # 获取所有有日线数据的股票 (不按日期筛选，确保大盘停牌日也能覆盖)
         symbols = [r[0] for r in conn.execute(
-            "SELECT DISTINCT symbol FROM daily"
+            "SELECT DISTINCT d.symbol FROM daily d JOIN stocks s ON d.symbol=s.symbol WHERE s.market!='BJ'"
         ).fetchall()]
         # Get enough history for factor computation (need 60+ days)
         data = store.get_daily(symbols, start="2026-01-01", end=date_str)

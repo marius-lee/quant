@@ -28,6 +28,7 @@ risk:
   max_positions: 5              # ④ 小资金集中持仓但留有分散
   min_daily_amount: 500000      # ③ 动态 = capital/max_positions*10 的静态回退
   exclude_star_st: true         # ② *ST退市风险过高, 无alpha价值
+  exclude_markets: [BJ]        # ④ 北交所需50万保证金, 未开通权限
 
 # ── Layer 5: Optimizer ──
 optimizer:

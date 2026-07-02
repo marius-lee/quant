@@ -24,23 +24,29 @@ def _init_state() -> dict:
             capital = round(row[0], 2)
         else:
             capital = float(cfg("backtest.initial_capital", 5000))
+        # board_count 列在旧 schema 中可能不存在 — PRAGMA 探测
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(sim_trades)").fetchall()]
+        has_board = "board_count" in cols
+        query = (
+            "SELECT symbol, price, shares, board_count, date FROM sim_trades "
+            if has_board else
+            "SELECT symbol, price, shares, 0, date FROM sim_trades "
+        ) + (
+            "WHERE side='buy' AND strategy='quant' AND symbol NOT IN ("
+            "SELECT symbol FROM sim_trades WHERE side='sell' AND strategy='quant')"
+        )
         merged = {}
-        for r in conn.execute("""
-            SELECT symbol, price, shares, board_count, date FROM sim_trades
-            WHERE side='buy' AND strategy='quant' AND symbol NOT IN (
-                SELECT symbol FROM sim_trades WHERE side='sell' AND strategy='quant'
-            )
-        """).fetchall():
+        for r in conn.execute(query).fetchall():
             sym, px, sh, board, dt = r[0], r[1], r[2], r[3], r[4]
             if sym in merged:
                 m = merged[sym]; total_sh = m["shares"] + sh
                 m["price"] = round((m["price"] * m["shares"] + px * sh) / total_sh, 2)
                 m["shares"] = total_sh
-                m["board_count"] = max(m["board_count"], board)
+                m["board_count"] = max(m["board_count"], board or 0)
                 m["date"] = min(m["date"], dt)
             else:
                 merged[sym] = {"symbol": sym, "shares": sh, "price": px,
-                               "board_count": board, "date": dt}
+                               "board_count": board or 0, "date": dt}
         positions = [{"symbol": m["symbol"], "name": "", "shares": m["shares"],
                        "price": m["price"], "board_count": m["board_count"],
                        "date": m["date"], "current": m["price"], "pnl_pct": 0,

@@ -116,7 +116,8 @@ def api_positions():
             })
         conn.close()
     except Exception:
-        pass
+        logger.warning("api_positions: query failed (schema mismatch?)", exc_info=True)
+        return jsonify({"positions": [], "error": "internal"}), 500
     return jsonify({"positions": positions})
 
 
@@ -156,7 +157,8 @@ def api_trades():
                        "board_count": r[3], "date": r[4]} for r in buys]
         conn.close()
     except Exception:
-        pass
+        logger.warning("api_trades: query failed (schema mismatch?)", exc_info=True)
+        return jsonify({"trades": [], "positions": [], "error": "internal"}), 500
     return jsonify({"trades": trades, "positions": positions})
 
 

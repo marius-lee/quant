@@ -173,7 +173,7 @@ class DataStore:
         conn = self._connect()
         try:
             conn.execute("ALTER TABLE stocks ADD COLUMN industry TEXT")
-        except:
+        except sqlite3.OperationalError:
             pass
         try:
             bs.login()
@@ -207,8 +207,8 @@ class DataStore:
         except Exception as e:
             try:
                 bs.logout()
-            except:
-                pass
+            except Exception:
+                logger.warning(f"tushare init failed (token may be invalid): will skip tushare source")
             logger.warning(f"industry sync failed: {e}")
             return 0
 

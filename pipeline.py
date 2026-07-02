@@ -13,6 +13,7 @@ import pandas as pd
 
 from data.store import DataStore
 from data.trade_repo import TradeRepo
+from config.loader import get as cfg
 
 from factor.compute import compute_all_factors
 from factor.synth import equal_weight
@@ -43,7 +44,6 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         date_str = datetime.today().strftime("%Y-%m-%d")
 
     if capital is None:
-        from config.loader import get as cfg
         capital = cfg("backtest.initial_capital", 5000)
 
     t0 = time.time()
@@ -149,10 +149,26 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         store.close()
         return results
 
+    # ── Compute total capital (cash + position value at current prices) ──
+    # Bug fix: was passing cash-only (~¥305) to construct() and compute_trades(),
+    # causing optimizer to think portfolio is empty. Now uses cash + Σ(shares × current px).
+    current_positions = engine.get_positions(strategy)
+    cash = engine.get_cash(strategy)
+    position_value = 0.0
+    for p in current_positions:
+        px = prices.get(p["symbol"], None)
+        if px is None or px <= 0:
+            px = p.get("price", 0)  # fallback: cost basis
+        position_value += p["shares"] * px
+    total_capital = round(cash + position_value, 2)
+
     # ── Step 5: Optimizer ──
     try:
-        current_capital = engine.get_cash(strategy)  # 可用现金, 非总资产(已含持仓市值)
-        portfolio = constructor.construct(filtered["alpha"], filtered["close"], current_capital)
+        portfolio = constructor.construct(
+            filtered["alpha"],
+            filtered["close"],
+            total_capital,
+        )
         results["steps"]["optimizer"] = {
             "method": portfolio.method,
             "positions": portfolio.positions,
@@ -168,12 +184,13 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
 
     # ── Step 6: Execution ──
     try:
-        current_positions = engine.get_positions(strategy)
         current_lots = pd.Series({p["symbol"]: p["shares"] // LOT_SIZE for p in current_positions}, dtype=int)
-        current_capital = engine.get_cash(strategy)  # 可用现金, 用于验证订单可行性
+        turnover_limit = cfg("optimizer.turnover_limit", 1.00)
 
         orders = compute_trades(
-            portfolio.lots, current_lots, prices, cost_model, capital=current_capital
+            portfolio.lots, current_lots, prices, cost_model,
+            capital=total_capital,
+            max_turnover_ratio=turnover_limit,
         )
         if orders:
             engine.execute(orders, date_str, strategy)

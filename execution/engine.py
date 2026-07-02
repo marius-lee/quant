@@ -180,8 +180,8 @@ class ExecutionEngine:
                 pnl = 0.0
                 pnl_pct = 0.0
                 if orig:
-                    pnl = (price - orig[0]) * shares
-                    pnl_pct = (price / orig[0] - 1) if orig[0] > 0 else 0.0
+                    pnl = proceeds - orig[0] * shares
+                    pnl_pct = (proceeds / (orig[0] * shares) - 1) if orig[0] * shares > 0 else 0.0
                 capital += proceeds
 
             conn.execute(

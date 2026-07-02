@@ -1,8 +1,9 @@
 """统一成本模型 — 佣金 + 印花税 + 滑点估计。
-from utils.logger import get_logger
-logger = get_logger("execution.cost")
 来源: ② A股标准费率; ② 券商普遍收费结构
 """
+
+from utils.logger import get_logger
+logger = get_logger("execution.cost")
 
 from dataclasses import dataclass
 

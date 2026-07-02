@@ -89,8 +89,13 @@ def compute_factor_stats(
     # 只计算最近 lookback 个交易日
     eval_dates = dates[-lookback:]
 
-    from tqdm import tqdm
-    for d in tqdm(eval_dates, desc="Computing factors"):
+    try:
+        from tqdm import tqdm
+        date_iter = tqdm(eval_dates, desc="Computing factors")
+    except ImportError:
+        logger.info("tqdm not installed, computing without progress bar")
+        date_iter = eval_dates
+    for d in date_iter:
         date_str = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10]
         try:
             fv = compute_all_factors(data, date_str)

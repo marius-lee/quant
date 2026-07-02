@@ -189,19 +189,16 @@ def compute_amihud(data: pd.DataFrame, date: str, window: int = 20) -> pd.Series
     idx = close.index.get_loc(date)
     start = max(0, idx - window + 1)
     
-    results = {}
-    for sym in close.columns:
-        p = close[sym].iloc[start:idx + 1]
-        a = amount[sym].iloc[start:idx + 1]
-        if p.count() < window * 0.5 or a.count() < window * 0.5:
-            results[sym] = np.nan
-            continue
-        # 日收益绝对值
-        ret = p.pct_change().abs()
-        # dollar_volume = amount(千元) × 1000 = 元
-        dollar_vol = a * 1000
-        illiq = (ret / dollar_vol.replace(0, np.nan)).mean() * 1e6
-        results[sym] = illiq
+    # Vectorized Amihud: all stocks at once
+    p_slice = close.iloc[start:idx + 1]
+    a_slice = amount.iloc[start:idx + 1]
+    ret = p_slice.pct_change().abs()
+    dollar_vol = a_slice * 1000
+    illiq = (ret / dollar_vol.replace(0, np.nan)).mean(skipna=True) * 1e6
+    # Stocks with <50% valid data → NaN
+    min_valid = max(1, int(window * 0.5))
+    valid_mask = (p_slice.count() >= min_valid) & (a_slice.count() >= min_valid)
+    illiq = illiq.where(valid_mask)
     
     series = pd.Series(results)
     # 高分=高非流动性=高预期收益

@@ -910,8 +910,9 @@ class DataStore:
             df = pd.read_sql_query(
                 f"SELECT {base_cols} FROM stocks", conn)
         df = df.set_index("symbol")
-        # 过滤负值PE/PB
+        # 过滤负值和极端PE/PB (PE>1000=数据噪声, 无alpha价值)
         df.loc[df["pe"] <= 0, "pe"] = None
+        df.loc[df["pe"] > 1000, "pe"] = None
         df.loc[df["pb"] <= 0, "pb"] = None
         # 加入最新收盘价 (从 daily 表取指定日期的 close)
         if date:

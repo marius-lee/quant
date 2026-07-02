@@ -16,8 +16,9 @@ from data.trade_repo import TradeRepo
 from config.loader import get as cfg
 
 from factor.compute import compute_all_factors
-from factor.synth import equal_weight
+from factor.synth import ic_weighted, equal_weight
 from risk.neutralize import neutralize
+from factor.stats_cache import load_ic_map_from_cache
 from risk.covariance import covariance_matrix
 from risk.constraints import RiskLimits, apply_all_filters
 from optimizer.portfolio import PortfolioConstructor
@@ -113,21 +114,25 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         factor_values = compute_all_factors(data, actual_date,
                                             fundamentals=fundamentals,
                                             benchmark_ret=benchmark_ret)
-        # P1-3: IC weights loaded from factor_cache.json (auto-calibrated every 24h)
-        # Source: factor_report() via stats_cache.compute_factor_stats()
-        # Falls back to 2024-2025 empirical IC estimates if cache is empty/missing
-        from factor.stats_cache import load_ic_map_from_cache
-        ic_map = load_ic_map_from_cache(factor_values)
-        if not ic_map:
-            ic_map = {
-                "reversal_5d":      0.050,
-                "volatility_20d":   0.034,
-                "turnover_rev_5d":  0.040,
-                "max_ret_20d":      0.035,
-                "gap_5d":           0.030,
-            }
-        from factor.synth import ic_weighted
-        alpha_raw = ic_weighted(factor_values, ic_map)
+        # P1-3: Factor synthesis — method from config.yaml alpha.method
+        # ic_weighted: uses factor_cache.json IC weights (auto-refreshed every 24h)
+        # equal_weight: simple average, fallback when cache is unavailable
+        method = cfg("alpha.method", "ic_weighted")
+        if method == "ic_weighted":
+            ic_map = load_ic_map_from_cache(factor_values)
+            if not ic_map:
+                ic_map = {
+                    "reversal_5d":      0.050,
+                    "volatility_20d":   0.034,
+                    "turnover_rev_5d":  0.040,
+                    "max_ret_20d":      0.035,
+                    "gap_5d":           0.030,
+                    "momentum_10d":     0.058,  # A股反转效应 (flipped)
+                    "skewness_20d":     0.024,  # 负偏度溢价 (flipped)
+                }
+            alpha_raw = ic_weighted(factor_values, ic_map)
+        else:
+            alpha_raw = equal_weight(factor_values)
         # Only keep top 30% of alpha — reduces noise from marginal picks
         top_frac = cfg("alpha.top_fraction", 0.30)
         threshold = alpha_raw.quantile(1.0 - top_frac) if alpha_raw.notna().sum() > 10 else -999

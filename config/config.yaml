@@ -15,7 +15,7 @@ factor:
 
 # ── Layer 3: Alpha ──
 alpha:
-  method: equal_weight           # equal_weight | ic_weighted | ml (当前Pipeline使用equal_weight)
+  method: ic_weighted           # equal_weight | ic_weighted | ml
   train_window: 252              # ① 年交易日标准假设
   retrain_freq: 20               # ④ 每月(≈20交易日)重校准, 不频繁
   top_fraction: 0.30             # ④ 选股池保留 Top 30%

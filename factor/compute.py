@@ -251,17 +251,13 @@ def compute_skewness(data: pd.DataFrame, date: str, window: int = 20) -> pd.Seri
 # 因子注册表 — 供 FactorEvaluator 扫描
 # ═══════════════════════════════════════════════════════════
 
+# 因子注册表 — 仅保留经 IC/IR 验证有效的 4 因子 (2025Q1-2026Q2 截面评估).
+# 已移除 7 个无效/冗余因子: momentum_5d, momentum_60d, reversal_5d,
+#   downside_vol_20d, vol_ratio_5d, turnover_chg_5d, amihud_20d.
 FACTOR_REGISTRY = {
-    "momentum_5d":      ("momentum",  5,  compute_momentum),
     "momentum_10d":     ("momentum",  10, compute_momentum),
     "momentum_20d":     ("momentum",  20, compute_momentum),
-    "momentum_60d":     ("momentum",  60, compute_momentum),
-    "reversal_5d":      ("reversal",  5,  compute_reversal),
     "volatility_20d":   ("volatility",20, compute_volatility),
-    "downside_vol_20d": ("volatility",20, compute_downside_volatility),
-    "vol_ratio_5d":     ("volume",    5,  compute_volume_ratio),
-    "turnover_chg_5d":  ("volume",    5,  compute_turnover_change),
-    "amihud_20d":       ("liquidity", 20, compute_amihud),
     "skewness_20d":     ("skewness",  20, compute_skewness),
 }
 

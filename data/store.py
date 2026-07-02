@@ -189,7 +189,7 @@ class DataStore:
         try:
             import baostock as bs
         except ImportError:
-            logger.info("baostock not available (Python 3.14?), trying akshare...")
+            logger.info("baostock library not installed (no wheel for Python 3.14), trying akshare...")
             return self._sync_industry_akshare(conn)
         try:
             bs.login()

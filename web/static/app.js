@@ -14,8 +14,8 @@ let _chartsRendered = false;
 const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => el.querySelectorAll(sel);
 const fmtMoney = (v) => '¥' + Math.round(v).toLocaleString();
-const fmtPct = (v) => (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
-const fmtNum = (v, d = 2) => v.toFixed(d);
+const fmtPct = (v) => { if (v == null || isNaN(v)) return '—'; return (v >= 0 ? '+' : '') + v.toFixed(2) + '%'; };
+const fmtNum = (v, d = 2) => { if (v == null || isNaN(v)) return '—'; return v.toFixed(d); };
 const clsPnl = (v) => v >= 0 ? 'up' : 'down';
 
 function setText(id, text) {
@@ -305,7 +305,7 @@ async function loadPortfolio() {
         shares: v => v.toLocaleString(),
         price: v => fmtNum(v, 2),
         current: v => fmtNum(v, 2),
-        pnl_pct: v => fmtPct(v),
+        pnl_pct: v => (v != null ? fmtPct(v) : '—'),
         value: v => fmtMoney(v),
         change_pct: v => (v ? fmtPct(v) : '—'),
       }

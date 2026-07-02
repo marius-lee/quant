@@ -23,7 +23,7 @@ from risk.constraints import RiskLimits, apply_all_filters
 from optimizer.portfolio import PortfolioConstructor
 from optimizer.rebalance import compute_trades
 from execution.cost import CostModel
-from execution.engine import ExecutionEngine
+from execution.engine import ExecutionEngine, Order
 from monitor.report import generate_report, push_to_web
 from utils.logger import get_logger
 
@@ -161,6 +161,32 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
             px = p.get("price", 0)  # fallback: cost basis
         position_value += p["shares"] * px
     total_capital = round(cash + position_value, 2)
+
+
+    # ── Stop-Loss: 任一持仓从成本价跌超 5% 立即平仓 ──
+    stop_loss_pct = cfg("risk.stop_loss_pct", 0.05)
+    stopped = 0
+    for p in current_positions:
+        cost_basis = p.get("price", 0)
+        current_px = prices.get(p["symbol"], None)
+        if current_px is None or current_px <= 0 or cost_basis <= 0:
+            continue
+        drop = (current_px - cost_basis) / cost_basis
+        if drop <= -stop_loss_pct:
+            shares = int(p["shares"])
+            if shares > 0:
+                logger.warning(f"[SL] stop-loss: {p['symbol']} drop={drop:.1%}, selling {shares} shares")
+                engine.execute([Order(symbol=p["symbol"], side="sell", shares=shares, price=current_px, cost=0)], date_str, strategy)
+                stopped += 1
+    if stopped:
+        # 刷新持仓以反映止损卖出
+        current_positions = engine.get_positions(strategy)
+        cash = engine.get_cash(strategy)
+        position_value = sum(
+            prices.get(p2["symbol"], p2.get("price", 0)) * p2["shares"]
+            for p2 in current_positions
+        )
+        total_capital = round(cash + position_value, 2)
 
     # ── Step 5: Optimizer ──
     try:

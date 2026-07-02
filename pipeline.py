@@ -15,7 +15,6 @@ from data.store import DataStore
 from data.trade_repo import TradeRepo
 from factor.compute import compute_all_factors
 from factor.synth import equal_weight
-from alpha.model import AlphaModel
 from risk.neutralize import neutralize
 from risk.covariance import covariance_matrix
 from risk.constraints import RiskLimits, apply_all_filters
@@ -54,7 +53,6 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
     engine = ExecutionEngine()
     cost_model = CostModel()
     constructor = PortfolioConstructor()
-    alpha_model = AlphaModel(method="equal_weight")
 
     # ── Step 1: Data Update ──
     try:

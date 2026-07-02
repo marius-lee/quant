@@ -1,23 +1,26 @@
-"""线程安全共享状态 — 仅陈小群策略。
-其他策略(ETF/小市值/大盘择时)各用自己的get_state()。
+"""线程安全共享状态 — pipeline → Web 的桥接层。
+
+仅做内存缓存，不执行业务逻辑。业务逻辑全在 monitor/ 和 pipeline/ 中。
 """
 import threading, sqlite3, os
 
 _lock = threading.Lock()
 
 def _init_state() -> dict:
+    """从 trades.db 恢复初始状态。"""
     from config.loader import get as cfg
-    state = {"status": "休市", "progress": "", "mood": {},
-             "golden_signals": [], "final_signals": [], "all_signals": [],
-             "sectors": [], "summary": {}, "timestamp": ""}
+    state = {"status": "休市", "progress": "",
+             "mood": {},
+             "signals": [], "sectors": [],
+             "summary": {}, "timestamp": ""}
     base = float(cfg("backtest.initial_capital", 5000))
     try:
         db = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "trades.db")
         conn = sqlite3.connect(db)
-        # 仅陈小群策略
+        # 默认策略 "quant"
         capital = base
         for side, price, shares in conn.execute(
-            "SELECT side, price, shares FROM sim_trades WHERE strategy='chen' ORDER BY id"
+            "SELECT side, price, shares FROM sim_trades WHERE strategy='quant' ORDER BY id"
         ).fetchall():
             val = price * shares
             if side == "buy":
@@ -27,8 +30,8 @@ def _init_state() -> dict:
         merged = {}
         for r in conn.execute("""
             SELECT symbol, price, shares, board_count, date FROM sim_trades
-            WHERE side='buy' AND strategy='chen' AND symbol NOT IN (
-                SELECT symbol FROM sim_trades WHERE side='sell' AND strategy='chen'
+            WHERE side='buy' AND strategy='quant' AND symbol NOT IN (
+                SELECT symbol FROM sim_trades WHERE side='sell' AND strategy='quant'
             )
         """).fetchall():
             sym, px, sh, board, dt = r[0], r[1], r[2], r[3], r[4]

@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <rect width="512" height="512" rx="80" fill="#0f0f11"/>
-  <rect x="32" y="32" width="448" height="448" rx="64" fill="none" stroke="#e9a123" stroke-width="4" opacity="0.2"/>
-  <text x="256" y="210" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="140" font-weight="900" fill="#e9a123">QA</text>
-  <text x="256" y="330" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="36" fill="#999999" letter-spacing="8">QUANTA</text>
-  <text x="256" y="400" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="20" fill="#666666" letter-spacing="3">5000→100万</text>
-</svg>

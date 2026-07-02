@@ -2,190 +2,116 @@
 
 ## 架构概览
 
+基于 Grinold & Kahn 的 Fundamental Law 框架搭建的 A 股量化选股系统。因子驱动、风险中性化、组合优化、模拟执行四阶段全流程。
+
 ```
-数据层 → 因子层 → 策略层 → 回测层 → 风控层 → Web界面
- SQLite    152+      5模型     事件驱动   仓位/止损    Flask
+基础层 → 数据层 → 因子层 → Alpha层 → 风控层 → 优化层 → 执行层 → 监控层 → Web
+config    SQLite   6类12+   IC加权   行业中性  得分排序   成本模型   绩效归因   Flask
+utils             因子               Ledoit-Wolf 整手约束            风险报告   8521
+calendar                                         资本自适应
 ```
 
----
+**核心设计**: 每一层只依赖下层接口，可独立回测。信号自底向上流动，订单自顶向下执行。
 
-## 一、数据层
+## 目录结构
 
-### 数据存储
-- **SQLite** 数据库（`market.db`，396MB），存储全A股日线数据
-- 股票列表 ~5500 只（全A股），~3700 只有日线数据，63 万行
-- 增量更新机制：首次全量拉取 → 后续对比 SQLite 只拉新日期
+```
+quant/
+├── config/                # Layer 0: 配置 + 日志 + 日期
+│   ├── loader.py          #   YAML 热加载
+│   └── config.yaml        #   集中参数
+├── utils/                 # Layer 0
+│   ├── logger.py          #   模块级 logger + 轮转
+│   └── date.py            #   日期格式化
+├── data/                  # Layer 1: 数据
+│   ├── store.py           #   DataStore — 多源日线增量同步
+│   ├── trade_repo.py      #   TradeRepo — 交易记录读写
+│   └── market.db          #   SQLite 数据仓库
+├── factor/                # Layer 2: 因子
+│   ├── base.py            #   Factor 抽象基类
+│   ├── compute.py         #   因子计算（向量化、纯函数）
+│   ├── evaluate.py        #   IC/IR 评估 + 衰减分析
+│   └── synth.py           #   因子合成（等权/IC加权）
+├── alpha/                 # Layer 3: Alpha
+│   └── model.py           #   AlphaModel — 收益预测 + 截面排名
+├── risk/                  # Layer 4: 风控
+│   ├── neutralize.py      #   行业/市值中性化
+│   ├── covariance.py      #   Ledoit-Wolf 协方差估计
+│   └── constraints.py     #   暴露约束 + 流动性过滤
+├── optimizer/             # Layer 5: 组合优化
+│   ├── portfolio.py       #   PortfolioConstructor — 目标组合生成
+│   └── rebalance.py       #   调仓计算
+├── execution/             # Layer 6: 执行
+│   ├── engine.py          #   ExecutionEngine — 模拟交易执行
+│   ├── cost.py            #   统一成本模型（佣金+印花税+滑点）
+│   ├── quote.py           #   新浪实时行情
+│   └── calendar.py        #   交易日历
+├── monitor/               # Layer 7: 监控
+│   ├── attribution.py     #   绩效归因（因子收益 vs 残差收益）
+│   └── report.py          #   日报生成
+├── web/                   # Web 仪表盘
+│   ├── app.py             #   Flask API + 调度线程
+│   ├── shared.py          #   线程安全内存状态
+│   ├── static/            #   前端资源
+│   └── templates/         #   HTML 模板
+├── pipeline.py            # 全流程编排
+├── scheduler.py           # 盘后调度
+├── requirements.txt
+└── README.md
+```
 
-### 数据源（2 源自动切换）
-| 优先级 | 数据源 | 特点 |
-|--------|--------|------|
-| 1 | tushare | 批量 API，10 只/批，1200 天深度 |
-| 2 | akshare | 东方财富数据，免费备用（股票列表）|
-| - | 腾讯财经 | PE/PB/市值，60只/次批量 |
+## 数据流
 
-### 数据清洗
-- ST/退市/次新股自动过滤
-- 最少 250 个交易日门槛
+```
+交易日 15:30 → scheduler.py → pipeline.py.run()
+  Step 1: DataStore.update_daily()        # 增量同步日线
+  Step 2: Factor.compute() → rank_ic()    # 因子计算 + IC评估
+  Step 3: AlphaModel.predict()           # 因子合成 + 截面排名
+  Step 4: RiskManager.apply()            # 中性化 + 约束过滤
+  Step 5: PortfolioConstructor()         # Top N + 整手分配
+  Step 6: ExecutionEngine.execute()      # 模拟成交 → trades.db
+  Step 7: Monitor.generate_report()      # 归因 → Web 推送
+```
 
----
+## 运行方式
 
-## 二、因子层（152+ 因子）
+```bash
+cd /Users/mariusto/project/quant
 
-### 手工因子（52 个）
+# Web 服务（含调度线程）
+PYTHONPATH=. python3 web/app.py
+# 浏览器打开 http://localhost:8521
 
-**技术因子（20 个）**
-- 动量因子（5/10/20/60日，4 个）
-- 反转因子（5/10/20/60日，4 个）
-- 波动率因子（5/10/20/60日，4 个）
-- 换手率变化（5/10/20/60日，4 个）
-- 均线偏离（5/10/20/60日，4 个）
+# 手动触发全流程
+PYTHONPATH=. python3 pipeline.py
 
-**博弈论因子（32 个，8 类 × 4 窗口）**
-| 因子 | 学术来源 | 博弈含义 |
-|------|---------|---------|
-| Amihud 非流动性 | Amihud (2002) | 信息不对称 → 流动性补偿 |
-| PIN 知情交易概率 | Easley & O'Hara (1992) | 逆向选择风险 |
-| 羊群效应 CSSD | Christie & Huang (1995) | 非理性跟风 → 反转机会 |
-| 买卖价差 HL | Roll (1984) | 做市商保护性扩价差 |
-| Kyle's Lambda | Kyle (1985) | 知情交易者隐藏策略 |
-| 信息到达速度 | — | 成交量突变 → 抢先交易 |
-| 资金流向 MF | — | 聪明钱方向 |
-| Nash 均衡偏离 | — | 偏离理性均衡的程度 |
+# 因子评估报告
+PYTHONPATH=. python3 -c "from factor.evaluate import factor_report; print(factor_report())"
+```
 
-### 自动生成因子（100 个，WorldQuant 风格）
-- 基础算子：rank、delta、ts_mean、ts_std、ts_max、ts_min、ts_corr、scale、log、abs、sign
-- 随机组合算子 → 海量生成 → IC 筛选 → 保留有效因子
+## 数据存储
 
-### 因子处理
-- MAD 去极值（3 倍中位数偏差）
-- 截面 Z-Score 标准化
-- 向量化 Rank IC 筛选（3.8 秒/52 因子）
-- 阈值：|mean_IC| ≥ 0.01，|IC_IR| ≥ 0.05
+| 数据库 | 用途 | 大小 |
+|--------|------|------|
+| `data/market.db` | 全 A 股日线（~5500 只，5 数据源） | ~400MB |
+| `data/trades.db` | 模拟交易记录 + 信号 + 策略配置 | ~1MB |
 
----
-
-## 三、策略层
-
-### 集成模型（5 模型加权融合，Numerai 风格）
-
-| 模型 | 类型 | 特点 |
-|------|------|------|
-| LightGBM | 梯度提升树 | 训练快、因子重要性 |
-| XGBoost | 梯度提升树 | 防过拟合、行业标准 |
-| RandomForest | 随机森林 | 稳定、低方差 |
-| ExtraTrees | 极端随机树 | 进一步降方差 |
-| Ridge | 线性回归 | 基线对照 |
-
-- 按验证集 IC 自动分配权重
-- 训练集/验证集 7:3 拆分
-- 目标：未来 5 日收益率
-
-### 信号生成
-- 分位数法：预测收益 Top 30% → 买入信号
-- 等权/预测值加权两种权重方案
-
----
-
-## 四、回测层
-
-### 向量化回测（生产使用）
-- 用管线预计算预测排名，选 top N 等权持有，纯 pandas 计算每日收益
-- 秒级出结果，适合快速迭代
-
-### 按月再平衡回测（新增）
-- 每月初重排名选股，模拟真实调仓
-- 手续费万三 + 滑点千一
-- A股手数取整（100股为单位）
-
-### 事件驱动回测引擎（保留备用，QuantConnect 风格）
-- 逐日模拟：行情 → 信号 → 下单 → 成交 → 持仓 → 净值
-- A股 T+1 结算模拟
-- 完整的成交量约束（≤ 当日 5%）、风险熔断
-- NaN/边界自动防护
-
-### 绩效指标
-| 指标 | 说明 |
-|------|------|
-| 夏普比率 | 风险调整收益 |
-| 年化收益率 | 252 日年化 |
-| 最大回撤 | 历史最大亏损幅度 |
-| 胜率 | 正收益天数占比 |
-| Calmar 比率 | 年化收益 / 最大回撤 |
-
-### 因子筛选报告
-- 每因子 Rank IC、IC_IR、IC 方向、稳定性
-- 通过/淘汰数量统计
-
----
-
-## 五、风控层
-
-- 行业+市值中性化（在排名阶段完成）
-- 单票仓位上限 10%（再平衡回测中执行）
-- 更多风控（最大回撤止损、日亏损限制、行业暴露上限）在事件驱动回测引擎中可配置，当前生产管线使用向量化回测未包含
-
----
-
-## 六、Web 界面
-
-### 技术栈
-- Flask Web 服务（端口 8521）
-- 后台预热缓存（启动时自动拉取增量数据）
-- SQLite 结果持久化（`results.db`）
-- 分析历史追踪（`runs` + `picks` 表）
-
-### 界面功能
-- 一键分析：点击「开始分析」运行全流程
-- 推荐列表：排名、代码、名称、预测得分、最新价、近 5 日涨跌、波动率
-- 回测指标面板：夏普、年化收益、最大回撤、胜率等
-- 因子重要性 Top 10（含进度条）
-- 历史记录查询（API）
-- 预热进度显示
-
----
-
-## 七、关键设计决策
+## Key Design Decisions
 
 | 决策 | 选择 | 原因 |
 |------|------|------|
 | 存储 | SQLite | 单用户本地，零配置，千万行无压力 |
-| 频率 | 日线 | A 股 T+1 制度，高频无意义 |
-| 语言 | Python | 研究层最优选，生态最全 |
-| 回测 | 向量化+再平衡 | 生产用向量化秒出+按月再平衡，事件引擎保留备用 |
-| 模型 | 集成 | 多模型互补，比单模型稳定 |
-| 因子 | 手工+自动生成 | 既有领域知识，又有广度 |
+| 频率 | 日线 | A 股 T+1，更高频无意义 |
+| 因子评估 | 截面 Rank IC | Spearman 秩相关，对异常值鲁棒 |
+| 协方差 | Ledoit-Wolf 收缩 | 优于样本协方差，适合高维 |
+| 组合构建 | 资本自适应（等权→得分倾斜→均值-方差） | 方法随资金规模升级，不对初始本金过度优化 |
+| 成本模型 | 统一 CostModel | 确保所有模拟交易的绩效可比 |
+| 参数管理 | YAML + 热更新 | 零停机调参 |
 
----
+## 北极星
 
-## 八、性能优化历程
-
-| 优化项 | 改进前 | 改进后 | 提升 |
-|--------|--------|--------|------|
-| 数据拉取 | baostock 逐只 119s | tushare 批量 20s | 6x |
-| 因子筛选 | 逐日期循环 103s | 向量化 3.8s | 27x |
-| 博弈论因子 | 重复 stack 8.9s | 宽表直出 1.2s | 7x |
-| 名称查询 | baostock 300 次 55s | tushare 批量 0.5s | 100x |
-| 读盘 | 300 个 CSV | SQLite 单查询 | 即时 |
-| 预热缓存 | 无 | 后台启动自动拉取 | 首次后秒出 |
-
----
-
-## 九、运行方式
-
-```bash
-cd /Users/mariusto/project/quant
-PYTHONPATH=. python3 web/app.py
-# 浏览器打开 http://localhost:8521
-
-# 运行测试
-PYTHONPATH=. python3 -m pytest tests/ -v
-
-# 定时全流程分析
-PYTHONPATH=. python3 auto_run.py
-```
-
----
+¥5,000 → ¥100 万（6 个月，200 倍）。所有架构决策围绕此目标。
 
 ## 免责声明
 
-本系统仅供学习和研究使用。股市有风险，投资需谨慎。系统输出的推荐不构成任何投资建议。
+本系统仅供学习和研究使用。股市有风险，投资需谨慎。系统输出不构成任何投资建议。

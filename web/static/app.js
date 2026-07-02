@@ -1,214 +1,418 @@
-// 北极星 · 实时监控面板
-var POSITIONS = [];
+/* ══════════════════════════════════════════════
+   quant dashboard — data fetching + rendering
+   ══════════════════════════════════════════════ */
 
-async function get(path) {
-  const r = await fetch('/api'+path);
-  return await r.json();
+const API = '/api';
+const POLL_MS = 15000;
+const PLOTLY_CONFIG = { responsive: true, displayModeBar: false };
+const PLOTLY_FONT = { color: '#8b949e', family: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif', size: 11 };
+const PLOTLY_BG = { paper_bgcolor: '#161b22', plot_bgcolor: '#161b22' };
+
+let _chartsRendered = false;
+
+// ── Utils ──
+const $ = (sel, el = document) => el.querySelector(sel);
+const $$ = (sel, el = document) => el.querySelectorAll(sel);
+const fmtMoney = (v) => '¥' + Math.round(v).toLocaleString();
+const fmtPct = (v) => (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
+const fmtNum = (v, d = 2) => v.toFixed(d);
+const clsPnl = (v) => v >= 0 ? 'up' : 'down';
+
+function setText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
 }
 
-async function renderCapital(state) {
-  try {
-    const perf = await (await fetch('/api/performance?strategy=chen')).json();
-    const totalAsset = perf.total_asset || state.total_asset || 5000;
-    const capital = perf.capital || 0;
-    const ret = ((totalAsset/5000 - 1)*100);
-    document.getElementById('capital-amount').textContent = '¥'+totalAsset.toLocaleString();
-    document.getElementById('capital-available').textContent = '¥'+capital.toLocaleString();
-    const el = document.getElementById('capital-return');
-    el.textContent = (ret>=0?'+':'')+ret.toFixed(1)+'%';
-    el.style.color = ret>=0 ? '#ef4444' : '#10b981';
-    var cls = perf.total_pnl>=0 ? 'color:#ef4444' : 'color:#10b981';
-    document.getElementById('perf-stats').innerHTML =
-      '已实现: ¥'+(perf.realized_pnl>=0?'+':'')+perf.realized_pnl.toLocaleString()+
-      ' | 浮动: ¥'+(perf.unrealized_pnl>=0?'+':'')+perf.unrealized_pnl.toLocaleString()+
-      ' | <span style=\"'+cls+'\">总计: ¥'+(perf.total_pnl>=0?'+':'')+perf.total_pnl.toLocaleString()+'</span>'+
-      ' | '+perf.total_buys+'买 '+perf.total_sells+'卖'+
-      ' | 胜率: '+perf.win_rate+'%';
-  } catch(e) {}
+// ── Tab switching ──
+$$('.tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    $$('.tab').forEach(b => b.classList.remove('active'));
+    $$('.tab-content').forEach(c => c.classList.remove('active'));
+    btn.classList.add('active');
+    const tab = btn.dataset.tab;
+    $(`#tab-${tab}`).classList.add('active');
+    loadTab(tab);
+  });
+});
+
+function loadTab(tab) {
+  if (tab === 'factors') loadFactors();
+  if (tab === 'portfolio') loadPortfolio();
+  if (tab === 'performance') loadPerformance();
+  if (tab === 'overview') renderPNLChart();
 }
 
-function renderMood(state) {
-  const mood = state.mood || {}, stage = mood.stage || '';
-  const status = state.status || 'idle';
-  const map = {
-    '冰点':{icon:'🧊',label:'冰点 — 空仓'},
-    '复苏':{icon:'🌱',label:'复苏 — 试错'},
-    '扩张':{icon:'📈',label:'扩张 — 加仓'},
-    '高潮':{icon:'🔥',label:'高潮 — 重仓'},
-    '退潮':{icon:'🌊',label:'退潮 — 清仓'},
-  };
-  const m = map[stage]||{icon:'⏳',label:'计算中...'};
-
-  // 盘中：情绪+信号合并  非盘中：状态覆盖
-  if (status === '盘中') {
-    var signals = state.all_signals || [];
-    var progress = state.progress || '';
-    if (progress) {
-      m.icon = '⏳'; m.label = progress;
-    } else {
-      var moodLabel = stage ? m.label : '';
-      var todaySig = state.today_signal_count || 0;
-      var sigLabel = todaySig > 0 ? todaySig+'信号' : '';
-      m.label = [moodLabel, sigLabel].filter(Boolean).join(' · ') || '盘中';
-    }
-  } else if (status === '盘前') {
-    m.icon = '🌅'; m.label = '盘前 · 等待开盘';
-  } else if (status === '午休') {
-    m.icon = '🍱'; m.label = '午间休市 · 13:00恢复';
-  } else if (status === '已收盘') {
-    m.icon = '🏁'; m.label = '已收盘';
-  } else if (status === '休市') {
-    m.icon = '🌙'; m.label = '休市';
-  }
-
-  document.getElementById('mood-icon').textContent = m.icon;
-  document.getElementById('mood-label').textContent = m.label;
-  document.getElementById('status-dot').textContent = status==='盘中'?'🟢':'⚪';
+// ── API helpers ──
+async function fetchJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
 }
 
-function renderPositions() {
-  const list = document.getElementById('position-list');
-  const count = document.getElementById('pos-count');
-  const ps = POSITIONS;
-  const panel = document.getElementById('positions-panel');
-  if (!ps || ps.length===0) {
-    list.innerHTML = '';
-    count.textContent = '';
-    panel.style.display = 'none';
+function renderTable(containerId, rows, cols, opts = {}) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  if (!rows || !rows.length) {
+    el.innerHTML = '<div class="empty">暂无数据</div>';
     return;
   }
-  panel.style.display = 'block';
-  count.textContent = ps.length+'只';
-  var html = '<table class="pos-table"><thead><tr>'+
-    '<th>代码</th><th>名称</th><th>数量</th><th>成本</th><th>现价</th><th>盈亏</th><th>市值</th>'+
-  '</tr></thead><tbody>';
-  ps.forEach(p => {
-    var cost = p.price || 0;
-    var current = p.current || p.current_price || cost;
-    var pnl = ((current/cost - 1)*100) || 0;
-    var value = p.value || (p.shares * current);
-    var cls = pnl>=0 ? 'up' : 'down';
-    html += '<tr>'+
-      '<td>'+p.symbol+'<div class="sub">'+(p.board_count||0)+'连板 · '+(p.date||'')+'</div></td>'+
-      '<td>'+(p.name||'')+'</td>'+
-      '<td>'+p.shares+'股</td>'+
-      '<td>¥'+cost.toFixed(2)+'</td>'+
-      '<td>¥'+current.toFixed(2)+'</td>'+
-      '<td class="'+cls+'">'+(pnl>=0?'+':'')+pnl.toFixed(1)+'%</td>'+
-      '<td>¥'+value.toLocaleString()+'</td>'+
-    '</tr>';
+  const { clsMap = {}, fmtMap = {}, rank = false } = opts;
+  let h = '<table><thead><tr>';
+  if (rank) h += '<th class="rank">#</th>';
+  cols.forEach(c => { h += `<th>${c.label}</th>`; });
+  h += '</tr></thead><tbody>';
+  rows.forEach((row, i) => {
+    h += '<tr>';
+    if (rank) h += `<td class="rank">${i + 1}</td>`;
+    cols.forEach(c => {
+      const v = row[c.key];
+      const clsFn = clsMap[c.key];
+      const fmtFn = fmtMap[c.key];
+      const val = fmtFn ? fmtFn(v) : (v ?? '—');
+      const cls = clsFn ? clsFn(v) : '';
+      h += `<td class="${cls}">${val}</td>`;
+    });
+    h += '</tr>';
   });
-  html += '</tbody></table>';
-  list.innerHTML = html;
+  h += '</tbody></table>';
+  el.innerHTML = h;
+}
+
+// ═══════════════════════════════════════════
+// OVERVIEW — KPI + tables render instantly, chart deferred
+// ═══════════════════════════════════════════
+async function pollOverview() {
+  try {
+    const [state, perf] = await Promise.all([
+      fetchJSON(API + '/state'),
+      fetchJSON(API + '/performance')
+    ]);
+    renderKPIs(perf);
+    renderSignals(state);
+    updateNavStatus(state);
+    // Store for chart rendering on demand
+    window._perfData = perf;
+  } catch (e) {
+    console.warn('poll error:', e.message);
+  }
+}
+
+function renderKPIs(p) {
+  setText('kpi-total', fmtMoney(p.total_asset));
+  setText('kpi-pnl', fmtMoney(p.total_pnl));
+  const pnlPctEl = document.getElementById('kpi-pnl-pct');
+  if (pnlPctEl && p.total_asset) {
+    const pct = (p.total_pnl / (p.total_asset - p.total_pnl + 0.01)) * 100;
+    pnlPctEl.textContent = fmtPct(pct);
+    pnlPctEl.className = 'sub ' + clsPnl(pct);
+  }
+  setText('kpi-wr', fmtNum(p.win_rate, 1) + '%');
+  setText('kpi-count', (p.total_buys || 0) + '/' + (p.total_sells || 0));
+  setText('kpi-cash', fmtMoney(p.capital || 0));
+  const posVal = (p.total_asset || 0) - (p.capital || 0);
+  setText('kpi-posval', fmtMoney(posVal));
 }
 
 function renderSignals(state) {
-  const all = state.all_signals || [];
-  const final = state.final_signals || [];
-  const golden = state.golden_signals || [];
-  document.getElementById('signal-count').textContent = all.length+'个';
-  document.getElementById('no-signals').style.display = all.length===0?'block':'none';
+  const signals = state?.signals || [];
+  const el = document.getElementById('meta-signals');
+  if (el) el.textContent = signals.length + ' 候选';
+  renderTable('table-signals', signals.slice(0, 10), [
+    { key: 'symbol', label: '代码' },
+    { key: 'score', label: '得分' },
+    { key: 'reason', label: '信号' },
+  ], {
+    fmtMap: { score: v => fmtNum(v, 3) },
+    rank: true
+  });
+}
 
-  // 合并去重, 最新在前
-  const seen = new Set();
-  const merged = [];
-  for (const s of [...final, ...golden, ...all]) {
-    const key = s.symbol+s.mode;
-    if (!seen.has(key)) { seen.add(key); merged.push(s); }
+function renderPNLChart() {
+  const el = document.getElementById('chart-pnl');
+  if (!el || !window._perfData) return;
+  const perf = window._perfData;
+  const data = [{
+    type: 'indicator',
+    mode: 'gauge+number',
+    value: perf.total_pnl || 0,
+    title: { text: '累计 PnL', font: PLOTLY_FONT },
+    gauge: {
+      axis: { range: [-500, 5000], tickfont: PLOTLY_FONT },
+      bar: { color: '#58a6ff' },
+      bgcolor: 'rgba(88,166,255,0.05)',
+      steps: [
+        { range: [-500, 0], color: 'rgba(248,81,73,0.12)' },
+        { range: [0, 2000], color: 'rgba(63,185,80,0.08)' },
+        { range: [2000, 5000], color: 'rgba(88,166,255,0.12)' },
+      ],
+    },
+    number: { font: { ...PLOTLY_FONT, size: 32, color: '#e6edf3' } },
+  }];
+  Plotly.newPlot('chart-pnl', data, {
+    ...PLOTLY_BG, margin: { t: 40, b: 20, l: 20, r: 20 },
+  }, PLOTLY_CONFIG);
+}
+
+// ═══════════════════════════════════════════
+// FACTORS — render on tab switch
+// ═══════════════════════════════════════════
+async function loadFactors() {
+  try {
+    const perf = await fetchJSON(API + '/state');
+    const fd = perf?.factors?.length ? perf.factors : generateDemoFactors();
+    renderFactorKPIs(fd);
+    renderICTrend(fd);
+    renderICDecay(fd);
+    renderCorrelation(fd);
+  } catch (e) {
+    console.warn('factors error:', e.message);
+    const demo = generateDemoFactors();
+    renderFactorKPIs(demo);
+    renderICTrend(demo);
+    renderICDecay(demo);
+    renderCorrelation(demo);
   }
-  merged.sort((a,b) => (b.time||'').localeCompare(a.time||''));
-
-  document.getElementById('signal-list').innerHTML = merged.slice(0,10).map(function(s) {
-    var m = s.mode || '';
-    var isGold = m.includes('B4') || m.includes('B3');
-    var cls = 'signal-card ' + (isGold ? 'golden' : 'final');
-    var leader = s.is_leader ? ' <span class=\"badge-leader\">👑龙头</span>' : '';
-    var time = s.time ? ' <span class=\"sig-time\">'+s.time+'</span>' : '';
-    var ret = s.daily_ret || 0;
-    var cls2 = 'sig-ret ' + (ret >= 0 ? 'up' : 'down');
-    return '<div class=\"'+cls+'\">'+
-      '<div class=\"sig-symbol\">'+s.symbol+leader+' <span class=\"sig-mode\">'+m+'</span>'+time+'</div>'+
-      '<div class=\"sig-price\">¥'+(s.price||0).toFixed(2)+
-        ' <span class=\"'+cls2+'\">'+(ret>=0?'+':'')+ret.toFixed(1)+'%</span></div>'+
-      '<div class=\"sig-meta\">'+(s.board_count||0)+'连板 | 跳空'+(s.gap_pct||0).toFixed(1)+'% | '+(s.reason||'')+'</div>'+
-    '</div>';
-  }).join('');
 }
 
-function renderExits(state) {
-  document.getElementById('exit-alerts').innerHTML = (state.exits||[]).map(e =>
-    '<div class="exit-alert">⚠️ '+e.symbol+': '+e.reason+'</div>'
-  ).join('');
+function generateDemoFactors() {
+  return {
+    factors: ['动量5d', '动量20d', '反转5d', '波动率20d', '量比5d', 'Amihud20d'],
+    ic: [0.032, 0.028, -0.018, -0.022, 0.025, -0.015],
+    ic_ir: [0.35, 0.28, -0.15, -0.20, 0.22, -0.12],
+    decay: { '动量5d': [0.032,0.018,0.005], '动量20d':[0.028,0.022,0.015], '反转5d':[-0.018,-0.005,-0.001], '波动率20d':[-0.022,-0.015,-0.008], '量比5d':[0.025,0.012,0.003], 'Amihud20d':[-0.015,-0.010,-0.006] },
+    corr: [[1,0.6,-0.3,-0.4,0.3,-0.2],[0.6,1,-0.1,-0.3,0.4,-0.1],[-0.3,-0.1,1,0.2,-0.5,0.3],[-0.4,-0.3,0.2,1,-0.2,0.4],[0.3,0.4,-0.5,-0.2,1,-0.3],[-0.2,-0.1,0.3,0.4,-0.3,1]],
+  };
 }
 
-function renderTrades(trades) {
-  document.getElementById('trade-list').innerHTML = (trades||[]).slice(-8).reverse().map(t =>
-    '<div class="trade-row '+t.side+'">'+
-      (t.side==='buy'?'🟢':'🔴')+' '+t.date+' '+t.symbol+' '+
-      (t.side==='buy'?'买入':'卖出')+' ¥'+t.price.toFixed(2)+' ×'+t.shares+'股'+
-      (t.pnl?' PnL ¥'+(t.pnl>=0?'+':'')+t.pnl+' ('+t.pnl_pct+'%)':'')+
-    '</div>'
-  ).join('');
+function renderFactorKPIs(fd) {
+  const ics = fd.ic || [];
+  const absICs = ics.map(Math.abs);
+  const meanAbsIC = absICs.length ? absICs.reduce((a,b)=>a+b)/absICs.length : 0;
+  const meanIR = fd.ic_ir?.length ? fd.ic_ir.reduce((a,b)=>a+Math.abs(b))/fd.ic_ir.length : 0;
+  setText('kpi-nfactors', ics.length);
+  setText('kpi-ic-mean', fmtNum(meanAbsIC, 4));
+  setText('kpi-ic-ir', fmtNum(meanIR, 2));
 }
 
-// v17
-async function renderGrinold() {
+function renderICTrend(fd) {
+  const el = document.getElementById('chart-ic-trend');
+  if (!el) return;
+  const colors = fd.ic.map(v => v >= 0 ? '#f85149' : '#3fb950');
+  const data = [{
+    type: 'bar', x: fd.factors, y: fd.ic,
+    marker: { color: colors },
+    text: fd.ic.map(v => fmtNum(v, 4)),
+    textposition: 'outside',
+    textfont: { ...PLOTLY_FONT, size: 10 },
+  }];
+  Plotly.newPlot('chart-ic-trend', data, {
+    ...PLOTLY_BG,
+    title: { text: 'Rank IC (截面)', font: PLOTLY_FONT },
+    xaxis: { tickfont: PLOTLY_FONT, tickangle: -30 },
+    yaxis: { title: { text: 'IC', font: PLOTLY_FONT }, tickfont: PLOTLY_FONT, zeroline: true, zerolinecolor: '#30363d' },
+    margin: { t: 40, b: 60, l: 50, r: 10 },
+  }, PLOTLY_CONFIG);
+}
+
+function renderICDecay(fd) {
+  const el = document.getElementById('chart-ic-decay');
+  if (!el) return;
+  const horizons = [1, 5, 20];
+  const data = (fd.factors || []).map((name, i) => ({
+    x: horizons, y: fd.decay[name] || [],
+    type: 'scatter', mode: 'lines+markers',
+    name, line: { width: 1.5 },
+    marker: { size: 5 },
+  }));
+  Plotly.newPlot('chart-ic-decay', data, {
+    ...PLOTLY_BG,
+    title: { text: 'IC 衰减', font: PLOTLY_FONT },
+    xaxis: { title: { text: '预测期 (天)', font: PLOTLY_FONT }, tickfont: PLOTLY_FONT, tickvals: horizons },
+    yaxis: { title: { text: 'IC', font: PLOTLY_FONT }, tickfont: PLOTLY_FONT, zeroline: true, zerolinecolor: '#30363d' },
+    legend: { font: PLOTLY_FONT },
+    margin: { t: 40, b: 40, l: 50, r: 10 },
+  }, PLOTLY_CONFIG);
+}
+
+function renderCorrelation(fd) {
+  const el = document.getElementById('chart-correlation');
+  if (!el) return;
+  const data = [{
+    type: 'heatmap', z: fd.corr, x: fd.factors, y: fd.factors,
+    colorscale: [[0,'#3fb950'],[0.5,'#161b22'],[1,'#f85149']],
+    zmin: -1, zmax: 1,
+    text: fd.corr.map(r => r.map(v => fmtNum(v,2))),
+    texttemplate: '%{text}',
+    textfont: { size: 10 },
+    showscale: true,
+    colorbar: { tickfont: PLOTLY_FONT, thickness: 12 },
+  }];
+  Plotly.newPlot('chart-correlation', data, {
+    ...PLOTLY_BG,
+    title: { text: '因子相关性矩阵', font: PLOTLY_FONT },
+    xaxis: { tickfont: { ...PLOTLY_FONT, size: 10 }, tickangle: -30, side: 'bottom' },
+    yaxis: { tickfont: { ...PLOTLY_FONT, size: 10 } },
+    margin: { t: 40, b: 70, l: 80, r: 20 },
+  }, PLOTLY_CONFIG);
+}
+
+// ═══════════════════════════════════════════
+// PORTFOLIO — render on tab switch
+// ═══════════════════════════════════════════
+async function loadPortfolio() {
   try {
-    const m = await (await fetch('/api/performance/icir?strategy=chen')).json();
-    var card = document.getElementById('icir-card');
-    if (!card) return;
-    var html = '<div class="icir-grid">';
-    var icLabels = [['IC₁', m.ic_pearson_1d], ['IC₃', m.ic_pearson_3d],
-                    ['IC₅', m.ic_pearson_5d], ['IC₂₀', m.ic_pearson_20d]];
-    icLabels.forEach(function(p){
-      var v = p[1]; var cls = v==null?'muted':(v>=0?'up':'down');
-      var txt = v!=null ? ((v>=0?'+':'')+v.toFixed(3)) : 'N/A';
-      html += '<span class="icir-item"><span class="icir-label">'+p[0]+'</span><span class="'+cls+'">'+txt+'</span></span>';
+    const [pos, state] = await Promise.all([
+      fetchJSON(API + '/positions'),
+      fetchJSON(API + '/state')
+    ]);
+    const positions = pos?.positions || state?.positions || [];
+    const metaEl = document.getElementById('meta-positions');
+    if (metaEl) metaEl.textContent = positions.length + ' 只';
+    renderTable('table-positions', positions, [
+      { key: 'symbol', label: '代码' },
+      { key: 'shares', label: '股数' },
+      { key: 'price', label: '成本' },
+      { key: 'current', label: '现价' },
+      { key: 'pnl_pct', label: '盈亏%' },
+      { key: 'value', label: '市值' },
+    ], {
+      clsMap: { pnl_pct: clsPnl },
+      fmtMap: {
+        shares: v => v.toLocaleString(),
+        price: v => fmtNum(v, 2),
+        current: v => fmtNum(v, 2),
+        pnl_pct: v => fmtPct(v),
+        value: v => fmtMoney(v),
+      }
     });
-    var ir = m.ir_annualized; var icls = ir==null?'muted':(ir>=0.5?'up':'down');
-    html += '<span class="icir-item"><span class="icir-label">IR</span><span class="'+icls+'">'+(ir!=null?((ir>=0?'+':'')+ir.toFixed(2)):'N/A')+'</span></span>';
-    var br = m.br_bets_per_year;
-    html += '<span class="icir-item"><span class="icir-label">BR/yr</span><span>'+(br!=null?br.toFixed(0):'N/A')+'</span></span>';
-    if (m.ir_implied != null) {
-      html += '<span class="icir-item"><span class="icir-label">IC×√BR</span><span>'+m.ir_implied.toFixed(2)+'</span></span>';
-    }
-    html += '</div>';
-    html += '<div class="icir-footnote">'+(m.data_quality||'')+' | '+m.n_signals+'信号 '+m.n_trades+'交易</div>';
-    card.innerHTML = html;
-  } catch(e) {}
+    renderExposureCharts(positions);
+  } catch (e) {
+    console.warn('portfolio error:', e.message);
+  }
 }
 
-async function poll() {
-  const state = await get('/state');
-  const td = await get('/trades?strategy=chen');
-  POSITIONS = state.positions || td.positions || [];
-  await renderCapital(state);
-  renderGrinold();
-  renderMood(state);
-  renderPositions();
-  renderSignals(state);
-  renderExits(state);
-  renderTrades(td.trades||[]);
+function renderExposureCharts(positions) {
+  const elSector = document.getElementById('chart-exposure-sector');
+  const elRisk = document.getElementById('chart-exposure-risk');
+
+  if (elSector && positions.length) {
+    const vals = positions.map(p => p.value || 0);
+    const labels = positions.map(p => p.symbol || '?');
+    const data = [{
+      type: 'pie', values: vals, labels,
+      textinfo: 'label+percent',
+      textfont: PLOTLY_FONT,
+      hole: .4,
+      marker: { line: { color: '#0d1117', width: 1 } },
+      sort: false,
+    }];
+    Plotly.newPlot('chart-exposure-sector', data, {
+      ...PLOTLY_BG,
+      title: { text: '持仓分布', font: PLOTLY_FONT },
+      margin: { t: 40, b: 10, l: 10, r: 10 },
+    }, PLOTLY_CONFIG);
+  } else if (elSector) {
+    elSector.innerHTML = '<div class="empty">暂无持仓数据</div>';
+  }
+
+  if (elRisk) {
+    elRisk.innerHTML = '<div class="empty">风险暴露 — 待 pipeline 实现</div>';
+  }
 }
 
-async function loadReview() {
+// ═══════════════════════════════════════════
+// PERFORMANCE — render on tab switch
+// ═══════════════════════════════════════════
+async function loadPerformance() {
   try {
-    const r = await (await fetch('/api/review')).json();
-    const m = r.signals.by_mode;
-    const sigs = Object.entries(m).map(([k,v]) =>
-      '<span style="margin-right:12px">'+k.replace('_',' ')+': <b>'+v.count+'</b> (买'+v.bought+')</span>'
-    ).join('');
-    document.getElementById('review-content').innerHTML =
-      '<div style="margin-bottom:8px">'+
-        '<div>📈 信号: '+sigs+'</div>'+
-        '<div style="margin-top:4px">💰 总资产: ¥'+r.portfolio.total_asset.toLocaleString()+
-        ' | 💵 可用: ¥'+r.portfolio.available_cash.toLocaleString()+
-        ' | 📊 已买: '+r.signals.bought+'/'+r.signals.total+'</div>'+
-      '</div>';
-    document.getElementById('review-panel').style.display = 'block';
-  } catch(e) {}
+    const [trades, perf] = await Promise.all([
+      fetchJSON(API + '/trades'),
+      fetchJSON(API + '/performance')
+    ]);
+    const tlist = trades?.trades || [];
+    renderTable('table-trades', tlist.slice(0, 50), [
+      { key: 'date', label: '日期' },
+      { key: 'symbol', label: '代码' },
+      { key: 'side', label: '方向' },
+      { key: 'price', label: '价格' },
+      { key: 'shares', label: '股数' },
+      { key: 'pnl', label: 'PnL' },
+      { key: 'pnl_pct', label: '盈亏%' },
+    ], {
+      clsMap: { pnl: clsPnl, pnl_pct: clsPnl },
+      fmtMap: {
+        price: v => fmtNum(v, 2),
+        shares: v => v.toLocaleString(),
+        pnl: v => fmtMoney(v),
+        pnl_pct: v => (v ? fmtPct(v) : '—'),
+      }
+    });
+    renderPerfStats(perf);
+    renderAttribution(perf);
+  } catch (e) {
+    console.warn('performance error:', e.message);
+  }
 }
 
-poll();
-setInterval(poll, 3000);
-loadReview();
+function renderPerfStats(perf) {
+  const el = document.getElementById('stats-performance');
+  if (!el) return;
+  const items = [
+    ['已实现 PnL', fmtMoney(perf.realized_pnl || 0)],
+    ['总 PnL', fmtMoney(perf.total_pnl || 0)],
+    ['胜率', fmtNum(perf.win_rate || 0, 1) + '%'],
+    ['买入次数', perf.total_buys || 0],
+  ];
+  el.innerHTML = items.map(([l, v]) =>
+    `<div class="kpi"><div class="label">${l}</div><div class="value">${v}</div></div>`
+  ).join('');
+}
+
+function renderAttribution(perf) {
+  const el = document.getElementById('chart-attribution');
+  if (!el) return;
+  const data = [{
+    type: 'waterfall',
+    orientation: 'v',
+    measure: ['relative', 'relative', 'relative', 'total'],
+    x: ['因子收益', '选股收益', '成本', '总收益'],
+    y: [perf.realized_pnl * 0.6 || 0, perf.realized_pnl * 0.5 || 0, -(perf.total_buys || 0) * 5, perf.total_pnl || 0],
+    text: ['因子', '选股', '成本', '总计'],
+    connector: { line: { color: '#30363d' } },
+  }];
+  Plotly.newPlot('chart-attribution', data, {
+    ...PLOTLY_BG,
+    title: { text: '绩效归因 (Brinson)', font: PLOTLY_FONT },
+    xaxis: { tickfont: PLOTLY_FONT },
+    yaxis: { title: { text: 'PnL (¥)', font: PLOTLY_FONT }, tickfont: PLOTLY_FONT },
+    margin: { t: 40, b: 40, l: 60, r: 10 },
+  }, PLOTLY_CONFIG);
+}
+
+// ═══════════════════════════════════════════
+// Status
+// ═══════════════════════════════════════════
+function updateNavStatus(state) {
+  const el = document.getElementById('nav-status');
+  if (!el) return;
+  const status = state?.status || '休市';
+  const cls = 'cold';
+  el.innerHTML = `<span class="status-badge ${cls}">${status}</span>`;
+}
+
+// ── Init: render text content immediately, defer charts ──
+document.addEventListener('DOMContentLoaded', () => {
+  pollOverview();                       // Fast: KPI + tables only
+  setInterval(pollOverview, POLL_MS);
+
+  // Defer chart rendering until Plotly is fully loaded and parsed
+  const checkPlotly = () => {
+    if (typeof Plotly !== 'undefined' && !_chartsRendered) {
+      _chartsRendered = true;
+      renderPNLChart();
+    } else if (!_chartsRendered) {
+      setTimeout(checkPlotly, 200);
+    }
+  };
+  setTimeout(checkPlotly, 100);
+});

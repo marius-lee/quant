@@ -78,8 +78,15 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
             ).fetchall()]
         # Get enough history for factor computation (need 60+ days)
         data = store.get_daily(symbols, start="2026-01-01", end=date_str)
-        results["steps"]["load"] = {"symbols": len(symbols), "status": "ok"}
-        logger.info(f"[2/7] load: {len(symbols)} symbols, {data.shape[0]} days")
+        # 基本面数据 — 用于价值因子计算和市值中性化
+        fundamentals = store.get_fundamentals(symbols)
+        results["steps"]["load"] = {
+            "symbols": len(symbols),
+            "fund_pe_valid": int(fundamentals["pe"].notna().sum()),
+            "fund_pb_valid": int(fundamentals["pb"].notna().sum()),
+            "status": "ok",
+        }
+        logger.info(f"[2/7] load: {len(symbols)} symbols, {data.shape[0]} days, fundamentals: PE/PB={fundamentals['pe'].notna().sum()}/{fundamentals['pb'].notna().sum()}")
     except Exception as e:
         results["steps"]["load"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[2/7] load failed: {e}")
@@ -87,7 +94,12 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
 
     # ── Step 3: Factor + Alpha ──
     try:
-        factor_values = compute_all_factors(data, date_str)
+        # 使用数据中实际存在的最新日期 (避免 date_str 不在 data.index 中)
+        actual_date = date_str
+        if actual_date not in data.index:
+            actual_date = data.index[-1].strftime("%Y-%m-%d")
+            logger.info(f"[3/7] date adjusted: {date_str} → {actual_date}")
+        factor_values = compute_all_factors(data, actual_date, fundamentals=fundamentals)
         alpha = equal_weight(factor_values)
         results["steps"]["factor"] = {
             "factors": len(factor_values),
@@ -103,9 +115,12 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant"):
     # ── Step 4: Risk ──
     try:
         close_df = data["close"]
-        prices = close_df.loc[date_str].dropna() if date_str in close_df.index else close_df.iloc[-1].dropna()
-        mcap_approx = prices * 1e8
-        alpha_neut = neutralize(alpha, market_caps=mcap_approx)
+        risk_date = actual_date if actual_date in close_df.index else close_df.index[-1].strftime("%Y-%m-%d")
+        prices = close_df.loc[risk_date].dropna()
+        # 用 fundamentals 中的真实总市值做中性化 (缺失值回退到 price × 1e8 估算)
+        mcap_real = fundamentals["total_mv"].reindex(prices.index)
+        mcap_real = mcap_real.fillna(prices * 1e8)
+        alpha_neut = neutralize(alpha, market_caps=mcap_real)
 
         log_ret = np.log(close_df).diff().dropna(how="all")
         cov = covariance_matrix(log_ret, method="ledoit_wolf", window=60)

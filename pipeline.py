@@ -122,7 +122,6 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
             ic_map = load_ic_map_from_cache(factor_values)
             if not ic_map:
                 # Fallback to equal_weight when IC cache is unavailable
-                from config.loader import get as cfg
                 logger.info('IC cache unavailable, falling back to equal_weight')
                 method = 'equal_weight'
                 ic_map = {}

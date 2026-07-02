@@ -252,24 +252,62 @@ async function loadPortfolio() {
       fetchJSON(API + '/positions'),
       fetchJSON(API + '/state')
     ]);
-    const positions = pos?.positions || state?.positions || [];
+    let positions = pos?.positions || state?.positions || [];
+
+    // 拉取实时行情, 合并到持仓数据中
+    if (positions.length > 0) {
+      try {
+        const syms = positions.map(p => p.symbol).join(',');
+        const qr = await fetchJSON(API + '/quotes?symbols=' + syms);
+        const quotes = qr?.quotes || {};
+        positions = positions.map(p => {
+          const q = quotes[p.symbol];
+          if (q && q.price > 0) {
+            const current = q.price;
+            const pnlPct = p.price > 0 ? ((current / p.price) - 1) * 100 : 0;
+            return {
+              ...p,
+              current: current,
+              pnl_pct: roundNum(pnlPct, 2),
+              value: roundNum(p.shares * current, 2),
+              name: q.name || p.name || '',
+              change_pct: q.change_pct || 0,
+            };
+          }
+          // 无实时行情: 用成本价作为现价 (盘后/非交易日)
+          return { ...p, current: p.current || p.price, value: p.value || roundNum(p.shares * (p.current || p.price), 2) };
+        });
+      } catch (e) {
+        console.warn('quotes fetch failed, using cached prices');
+      }
+    }
+
     const metaEl = document.getElementById('meta-positions');
+    const quoteStatusEl = document.getElementById('quote-status');
     if (metaEl) metaEl.textContent = positions.length + ' 只';
+    if (quoteStatusEl && positions.length > 0) {
+      const hasLive = positions.some(p => p.change_pct !== undefined && p.change_pct !== 0);
+      quoteStatusEl.textContent = hasLive ? '● 实时' : '○ 盘后';
+      quoteStatusEl.style.color = hasLive ? 'var(--up)' : 'var(--text-muted)';
+    }
     renderTable('table-positions', positions, [
       { key: 'symbol', label: '代码' },
+      { key: 'name', label: '名称' },
       { key: 'shares', label: '股数' },
       { key: 'price', label: '成本' },
       { key: 'current', label: '现价' },
       { key: 'pnl_pct', label: '盈亏%' },
       { key: 'value', label: '市值' },
+      { key: 'change_pct', label: '日涨跌' },
     ], {
-      clsMap: { pnl_pct: clsPnl },
+      clsMap: { pnl_pct: clsPnl, change_pct: clsPnl },
       fmtMap: {
         shares: v => v.toLocaleString(),
         price: v => fmtNum(v, 2),
         current: v => fmtNum(v, 2),
         pnl_pct: v => fmtPct(v),
         value: v => fmtMoney(v),
+        change_pct: v => (v ? fmtPct(v) : '—'),
       }
     });
     renderExposureCharts(positions);
@@ -277,6 +315,8 @@ async function loadPortfolio() {
     console.warn('portfolio error:', e.message);
   }
 }
+
+function roundNum(v, d) { return Math.round(v * Math.pow(10, d)) / Math.pow(10, d); }
 
 function renderExposureCharts(positions) {
   const elSector = document.getElementById('chart-exposure-sector');

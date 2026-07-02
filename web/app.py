@@ -190,6 +190,28 @@ def api_update_state():
     return jsonify({"ok": True})
 
 
+@app.route("/api/quotes")
+def api_quotes():
+    """实时行情 — 批量拉取新浪财经报价, 为前端持仓页提供现价和涨跌幅。
+
+    ?symbols=000001,600036,430047 — 逗号分隔的股票代码列表
+    返回: {quotes: {symbol: {price, change_pct, name, high, low, volume}}}
+    仅在交易日 9:30-15:00 拉取, 否则返回空。
+    """
+    from flask import request
+    from execution.quote import fetch_quotes, is_trading_time
+    syms_str = request.args.get("symbols", "")
+    if not syms_str:
+        return jsonify({"quotes": {}})
+    symbols = [s.strip() for s in syms_str.split(",") if s.strip() and len(s.strip()) == 6]
+    if not symbols:
+        return jsonify({"quotes": {}})
+    if not is_trading_time():
+        return jsonify({"quotes": {}, "status": "closed"})
+    quotes = fetch_quotes(symbols)
+    return jsonify({"quotes": quotes, "status": "open"})
+
+
 @app.route("/api/performance")
 def api_performance():
     """累计绩效统计. ?strategy=quant"""

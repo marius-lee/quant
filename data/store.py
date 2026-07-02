@@ -355,7 +355,7 @@ class DataStore:
             try:
                 df = ak.stock_zh_a_hist(
                     symbol=sym, period="daily",
-                    start_date=start_date, end_date=end_date, adjust="")
+                    start_date=start_date, end_date=end_date, adjust="qfq")
                 if df is None or df.empty:
                     continue
                 for _, row in df.iterrows():
@@ -474,7 +474,7 @@ class DataStore:
             try:
                 df = ak.stock_zh_a_hist(
                     symbol=sym, period="daily",
-                    start_date="2020-01-01", end_date=end_date, adjust="")
+                    start_date="2020-01-01", end_date=end_date, adjust="qfq")
                 if df is None or df.empty:
                     continue
                 for _, row in df.iterrows():

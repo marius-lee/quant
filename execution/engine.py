@@ -92,8 +92,8 @@ class ExecutionEngine:
                 """, (strategy,)).fetchall()
                 sell_map = {r[0]: r[1] for r in sells}
                 pos_value = sum(
-                    round(p[1], 4) * max(0, p[0] - sell_map.get(p[0], 0))
-                    for p in positions if p[1] is not None
+                    round(p[2], 4) * max(0, p[1] - sell_map.get(p[0], 0))
+                    for p in positions if p[2] is not None
                 )
                 return cash + pos_value
             # 无交易记录: 回退到 strategy_config

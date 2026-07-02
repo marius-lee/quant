@@ -64,7 +64,18 @@ def compute_trades(
                 f"turnover {ratio:.1%} exceeds limit {max_turnover_ratio:.1%}, scaling down"
             )
             scale = max_turnover_ratio / ratio
-            diff = (diff * scale).round(0).astype(int)
+            # Use ceil for |diff|≥1 to preserve non-zero orders
+            scaled = diff * scale
+            # Round away from zero: ±0.5 threshold, but never kill |diff|≥1
+            result = pd.Series(0, index=diff.index, dtype=int)
+            for i in range(len(diff)):
+                d = scaled.iloc[i]
+                if abs(d) >= 0.5:
+                    result.iloc[i] = int(np.ceil(d) if d > 0 else np.floor(d))
+                elif abs(diff.iloc[i]) >= 1:
+                    # Original diff was at least 1 lot — keep direction
+                    result.iloc[i] = 1 if diff.iloc[i] > 0 else -1
+            diff = result
 
     # 卖出订单 (diff < 0 → 卖出)
     for sym in diff[diff < 0].index:

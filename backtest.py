@@ -14,7 +14,7 @@ import numpy as np
 
 from data.store import DataStore
 from execution.engine import ExecutionEngine
-from execution.cost import CostModel
+from data.benchmark import sync_benchmark
 from utils.logger import get_logger
 
 logger = get_logger("backtest")
@@ -34,6 +34,8 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
         os.remove(TRADE_DB)
 
     store = DataStore()
+    # 同步基准指数数据
+    sync_benchmark("000300")
     engine = ExecutionEngine()
     engine.set_initial_capital("quant", capital)
 

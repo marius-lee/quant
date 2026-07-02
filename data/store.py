@@ -838,25 +838,40 @@ class DataStore:
         return new_count
 
     def get_benchmark(self, code: str = "000300", start: str = None) -> pd.Series:
-        """拉取基准指数日线，返回 (date → return) Series"""
+        """拉取基准指数日线，返回 (date → return) Series (小数, 非百分比)。
+
+        优先从本地 benchmark.db 读取 (通过 data/benchmark.py sync)。
+        """
         if start is None:
             from config.loader import get as cfg
-            start = cfg("data.start_date", DEFAULT_START_DATE)
-        import tushare as ts
-        ts.set_token(self.token)
-        pro = ts.pro_api()
+            start = cfg("backtest.benchmark_start_date", "2020-01-01")
+        # 先尝试本地 benchmark.db (由 scripts/init_data.py --benchmark 同步)
+        import sqlite3, os
+        bm_db = os.path.join(os.path.dirname(__file__), "benchmark.db")
+        if os.path.exists(bm_db):
+            try:
+                conn = sqlite3.connect(bm_db)
+                df = pd.read_sql_query(
+                    "SELECT date, close FROM benchmark_daily WHERE index_code=? AND date>=? ORDER BY date",
+                    conn, params=(code, start)
+                )
+                conn.close()
+                if not df.empty:
+                    df["date"] = pd.to_datetime(df["date"])
+                    df = df.set_index("date")["close"]
+                    return df.pct_change().dropna()
+            except Exception as e:
+                logger.debug(f"benchmark local read failed: {e}")
+        # 回退: akshare 实时拉取
         try:
-            df = pro.index_daily(ts_code=f"{code}.SH", start_date=to_compact(start),  # tushare API只接受YYYYMMDD
-                                end_date=to_compact(datetime.today()),  # tushare API只接受YYYYMMDD, 不接受YYYY-MM-DD
-                                fields="trade_date,close")
-            if df is None or df.empty:
-                return pd.Series()
-            df = df.sort_values("trade_date")
-            df["date"] = pd.to_datetime(df["trade_date"])
-            df = df.set_index("date")["close"]
-            return df.pct_change().dropna()
-        except Exception:
-            logger.warning(f"benchmark {code} fetch failed")
+            from data.benchmark import get_benchmark_returns
+            # get_benchmark_returns 返回百分比, 转小数
+            bm_pct = get_benchmark_returns(code, start=start)
+            if bm_pct.empty:
+                return pd.Series(dtype=float, name=code)
+            return bm_pct / 100.0
+        except Exception as e:
+            logger.warning(f"benchmark {code} fetch failed: {e}")
             return pd.Series()
 
     def get_stock_names(self, symbols: list) -> dict:

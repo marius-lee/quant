@@ -15,6 +15,8 @@ from factor.compute import (
     compute_volatility,
     compute_skewness,
     compute_bp_ratio,
+    compute_size,
+    compute_roe_ratio,
     compute_all_factors,
     get_factor_names,
     FACTOR_REGISTRY,
@@ -32,7 +34,7 @@ from factor.synth import equal_weight, ic_weighted, synthesize
 __all__ = [
     "Factor", "FactorResult", "FactorStats",
     "compute_momentum", "compute_volatility", "compute_skewness",
-    "compute_bp_ratio",
+    "compute_bp_ratio", "compute_size", "compute_roe_ratio",
     "compute_all_factors", "get_factor_names",
     "FACTOR_REGISTRY", "FUNDAMENTAL_FACTOR_REGISTRY",
     "rank_ic", "evaluate_factor", "compute_ic_series",

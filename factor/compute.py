@@ -254,6 +254,7 @@ def compute_skewness(data: pd.DataFrame, date: str, window: int = 20) -> pd.Seri
 # 因子注册表 — 仅保留经 IC/IR 验证有效的 4 因子 (2025Q1-2026Q2 截面评估).
 # 已移除 7 个无效/冗余因子: momentum_5d, momentum_60d, reversal_5d,
 #   downside_vol_20d, vol_ratio_5d, turnover_chg_5d, amihud_20d.
+# 基本面因子补充: bp_ratio(价值) + size(小市值) + roe_ratio(盈利) = 6因子系统
 FACTOR_REGISTRY = {
     "momentum_10d":     ("momentum",  10, compute_momentum),
     "volatility_20d":   ("volatility",20, compute_volatility),
@@ -291,8 +292,23 @@ def compute_size(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
     return _cs_zscore(size).rename("size")
 
 
+def compute_roe_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
+    """ROE 盈利能力因子 — 盈利能力溢价。高分 = 高ROE = 高预期收益。
+    
+    来源: Fama & French (2015) — 盈利能力因子 (RMW)
+    计算: ROE ≈ PB/PE = (Price/Book) / (Price/Earnings) = Earnings/Book
+    由于 PE/PB 来自同一截面，用 PB/PE 推算 ROE。
+    """
+    roe = fundamentals["pb"] / fundamentals["pe"]
+    roe = roe.replace([np.inf, -np.inf], np.nan)
+    # 高ROE = 高分
+    return _cs_zscore(roe).rename("roe_ratio")
+
+
 FUNDAMENTAL_FACTOR_REGISTRY = {
-    "bp_ratio":   ("value",    compute_bp_ratio),
+    "bp_ratio":   ("value",         compute_bp_ratio),
+    "size":       ("market_cap",    compute_size),
+    "roe_ratio":  ("profitability", compute_roe_ratio),
 }
 
 def get_factor_names() -> list:

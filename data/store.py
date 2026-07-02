@@ -181,8 +181,9 @@ class DataStore:
         classified = conn.execute(
             "SELECT COUNT(*) FROM stocks WHERE industry IS NOT NULL"
         ).fetchone()[0]
-        if classified > 0:
-            logger.info(f"industry sync skipped: {classified} already classified")
+        total = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
+        if classified >= total:
+            logger.info(f"industry sync skipped: {classified}/{total} already classified")
             return 0
         # baostock attempt
         try:

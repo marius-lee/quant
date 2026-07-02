@@ -438,8 +438,18 @@ class DataStore:
         return rows
 
     def backfill_turnover(self, limit: int = 0):
-        """Baostock 回填换手率 — 只更新 turnover=0 的行。limit=0 表示全部。"""
-        import baostock as bs
+        """akshare 回填换手率 — 逐只下载日线，只更新 turnover=0/NULL 的行。
+
+        baostock 在 Python 3.14 不可用，改用 akshare。
+        limit=0 表示全部（很慢, ~5000 stocks × 1.5s each ≈ 2h）。
+        建议: limit=100 测试，增量同步会自然填充新数据。
+        """
+        try:
+            import akshare as ak
+        except ImportError:
+            logger.warning("akshare not installed — turnover backfill skipped")
+            return 0
+        from datetime import datetime
         conn = self._connect()
         sql = "SELECT DISTINCT symbol FROM daily WHERE turnover=0 OR turnover IS NULL"
         if limit > 0:
@@ -449,39 +459,31 @@ class DataStore:
             logger.info("turnover backfill: no missing data")
             return 0
 
-        logger.info(f"turnover backfill: {len(symbols)} stocks, starting baostock...")
-        bs.login()
+        logger.info(f"turnover backfill: {len(symbols)} stocks via akshare (~{len(symbols)*1.5:.0f}s estimated)")
         filled = 0
+        end_date = datetime.today().strftime("%Y%m%d")
         for sym in symbols:
             try:
-                code = f"{'sh' if sym.startswith(('6','9','68')) else 'sz'}.{sym}"
-                rs = bs.query_history_k_data_plus(
-                    code, "date,turn",
-                    start_date="2020-01-01",
-                    end_date=datetime.today().strftime("%Y-%m-%d"),
-                    frequency="d", adjustflag="2"
-                )
-                if rs.error_code != "0":
-                    continue
-                df = rs.get_data()
-                if df.empty:
+                df = ak.stock_zh_a_hist(
+                    symbol=sym, period="daily",
+                    start_date="2020-01-01", end_date=end_date, adjust="")
+                if df is None or df.empty:
                     continue
                 for _, row in df.iterrows():
-                    t = float(row["turn"]) if row["turn"] and row["turn"] != "" else 0.0
+                    t = float(row.get("换手率", 0) or 0)
                     if t > 0:
-                        d = row["date"][:10]  # YYYY-MM-DD, 与 daily.date 格式一致
+                        d = str(row["日期"])[:10]
                         conn.execute(
                             "UPDATE daily SET turnover=? WHERE symbol=? AND date=? AND (turnover=0 OR turnover IS NULL)",
                             (round(t, 4), sym, d)
                         )
                         filled += 1
+                import time; time.sleep(1.5)
             except Exception:
                 continue
-        bs.logout()
         conn.commit()
-        logger.info(f"turnover backfill done: {filled} rows updated for {len(symbols)} stocks")
+        logger.info(f"turnover backfill (akshare): {filled} rows updated for {len(symbols)} stocks")
         return filled
-
 
     def _sync_industry_akshare(self, conn) -> int:
         """akshare 同花顺行业分类回退。

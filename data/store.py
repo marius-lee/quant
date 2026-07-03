@@ -801,16 +801,15 @@ class DataStore:
                 sources[source] = sources.get(source, 0) + 1
 
             # 每批打印进度 + 样本日志 (每批50只)
-            if True:  # 每批都输出进度
-                conn.commit()
-                # 取本批第一行做样本验证
-                sample = rows[0] if rows else None
-                sample_str = ""
-                if sample:
-                    sample_str = f" | sample: {sample[0]} {sample[1]} V={sample[6]} Amt={sample[7]}"
-                pct = min(i + batch_size, len(symbols)) / len(symbols) * 100
-                done = min(i + batch_size, len(symbols))
-                logger.info(f"daily [{source}] {done}/{len(symbols)} ({pct:.0f}%) {total_new}新行{sample_str}")
+            conn.commit()
+            # 取本批第一行做样本验证
+            sample = rows[0] if rows else None
+            sample_str = ""
+            if sample:
+                sample_str = f" | sample: {sample[0]} {sample[1]} V={sample[6]} Amt={sample[7]}"
+            pct = min(i + batch_size, len(symbols)) / len(symbols) * 100
+            done = min(i + batch_size, len(symbols))
+            logger.info(f"daily [{source}] {done}/{len(symbols)} ({pct:.0f}%) {total_new}新行{sample_str}")
 
             if source == "tushare" and pro is not None:
                 time.sleep(0.4)

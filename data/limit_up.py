@@ -28,11 +28,19 @@ def _ensure_table(conn):
             date TEXT NOT NULL,
             symbol TEXT NOT NULL,
             name TEXT,
+            change_pct REAL,
+            close REAL,
+            amount REAL,
+            circ_mv REAL,
+            total_mv REAL,
+            turnover_rate REAL,
+            lock_capital REAL,
             first_time TEXT,
             last_time TEXT,
             open_times INTEGER,
+            zt_stat TEXT,
             limit_up_times INTEGER,
-            turnover_rate REAL,
+            industry TEXT,
             PRIMARY KEY (date, symbol)
         )
     """)
@@ -59,10 +67,21 @@ def sync_date(date_str: str, conn=None) -> int:
         
         # Normalize
         col_map = {
-            '代码': 'symbol', '名称': 'name',
-            '首次封板时间': 'first_time', '最后封板时间': 'last_time',
-            '打开次数': 'open_times', '连板数': 'limit_up_times',
+            '代码': 'symbol',
+            '名称': 'name',
+            '涨跌幅': 'change_pct',
+            '最新价': 'close',
+            '成交额': 'amount',
+            '流通市值': 'circ_mv',
+            '总市值': 'total_mv',
             '换手率': 'turnover_rate',
+            '封板资金': 'lock_capital',
+            '首次封板时间': 'first_time',
+            '最后封板时间': 'last_time',
+            '炸板次数': 'open_times',
+            '涨停统计': 'zt_stat',
+            '连板数': 'limit_up_times',
+            '所属行业': 'industry',
         }
         df = df.rename(columns=col_map)
         df['date'] = date_str
@@ -73,11 +92,16 @@ def sync_date(date_str: str, conn=None) -> int:
             try:
                 conn.execute("""
                     INSERT OR REPLACE INTO limit_up_pool 
-                    (date, symbol, name, first_time, last_time, open_times, limit_up_times, turnover_rate)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (date_str, row['symbol'], row.get('name'), row.get('first_time'),
-                      row.get('last_time'), row.get('open_times'), row.get('limit_up_times'),
-                      row.get('turnover_rate')))
+                    (date, symbol, name, change_pct, close, amount, circ_mv, total_mv,
+                     turnover_rate, lock_capital, first_time, last_time, open_times, 
+                     zt_stat, limit_up_times, industry)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (date_str, row['symbol'], row.get('name'),
+                      row.get('change_pct'), row.get('close'), row.get('amount'),
+                      row.get('circ_mv'), row.get('total_mv'), row.get('turnover_rate'),
+                      row.get('lock_capital'), row.get('first_time'), row.get('last_time'),
+                      row.get('open_times'), row.get('zt_stat'), row.get('limit_up_times'),
+                      row.get('industry')))
                 n += 1
             except Exception:
                 pass

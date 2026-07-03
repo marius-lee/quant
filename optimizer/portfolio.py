@@ -22,7 +22,8 @@ class TargetPortfolio:
 
     @property
     def invested(self) -> float:
-        return self.total_value - self.cash_reserve
+        """已投入资金 = 持仓总市值（total_value 已是 手数×价格×100 股）。"""
+        return self.total_value
 
 
 LOT_SIZE = 100  # A股每手 100 股, ① 交易所规则

@@ -129,10 +129,21 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
             alpha_raw = ic_weighted(factor_values, ic_map)
         else:
             alpha_raw = equal_weight(factor_values)
-        # Only keep top 30% of alpha — reduces noise from marginal picks
+        # Soft cutoff: top_fraction controls attenuation, not hard kill
         top_frac = cfg("alpha.top_fraction", 0.30)
-        threshold = alpha_raw.quantile(1.0 - top_frac) if alpha_raw.notna().sum() > 10 else -999
-        alpha = alpha_raw.where(alpha_raw >= threshold)
+        if alpha_raw.notna().sum() > 10 and top_frac < 1.0:
+            # Softmax-style: weights decay below top_fraction quantile
+            threshold = alpha_raw.quantile(1.0 - top_frac)
+            below = alpha_raw < threshold
+            # Scale down below-threshold stocks: their alpha *= (their_rank / min_rank)^2
+            if below.any():
+                min_below = alpha_raw[below].min()
+                alpha = alpha_raw.copy()
+                alpha[below] = alpha[below] * (alpha[below] / threshold) ** 2
+            else:
+                alpha = alpha_raw.copy()
+        else:
+            alpha = alpha_raw.copy()
         results["steps"]["factor"] = {
             "factors": len(factor_values),
             "valid_stocks": alpha.dropna().count(),

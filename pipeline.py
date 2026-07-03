@@ -15,7 +15,7 @@ from data.store import DataStore
 from config.loader import get as cfg
 
 from factor.compute import compute_all_factors
-from factor.synth import ic_weighted, equal_weight
+from factor.synth import ic_weighted, equal_weight, intersection_alpha
 from risk.neutralize import neutralize
 
 from factor.stats_cache import load_ic_map_from_cache
@@ -125,19 +125,24 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         # ic_weighted: uses factor_cache.json IC weights (auto-refreshed every 24h)
         # equal_weight: simple average, fallback when cache is unavailable
         method = cfg("alpha.method", "ic_weighted")
-        if method == "ic_weighted":
+        if method == "intersection":
+            # Intersection: stocks must rank top X% in ALL factors to be candidates
+            alpha_raw = intersection_alpha(
+                factor_values,
+                top_fraction=cfg("alpha.intersection_top_fraction", 0.20),
+                primary_factor=cfg("alpha.intersection_primary", "gap_5d"),
+            )
+        elif method == "ic_weighted":
             ic_map = load_ic_map_from_cache(factor_values)
             if not ic_map:
-                # Fallback to equal_weight when IC cache is unavailable
-                logger.info('IC cache unavailable, falling back to equal_weight')
-                method = 'equal_weight'
-                ic_map = {}
-        if method == 'ic_weighted' and ic_map:
-            alpha_raw = ic_weighted(factor_values, ic_map)
+                logger.info("IC cache unavailable, falling back to equal_weight")
+                alpha_raw = equal_weight(factor_values)
+            else:
+                alpha_raw = ic_weighted(factor_values, ic_map)
         else:
             alpha_raw = equal_weight(factor_values)
-        # Per-factor contribution: which factors drive top picks
-        if ic_map and alpha_raw.notna().sum() > 10:
+            ic_map = {}
+        if method != 'intersection' and alpha_raw.notna().sum() > 10:
             top_n = min(50, alpha_raw.notna().sum())
             top_symbols = alpha_raw.nlargest(top_n).index
             contribs = []
@@ -152,17 +157,20 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
             logger.info("[3/7] top factor contributors: %s",
                         ", ".join(f"{n}={v:+.4f}" for n, v in top3))
 
-        # Soft cutoff: top_fraction controls attenuation, not hard kill
-        top_frac = cfg("alpha.top_fraction", 0.30)
-        if alpha_raw.notna().sum() > 10 and top_frac < 1.0:
-            # Softmax-style: weights decay below top_fraction quantile
-            threshold = alpha_raw.quantile(1.0 - top_frac)
-            below = alpha_raw < threshold
-            # Scale down below-threshold stocks: their alpha *= (their_rank / min_rank)^2
-            if below.any():
-                min_below = alpha_raw[below].min()
-                alpha = alpha_raw.copy()
-                alpha[below] = alpha[below] * (alpha[below] / threshold) ** 2
+        # Soft cutoff: only for ic_weighted/equal_weight (intersection already filters)
+        if method == "intersection":
+            alpha = alpha_raw.copy()
+        elif alpha_raw.notna().sum() > 10:
+            top_frac = cfg("alpha.top_fraction", 0.30)
+            if top_frac < 1.0:
+                # Softmax-style: weights decay below top_fraction quantile
+                threshold = alpha_raw.quantile(1.0 - top_frac)
+                below = alpha_raw < threshold
+                if below.any():
+                    alpha = alpha_raw.copy()
+                    alpha[below] = alpha[below] * (alpha[below] / threshold) ** 2
+                else:
+                    alpha = alpha_raw.copy()
             else:
                 alpha = alpha_raw.copy()
         else:

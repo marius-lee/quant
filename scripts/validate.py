@@ -162,7 +162,7 @@ def check_parameters():
     if stop_loss < 0.05 or stop_loss > 0.50:
         warn(f"stop_loss_pct={stop_loss} seems extreme")
 
-    if alpha_method not in ("ic_weighted", "equal_weight"):
+    if alpha_method not in ("ic_weighted", "equal_weight", "intersection"):
         warn(f"Unknown alpha.method={alpha_method}")
 
 

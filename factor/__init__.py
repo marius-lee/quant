@@ -15,10 +15,10 @@ from factor.compute import (
     load_active_price_factors,
     load_active_fundamental_factors,
 )
-from factor.synth import equal_weight, ic_weighted
+from factor.synth import equal_weight, ic_weighted, intersection_alpha, strict_intersection
 
 __all__ = [
     "compute_all_factors", "get_factor_names",
     "load_active_price_factors", "load_active_fundamental_factors",
-    "equal_weight", "ic_weighted",
+    "equal_weight", "ic_weighted", "intersection_alpha", "strict_intersection",
 ]

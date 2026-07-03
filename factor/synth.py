@@ -1,5 +1,11 @@
 """因子合成 — 将多个因子合成为单一复合因子得分。
 
+导出:
+  equal_weight        — 等权平均
+  ic_weighted         — IC 加权 (|IC| 比例)
+  intersection_alpha  — 交集筛选 (每因子排前 X% 才进候选池)
+  strict_intersection — 严格交集 (每因子取 top N, 同时出现才进池)
+
 合成方法:
   equal_weight — 等权平均, 简单但忽略因子质量差异
   ic_weighted  — IC 加权 (|IC| 比例), 给预测力强的因子更高权重
@@ -9,6 +15,8 @@
 
 import numpy as np
 import pandas as pd
+from factor.intersection import intersection_alpha, strict_intersection
+
 
 
 def equal_weight(factor_values: dict) -> pd.Series:

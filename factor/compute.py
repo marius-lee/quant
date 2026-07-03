@@ -401,6 +401,29 @@ def compute_intraday_range(data: "pd.DataFrame", date: str, window: int = 20) ->
 
 
 
+
+# ═══════════════════════════════════════════════════════════
+# 15. RSI 均值回复 — A 股实证 IC≈0.03-0.04
+# RSI<30(超卖)→反弹, RSI>70(超买)→回落, 取-RSI使低RSI得高分
+# ═══════════════════════════════════════════════════════════
+
+def compute_rsi_reversal(data, date: str, window: int = 14):
+    """RSI 均值回复因子: -RSI(14), 低RSI(超卖)→高分→预期反弹."""
+    close = data["close"]
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta).where(delta < 0, 0.0)
+    if date not in close.index:
+        return pd.Series(np.nan, index=close.columns, name=f"rsi_rev_{window}d")
+    idx = close.index.get_loc(date)
+    start = max(0, idx - window + 1)
+    avg_gain = gain.iloc[start:idx + 1].mean()
+    avg_loss = loss.iloc[start:idx + 1].mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100.0 - 100.0 / (1.0 + rs)
+    return _cs_zscore(-rsi).rename(f"rsi_rev_{window}d")
+
+
 # ── 因子函数映射 (元数据从 factor_registry 表读取) ──
 _PRICE_FN_MAP = {
     "reversal_5d":      (compute_reversal,       5),
@@ -414,6 +437,7 @@ _PRICE_FN_MAP = {
     "idio_vol_20d":     (compute_idiosyncratic_vol, 20),
     "hsgt_flow_5d":     (compute_hsgt_flow,      5),
     "amihud_20d":       (compute_amihud,        20),
+    "rsi_rev_14d":      (compute_rsi_reversal,  14),
 }
 
 def _market_db_path():
@@ -487,10 +511,11 @@ def compute_bp_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
 
 
 def compute_size(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
-    """规模因子 — -log(总市值)。小市值 = 高分。
-    来源: Fama & French (1993) — 市值因子 (SMB), A股小盘溢价
+    """规模因子 — +log(总市值)。大盘股 = 高分。
+    来源: Fama & French (1993) — 市值因子
+    A股实证: IC=-0.101 → 大盘股跑赢, 与传统SMB反向
     """
-    size = -np.log(fundamentals["total_mv"])
+    size = np.log(fundamentals["total_mv"])
     size = size.replace([np.inf, -np.inf], np.nan)
     return _cs_zscore(size).rename("size")
 
@@ -516,7 +541,7 @@ _FUNDAMENTAL_FN_MAP = {
     "bp_ratio":      ("value_bp",       compute_bp_ratio),
     "roe_ratio":     ("profitability",  compute_roe_ratio),
     "high52w_dist":  ("high52w",        compute_high52w_dist),
-    "size":          ("size_smb",       compute_size),
+    "size":          ("size_large_cap", compute_size),  # A股大盘溢价
 }
 
 def get_factor_names() -> list:

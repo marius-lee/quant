@@ -313,6 +313,13 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = 200) -
         with open(CACHE_FILE, "w") as f:
             json.dump(stats, f, ensure_ascii=False, indent=2)
         logger.info(f"factor cache saved to {CACHE_FILE}")
+
+        # 同步写入 factor_registry 表 (消除双写问题)
+        from factor.compute import update_factor_evaluation
+        factor_keys = stats.get("factor_keys", [])
+        ic_vals = stats.get("ic", [])
+        for k, ic in zip(factor_keys, ic_vals):
+            update_factor_evaluation(k, ic, 0.0)
     except Exception as e:
         logger.warning(f"Factor cache write failed: {e}")
 
@@ -320,8 +327,11 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = 200) -
 
 
 
-def _load_ic_from_db() -> dict:
-    """从 factor_registry 表加载 active 因子的 IC 权重."""
+def _load_ic_from_db(filter_names=None) -> dict:
+    """从 factor_registry 表加载 active 因子的 IC 权重。
+    
+    filter_names: 可选, 只保留这些因子名的 IC 权重 (filter_names 来自 factor_values).
+    """
     try:
         import sqlite3 as _sql
         db = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
@@ -332,69 +342,29 @@ def _load_ic_from_db() -> dict:
         conn.close()
         if not rows:
             return {}
-        ic_map = {name: abs(ic) for name, ic in rows}
+        ic_map = {}
+        for name, ic in rows:
+            abs_ic = abs(ic) if isinstance(ic, (int, float)) else 0
+            if abs_ic >= 0.01:
+                ic_map[name] = abs_ic
+        if filter_names and ic_map:
+            ic_map = {k: v for k, v in ic_map.items() if k in filter_names}
         total = sum(ic_map.values())
         if total > 0:
             ic_map = {k: v / total for k, v in ic_map.items()}
-        logger.info(f"IC weights loaded from factor_registry: {len(ic_map)} factors")
+        logger.info(f"IC weights loaded from DB: {len(ic_map)} factors")
         return ic_map
     except Exception as e:
         logger.warning(f"factor_registry load failed: {e}")
         return {}
 
 def load_ic_map_from_cache(factor_values: dict = None) -> dict:
-    """P1-3: 从 factor_cache.json 加载 IC 权重, 替代 pipeline 硬编码。
+    """从 factor_registry 表加载 IC 权重（单一数据源，不再依赖 JSON 文件）。
 
-    优先使用绝对值最大的 IC 值; 过滤 IC<0.01 的无效因子。
-    返回: {factor_name: abs(IC)} 字典，归一化为权重。
-    factor_values: 可选，用于过滤只包含当前有效因子的权重。
+    返回: {factor_name: weight} 字典，已归一化。
+    factor_values: 可选，用于过滤只保留实际计算出的因子。
     """
-    if not os.path.exists(CACHE_FILE):
-        logger.info("IC cache not found, loading from factor_registry table")
-        return _load_ic_from_db()
-
-    try:
-        with open(CACHE_FILE, "r") as f:
-            cache = json.load(f)
-    except Exception as e:
-        logger.warning(f"IC cache read failed: {e}")
-        return {}
-
-    # Check cache freshness
-    if "generated_at" in cache:
-        age = time.time() - cache.get("generated_at", 0)
-        if age > CACHE_TTL_SEC:
-            logger.info(f"IC cache expired ({age/3600:.0f}h > 24h)")
-            return {}
-
-    ic_list = cache.get("ic", [])
-    factor_keys = cache.get("factor_keys", [])
-
-    if not ic_list or len(ic_list) != len(factor_keys):
-        return {}
-
-    # 格式: {EnglishKey: abs(IC)}, 过滤 IC<0.01 的无意义因子
-    ic_map = {}
-    min_ic = 0.01
-    for key, ic_val in zip(factor_keys, ic_list):
-        abs_ic = abs(ic_val) if isinstance(ic_val, (int, float)) else 0
-        if abs_ic >= min_ic:
-            ic_map[key] = abs_ic
-
-    if not ic_map:
-        return _load_ic_from_db()
-
-    # 归一化为 IC-weighted 权重
-    total = sum(ic_map.values())
-    if total > 0:
-        ic_map = {k: v / total for k, v in ic_map.items()}
-
-    # P1-3: 过滤因子：若传入了 factor_values，只保留实际计算出的因子
-    if factor_values and ic_map:
-        ic_map = {k: v for k, v in ic_map.items() if k in factor_values}
-
-    logger.info(f"IC weights loaded from cache: {len(ic_map)} factors")
-    return ic_map
+    return _load_ic_from_db(factor_values)
 
 
 def force_refresh_cache(n_symbols: int = 500) -> dict:

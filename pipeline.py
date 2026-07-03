@@ -122,7 +122,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
                                             fundamentals=fundamentals,
                                             benchmark_ret=benchmark_ret)
         # P1-3: Factor synthesis — method from config.yaml alpha.method
-        # ic_weighted: uses factor_cache.json IC weights (auto-refreshed every 24h)
+        # ic_weighted: uses factor_registry IC weights (auto-refreshed every 24h)
         # equal_weight: simple average, fallback when cache is unavailable
         method = cfg("alpha.method", "ic_weighted")
         if method == "intersection":

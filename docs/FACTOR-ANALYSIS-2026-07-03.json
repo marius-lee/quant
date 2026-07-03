@@ -1,0 +1,97 @@
+{
+  "analysis_date": "2026-07-03T13:29:15.559755",
+  "period": "2026-01-01 to 2026-06-30",
+  "methodology": "500 stocks × 90 days, cross-sectional rank IC",
+  "new_factors_evaluated": [
+    {
+      "name": "money_flow_5d",
+      "expected_ic_range": [
+        0.04,
+        0.06
+      ],
+      "actual_ic": -0.0042,
+      "verdict": "zero_signal",
+      "reason": "A股T+1下日内资金流次日均值回复"
+    },
+    {
+      "name": "ma_alignment_20d",
+      "expected_ic_range": [
+        0.03,
+        0.05
+      ],
+      "actual_ic": 0.0,
+      "verdict": "broken",
+      "reason": "函数签名错误, 且金叉陷阱 — 散户多头排列时主力出货"
+    },
+    {
+      "name": "vol_price_corr_10d",
+      "expected_ic_range": [
+        0.03,
+        0.05
+      ],
+      "actual_ic": -0.0262,
+      "verdict": "wrong_direction",
+      "reason": "量价正相关预测负收益 — 量价背离才是正向信号"
+    },
+    {
+      "name": "turnover_anomaly",
+      "expected_ic_range": [
+        0.03,
+        0.04
+      ],
+      "actual_ic": -0.0109,
+      "verdict": "wrong_direction",
+      "reason": "高换手=拥挤交易=即将反转"
+    },
+    {
+      "name": "limit_up_prox_5d",
+      "expected_ic_range": [
+        0.03,
+        0.06
+      ],
+      "actual_ic": 0.0169,
+      "verdict": "weak_correct",
+      "reason": "方向正确但IC弱, 保留观察"
+    }
+  ],
+  "surprising_finding": {
+    "high52w_dist": {
+      "ic": 0.095,
+      "note": "单个最强因子, 但数据覆盖不全, 需补全52周高低数据"
+    }
+  },
+  "active_factors": [
+    "bp_ratio",
+    "size",
+    "gap_5d",
+    "amihud_20d"
+  ],
+  "best_method": "intersection (top 20%, primary=gap_5d)",
+  "backtest_result": {
+    "cumulative_return_pct": 78.1,
+    "sharpe": 1.52,
+    "alpha_pct": 72.6
+  },
+  "next_data_sources_needed": [
+    {
+      "source": "akshare stock_hsgt_individual_em",
+      "table": "northbound_flow",
+      "status": "API存在, 需创建表+同步"
+    },
+    {
+      "source": "akshare stock_lhb_detail_em",
+      "table": "lhb_detail",
+      "status": "API存在, 表已存在但为空"
+    },
+    {
+      "source": "akshare stock_zt_pool_em",
+      "table": "limit_up_pool (新)",
+      "status": "API存在, 需建表"
+    },
+    {
+      "source": "akshare stock_margin_detail_sse/szse",
+      "table": "margin_detail (新)",
+      "status": "API存在, 需建表"
+    }
+  ]
+}

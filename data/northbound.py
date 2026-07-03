@@ -1,139 +1,131 @@
-"""北向资金数据同步 — 陆股通/港股通个股持仓与资金流。
+"""北向资金数据同步 — 沪深股通个股净买入。
 
-数据源: akshare stock_hsgt_individual_em (东方财富)
-存储: market.db → northbound_flow 表 (date, symbol, net_buy, hold_shares, hold_value)
-
-北向资金因子 IC 实证:
-  - 净买入/流通市值 5日均值: IC≈0.04-0.06 (A股最可靠因子之一)
-  - 持股比例变化: IC≈0.03-0.05
+数据源: akshare.stock_hsgt_individual_em (东方财富)
+表: northbound_flow (date, symbol, net_buy, buy_amt, sell_amt, hold_shares, hold_ratio)
 """
 
-import sqlite3
 import os
+import sqlite3
 import time
+from datetime import datetime, timedelta
+
 import pandas as pd
-import numpy as np
-from typing import Optional
 from utils.logger import get_logger
 
 logger = get_logger("data.northbound")
 
-NORTHBOUND_DB = os.path.join(os.path.dirname(__file__), "market.db")
+DB_PATH = os.path.join(os.path.dirname(__file__), "market.db")
 
 
-def _ensure_schema(conn):
-    conn.executescript("""
+def _ensure_table(conn):
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS northbound_flow (
             date TEXT NOT NULL,
             symbol TEXT NOT NULL,
-            net_buy REAL,          -- 当日净买入(万元, 沪+深)
-            hold_shares REAL,      -- 持股数量(股)
-            hold_value REAL,       -- 持股市值(万元)
+            net_buy REAL,
+            buy_amt REAL,
+            sell_amt REAL,
+            hold_shares REAL,
+            hold_ratio REAL,
             PRIMARY KEY (date, symbol)
-        );
-        CREATE INDEX IF NOT EXISTS idx_nb_date ON northbound_flow(date);
-        CREATE INDEX IF NOT EXISTS idx_nb_symbol ON northbound_flow(symbol);
+        )
     """)
-
-
-def sync_northbound(symbols: Optional[list] = None, days: int = 60) -> int:
-    """同步北向资金数据到本地数据库。
-
-    symbols: 股票列表 (None=沪深300成分股，全量5200+太慢)
-    days: 拉取最近N个交易日
-    返回: 新增行数
-    """
-    import akshare as ak
-
-    conn = sqlite3.connect(NORTHBOUND_DB)
-    _ensure_schema(conn)
-
-    if symbols is None:
-        # 默认: 取有turnover数据的活跃股 (成交量>0.5%), 约500只
-        symbols = [r[0] for r in conn.execute("""
-            SELECT DISTINCT symbol FROM daily
-            WHERE date >= date('now', '-20 days') AND turnover > 0.5
-            LIMIT 500
-        """).fetchall()]
-
-    total_new = 0
-    failed = 0
-
-    for i, sym in enumerate(symbols):
-        try:
-            df = ak.stock_hsgt_individual_em(symbol=sym)
-            if df.empty:
-                continue
-
-            df["symbol"] = sym
-            # 取最近 days 行
-            df = df.tail(days)
-
-            # 标准化列名
-            cols_map = {
-                "日期": "date", "date": "date",
-                "ggt_ss_net_buy": "ss_net",
-                "ggt_sz_net_buy": "sz_net",
-            }
-            df = df.rename(columns=cols_map)
-
-            # 计算净买入总和 (万 → 保持原单位)
-            ss_net = df.get("ss_net", pd.Series(0, index=df.index)).fillna(0)
-            sz_net = df.get("sz_net", pd.Series(0, index=df.index)).fillna(0)
-
-            for _, row in df.iterrows():
-                dt = str(row["date"])[:10]
-                net_buy = float(row.get("ss_net", 0) or 0) + float(row.get("sz_net", 0) or 0)
-                hold_shares = float(row.get("hold_shares", 0) or 0)
-                hold_value = float(row.get("hold_value", 0) or 0)
-
-                conn.execute("""
-                    INSERT OR REPLACE INTO northbound_flow(date, symbol, net_buy, hold_shares, hold_value)
-                    VALUES(?,?,?,?,?)
-                """, (dt, sym, net_buy, hold_shares, hold_value))
-                total_new += 1
-
-            # 每50只暂停防限流
-            if (i + 1) % 50 == 0:
-                conn.commit()
-                time.sleep(0.5)
-
-        except Exception as e:
-            failed += 1
-            if failed <= 3:
-                logger.debug(f"northbound {sym} query failed: {e}")
-
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_nb_date ON northbound_flow(date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_nb_symbol ON northbound_flow(symbol)")
     conn.commit()
-    conn.close()
-    logger.info(f"northbound sync: {total_new} rows for {len(symbols)-failed}/{len(symbols)} stocks")
-    return total_new
 
 
-def get_northbound_flow(symbols: list, date: str, window: int = 5) -> pd.Series:
-    """获取北向资金 N 日净流入因子值。
-
-    返回: Series(index=symbol, value=净买入/流通市值_N日均值)
-    """
-    conn = sqlite3.connect(NORTHBOUND_DB)
+def sync_single_stock(symbol: str, conn=None) -> int:
+    """同步单只股票的北向资金历史数据。返回新增行数。"""
+    import akshare as ak
+    close_conn = False
+    if conn is None:
+        conn = sqlite3.connect(DB_PATH)
+        close_conn = True
+    
+    _ensure_table(conn)
+    
     try:
-        placeholders = ",".join("?" for _ in symbols)
-        df = pd.read_sql_query(f"""
-            SELECT symbol, AVG(net_buy) as avg_net_buy
-            FROM northbound_flow
-            WHERE symbol IN ({placeholders}) AND date <= ?
-            GROUP BY symbol
-            HAVING COUNT(*) >= ?
-        """, conn, params=symbols + [date, max(1, window//2)])
-
-        # 除以流通市值做标准化 (从 stocks 表取, circ_mv NULL→total_mv fallback)
-        mv_df = pd.read_sql_query(f"""
-            SELECT symbol, COALESCE(circ_mv, total_mv) as mv
-            FROM stocks WHERE symbol IN ({placeholders})
-        """, conn, params=symbols)
-
-        df = df.merge(mv_df, on="symbol", how="left")
-        df["flow_ratio"] = df["avg_net_buy"] / df["mv"].replace(0, np.nan)
-
-        return pd.Series(df["flow_ratio"].values, index=df["symbol"]).dropna()
+        df = ak.stock_hsgt_individual_em(symbol=symbol)
+        if df.empty:
+            return 0
+        
+        # Normalize columns
+        col_map = {
+            'TRADE_DATE': 'date', '日期': 'date',
+            'NET_Buy_AMT': 'net_buy', '净买入金额': 'net_buy',
+            'BUY_AMT': 'buy_amt', '买入金额': 'buy_amt',
+            'SELL_AMT': 'sell_amt', '卖出金额': 'sell_amt',
+            'HOLD_SHARES': 'hold_shares', '持股数量': 'hold_shares',
+            'HOLD_RATIO': 'hold_ratio', '持股比例': 'hold_ratio',
+        }
+        df = df.rename(columns=col_map)
+        df['symbol'] = symbol
+        df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+        
+        # Filter to columns we have in table
+        cols = ['date', 'symbol', 'net_buy', 'buy_amt', 'sell_amt', 'hold_shares', 'hold_ratio']
+        df = df[[c for c in cols if c in df.columns]]
+        
+        n = 0
+        for _, row in df.iterrows():
+            try:
+                conn.execute("""
+                    INSERT OR REPLACE INTO northbound_flow 
+                    (date, symbol, net_buy, buy_amt, sell_amt, hold_shares, hold_ratio)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (row.get('date'), symbol, row.get('net_buy'), row.get('buy_amt'),
+                      row.get('sell_amt'), row.get('hold_shares'), row.get('hold_ratio')))
+                n += 1
+            except Exception:
+                pass
+        
+        conn.commit()
+        if n > 0:
+            logger.info(f"northbound: {symbol} — {n} rows synced")
+        
+    except Exception as e:
+        logger.warning(f"northbound sync failed for {symbol}: {e}")
     finally:
+        if close_conn:
+            conn.close()
+    
+    return n
+
+
+def sync_all(max_stocks: int = None, conn=None) -> int:
+    """同步所有 A 股的北向资金数据。"""
+    close_conn = False
+    if conn is None:
+        conn = sqlite3.connect(DB_PATH)
+        close_conn = True
+    
+    _ensure_table(conn)
+    
+    # Get all symbols from stocks table
+    symbols = [r[0] for r in conn.execute(
+        "SELECT symbol FROM stocks WHERE market IN ('SH','SZ') ORDER BY total_mv DESC"
+    ).fetchall()]
+    
+    if max_stocks:
+        symbols = symbols[:max_stocks]
+    
+    total = 0
+    for i, sym in enumerate(symbols):
+        n = sync_single_stock(sym, conn=conn)
+        total += n
+        if (i + 1) % 50 == 0:
+            logger.info(f"northbound sync: {i+1}/{len(symbols)} stocks, {total} rows")
+        time.sleep(0.3)  # Rate limiting
+    
+    logger.info(f"northbound sync done: {total} rows for {len(symbols)} stocks")
+    
+    if close_conn:
         conn.close()
+    return total
+
+
+if __name__ == "__main__":
+    import sys
+    n = int(sys.argv[1]) if len(sys.argv) > 1 else 50
+    sync_all(max_stocks=n)

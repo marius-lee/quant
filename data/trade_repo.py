@@ -36,7 +36,7 @@ class TradeRepo:
     # ── 资金 ──
     def get_cash(self, strategy: str) -> float:
         """返回最新 capital_after (运行时资产), 无交易记录时返回 0.0.
-        
+
         调用方应检查返回值:
         - > 0: 正常运行时资产
         - = 0: 无交易记录, 应从 strategy_config.initial_capital 获取种子本金

@@ -26,7 +26,7 @@ risk:
   covariance_window: 60          # ② Ledoit & Wolf (2004): ~250 stocks需要≥50天
   max_single_position: 1.00     # ④ ¥5,000: 全仓不设上限
   stop_loss_pct: 0.15             # ④ 持仓跌15%立即平仓, 防止单票暴雷
-  max_positions: 1              # ④ ¥5,000: 全仓1只, 不稀释alpha
+  max_positions: 3              # ④ ¥5,000/3≈¥1,600/只, 分散因子信号
   min_daily_amount: 500000      # ③ 动态 = capital/max_positions*10 的静态回退
   exclude_star_st: true         # ② *ST退市风险过高, 无alpha价值
   exclude_markets: [BJ]        # ④ 北交所需50万保证金, 未开通权限

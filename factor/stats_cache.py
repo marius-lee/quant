@@ -48,7 +48,7 @@ def compute_factor_stats(
     }
     """
     from data.store import DataStore
-    from factor.compute import compute_all_factors, FACTOR_REGISTRY, FUNDAMENTAL_FACTOR_REGISTRY
+    from factor.compute import compute_all_factors, get_factor_names
 
     store = DataStore()
 
@@ -83,7 +83,7 @@ def compute_factor_stats(
 
     # 3. 逐日计算因子值
     dates = data.index
-    factor_names = list(FACTOR_REGISTRY.keys()) + list(FUNDAMENTAL_FACTOR_REGISTRY.keys())
+    factor_names = get_factor_names()
     factor_values_by_date = {name: {} for name in factor_names}
 
     # 只计算最近 lookback 个交易日

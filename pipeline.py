@@ -250,6 +250,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         orders = compute_trades(
             portfolio.lots, current_lots, prices, cost_model,
             capital=total_capital,
+            cash=engine.get_cash(strategy),
             max_turnover_ratio=turnover_limit,
         )
         if orders:

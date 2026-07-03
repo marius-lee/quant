@@ -93,9 +93,9 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
                             engine.execute([PipelineOrder(symbol=p["symbol"], side="sell", shares=shares, price=current_px, cost=0)], date_str, "quant")
                             sl_checks += 1
             
-           # Only run full pipeline on rebalance dates
-           if date_str not in rebalance_dates:
-               # Non-rebalance day: just record wealth  
+            # Only run full pipeline on rebalance dates
+            if date_str not in rebalance_dates:
+                # Non-rebalance day: just record wealth  
                 # 用当日收盘价 (市场价格) 算持仓市值, 不能用 cost basis
                 cash = engine.get_cash("quant")
                 position_value = 0.0
@@ -204,7 +204,7 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
                 excess = strategy_cum - bench_cum
                 # Tracking error (annualized)
                 strategy_daily = df.set_index("date")["total_wealth"].pct_change().dropna()
-                # 统一日期类型: strategy_daily.index 是 string, bench_aligned.index 是 Timestamp, intersection 为空
+                # 统一日期类型: strategy_daily.index 是 string, bench_aligned.index 是 Timestamp
                 strategy_daily.index = pd.to_datetime(strategy_daily.index)
                 common_idx = strategy_daily.index.intersection(bench_aligned.index)
                 te_daily = strategy_daily.loc[common_idx] - bench_aligned.loc[common_idx]

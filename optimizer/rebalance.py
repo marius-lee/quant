@@ -103,6 +103,26 @@ def compute_trades(
                 cost=cost_model.buy_cost(price, shares),
             ))
 
+    # ── 换手缩放后的 cash feasibility 检查 ──
+    # 换手率限制可能使卖单缩水但买单保留, 造成资金缺口。
+    # 此时优先执行所有卖单, 再按买入成本从低到高依次纳入买单。
+    if capital > 0 and orders:
+        sell_orders = [o for o in orders if o.side == "sell"]
+        buy_orders = [o for o in orders if o.side == "buy"]
+        sell_inflow = sum(o.price * o.shares - o.cost for o in sell_orders)
+        available = capital + sell_inflow
+        feasible = []
+        for o in buy_orders:
+            if available >= o.cost:
+                feasible.append(o)
+                available -= o.cost
+        if len(feasible) < len(buy_orders):
+            from utils.logger import get_logger
+            get_logger("optimizer.rebalance").warning(
+                f"cash feasibility: {len(buy_orders) - len(feasible)} buy(s) trimmed (insufficient funds)"
+            )
+            orders = sell_orders + feasible
+
     return orders
 
 

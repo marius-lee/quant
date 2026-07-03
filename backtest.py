@@ -67,9 +67,9 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
         try:
             # P0-2: On every trading day, check stop-loss first
             current_positions = engine.get_positions("quant")
+            prices_for_sl = {}
             if current_positions:
                 stop_loss_pct = cfg("risk.stop_loss_pct", 0.15)
-                prices_for_sl = {}
                 try:
                     # Get today's close prices for all held symbols
                     syms = [p["symbol"] for p in current_positions]
@@ -93,15 +93,31 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
                             engine.execute([PipelineOrder(symbol=p["symbol"], side="sell", shares=shares, price=current_px, cost=0)], date_str, "quant")
                             sl_checks += 1
             
-            # Only run full pipeline on rebalance dates
-            if date_str not in rebalance_dates:
-                # Non-rebalance day: just record wealth  
-                total_wealth = engine.get_capital("quant")
+           # Only run full pipeline on rebalance dates
+           if date_str not in rebalance_dates:
+               # Non-rebalance day: just record wealth  
+                # 用当日收盘价 (市场价格) 算持仓市值, 不能用 cost basis
+                cash = engine.get_cash("quant")
+                position_value = 0.0
+                if current_positions and prices_for_sl:
+                    for p in current_positions:
+                        sym = p["symbol"]
+                        shares = p.get("shares", 0)
+                        px = prices_for_sl.get(sym, None)
+                        if px is not None and px > 0:
+                            position_value += px * shares
+                        else:
+                            position_value += p.get("price", 0) * shares
+                else:
+                    for p in current_positions:
+                        position_value += p.get("price", 0) * p.get("shares", 0)
+                total_wealth = round(cash + position_value, 2)
                 daily_return = (total_wealth - prev_wealth_for_daily) / prev_wealth_for_daily if prev_wealth_for_daily > 0 else 0
                 prev_wealth_for_daily = total_wealth
                 results.append({
                     "date": date_str,
                     "wealth": round(total_wealth, 2),
+                    "total_wealth": round(total_wealth, 2),
                     "daily_return": round(daily_return, 6),
                     "type": "daily_check",
                 })
@@ -188,6 +204,8 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
                 excess = strategy_cum - bench_cum
                 # Tracking error (annualized)
                 strategy_daily = df.set_index("date")["total_wealth"].pct_change().dropna()
+                # 统一日期类型: strategy_daily.index 是 string, bench_aligned.index 是 Timestamp, intersection 为空
+                strategy_daily.index = pd.to_datetime(strategy_daily.index)
                 common_idx = strategy_daily.index.intersection(bench_aligned.index)
                 te_daily = strategy_daily.loc[common_idx] - bench_aligned.loc[common_idx]
                 tracking_err = float(te_daily.std() * np.sqrt(252)) if len(te_daily) > 1 else 0.0

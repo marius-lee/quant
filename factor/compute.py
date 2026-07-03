@@ -649,6 +649,73 @@ def compute_limit_up_proximity(data: "pd.DataFrame", date: str, window: int = 5)
     return _cs_zscore(result).rename(f"limit_up_prox_{window}d")
 
 
+
+# ═══════════════════════════════════════════════════════════
+# 21. 涨停板因子 (Limit-Up) — A股最强动量异象
+# 首板次日连板概率 30-40%, IC≈0.06-0.10 (A股独有)
+# ═══════════════════════════════════════════════════════════
+
+def compute_limit_up_streak(data: "pd.DataFrame", date: str) -> "pd.Series":
+    """涨停连板因子: 从 limit_up_pool 表读取连板数 + 封板质量。
+    
+    算法:
+      - 连板数 (limit_up_times): 越高越强, 但≥5连板风险加大 → 倒U型评分
+      - 封板质量: 炸板次数=0 且封板资金/流通市值 > 5% 加分
+      - 首板 (zt_stat='1/1'): 额外加分 (首板溢价)
+      - 只包含当日涨停的股票, 其余为 NaN
+    
+    来源: A股涨跌停制度独有异象. 涨停板有显著动量溢出.
+    """
+    import sqlite3
+    db_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "market.db")
+    conn = sqlite3.connect(db_path)
+    
+    # Get today's limit-up stocks
+    rows = conn.execute("""
+        SELECT symbol, limit_up_times, open_times, lock_capital, circ_mv, zt_stat
+        FROM limit_up_pool WHERE date = ?
+    """, (date,)).fetchall()
+    conn.close()
+    
+    if not rows:
+        return pd.Series(dtype=float, name="zt_streak")
+    
+    scores = {}
+    for sym, times, opens, lock_cap, circ_mv, zt_stat in rows:
+        score = 0.0
+        
+        # 连板数评分: 1→0.5, 2→1.5, 3→3.0, 4→4.0, 5+→递减 (倒U)
+        if times and times > 0:
+            if times <= 4:
+                score += times * (times + 1) / 2  # 1→1, 2→3, 3→6, 4→10
+            else:
+                score += max(0, 10 - (times - 4) * 2)  # 5→8, 6→6, 7→4, ...
+        
+        # 封板质量: 未炸板 + 封板资金占比
+        if opens is not None and opens == 0:
+            score += 1.0
+        if lock_cap is not None and circ_mv is not None and circ_mv > 0:
+            lock_ratio = lock_cap / circ_mv
+            if lock_ratio > 0.10:
+                score += 3.0  # 封板资金 > 10% 流通市值 = 极强
+            elif lock_ratio > 0.05:
+                score += 2.0
+            elif lock_ratio > 0.02:
+                score += 1.0
+        
+        # 首板溢价
+        if zt_stat and zt_stat.startswith('1/'):
+            score += 1.5
+        
+        # 开板过多次的扣分
+        if opens is not None and opens >= 3:
+            score -= opens * 0.5
+        
+        scores[sym] = score
+    
+    result = pd.Series(scores)
+    return _cs_zscore(result).rename("zt_streak")
+
 _PRICE_FN_MAP = {
     "reversal_5d":           (compute_reversal,            5),
     "volatility_20d":        (compute_volatility,         20),
@@ -667,6 +734,7 @@ _PRICE_FN_MAP = {
     "vol_price_corr_10d":    (compute_volume_price_corr,  10),
     "turnover_anomaly":      (compute_turnover_anomaly,    5),
     "limit_up_prox_5d":      (compute_limit_up_proximity,  5),
+    "zt_streak":             (compute_limit_up_streak,     0),
 }
 
 def _market_db_path():

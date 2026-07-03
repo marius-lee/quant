@@ -1,0 +1,132 @@
+"""涨停板数据同步 — A股每日涨停/跌停池。
+
+数据源: akshare.stock_zt_pool_em (东方财富)
+表: limit_up_pool (新)
+
+涨停因子是最强A股动量预测器:
+- 涨停连板概率 ~30-40% (A股独有现象)
+- 首板次日的正收益概率 ~60%
+- IC 显著高于传统价格因子
+"""
+
+import os
+import sqlite3
+import time
+from datetime import datetime, timedelta
+
+import pandas as pd
+from utils.logger import get_logger
+
+logger = get_logger("data.limit_up")
+
+DB_PATH = os.path.join(os.path.dirname(__file__), "market.db")
+
+
+def _ensure_table(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS limit_up_pool (
+            date TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            name TEXT,
+            first_time TEXT,
+            last_time TEXT,
+            open_times INTEGER,
+            limit_up_times INTEGER,
+            turnover_rate REAL,
+            PRIMARY KEY (date, symbol)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_zt_date ON limit_up_pool(date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_zt_symbol ON limit_up_pool(symbol)")
+    conn.commit()
+
+
+def sync_date(date_str: str, conn=None) -> int:
+    """同步单日涨停池。返回新增行数。"""
+    import akshare as ak
+    
+    close_conn = False
+    if conn is None:
+        conn = sqlite3.connect(DB_PATH)
+        close_conn = True
+    
+    _ensure_table(conn)
+    
+    try:
+        df = ak.stock_zt_pool_em(date=date_str.replace('-', ''))
+        if df.empty:
+            return 0
+        
+        # Normalize
+        col_map = {
+            '代码': 'symbol', '名称': 'name',
+            '首次封板时间': 'first_time', '最后封板时间': 'last_time',
+            '打开次数': 'open_times', '连板数': 'limit_up_times',
+            '换手率': 'turnover_rate',
+        }
+        df = df.rename(columns=col_map)
+        df['date'] = date_str
+        df['symbol'] = df['symbol'].astype(str).str.zfill(6)
+        
+        n = 0
+        for _, row in df.iterrows():
+            try:
+                conn.execute("""
+                    INSERT OR REPLACE INTO limit_up_pool 
+                    (date, symbol, name, first_time, last_time, open_times, limit_up_times, turnover_rate)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (date_str, row['symbol'], row.get('name'), row.get('first_time'),
+                      row.get('last_time'), row.get('open_times'), row.get('limit_up_times'),
+                      row.get('turnover_rate')))
+                n += 1
+            except Exception:
+                pass
+        
+        conn.commit()
+        logger.info(f"limit_up: {date_str} — {n} stocks")
+        
+    except Exception as e:
+        logger.warning(f"limit_up sync failed for {date_str}: {e}")
+    finally:
+        if close_conn:
+            conn.close()
+    
+    return n
+
+
+def sync_range(start_date: str, end_date: str = None, conn=None) -> int:
+    """同步区间内每个交易日的涨停池。"""
+    if end_date is None:
+        end_date = datetime.today().strftime("%Y-%m-%d")
+    
+    close_conn = False
+    if conn is None:
+        conn = sqlite3.connect(DB_PATH)
+        close_conn = True
+    
+    # Get trading days from daily table
+    dates = [r[0] for r in conn.execute(
+        "SELECT DISTINCT date FROM daily WHERE date >= ? AND date <= ? ORDER BY date",
+        (start_date, end_date)
+    ).fetchall()]
+    
+    total = 0
+    for i, d in enumerate(dates):
+        n = sync_date(d, conn=conn)
+        total += n
+        if (i + 1) % 10 == 0:
+            logger.info(f"limit_up sync: {i+1}/{len(dates)} dates, {total} stocks")
+        time.sleep(0.3)
+    
+    logger.info(f"limit_up sync done: {total} rows for {len(dates)} dates")
+    
+    if close_conn:
+        conn.close()
+    return total
+
+
+if __name__ == "__main__":
+    import sys
+    s = sys.argv[1] if len(sys.argv) > 1 else "2026-01-01"
+    e = sys.argv[2] if len(sys.argv) > 2 else None
+    sync_range(start_date=s, end_date=e)

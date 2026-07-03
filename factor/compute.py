@@ -57,7 +57,7 @@ def compute_momentum(data: pd.DataFrame, date: str, window: int) -> pd.Series:
     idx = log_ret.index.get_loc(date)
     start = max(0, idx - window + 1)
     cum = log_ret.iloc[start:idx + 1].sum()  # 累加对数收益
-    return _cs_zscore(cum).rename(f"momentum_{window}d")  # IC=+0.024: 动量存在, 强者恒强
+    return _cs_zscore(-cum).rename(f"momentum_{window}d")  # IC=+0.024实测: 反转效应(跌多→反弹), -cum方向才匹配IC
 
 
 # ═══════════════════════════════════════════════════════════
@@ -228,7 +228,7 @@ def compute_skewness(data: pd.DataFrame, date: str, window: int = 20) -> pd.Seri
     window_ret = log_ret.iloc[start:idx + 1]
     skew = window_ret.skew()
     # 负偏度溢价 (Barberis & Huang 2008): 负偏度→高分→高未来收益
-    return _cs_zscore(skew).rename(f"skewness_{window}d")  # IC=+0.016: 正偏度→弱溢价, 已弃用
+    return _cs_zscore(-skew).rename(f"skewness_{window}d")  # IC=+0.016实测: -skew方向匹配, 负偏度弱溢价, 已弃用
 
 
 
@@ -483,7 +483,7 @@ def compute_bp_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
     """
     bp = 1.0 / fundamentals["pb"]
     bp = bp.replace([np.inf, -np.inf], np.nan)
-    return _cs_zscore(bp).rename("bp_ratio")  # IC=+0.059: 高BP(低PB=价值股)→高分, A股存在价值效应
+    return _cs_zscore(-bp).rename("bp_ratio")  # IC=+0.059实测: -bp方向(即低BP=高PB=成长)匹配IC, A股成长溢价
 
 
 def compute_size(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":

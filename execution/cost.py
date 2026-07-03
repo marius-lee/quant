@@ -46,9 +46,9 @@ class CostModel:
         return trade_value * self.slippage_rate
 
     def buy_cost(self, price: float, shares: int) -> float:
-        logger.debug(f"[cost] buy {shares}@{price:.2f} = {value + self.commission(value) + self.slippage(value):.2f}")
         """买入总成本 = 成交额 + 佣金 + 滑点。"""
         value = price * shares
+        logger.debug(f"[cost] buy {shares}@{price:.2f} = {value + self.commission(value) + self.slippage(value):.2f}")
         return value + self.commission(value) + self.slippage(value)
 
     def sell_proceeds(self, price: float, shares: int) -> float:

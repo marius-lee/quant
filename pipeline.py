@@ -263,13 +263,11 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
     # ── Step 6: Execution ──
     try:
         current_lots = pd.Series({p["symbol"]: p["shares"] // LOT_SIZE for p in current_positions}, dtype=int)
-        turnover_limit = cfg("optimizer.turnover_limit", 1.00)
-
+        # turnover_limit removed — 小资金单仓无限制
         orders = compute_trades(
             portfolio.lots, current_lots, prices, cost_model,
             capital=total_capital,
             cash=engine.get_cash(strategy),
-            max_turnover_ratio=turnover_limit,
         )
         if orders:
             is_valid, msg = validate_orders(orders, engine.get_cash(strategy))

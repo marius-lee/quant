@@ -136,6 +136,22 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
             alpha_raw = ic_weighted(factor_values, ic_map)
         else:
             alpha_raw = equal_weight(factor_values)
+        # Per-factor contribution: which factors drive top picks
+        if ic_map and alpha_raw.notna().sum() > 10:
+            top_n = min(50, alpha_raw.notna().sum())
+            top_symbols = alpha_raw.nlargest(top_n).index
+            contribs = []
+            for fn, fv in factor_values.items():
+                if fn in ic_map and not fv.dropna().empty:
+                    common = fv.reindex(top_symbols).dropna()
+                    if len(common) > 5:
+                        avg_contrib = (common * ic_map[fn]).mean()
+                        contribs.append((fn, round(avg_contrib, 4)))
+            contribs.sort(key=lambda x: abs(x[1]), reverse=True)
+            top3 = contribs[:3]
+            logger.info("[3/7] top factor contributors: %s", 
+                        ", ".join(f"{n}={v:+.4f}" for n, v in top3))
+
         # Soft cutoff: top_fraction controls attenuation, not hard kill
         top_frac = cfg("alpha.top_fraction", 0.30)
         if alpha_raw.notna().sum() > 10 and top_frac < 1.0:

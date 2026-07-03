@@ -12,6 +12,24 @@ TRADE_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "tra
 class TradeRepo:
     def __init__(self, db_path: str = TRADE_DB):
         self._db = db_path
+        self._ensure_tables()
+
+    def _ensure_tables(self):
+        c = self._conn()
+        c.executescript("""
+            CREATE TABLE IF NOT EXISTS sim_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL,
+                price REAL NOT NULL, shares INTEGER NOT NULL,
+                pnl REAL DEFAULT 0, pnl_pct REAL DEFAULT 0,
+                capital_after REAL DEFAULT 0, strategy TEXT DEFAULT 'quant',
+                board_count INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS strategy_config (
+                strategy TEXT PRIMARY KEY, config_json TEXT
+            );
+        """)
+        c.close()
 
     def _conn(self): return sqlite3.connect(self._db)
 

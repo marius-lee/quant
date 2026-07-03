@@ -1,60 +1,50 @@
-# A股量化选股系统 — 集中配置
-# 所有参数值需标注来源: ①数学恒等式 ②文献/标准 ③数据校准 ④用户确认
-
 data:
   tushare_token: ${TUSHARE_TOKEN}
-  start_date: '2020-01-01'       # ④ 2020年前A股审批制+壳价值, 市场结构根本不同
-
-# ── Layer 2: Factor ──
+  start_date: '2020-01-01'
 factor:
-  windows: [5, 10, 20, 60]       # ② Jegadeesh & Titman (1993) 多窗口梯度
-  min_abs_ic: 0.02               # ② 量化因子研究: Rank IC 最低有意义阈值
-  min_ic_ir: 0.10                # ② IC/标准差, 行业共识下限
-  decay_horizons: [1, 5, 20]     # ② IC 衰减分析标准检查点
-  enable_quality: false          # ④ 需 PE/PB 数据, 后续启用
-
-# ── Layer 3: Alpha ──
+  windows:
+  - 5
+  - 10
+  - 20
+  - 60
+  min_abs_ic: 0.02
+  min_ic_ir: 0.1
+  decay_horizons:
+  - 1
+  - 5
+  - 20
+  enable_quality: false
 alpha:
-  method: ic_weighted           # equal_weight | ic_weighted | ml
-  train_window: 252              # ① 年交易日标准假设
-  retrain_freq: 20               # ④ 每月(≈20交易日)重校准, 不频繁
-  top_fraction: 0.30             # ④ 选股池保留 Top 30%
-
-# ── Layer 4: Risk ──
+  method: intersection
+  train_window: 252
+  retrain_freq: 20
+  top_fraction: 0.3
+  intersection_top_fraction: 0.2
+  intersection_primary: gap_5d
 risk:
-  covariance_method: ledoit_wolf # sample | ledoit_wolf
-  covariance_window: 60          # ② Ledoit & Wolf (2004): ~250 stocks需要≥50天
-  max_single_position: 1.00     # ④ ¥5,000: 全仓不设上限
-  stop_loss_pct: 0.15             # ④ 持仓跌15%立即平仓, 防止单票暴雷
-  max_positions: 1              # ④ ¥5,000/3≈¥1,600/只, 分散因子信号
-  min_daily_amount: 500000      # ③ 动态 = capital/max_positions*10 的静态回退
-  exclude_star_st: true         # ② *ST退市风险过高, 无alpha价值
-  exclude_markets: [BJ]        # ④ 北交所需50万保证金, 未开通权限
-
-# ── Layer 5: Optimizer ──
+  covariance_method: ledoit_wolf
+  covariance_window: 60
+  max_single_position: 1.0
+  stop_loss_pct: 0.15
+  max_positions: 1
+  min_daily_amount: 500000
+  exclude_star_st: true
+  exclude_markets:
+  - BJ
 optimizer:
-  method: equal_weight           # equal_weight | score_weighted
-  rebalance_freq: weekly         # daily | weekly | monthly
-  min_holding_days: 5            # ④ 避免过度交易, A股T+1下5天合理
-  # turnover_limit: removed — 小资金单仓换手天然>100%, 无保护意义
-  equal_weight_cap: 20000          # ④ ¥5K走等权贪心, score_weighted对小资金无效(n_lots=0)
-
-# ── Layer 6: Execution ──
+  method: equal_weight
+  rebalance_freq: weekly
+  min_holding_days: 5
+  equal_weight_cap: 20000
 execution:
-  commission: 0.0003             # ② 万三佣金, 行业标准券商费率
-  min_commission: 5              # ② 最低5元/笔
-  stamp_tax: 0.001               # ① A股税法: 千一印花税(仅卖出)
-  slippage: 0.001                # ③ A股中小盘滑点0.5-3%, 取千一中值
-
-# ── Backtest ──
+  commission: 0.0003
+  min_commission: 5
+  stamp_tax: 0.001
+  slippage: 0.001
 backtest:
-  benchmark: '000300'            # ② 沪深300, A股最常用基准
-
-# ── Web ──
+  benchmark: '000300'
 web:
   port: 8521
-
-# ── Screening (for factor evaluation) ──
 screening:
-  min_abs_ic: 0.02               # ② Rank IC 最低阈值（可放宽, 因回测前会网格优化）
-  min_ic_ir: 0.10                # ② IC/IR 比率最低阈值
+  min_abs_ic: 0.02
+  min_ic_ir: 0.1

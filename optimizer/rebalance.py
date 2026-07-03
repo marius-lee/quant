@@ -3,6 +3,7 @@
 from typing import Optional
 import pandas as pd
 import numpy as np
+from execution.engine import Order
 
 
 LOT_SIZE = 100

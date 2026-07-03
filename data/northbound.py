@@ -52,13 +52,18 @@ def sync_single_stock(symbol: str, conn=None) -> int:
         
         # Normalize columns
         col_map = {
-            'TRADE_DATE': 'date', '日期': 'date',
-            'NET_Buy_AMT': 'net_buy', '净买入金额': 'net_buy',
-            'BUY_AMT': 'buy_amt', '买入金额': 'buy_amt',
-            'SELL_AMT': 'sell_amt', '卖出金额': 'sell_amt',
-            'HOLD_SHARES': 'hold_shares', '持股数量': 'hold_shares',
-            'HOLD_RATIO': 'hold_ratio', '持股比例': 'hold_ratio',
+            '持股日期': 'date', 'TRADE_DATE': 'date',
+            '当日收盘价': 'close',
+            '当日涨跌幅': 'change_pct',
+            '持股数量': 'hold_shares', 'HOLD_SHARES': 'hold_shares',
+            '持股市值': 'hold_value',
+            '持股比例': 'hold_ratio', 'HOLD_RATIO': 'hold_ratio',
         }
+        # Compute net_buy from change in hold_shares * close (approximate)
+        if 'hold_shares' in df.columns and 'close' in df.columns:
+            df = df.sort_values('date')
+            df['hold_change'] = df['hold_shares'].diff()
+            df['net_buy'] = df['hold_change'] * df['close']
         df = df.rename(columns=col_map)
         df['symbol'] = symbol
         df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')

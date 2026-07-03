@@ -31,7 +31,7 @@ def sync_lhb(start_date: str = "2025-01-01", end_date: str = None, conn=None) ->
     
     try:
         df = ak.stock_lhb_detail_em(start_date=start_date, end_date=end_date)
-        if df.empty:
+        if df is None or df.empty:
             logger.info(f"LHB: no data for {start_date} → {end_date}")
             return 0
         

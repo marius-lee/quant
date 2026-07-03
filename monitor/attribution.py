@@ -1,14 +1,13 @@
-"""绩效归因 — Brinson 分解 + 因子暴露分解。
+"""绩效归因 — Brinson 分解 + 因子暴露分解。"""
 from utils.logger import get_logger
 logger = get_logger("monitor.attribution")
-
-将组合总收益分解为:
-  配置收益 (Allocation): 组合行业权重 vs 基准行业权重的差异带来的收益
-  选股收益 (Selection): 行业内个股选择带来的收益
-  交互效应 (Interaction): 配置与选股的交叉项
-
-来源: ② Brinson, Hood & Beebower (1986) — 绩效归因经典框架
-"""
+#
+# 将组合总收益分解为:
+#   配置收益 (Allocation): 组合行业权重 vs 基准行业权重的差异带来的收益
+#   选股收益 (Selection): 行业内个股选择带来的收益
+#   交互效应 (Interaction): 配置与选股的交叉项
+#
+# 来源: ② Brinson, Hood & Beebower (1986) — 绩效归因经典框架
 
 import numpy as np
 import pandas as pd

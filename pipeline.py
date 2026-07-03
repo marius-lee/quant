@@ -44,9 +44,6 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
     if date_str is None:
         date_str = datetime.today().strftime("%Y-%m-%d")
 
-    if capital is None:
-        capital = cfg("backtest.initial_capital", 5000)
-
     t0 = time.time()
     results = {"date": date_str, "steps": {}}
 
@@ -55,6 +52,16 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
     engine = ExecutionEngine()
     cost_model = CostModel()
     constructor = PortfolioConstructor()
+
+    # 资本单一真相源: sim_trades.capital_after → strategy_config.initial_capital
+    db_cash = engine.get_cash(strategy)
+    if db_cash > 0:
+        capital = db_cash
+    else:
+        # 无交易记录 → 种子本金 (CLI参数或默认5000)
+        seed = capital if capital else 5000
+        engine.set_initial_capital(strategy, seed)
+        capital = seed
 
     # ── Step 1: Data Update ──
     if not skip_pull:
@@ -295,7 +302,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         report = generate_report(
             date_str, cash_balance, positions, trades,
             pnl_total=total_wealth - capital,
-            initial_capital=capital,
+            initial_capital=engine.get_capital(strategy),
         )
         push_to_web(report)
         cap = report["capital"]

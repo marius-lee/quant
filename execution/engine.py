@@ -107,11 +107,15 @@ class ExecutionEngine:
         finally:
             conn.close()
         from config.loader import get as cfg
-        return cfg("backtest.initial_capital", 5000)
+        return 0.0  # no seed found
 
     def get_cash(self, strategy: str = "quant") -> float:
-        """获取当前现金余额 — 委托 TradeRepo。"""
-        return TradeRepo(self.db_path).get_cash(strategy)
+        """获取当前运行时资产 — sim_trades.capital_after, 空则 strategy_config.initial_capital."""
+        repo = TradeRepo(self.db_path)
+        cash = repo.get_cash(strategy)
+        if cash == 0.0:
+            cash = repo.get_initial_capital(strategy)
+        return cash
 
     def set_initial_capital(self, strategy: str, capital: float):
         """设置策略初始资金。"""

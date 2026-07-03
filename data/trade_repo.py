@@ -34,14 +34,28 @@ class TradeRepo:
     def _conn(self): return sqlite3.connect(self._db)
 
     # ── 资金 ──
-    def get_cash(self, strategy: str, fallback: float = 5000.0) -> float:
-        """返回最新 capital_after (现金余额), 无记录时返回 fallback."""
+    def get_cash(self, strategy: str) -> float:
+        """返回最新 capital_after (运行时资产), 无交易记录时返回 0.0.
+        
+        调用方应检查返回值:
+        - > 0: 正常运行时资产
+        - = 0: 无交易记录, 应从 strategy_config.initial_capital 获取种子本金
+        """
         c = self._conn()
         row = c.execute(
             "SELECT capital_after FROM sim_trades WHERE strategy=? AND capital_after IS NOT NULL ORDER BY id DESC LIMIT 1",
             (strategy,)).fetchone()
         c.close()
-        return round(row[0], 2) if row else fallback
+        return round(row[0], 2) if row else 0.0
+
+    def get_initial_capital(self, strategy: str = "quant") -> float:
+        """读取种子本金 (strategy_config 表, backtest.py 启动时写入)."""
+        c = self._conn()
+        row = c.execute(
+            "SELECT initial_capital FROM strategy_config WHERE strategy=?",
+            (strategy,)).fetchone()
+        c.close()
+        return float(row[0]) if row else 0.0
 
     # ── 持仓 ──
     def get_positions(self, strategy: str) -> list[dict]:

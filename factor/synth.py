@@ -57,9 +57,9 @@ def ic_weighted(
     if not names:
         return equal_weight(factor_values)
 
-    # 权重: |IC| 归一化
-    raw_weights = np.array([abs(ic_scores[n]) for n in names])
-    total = raw_weights.sum()
+    # 权重: 带符号 IC 归一化
+    raw_weights = np.array([ic_scores[n] for n in names])
+    total = np.abs(raw_weights).sum()
     if total == 0:
         return equal_weight(factor_values)
     weights = raw_weights / total

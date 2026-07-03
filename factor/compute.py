@@ -57,7 +57,8 @@ def compute_momentum(data: pd.DataFrame, date: str, window: int) -> pd.Series:
     idx = log_ret.index.get_loc(date)
     start = max(0, idx - window + 1)
     cum = log_ret.iloc[start:idx + 1].sum()  # 累加对数收益
-    return _cs_zscore(-cum).rename(f"momentum_{window}d")  # IC=+0.024实测: 反转效应(跌多→反弹), -cum方向才匹配IC
+    # P0-4: 干净数据(2026-07-03 qfq重拉) IC=-0.014, 反转效应不成立, 改为纯动量(+cum)
+    return _cs_zscore(cum).rename(f"momentum_{window}d")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -79,8 +80,8 @@ def compute_reversal(data: pd.DataFrame, date: str, window: int = 5) -> pd.Serie
     idx = log_ret.index.get_loc(date)
     start = max(0, idx - window + 1)
     cum = log_ret.iloc[start:idx + 1].sum()
-    # 反转 = 负动量
-    return _cs_zscore(-cum).rename(f"reversal_{window}d")
+    # P0-4: 干净数据 IC=-0.018, 反转不成立, 改为短动量(+cum)
+    return _cs_zscore(cum).rename(f"reversal_{window}d")
 
 
 # ═══════════════════════════════════════════════════════════

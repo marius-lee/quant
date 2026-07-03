@@ -40,8 +40,8 @@ def _init_state() -> dict:
         state["pos_value"] = round(pos_value, 2)
         state["positions"] = positions
     except Exception:
-        state["capital"] = float(cfg("backtest.initial_capital", 5000))
-        state["total_asset"] = float(cfg("backtest.initial_capital", 5000))
+        from data.trade_repo import TradeRepo; state["capital"] = float(TradeRepo().get_initial_capital("quant") or 5000)
+        state["total_asset"] = float(TradeRepo().get_initial_capital("quant") or 5000)
         state["pos_value"] = 0
         state["positions"] = []
     return state

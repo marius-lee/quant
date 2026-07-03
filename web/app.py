@@ -32,7 +32,7 @@ def _capital(strategy: str, fallback: float = None) -> float:
     """从 strategy_config 表读本金。如果表不存在则回退。"""
     if fallback is None:
         from config.loader import get as cfg
-        fallback = float(cfg("backtest.initial_capital", 5000))
+        from data.trade_repo import TradeRepo; fallback = TradeRepo().get_initial_capital(strategy) or 5000
     try:
         conn = sqlite3.connect(TRADE_DB)
         row = conn.execute("SELECT initial_capital FROM strategy_config WHERE strategy=?", (strategy,)).fetchone()
@@ -178,7 +178,7 @@ def api_record_trade():
             "SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy'"
         ).fetchone()[0]
         from config.loader import get as cfg
-        base = float(cfg("backtest.initial_capital", 5000))
+        from data.trade_repo import TradeRepo; base = TradeRepo().get_initial_capital(strategy) or 5000
         capital_after = base + sells + pnl - buys_cost + (price * shares)
         conn.execute("""INSERT INTO sim_trades (date, symbol, side, price, shares, pnl, pnl_pct, capital_after)
                         VALUES (?,?,?,?,?,?,?,?)""",
@@ -237,7 +237,7 @@ def api_performance():
     total_sells = len(sells)
     win_rate = round(win_trades / total_sells * 100, 1) if total_sells > 0 else 0
     buys = tc.execute("SELECT COUNT(*) FROM sim_trades WHERE side='buy' AND strategy=?", (strategy,)).fetchone()[0]
-    base = float(cfg("backtest.initial_capital", 5000))
+    from data.trade_repo import TradeRepo; base = TradeRepo().get_initial_capital(strategy) or 5000
     row = tc.execute(
         "SELECT capital_after FROM sim_trades WHERE strategy=? AND capital_after IS NOT NULL ORDER BY id DESC LIMIT 1",
         (strategy,)).fetchone()

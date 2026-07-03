@@ -48,7 +48,6 @@ execution:
 
 # ── Backtest ──
 backtest:
-  initial_capital: 5000          # ④ 北极星起点
   benchmark: '000300'            # ② 沪深300, A股最常用基准
 
 # ── Web ──

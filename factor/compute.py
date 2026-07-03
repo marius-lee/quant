@@ -716,6 +716,63 @@ def compute_limit_up_streak(data: "pd.DataFrame", date: str) -> "pd.Series":
     result = pd.Series(scores)
     return _cs_zscore(result).rename("zt_streak")
 
+def compute_lhb_net_buy(data: "pd.DataFrame", date: str, window: int = 20) -> "pd.Series":
+    """龙虎榜净买入强度因子: total_net_buy / avg(circ_mv), N日窗口.
+
+    算法:
+      - 从 lhb_detail 表读取过去 N 个交易日龙虎榜记录
+      - 每只股票: SUM(net_buy) / AVG(circ_mv) = 净买入占比
+      - 截面 z-score 标准化
+      - 未上榜股票得 0 分 (中性)
+
+    来源: A股龙虎榜制度独有信号. 机构/游资上榜净买入是资金流入代理变量,
+          龙虎榜净买入与次日收益正相关 (A股实证 IC≈0.04-0.08).
+
+    添加日期: 2026-07-03 — lhb_detail 表补齐后激活.
+    """
+    import sqlite3
+    db_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "market.db")
+    conn = sqlite3.connect(db_path)
+
+    symbols = list(data["close"].columns)
+
+    all_dates = sorted(data.index)
+    date_str = date.strftime("%Y-%m-%d") if hasattr(date, "strftime") else str(date)[:10]
+    if date_str not in all_dates:
+        conn.close()
+        return pd.Series(np.nan, index=symbols, name=f"lhb_net_buy_{window}d")
+
+    pos = all_dates.index(date_str)
+    start = max(0, pos - window + 1)
+    if hasattr(all_dates[start], "strftime"):
+        start_date = all_dates[start].strftime("%Y-%m-%d")
+    else:
+        start_date = str(all_dates[start])[:10]
+
+    rows = conn.execute("""
+        SELECT symbol,
+               COALESCE(SUM(net_buy), 0) as total_net_buy,
+               AVG(COALESCE(circ_mv, 0)) as avg_circ_mv
+        FROM lhb_detail
+        WHERE trade_date BETWEEN ? AND ?
+        GROUP BY symbol
+    """, (start_date, date_str)).fetchall()
+    conn.close()
+
+    if not rows:
+        return pd.Series(0.0, index=symbols, name=f"lhb_net_buy_{window}d")
+
+    scores = {}
+    for sym, total_buy, avg_mv in rows:
+        if avg_mv and avg_mv > 0 and total_buy is not None:
+            scores[sym] = total_buy / avg_mv
+
+    result = pd.Series(scores, dtype=float)
+    result = result.reindex(symbols).fillna(0.0)
+    return _cs_zscore(result).rename(f"lhb_net_buy_{window}d")
+
+
+
 _PRICE_FN_MAP = {
     "reversal_5d":           (compute_reversal,            5),
     "volatility_20d":        (compute_volatility,         20),
@@ -735,6 +792,7 @@ _PRICE_FN_MAP = {
     "turnover_anomaly":      (compute_turnover_anomaly,    5),
     "limit_up_prox_5d":      (compute_limit_up_proximity,  5),
     "zt_streak":             (compute_limit_up_streak,     0),
+    "lhb_net_buy_20d":       (compute_lhb_net_buy,        20),
 }
 
 def _market_db_path():

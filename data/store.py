@@ -445,6 +445,116 @@ class DataStore:
             logger.info(f"[tickflow] {len(symbols)} stocks: {len(rows)} rows (vol=手✅, amt/1000→千元)")
         return rows
 
+
+    def _fetch_pytdx_daily(self, symbols: list, start_date: str) -> list:
+        """Pytdx 通达信日线 + 前复权计算: vol=手, amt=元→/1000→千元。
+
+        数据源: 通达信标准行情 (pytdx), 服务器 180.153.18.170:7709。
+        Pytdx 返回未复权数据，通过 get_xdxr_info 获取除权除息记录手算前复权因子。
+
+        来源: ③ Pytdx 是国内最老牌的免费行情协议，数据质量可靠。
+        """
+        try:
+            from pytdx.hq import TdxHq_API
+        except ImportError:
+            raise RuntimeError("pytdx not installed")
+
+        api = TdxHq_API()
+        if not api.connect('180.153.18.170', 7709):
+            logger.warning("pytdx: server unreachable")
+            return []
+
+        rows = []
+        try:
+            for sym in symbols:
+                # 市场: 0=深圳, 1=上海
+                if sym.startswith(('0', '2', '3')):
+                    market = 0
+                else:
+                    market = 1
+
+                # 1. 获取除权除息记录 (用于前复权计算)
+                try:
+                    xdxr = api.get_xdxr_info(market, sym)
+                except Exception:
+                    xdxr = []
+
+                # 2. 构建前复权因子表: {date_str: factor}
+                # 算法: 从远到近累积 (1+songzhuangu/10), 当日之前的日期 factor=CUM_PRODUCT
+                adj_map = {}
+                if xdxr:
+                    events = []
+                    for r in xdxr:
+                        songzhuan = float(r.get('songzhuangu', 0) or 0)
+                        if songzhuan > 0:
+                            d = '%d-%02d-%02d' % (r['year'], r['month'], r['day'])
+                            events.append((d, 1 + songzhuan / 10))
+                    if events:
+                        events.sort(key=lambda x: x[0])
+                        # cum[i] = product of (1+R) from events[0] to events[i]
+                        cum = 1.0
+                        for d, ratio in events:
+                            cum *= ratio
+                            adj_map[d] = cum
+                        # Now for a bar date D, factor = 1 / product of events AFTER D
+                        # = 1 / (cum_last / cum_at_or_before_D)
+                        # Actually simpler: for each bar date, multiply by 1/ratio for each event after it
+
+                # 3. 获取日线
+                try:
+                    bars = api.get_security_bars(9, market, sym, 0, 2000)
+                except Exception:
+                    continue
+
+                if not bars:
+                    continue
+
+                # 对每个bar应用前复权
+                for b in bars:
+                    d = '%d-%02d-%02d' % (b['year'], b['month'], b['day'])
+                    if d < start_date:
+                        continue
+
+                    o, h, l, c = (float(b['open']), float(b['high']),
+                                  float(b['low']), float(b['close']))
+                    vol = float(b['vol'])
+                    amt = float(b['amount'])
+
+                    # 前复权: 找到日期 >= d 的除权事件，累积复权因子
+                    # factor = 1 / product(ratio for event_date > d)
+                    factor = 1.0
+                    if adj_map:
+                        # cum_at_date = product of ratios up to and including d
+                        # We need 1 / product of ratios AFTER d
+                        cum_before = 1.0
+                        cum_all = 1.0
+                        found = False
+                        for ed, ratio in sorted(adj_map.items()):
+                            cum_all = ratio
+                            if ed <= d:
+                                cum_before = ratio
+                                found = True
+                        # ratios after d = cum_all / cum_before (if cum_before != 0)
+                        # factor for prices at d = 1 / (ratios after d)
+                        if found and cum_before > 0:
+                            factor = cum_before / cum_all
+                        else:
+                            factor = 1.0 / cum_all
+
+                    o_adj = round(o * factor, 4)
+                    h_adj = round(h * factor, 4)
+                    l_adj = round(l * factor, 4)
+                    c_adj = round(c * factor, 4)
+                    # vol in 手, amt in 元→千元, turnover=0 (pytdx 不提供换手率)
+                    rows.append(self._norm_row(sym, d, o_adj, h_adj, l_adj, c_adj, vol, amt / 1000, 0.0))
+
+        finally:
+            api.disconnect()
+
+        if rows:
+            logger.info(f"[pytdx] {len(symbols)} stocks: {len(rows)} rows (vol=手, amt/1000→千元, qfq manual adj)")
+        return rows
+
     def backfill_turnover(self, limit: int = 0):
         """akshare 回填换手率 — 逐只下载日线，只更新 turnover=0/NULL 的行。
 
@@ -658,6 +768,7 @@ class DataStore:
             # P3: sina 已移除 — 返回未复权数据(除权日单日跳-34%)，tencent/akshare 均用 qfq 前复权
 
             all_sources = [
+                ("pytdx",    lambda: self._fetch_pytdx_daily(chunk, batch_start)),
                 ("tencent",  lambda: self._fetch_tencent_daily(chunk, batch_start)),
                 ("akshare",  lambda: self._fetch_akshare_daily(chunk, batch_start)),
             ]

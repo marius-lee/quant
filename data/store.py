@@ -655,8 +655,9 @@ class DataStore:
             # 动态轮转: 记录每条每秒速度, 最快的排前面, 失败排最后
             if not hasattr(self, '_source_speed'):
                 self._source_speed = {}
+            # P3: sina 已移除 — 返回未复权数据(除权日单日跳-34%)，tencent/akshare 均用 qfq 前复权
+
             all_sources = [
-                ("sina",     lambda: self._fetch_sina_daily(chunk, batch_start)),
                 ("tencent",  lambda: self._fetch_tencent_daily(chunk, batch_start)),
                 ("akshare",  lambda: self._fetch_akshare_daily(chunk, batch_start)),
             ]

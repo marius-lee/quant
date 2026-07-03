@@ -1,7 +1,7 @@
 """因子评估缓存 — 为 Web 前端的因子分析页面提供预计算数据。
 
 计算成本高（需遍历历史数据算 IC/IR/相关性），每次刷新页面不应该重算。
-缓存到 data/factor_cache.json，默认 24h 过期。
+评估结果存入 factor_snapshot 表，24h 过期自动重算。
 
 用法:
   from factor.stats_cache import get_cached_factor_stats
@@ -20,10 +20,8 @@ from utils.logger import get_logger
 
 logger = get_logger("factor.stats_cache")
 
-CACHE_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "data", "factor_cache.json"
-)
-CACHE_TTL_SEC = 86400  # 24 小时
+_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
+_SNAPSHOT_TTL_SEC = 86400  # 24 小时
 
 
 def compute_factor_stats(
@@ -286,42 +284,51 @@ def _empty_result() -> dict:
 
 
 def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = 200) -> dict:
-    """获取缓存的因子评估数据。缓存过期或 force_refresh=True 时重新计算。
+    """获取缓存的因子评估数据。从 factor_snapshot 表读取，24h 过期自动重算。
 
     返回: compute_factor_stats() 的输出格式
     """
-    if not force_refresh and os.path.exists(CACHE_FILE):
+    import sqlite3 as _sql
+    if not force_refresh:
         try:
-            with open(CACHE_FILE) as f:
-                cached = json.load(f)
-            cached_at = datetime.fromisoformat(cached.get("cached_at", "2000-01-01"))
-            age_sec = (datetime.now() - cached_at).total_seconds()
-            if age_sec < CACHE_TTL_SEC:
-                logger.info(f"factor cache hit, age={age_sec/60:.0f}min")
-                return cached
-            logger.info(f"factor cache expired, age={age_sec/3600:.1f}h")
+            conn = _sql.connect(_DB_PATH)
+            row = conn.execute(
+                "SELECT data, created_at FROM factor_snapshot WHERE id=1"
+            ).fetchone()
+            conn.close()
+            if row:
+                cached = json.loads(row[0])
+                cached_at = datetime.fromisoformat(cached.get("cached_at", "2000-01-01"))
+                age_sec = (datetime.now() - cached_at).total_seconds()
+                if age_sec < _SNAPSHOT_TTL_SEC:
+                    logger.info(f"factor snapshot hit, age={age_sec/60:.0f}min")
+                    return cached
+                logger.info(f"factor snapshot expired, age={age_sec/3600:.1f}h")
         except Exception as e:
-            logger.warning(f"Factor cache read failed: {e}")
+            logger.warning(f"Factor snapshot read failed: {e}")
 
     # 重新计算
     logger.info("computing factor stats (this may take ~30s)...")
     stats = compute_factor_stats(n_symbols=n_symbols, lookback=90)
 
-    # 缓存到文件
+    # 存入 factor_snapshot 表 + 同步更新 factor_registry
     try:
-        os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
-        with open(CACHE_FILE, "w") as f:
-            json.dump(stats, f, ensure_ascii=False, indent=2)
-        logger.info(f"factor cache saved to {CACHE_FILE}")
+        conn = _sql.connect(_DB_PATH)
+        conn.execute(
+            "INSERT OR REPLACE INTO factor_snapshot (id, data, created_at, n_symbols, lookback) VALUES (1,?,datetime('now','localtime'),?,?)",
+            (json.dumps(stats, ensure_ascii=False), n_symbols, 90)
+        )
+        conn.commit()
+        conn.close()
+        logger.info("factor snapshot saved to factor_snapshot table")
 
-        # 同步写入 factor_registry 表 (消除双写问题)
         from factor.compute import update_factor_evaluation
         factor_keys = stats.get("factor_keys", [])
         ic_vals = stats.get("ic", [])
         for k, ic in zip(factor_keys, ic_vals):
             update_factor_evaluation(k, ic, 0.0)
     except Exception as e:
-        logger.warning(f"Factor cache write failed: {e}")
+        logger.warning(f"Factor snapshot write failed: {e}")
 
     return stats
 
@@ -368,19 +375,13 @@ def load_ic_map_from_cache(factor_values: dict = None) -> dict:
 
 
 def force_refresh_cache(n_symbols: int = 500) -> dict:
-    """P1-2: 强制刷新 factor_cache.json — 删除旧缓存并重新计算。
+    """强制刷新因子评估 — 重新计算并存入 factor_snapshot 表。
 
-    用于: 基本面数据更新后、新的 turnover 回填完成后、每日定时任务。
-    n_symbols: 参与评估的股票数 (默认 500, 越大越准但越慢)。
+    用于: 基本面数据更新后、因子变更后、每日定时任务。
 
     返回: compute_factor_stats() 的输出 dict。
     """
-    import os, time
-    if os.path.exists(CACHE_FILE):
-        os.remove(CACHE_FILE)
-        logger.info(f"Old factor cache deleted: {CACHE_FILE}")
-
-    logger.info(f"Refreshing factor cache with {n_symbols} stocks...")
+    logger.info(f"Refreshing factor stats with {n_symbols} stocks...")
     stats = get_cached_factor_stats(force_refresh=True, n_symbols=n_symbols)
-    logger.info(f"Factor cache refresh complete: {len(stats.get('factors', []))} factors")
+    logger.info(f"Factor refresh complete: {len(stats.get('factors', []))} factors")
     return stats

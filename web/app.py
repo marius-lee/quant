@@ -63,7 +63,7 @@ def api_state():
 def api_factors():
     """因子评估数据 — 为前端因子分析 Tab 提供 IC/IR/衰减/相关性。
 
-    数据来源: factor/stats_cache.py → data/factor_cache.json (24h 过期)
+    数据来源: factor_snapshot 表 (24h 过期自动重算)
     首次访问时自动计算 (约 30s), 后续 24h 内秒出。
     ?refresh=true 强制重新计算。
     """

@@ -171,35 +171,32 @@ def compute_factor_stats(
             decay[horizon] = round(float(np.mean(h_ics)), 4) if h_ics else 0.0
         ic_decay[name] = decay
 
-    # 6. 计算因子相关性矩阵
-    corr_matrix = np.eye(len(factor_names))
-    common_dates = None
-    for name in factor_names:
-        dates_set = set(factor_values_by_date[name].keys())
-        if common_dates is None:
-            common_dates = dates_set
-        else:
-            common_dates &= dates_set
-
-    if common_dates:
-        corr_sum = np.zeros((len(factor_names), len(factor_names)))
-        n_corr = 0
-        for d in sorted(common_dates):
-            series = []
-            for name in factor_names:
-                if d in factor_values_by_date[name]:
-                    series.append(factor_values_by_date[name][d])
-                else:
-                    break
-            if len(series) != len(factor_names):
-                continue
-            df_corr = pd.concat(series, axis=1, keys=factor_names).dropna()
-            if len(df_corr) < 30:
-                continue
-            corr_sum += df_corr.corr(method="spearman").values
-            n_corr += 1
-        if n_corr > 0:
-            corr_matrix = corr_sum / n_corr
+    # 6. 计算因子相关性矩阵 (pairwise — 不要求所有因子同日期都有值)
+    n = len(factor_names)
+    corr_matrix = np.eye(n)
+    corr_counts = np.zeros((n, n))
+    for i in range(n):
+        for j in range(i + 1, n):
+            ni = factor_names[i]
+            nj = factor_names[j]
+            common_d = set(factor_values_by_date[ni].keys()) & set(factor_values_by_date[nj].keys())
+            pair_corrs = []
+            for d in sorted(common_d):
+                si = factor_values_by_date[ni][d].dropna()
+                sj = factor_values_by_date[nj][d].dropna()
+                common_sym = si.index.intersection(sj.index)
+                if len(common_sym) < 30:
+                    continue
+                rho = si.loc[common_sym].corr(sj.loc[common_sym], method="spearman")
+                if not np.isnan(rho):
+                    pair_corrs.append(rho)
+            if pair_corrs:
+                avg = np.mean(pair_corrs)
+                corr_matrix[i][j] = avg
+                corr_matrix[j][i] = avg
+                corr_counts[i][j] = len(pair_corrs)
+                corr_counts[j][i] = len(pair_corrs)
+    logger.info(f"corr matrix: {n}x{n}, avg pairwise periods: {corr_counts.sum()/(n*(n-1)):.1f}" if n > 1 else "corr: single factor")
 
     store.close()
 
@@ -253,7 +250,7 @@ def compute_factor_stats(
             ]
             for n in factor_names
         },
-        "corr": corr_matrix.round(4).tolist(),
+        "corr": np.nan_to_num(corr_matrix, nan=0.0).round(4).tolist(),
         "meta": meta,
         "cached_at": datetime.now().isoformat(),
     }
@@ -310,6 +307,29 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = 200) -
     return stats
 
 
+
+def _load_ic_from_db() -> dict:
+    """从 factor_registry 表加载 active 因子的 IC 权重."""
+    try:
+        import sqlite3 as _sql
+        db = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
+        conn = _sql.connect(db)
+        rows = conn.execute(
+            "SELECT name, ic_mean FROM factor_registry WHERE status='active' AND ABS(ic_mean) > 0.01"
+        ).fetchall()
+        conn.close()
+        if not rows:
+            return {}
+        ic_map = {name: abs(ic) for name, ic in rows}
+        total = sum(ic_map.values())
+        if total > 0:
+            ic_map = {k: v / total for k, v in ic_map.items()}
+        logger.info(f"IC weights loaded from factor_registry: {len(ic_map)} factors")
+        return ic_map
+    except Exception as e:
+        logger.warning(f"factor_registry load failed: {e}")
+        return {}
+
 def load_ic_map_from_cache(factor_values: dict = None) -> dict:
     """P1-3: 从 factor_cache.json 加载 IC 权重, 替代 pipeline 硬编码。
 
@@ -318,8 +338,8 @@ def load_ic_map_from_cache(factor_values: dict = None) -> dict:
     factor_values: 可选，用于过滤只包含当前有效因子的权重。
     """
     if not os.path.exists(CACHE_FILE):
-        logger.info("IC cache not found, falling back to hardcoded weights")
-        return {}
+        logger.info("IC cache not found, loading from factor_registry table")
+        return _load_ic_from_db()
 
     try:
         with open(CACHE_FILE, "r") as f:
@@ -350,7 +370,7 @@ def load_ic_map_from_cache(factor_values: dict = None) -> dict:
             ic_map[key] = abs_ic
 
     if not ic_map:
-        return {}
+        return _load_ic_from_db()
 
     # 归一化为 IC-weighted 权重
     total = sum(ic_map.values())

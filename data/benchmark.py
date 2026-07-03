@@ -12,7 +12,7 @@ import pandas as pd
 from utils.logger import get_logger
 
 logger = get_logger("data.benchmark")
-BENCHMARK_DB = os.path.join(os.path.dirname(__file__), "benchmark.db")
+_MARKET_DB = os.path.join(os.path.dirname(__file__), "market.db")
 
 BENCHMARKS = {
     "000300": "沪深300",
@@ -22,7 +22,7 @@ BENCHMARKS = {
 
 
 def _init_db():
-    conn = sqlite3.connect(BENCHMARK_DB)
+    conn = sqlite3.connect(_MARKET_DB)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS benchmark_daily (
             index_code TEXT NOT NULL,
@@ -94,7 +94,7 @@ def get_benchmark_returns(index_code: str = "000300",
     """
     if end is None:
         end = datetime.today().strftime("%Y-%m-%d")
-    conn = sqlite3.connect(BENCHMARK_DB)
+    conn = sqlite3.connect(_MARKET_DB)
     df = pd.read_sql_query(
         "SELECT date, close FROM benchmark_daily WHERE index_code=? AND date>=? AND date<=? ORDER BY date",
         conn, params=(index_code, start, end)

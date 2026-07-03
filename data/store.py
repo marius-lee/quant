@@ -847,14 +847,14 @@ class DataStore:
     def get_benchmark(self, code: str = "000300", start: str = None) -> pd.Series:
         """拉取基准指数日线，返回 (date → return) Series (小数, 非百分比)。
 
-        优先从本地 benchmark.db 读取 (通过 data/benchmark.py sync)。
+        优先从本地 market.db benchmark_daily 表读取。
         """
         if start is None:
             from config.loader import get as cfg
             start = cfg("backtest.benchmark_start_date", "2020-01-01")
-        # 先尝试本地 benchmark.db (由 scripts/init_data.py --benchmark 同步)
+        # 本地 market.db benchmark_daily 表
         import sqlite3, os
-        bm_db = os.path.join(os.path.dirname(__file__), "benchmark.db")
+        bm_db = os.path.join(os.path.dirname(__file__), "market.db")
         if os.path.exists(bm_db):
             try:
                 conn = sqlite3.connect(bm_db)

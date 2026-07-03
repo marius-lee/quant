@@ -12,13 +12,13 @@
 from factor.compute import (
     compute_all_factors,
     get_factor_names,
-    FACTOR_REGISTRY,
-    FUNDAMENTAL_FACTOR_REGISTRY,
+    load_active_price_factors,
+    load_active_fundamental_factors,
 )
 from factor.synth import equal_weight, ic_weighted
 
 __all__ = [
     "compute_all_factors", "get_factor_names",
-    "FACTOR_REGISTRY", "FUNDAMENTAL_FACTOR_REGISTRY",
+    "load_active_price_factors", "load_active_fundamental_factors",
     "equal_weight", "ic_weighted",
 ]

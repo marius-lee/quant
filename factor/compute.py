@@ -16,6 +16,8 @@
 
 import numpy as np
 import pandas as pd
+import sqlite3
+import os as _os
 from typing import Optional
 
 
@@ -399,21 +401,67 @@ def compute_intraday_range(data: "pd.DataFrame", date: str, window: int = 20) ->
 
 
 
-FACTOR_REGISTRY = {
-    # ── 6 动态因子: A 股实证最强 (全日频, 无基本面依赖) ──
-    "reversal_5d":      ("reversal",      5,  compute_reversal),
-    "volatility_20d":   ("volatility",   20, compute_volatility),
-    "turnover_rev_5d":  ("turnover_rev",  5,  compute_turnover_reversal),
-    "max_ret_20d":      ("max_ret",      20, compute_max_return),
-    "gap_5d":           ("overnight_gap", 5,  compute_overnight_gap),
-    "range_20d":        ("intraday_range",20, compute_intraday_range),
-    # ── 辅助/待启用 ──
-    "momentum_10d":     ("momentum",     10, compute_momentum),
-    "skewness_20d":     ("skewness",     20, compute_skewness),
-    "idio_vol_20d":     ("idio_vol",     20, compute_idiosyncratic_vol),
-    "hsgt_flow_5d":     ("northbound",   5,  compute_hsgt_flow),
-    "amihud_20d":       ("liquidity",    20, compute_amihud),
+# ── 因子函数映射 (元数据从 factor_registry 表读取) ──
+_PRICE_FN_MAP = {
+    "reversal_5d":      (compute_reversal,       5),
+    "volatility_20d":   (compute_volatility,    20),
+    "turnover_rev_5d":  (compute_turnover_reversal, 5),
+    "max_ret_20d":      (compute_max_return,    20),
+    "gap_5d":           (compute_overnight_gap,  5),
+    "range_20d":        (compute_intraday_range,20),
+    "momentum_10d":     (compute_momentum,      10),
+    "skewness_20d":     (compute_skewness,      20),
+    "idio_vol_20d":     (compute_idiosyncratic_vol, 20),
+    "hsgt_flow_5d":     (compute_hsgt_flow,      5),
+    "amihud_20d":       (compute_amihud,        20),
 }
+
+def _market_db_path():
+    return _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "market.db")
+
+def load_active_price_factors():
+    """从 factor_registry 表加载 status='active' 的价格因子 → {name: (cat, window, fn)}."""
+    conn = sqlite3.connect(_market_db_path())
+    name_list = list(_PRICE_FN_MAP.keys())
+    placeholders = ",".join("?" * len(name_list))
+    rows = conn.execute(
+        f"SELECT name FROM factor_registry WHERE status='active' AND name IN ({placeholders})",
+        name_list
+    ).fetchall()
+    conn.close()
+    result = {}
+    for (name,) in rows:
+        if name in _PRICE_FN_MAP:
+            fn, win = _PRICE_FN_MAP[name]
+            result[name] = ("dynamic", win, fn)
+    return result
+
+def load_active_fundamental_factors():
+    """从 factor_registry 表加载 status='active' 的基本面因子."""
+    conn = sqlite3.connect(_market_db_path())
+    fn_names = list(_FUNDAMENTAL_FN_MAP.keys())
+    placeholders = ",".join("?" * len(fn_names))
+    rows = conn.execute(
+        f"SELECT name FROM factor_registry WHERE status='active' AND name IN ({placeholders})",
+        fn_names
+    ).fetchall()
+    conn.close()
+    result = {}
+    for (name,) in rows:
+        if name in _FUNDAMENTAL_FN_MAP:
+            cat, fn = _FUNDAMENTAL_FN_MAP[name]
+            result[name] = (cat, fn)
+    return result
+
+def update_factor_evaluation(name: str, ic_mean: float, ic_ir: float):
+    """回测后更新因子 IC 到数据库."""
+    conn = sqlite3.connect(_market_db_path())
+    conn.execute(
+        "UPDATE factor_registry SET ic_mean=?, ic_ir=?, last_evaluated=datetime('now','localtime'), updated_at=datetime('now','localtime') WHERE name=?",
+        (round(ic_mean, 6), round(ic_ir, 4), name)
+    )
+    conn.commit()
+    conn.close()
 
 # ═══════════════════════════════════════════════════════════
 # 7. 基本面因子 — Fama & French (1992, 1993, 2015)
@@ -462,9 +510,8 @@ def compute_roe_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
     return _cs_zscore(roe).rename("roe_ratio")
 
 
-FUNDAMENTAL_FACTOR_REGISTRY = {
-    # ── 静态因子: 季度更新, 作为辅助/行业中性化用 ──
-    # 参与 alpha 合成 — 从 fundamentals (PE/PB/总市值/ROE/52周高低) 计算
+# ── 基本面因子函数映射 (元数据从 factor_registry 表读取) ──
+_FUNDAMENTAL_FN_MAP = {
     "ep_ratio":      ("value_ep",       compute_ep_ratio),
     "bp_ratio":      ("value_bp",       compute_bp_ratio),
     "roe_ratio":     ("profitability",  compute_roe_ratio),
@@ -473,8 +520,8 @@ FUNDAMENTAL_FACTOR_REGISTRY = {
 }
 
 def get_factor_names() -> list:
-    """返回所有已注册因子名 (价格 + 基本面)。"""
-    return list(FACTOR_REGISTRY.keys()) + list(FUNDAMENTAL_FACTOR_REGISTRY.keys())
+    """返回所有 status='active' 的因子名 (从 factor_registry 表读取)。"""
+    return list(load_active_price_factors().keys()) + list(load_active_fundamental_factors().keys())
 
 
 def compute_all_factors(data: pd.DataFrame, date: str,
@@ -486,7 +533,7 @@ def compute_all_factors(data: pd.DataFrame, date: str,
     benchmark_ret 用于特质波动率因子(对指数回归取残差)。
     """
     results = {}
-    for name, (cat, win, fn) in FACTOR_REGISTRY.items():
+    for name, (cat, win, fn) in load_active_price_factors().items():
         try:
             if 'idio_vol' in name and benchmark_ret is not None:
                 results[name] = fn(data, date, win, benchmark_ret=benchmark_ret)
@@ -497,7 +544,7 @@ def compute_all_factors(data: pd.DataFrame, date: str,
             get_logger("factor.compute").warning(f"price factor {name} failed: {e}")
             results[name] = pd.Series(dtype=float)
     if fundamentals is not None and not fundamentals.empty:
-        for name, (cat, fn) in FUNDAMENTAL_FACTOR_REGISTRY.items():
+        for name, (cat, fn) in load_active_fundamental_factors().items():
             try:
                 results[name] = fn(fundamentals, date)
             except Exception as e:

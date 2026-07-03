@@ -14,7 +14,7 @@ def compute_trades(
     current_lots: pd.Series,
     prices: pd.Series,
     cost_model,
-    max_turnover_ratio: float = 0.0  # P0-6: 0=不限制 (¥5000 小资金换手天然>100%),
+    max_turnover_ratio: float = 0.0,
     capital: float = 0.0,
     cash: float = 0.0,
 ) -> list[Order]:

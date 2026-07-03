@@ -655,65 +655,84 @@ def compute_limit_up_proximity(data: "pd.DataFrame", date: str, window: int = 5)
 # 首板次日连板概率 30-40%, IC≈0.06-0.10 (A股独有)
 # ═══════════════════════════════════════════════════════════
 
-def compute_limit_up_streak(data: "pd.DataFrame", date: str) -> "pd.Series":
-    """涨停连板因子: 从 limit_up_pool 表读取连板数 + 封板质量。
-    
+def compute_limit_up_streak(data: "pd.DataFrame", date: str, window: int = 0) -> "pd.Series":
+    """涨停连板因子: 从 data OHLCV 自算涨停 + 连板数(不依赖 limit_up_pool)。
+
     算法:
-      - 连板数 (limit_up_times): 越高越强, 但≥5连板风险加大 → 倒U型评分
-      - 封板质量: 炸板次数=0 且封板资金/流通市值 > 5% 加分
-      - 首板 (zt_stat='1/1'): 额外加分 (首板溢价)
-      - 只包含当日涨停的股票, 其余为 NaN
-    
+      - 主板(60/00开头): 涨停 = 日收益 >= 9.5% 且 close == high
+      - 科创/创业(68/30开头): 涨停 = 日收益 >= 19.5% 且 close == high
+      - 连板数 = 从今日往前连续涨停的天数
+      - 倒U型评分: 1连板→1, 2→3, 3→6, 4→10, 5→8, 6+→递减
+
     来源: A股涨跌停制度独有异象. 涨停板有显著动量溢出.
+    修改: 2026-07-03 — 从 limit_up_pool 改为 data OHLCV 自算, 覆盖 6 年历史.
+          limit_up_pool 仍每日积累(封板资金/炸板次数), 但不用于因子计算.
     """
-    import sqlite3
-    db_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "market.db")
-    conn = sqlite3.connect(db_path)
-    
-    # Get today's limit-up stocks
-    rows = conn.execute("""
-        SELECT symbol, limit_up_times, open_times, lock_capital, circ_mv, zt_stat
-        FROM limit_up_pool WHERE date = ?
-    """, (date,)).fetchall()
-    conn.close()
-    
-    if not rows:
+    close = data["close"]
+    high = data["high"]
+
+    # 匹配日期索引 (兼容 Timestamp 和 string)
+    date_str = str(date)[:10]
+    matched = [d for d in close.index if str(d)[:10] == date_str]
+    if not matched:
         return pd.Series(dtype=float, name="zt_streak")
-    
+
+    idx = close.index.get_loc(matched[0])
+    symbols = list(close.columns)
+
+    # 往前看 5 个交易日判断连板 (最多 5 连板, 超过递减)
+    lookback = 5
+    start = max(0, idx - lookback)
+    cw = close.iloc[start:idx + 1]
+    hw = high.iloc[start:idx + 1]
+
+    ret = cw.pct_change()  # row 0 = NaN (无前一日 close)
+
+    # 涨停幅度: 科创/创业板 20%, 主板 10%
+    limit_map = {}
+    for sym in symbols:
+        if sym.startswith('30') or sym.startswith('68'):
+            limit_map[sym] = 19.5
+        else:
+            limit_map[sym] = 9.5
+
+    # 今日是否涨停
+    today_ret = ret.iloc[-1] * 100
+    today_close = cw.iloc[-1]
+    today_high = hw.iloc[-1]
+
     scores = {}
-    for sym, times, opens, lock_cap, circ_mv, zt_stat in rows:
-        score = 0.0
-        
-        # 连板数评分: 1→0.5, 2→1.5, 3→3.0, 4→4.0, 5+→递减 (倒U)
-        if times and times > 0:
-            if times <= 4:
-                score += times * (times + 1) / 2  # 1→1, 2→3, 3→6, 4→10
+    for sym in symbols:
+        lim = limit_map[sym]
+        r = today_ret.get(sym)
+        c = today_close.get(sym)
+        h = today_high.get(sym)
+        if pd.isna(r) or pd.isna(c) or pd.isna(h):
+            continue
+        if not (r >= lim and c == h and h > 0):
+            continue  # 今日未涨停 → 无信号
+
+        # 往前数连板
+        streak = 1
+        for j in range(len(cw) - 2, -1, -1):
+            rj = ret.iloc[j].get(sym)
+            cj = cw.iloc[j].get(sym)
+            hj = hw.iloc[j].get(sym)
+            if pd.isna(rj) or pd.isna(cj) or pd.isna(hj):
+                break
+            if (rj * 100 >= lim) and (cj == hj and hj > 0):
+                streak += 1
             else:
-                score += max(0, 10 - (times - 4) * 2)  # 5→8, 6→6, 7→4, ...
-        
-        # 封板质量: 未炸板 + 封板资金占比
-        if opens is not None and opens == 0:
-            score += 1.0
-        if lock_cap is not None and circ_mv is not None and circ_mv > 0:
-            lock_ratio = lock_cap / circ_mv
-            if lock_ratio > 0.10:
-                score += 3.0  # 封板资金 > 10% 流通市值 = 极强
-            elif lock_ratio > 0.05:
-                score += 2.0
-            elif lock_ratio > 0.02:
-                score += 1.0
-        
-        # 首板溢价
-        if zt_stat and zt_stat.startswith('1/'):
-            score += 1.5
-        
-        # 开板过多次的扣分
-        if opens is not None and opens >= 3:
-            score -= opens * 0.5
-        
-        scores[sym] = score
-    
-    result = pd.Series(scores)
+                break
+
+        # 倒U型评分: 连板越多越强, 但 >=5 连板风险加大
+        if streak <= 4:
+            scores[sym] = streak * (streak + 1) / 2  # 1→1, 2→3, 3→6, 4→10
+        else:
+            scores[sym] = max(0, 10 - (streak - 4) * 2)  # 5→8, 6→6, 7→4, ...
+
+    result = pd.Series(scores, dtype=float)
+    result = result.reindex(symbols).fillna(0.0)
     return _cs_zscore(result).rename("zt_streak")
 
 def compute_lhb_net_buy(data: "pd.DataFrame", date: str, window: int = 20) -> "pd.Series":

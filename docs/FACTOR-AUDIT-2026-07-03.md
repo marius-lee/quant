@@ -215,3 +215,158 @@ IC 数据来自旧 `factor_cache.json` (500 只采样, 日期不详)。
 - 信息比率: 2.01
 - 周期: 2026-01-01 → 2026-06-30 (6个月, 24个调仓日)
 - 对比: 5因子(含zt_streak) vs 4因子(不含zt_streak) → zt_streak贡献了91.5%的收益增量
+
+
+## Phase 7: 新因子路线图 (2026-07-03 15:54)
+
+### 背景
+zt_streak 激活后回测 +80.5%。已淘汰 amihud_20d (IC=0.025)。
+现有 4 因子: bp_ratio (+0.062), zt_streak (+0.055), size (+0.044), gap_5d (+0.043)。
+
+### P0: lhb_post_quality — 龙虎榜上榜后质量因子
+- 数据源: lhb_detail.post_5d (已有 24,386 行)
+- 逻辑: 历史 LHB 上榜后涨的股票，再上榜时继续涨
+- 算法: AVG(post_5d) per symbol (历史所有上榜), z-scored
+- 预期 IC: 0.03-0.06
+- 状态: 待实现
+
+### P1: dt_streak — 跌停连板因子
+- 数据源: daily 表 OHLCV (已有 7.3M 行)
+- 逻辑: zt_streak 的镜像 — 跌停连板跑输 (A股跌停次日继续跌概率 ~70%)
+- 算法: 主板跌停=ret<=-9.5%且close==low, 科创/创业跌停=ret<=-19.5%且close==low
+- 连板数越多→负得分越强→负信号
+- 预期 IC: 0.04-0.08
+- 状态: 待实现
+
+### P2: 融资融券 / 资金流向 / 大宗交易 / 股东增减持
+- 数据源: akshare (stock_margin_detail_sse, stock_dzjy_mrmx, stock_fund_flow_individual, stock_shareholder_change_ths)
+- 待 API 测试结果
+- 状态: 待测试
+
+### 决策原则
+- 每个新因子必须经过 |IC| > 0.02 验证才能激活
+- 因子代码 + IC 结果 → FACTOR-AUDIT 归档 → 决策激活/弃用
+- 所有数据优先入库, 不依赖外部 JSON
+
+
+## Phase 8 (2026-07-03 17:00-17:40): P2 新数据源 — 融资融券 + 资金流向
+
+### 数据同步结果
+
+| 数据源 | 方式 | 结果 | 量级 |
+|--------|------|------|------|
+| 融资融券 SSE | JSON API 直接调用 | ✅ | 45,555行, 23交易日 |
+| 融资融券 SZSE | akshare / JSON API | ❌ | API 返回空 JSON |
+| 资金流向 | akshare stock_individual_fund_flow | ❌ | IP 被东方财富封 |
+
+### 因子 IC 评估 (500只 × 89天)
+
+| 因子 | IC | IR | 决定 | 原因 |
+|------|-----|-----|------|------|
+| margin_buy_ratio | +0.090 | +0.37 | 暂弃用 | IC 最强但仅 23/116 天覆盖, 回测 +16.7% vs 5因子 +80.5% |
+| margin_balance_chg | +0.004 | +0.03 | 弃用 | 融资余额变化率无预测力 |
+| main_flow_ratio | — | — | 待测 | fund_flow 无数据 |
+
+### 6因子回测 (bp+size+gap+zt+amihud+margin_buy_ratio)
+- 结果: +16.7% (Sharpe 0.84), 远低于 5 因子 +80.5%
+- 根因: margin 仅覆盖 23/116 回测日, 80% 日期返回零值 → alpha 被稀释
+- 决策: margin_buy_ratio 保留代码和数据, 等数据积累到 ≥90 天后重新激活
+
+### 技术细节
+
+**SSE JSON API 字段映射:**
+- stockCode → 股票代码
+- rzmre → 融资买入额 (margin_buy)
+- rzye → 融资余额 (margin_balance)
+- rzche → 融资偿还额 (margin_repay)
+- rqmcl → 融券卖出量 (short_sell_vol)
+- rqyl → 融券余量 (short_balance)
+
+**日期格式**: SSE API 要求 YYYYMMDD (无连字符), daily 表是 YYYY-MM-DD
+
+**fund_flow 限流**: 东方财富 API 极敏感, 1.5s 间隔仍被封 IP. 恢复后需 ≥10s 间隔.
+
+### 核心教训
+
+1. **数据覆盖 > 因子 IC**: IC=0.09 的因子如果数据稀疏, 对组合的贡献为零
+2. **API 脆弱性**: 交易所 API 格式不稳定, 限流严格, 需要更鲁棒的同步策略
+3. **先积累再激活**: 新数据源至少积累 60-90 天才能激活因子
+
+
+## Phase 8 结论 (2026-07-03 19:00)
+
+### 数据同步: ✅ 完成
+| 数据源 | 行数 | 日期范围 | 股票/天 |
+|--------|------|----------|---------|
+| margin SSE | 232,946 | 2026-01-05 ~ 07-02, 118天 | ~1,980 |
+| margin SZSE | 245,686 | 2026-01-05 ~ 07-01, 118天 | ~2,070 |
+
+### 因子评估: ❌ 不成立
+
+| 阶段 | IC | 原因 |
+|------|-----|------|
+| 初始 (look-ahead bias) | +0.090 | 使用了当天未发布的margin数据 |
+| 修复后 (仅SSE) | +0.043 | look-ahead修复, 但仅上交所~1980只 |
+| 全量 (SSE+SZSE) | **+0.004** | 加入深交所后被稀释为零 |
+
+**核心原因**: 融资买入占比对上交所股票有微弱预测力(IC=0.043),
+但对深交所股票无预测力(IC≈0)。两市合并后信号被噪声淹没。
+上交所和深交所的融资融券动态不同: SSE偏向大盘蓝筹, SZSE偏向中小成长,
+融资买入行为的经济含义不同。
+
+### 技术债已清偿
+- look-ahead bias 修复 (因子计算排除当日)
+- SZSE API 修复 (akshare wrapper + 6s interval + 3-retry)
+- margin.py 健壮性大幅提升 (日期跳过, 格式容错)
+
+### 经验教训
+1. **按市场拆分因子 > 全量合并**: 市场微观结构不同, 不应强行混合
+2. **单市场 IC 不能代表全量**: SSE IC=0.043但SZSE为零
+3. **look-ahead会反向放大**: 使用未来数据 → IC虚高 → 回测崩溃
+
+
+## Phase 10 (2026-07-03 20:21): 30-Factor Full Audit → 8-Factor Model
+
+**方法**: 全量30因子 IC 重算 (500 stock sample, Spearman rank), 相关性矩阵去冗余, |IC|>0.02 阈值筛选.
+
+**新增 3 因子:**
+
+| 因子 | IC | IR | 与现有最高|r| | 维度 |
+|------|-----|-----|---------|------|
+| high52w_dist | +0.095 | +0.50 | size=0.31, bp=0.39 | 52周高点锚定 (George & Hwang 2004) |
+| dt_streak | +0.037 | +0.61 | zt_streak=0.01 | 跌停连板 — zt_streak 镜像, 近乎正交 |
+| vol_price_corr_10d | -0.026 | -0.30 | 所有<0.1 | 量价背离 — 唯一独立维度, 自动翻转 |
+
+**保留 5 因子:** amihud_20d, gap_5d, zt_streak, bp_ratio, size
+
+**弃用 22 因子** (|IC|<0.02 + 数据质量问题):
+
+| 类别 | 因子 | 原因 |
+|------|------|------|
+| 纯噪声 (IC≈0) | analyst_buy, fund_change, hsgt_flow_5d, lhb_net_buy_20d, money_flow_5d, main_flow_ratio | IC=0.0000, 无预测力 |
+| 弱信号 | reversal_5d, momentum_10d, turnover_rev_5d, ma_alignment_20d, limit_up_prox_5d, max_ret_20d, range_20d, turnover_anomaly, rsi_rev_14d | \|IC\|<0.02, 边际贡献<噪声成本 |
+| 数据质量 | ep_ratio | PE负值导致r=-0.60反相关于BP, 不是纯净价值信号 |
+| 数据覆盖 | margin_buy_ratio, margin_balance_chg | 仅118天, 80%回测期返回零值 |
+| 其他 | volatility_20d, idio_vol_20d, skewness_20d, roe_ratio, lhb_post_quality | \|IC\|<0.02 |
+
+**关键发现:**
+
+1. **zt_streak 和 dt_streak 近乎正交** (r=0.010), 说明涨停和跌停捕捉的是不同市场机制, 分别独立有效.
+2. **ep_ratio 不可用** — EP=1/PE, PE字段含大量负值(亏损公司), 产生噪音. EP与BP反相关-0.60, 两者都是价值因子但方向矛盾 → 数据问题待修.
+3. **high52w_dist 是最强个体因子** (IC=+0.095), 与size相关性中等(r=0.31), 主要独立贡献来自52周锚定效应.
+4. **vol_price_corr_10d 是唯一量价因子**, 与所有其他因子相关性<0.1, 是真正的独立维度.
+5. **8因子是当前数据约束下的上限** — 30个因子中只有9个|IC|>0.02, 其中1个数据有问题. 增加更多因子需要新数据源或因子交互项.
+
+**8因子维度覆盖:**
+- 价值 (bp_ratio)
+- 规模 (size)
+- 流动性 (amihud_20d)
+- 涨停动量 (zt_streak)
+- 跌停动量 (dt_streak)
+- 隔夜缺口 (gap_5d)
+- 52周锚定 (high52w_dist)
+- 量价背离 (vol_price_corr_10d)
+
+**回测**: 待跑 (用户终端执行).
+
+---

@@ -85,6 +85,10 @@ def apply_all_filters(
     
     返回: 通过所有约束的候选池 DataFrame。
     """
+    # ── BJ 过滤说明 (P3) ──
+    # BJ(北交所 92xxxx/4xxxxx/8xxxxx) 已在 pipeline Step 2 SQL 层面通过
+    # WHERE s.market!='BJ' 排除，此处不重复过滤。若直接调用 apply_all_filters()
+    # 且含 BJ 股票，调用方自行预过滤。BJ 涨跌停±30% 且需50万保证金。
     if limits is None:
         limits = RiskLimits()
     df = candidates.copy()

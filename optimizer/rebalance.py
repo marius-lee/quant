@@ -30,6 +30,7 @@ def compute_trades(
     cost_model,
     max_turnover_ratio: float = 0.50,
     capital: float = 0.0,
+    cash: float = 0.0,
 ) -> list[Order]:
     """计算调仓订单。
 
@@ -106,11 +107,12 @@ def compute_trades(
     # ── 换手缩放后的 cash feasibility 检查 ──
     # 换手率限制可能使卖单缩水但买单保留, 造成资金缺口。
     # 此时优先执行所有卖单, 再按买入成本从低到高依次纳入买单。
-    if capital > 0 and orders:
+    available_cash = cash if cash > 0 else capital
+    if available_cash > 0 and orders:
         sell_orders = [o for o in orders if o.side == "sell"]
         buy_orders = [o for o in orders if o.side == "buy"]
         sell_inflow = sum(o.price * o.shares - o.cost for o in sell_orders)
-        available = capital + sell_inflow
+        available = available_cash + sell_inflow
         feasible = []
         for o in buy_orders:
             if available >= o.cost:

@@ -176,12 +176,14 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
         daily_rets = df.set_index("date")["total_wealth"].pct_change().dropna()
         if len(daily_rets) > 1:
             sharpe = (daily_rets.mean() * 252) / (daily_rets.std() * np.sqrt(252)) if daily_rets.std() > 0 else 0
-            cum_return = (df["total_wealth"].iloc[-1] / capital - 1) if capital > 0 else 0
+            final_wealth_series = df["total_wealth"].dropna()
+            final_wealth = final_wealth_series.iloc[-1] if len(final_wealth_series) > 0 else capital
+            cum_return = (final_wealth / capital - 1) if capital > 0 else 0
             logger.info(
                 f"\n=== Backtest Summary ==="
                 f"\n  Period: {start_date} → {end_date}"
                 f"\n  Rebalance days: {len(rebalance_dates)}"
-                f"\n  Final wealth: ¥{df['total_wealth'].iloc[-1]:,.2f}"
+                f"\n  Final wealth: ¥{final_wealth:,.2f}"
                 f"\n  Cumulative return: {cum_return*100:+.1f}%"
                 f"\n  Sharpe (est): {sharpe:.3f}"
             )

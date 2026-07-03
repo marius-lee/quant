@@ -45,9 +45,10 @@ def sync_single_stock(symbol: str, conn=None) -> int:
     
     _ensure_table(conn)
     
+    n = 0
     try:
         df = ak.stock_hsgt_individual_em(symbol=symbol)
-        if df.empty:
+        if df is None or df.empty:
             return 0
         
         # Normalize columns

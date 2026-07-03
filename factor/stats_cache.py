@@ -208,6 +208,10 @@ def compute_factor_stats(
         "bp_ratio": "BP比率",
         "size": "规模",
         "roe_ratio": "ROE比率",
+        "amihud_20d": "Amihud 20d",
+        "gap_5d": "隔夜缺口 5d",
+        "reversal_5d": "反转 5d",
+        "turnover_rev_5d": "换手率反转 5d",
     }
     categories = {
         "momentum_10d": "动量",
@@ -216,6 +220,10 @@ def compute_factor_stats(
         "bp_ratio": "价值",
         "size": "规模",
         "roe_ratio": "盈利",
+        "amihud_20d": "流动性",
+        "gap_5d": "隔夜",
+        "reversal_5d": "反转",
+        "turnover_rev_5d": "换手率",
     }
     sources = {
         "momentum_10d": "Jegadeesh & Titman (1993)",
@@ -224,6 +232,10 @@ def compute_factor_stats(
         "bp_ratio": "Fama & French (1992)",
         "size": "Fama & French (1993)",
         "roe_ratio": "Fama & French (2015)",
+        "amihud_20d": "Amihud (2002)",
+        "gap_5d": "A股 T+1 独有异象",
+        "reversal_5d": "Lehmann (1990) / Jegadeesh (1990)",
+        "turnover_rev_5d": "Lee & Swaminathan (2000)",
     }
 
     meta = {}

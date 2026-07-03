@@ -351,12 +351,12 @@ def _load_ic_from_db(filter_names=None) -> dict:
             return {}
         ic_map = {}
         for name, ic in rows:
-            abs_ic = abs(ic) if isinstance(ic, (int, float)) else 0
-            if abs_ic >= 0.01:
-                ic_map[name] = abs_ic
+            ic_val = ic if isinstance(ic, (int, float)) else 0.0
+            if abs(ic_val) >= 0.01:
+                ic_map[name] = ic_val
         if filter_names and ic_map:
             ic_map = {k: v for k, v in ic_map.items() if k in filter_names}
-        total = sum(ic_map.values())
+        total = sum(abs(v) for v in ic_map.values())
         if total > 0:
             ic_map = {k: v / total for k, v in ic_map.items()}
         logger.info(f"IC weights loaded from DB: {len(ic_map)} factors")

@@ -15,7 +15,8 @@ factor:
   - 20
   enable_quality: false
 alpha:
-  method: intersection
+  # 2026-07-03: intersection → ic_weighted (see HANDOFF for analysis)
+  method: ic_weighted
   train_window: 252
   retrain_freq: 20
   top_fraction: 0.3

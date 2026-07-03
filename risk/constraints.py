@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 @dataclass
 class RiskLimits:
     """风险约束参数集。
-    
+
     max_single_position: 单票最大仓位 (占组合比例)
     max_positions:      最大持仓数
     min_daily_amount:   最低日成交额 (元), 低于此值的股票无法买卖 (流动性门槛)
@@ -32,12 +32,12 @@ def filter_by_liquidity(
     min_daily_amount: float = 5_000_000,
 ) -> pd.DataFrame:
     """流动性过滤: 去掉日均成交额过低的股票。
-    
+
     candidates: DataFrame, index=symbol, 至少含 amount 列 (千元)
     min_daily_amount: 最低日均成交额 (元)
-    
+
     返回: 满足流动性要求的 subset。
-    
+
     来源: ③ 数据校准 — A股中小盘盘口流动性差, <500万/日几乎无法以合理价格成交
     """
     # amount 在数据库中单位为千元, 转换为元
@@ -60,7 +60,7 @@ def filter_st_stocks(
     stock_names: Optional[dict] = None,
 ) -> pd.DataFrame:
     """ST 股过滤: 移除名称含 *ST 或 ST 的股票。
-    
+
     stock_names: {symbol: name} 名称映射 (从 DataStore.get_stock_names() 获取)
     """
     if stock_names is None:
@@ -80,9 +80,9 @@ def apply_all_filters(
     industries: Optional[pd.Series] = None,
 ) -> pd.DataFrame:
     """应用所有风险过滤。
-    
+
     过滤顺序: 流动性 → 股价 → ST → 行业暴露上限
-    
+
     返回: 通过所有约束的候选池 DataFrame。
     """
     # ── BJ 过滤说明 (P3) ──
@@ -115,7 +115,7 @@ def position_limit_check(
     max_positions: int = 20,
 ) -> tuple[bool, str]:
     """检查持仓是否违反约束。
-    
+
     返回: (is_valid, message)
     """
     if len(weights) > max_positions:
@@ -132,7 +132,7 @@ def sector_exposure_check(
     max_exposure: float = 0.40,
 ) -> tuple[bool, str]:
     """检查行业暴露是否超过上限。
-    
+
     返回: (is_valid, message)
     """
     if max_exposure <= 0:

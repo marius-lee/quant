@@ -36,26 +36,26 @@ def ok(msg):
 def check_config_vs_code():
     """检查 config.yaml 中的值与代码默认值是否一致。"""
     from config.loader import get as cfg
-    
+
     # 检查关键参数
     checks = {
-        "risk.max_positions": (cfg("risk.max_positions"), 
+        "risk.max_positions": (cfg("risk.max_positions"),
             "PortfolioConstructor.__init__ default"),
-        "risk.stop_loss_pct": (cfg("risk.stop_loss_pct"), 
+        "risk.stop_loss_pct": (cfg("risk.stop_loss_pct"),
             "backtest.py stop_loss_pct default"),
     }
-    
+
     risk_max_pos = cfg("risk.max_positions")
     alpha_method = cfg("alpha.method")
-    
+
     if risk_max_pos is not None:
         ok(f"max_positions={risk_max_pos} (config)")
     else:
         warn("risk.max_positions not found in config.yaml")
-    
+
     if alpha_method:
         ok(f"alpha.method={alpha_method} (config)")
-    
+
     # 检查 optimizer/rebalance.py 的 max_turnover_ratio 默认值
     from optimizer.rebalance import compute_trades
     sig = inspect.signature(compute_trades)
@@ -69,35 +69,35 @@ def check_config_vs_code():
 def check_factors():
     """检查 factor_registry 与 factor/compute.py 一致性。"""
     from factor.compute import load_active_price_factors, load_active_fundamental_factors
-    
-    db = sqlite3.connect(os.path.join(os.path.dirname(os.path.dirname(__file__)), 
+
+    db = sqlite3.connect(os.path.join(os.path.dirname(os.path.dirname(__file__)),
                                        "data", "market.db"))
-    
+
     # Active factors in DB
     db_active = set(r[0] for r in db.execute(
         "SELECT name FROM factor_registry WHERE status='active'"
     ).fetchall())
-    
+
     # Deprecated factors in DB
     db_deprecated = set(r[0] for r in db.execute(
         "SELECT name FROM factor_registry WHERE status='deprecated'"
     ).fetchall())
-    
+
     # Active factors in code
     price_factors = set(load_active_price_factors().keys())
     fund_factors = set(load_active_fundamental_factors().keys())
     code_active = price_factors | fund_factors
-    
+
     # 检查: DB active 但 code 中没有 → factor_registry 过时
     db_only = db_active - code_active
     if db_only:
         warn(f"factor_registry has active factors not in code: {db_only}")
-    
+
     # 检查: code 中有但 DB 不是 active → 漏入库
     code_only = code_active - db_active
     if code_only:
         warn(f"Code has factor functions not active in DB: {code_only}")
-    
+
     # 检查: DB deprecated 但 IC >= 0.02 → 可能应该 reactivate
     for name in db_deprecated:
         row = db.execute(
@@ -106,7 +106,7 @@ def check_factors():
         if row and row[0] and abs(row[0]) >= 0.02:
             warn(f"Deprecated factor {name} has IC={row[0]:.4f} >= 0.02, "
                  f"may need re-evaluation")
-    
+
     ok(f"Active factors: {len(code_active)} code, {len(db_active)} DB")
     db.close()
 
@@ -116,11 +116,11 @@ def check_database():
     """检查关键表和列是否存在。"""
     db = sqlite3.connect(os.path.join(os.path.dirname(os.path.dirname(__file__)),
                                        "data", "market.db"))
-    
+
     required_tables = ["stocks", "daily", "factor_registry", "benchmark_daily"]
     for table in required_tables:
         exists = db.execute(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", 
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
             (table,)
         ).fetchone()[0]
         if not exists:
@@ -129,7 +129,7 @@ def check_database():
             count = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             if count == 0 and table not in ["factor_registry"]:
                 warn(f"Table '{table}' is empty")
-    
+
     # 检查 daily 表是否有足够的复权数据
     # (不应该有 >20% 的单日跳空)
     extreme = db.execute("""
@@ -143,7 +143,7 @@ def check_database():
         warn(f"Found {extreme} extreme daily returns (>20%) — possible unadjusted data")
     else:
         ok("No extreme daily returns found (data looks qfq-adjusted)")
-    
+
     db.close()
 
 
@@ -151,17 +151,17 @@ def check_database():
 def check_parameters():
     """检查关键参数是否合理。"""
     from config.loader import get as cfg
-    
+
     max_pos = cfg("risk.max_positions", 1)
     stop_loss = cfg("risk.stop_loss_pct", 0.15)
     alpha_method = cfg("alpha.method", "ic_weighted")
-    
+
     if max_pos < 1 or max_pos > 10:
         warn(f"max_positions={max_pos} seems extreme")
-    
+
     if stop_loss < 0.05 or stop_loss > 0.50:
         warn(f"stop_loss_pct={stop_loss} seems extreme")
-    
+
     if alpha_method not in ("ic_weighted", "equal_weight"):
         warn(f"Unknown alpha.method={alpha_method}")
 
@@ -171,12 +171,12 @@ if __name__ == "__main__":
     print("=" * 60)
     print("System validation")
     print("=" * 60)
-    
+
     check_config_vs_code()
     check_factors()
     check_database()
     check_parameters()
-    
+
     print("=" * 60)
     if ERRORS:
         print(f"❌ {ERRORS} ERROR(S), {WARNINGS} warning(s) — fix before running backtest")

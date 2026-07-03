@@ -60,7 +60,7 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
     original_capital = capital  # 初始本金，全程不变，用于计算累计收益率
     prev_total_wealth = capital  # 首个交易日前一日总资产=初始本金，避免 NameError
     prev_wealth_for_daily = capital  # P0-2: 用于日频止损间的 wealth 追踪
-    
+
     sl_checks = 0  # P0-2: 止损触发计数
     for day_idx, date_str in enumerate(all_dates):
         t0 = time.time()
@@ -92,10 +92,10 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
                             logger.warning(f"[SL-DAILY] {date_str}: {p['symbol']} drop={drop:.1%}, selling {shares} shares")
                             engine.execute([Order(symbol=p["symbol"], side="sell", shares=shares, price=current_px, cost=0)], date_str, "quant")
                             sl_checks += 1
-            
+
             # Only run full pipeline on rebalance dates
             if date_str not in rebalance_dates:
-                # Non-rebalance day: just record wealth  
+                # Non-rebalance day: just record wealth
                 # 用当日收盘价 (市场价格) 算持仓市值, 不能用 cost basis
                 cash = engine.get_cash("quant")
                 position_value = 0.0

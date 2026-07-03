@@ -149,7 +149,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
                         contribs.append((fn, round(avg_contrib, 4)))
             contribs.sort(key=lambda x: abs(x[1]), reverse=True)
             top3 = contribs[:3]
-            logger.info("[3/7] top factor contributors: %s", 
+            logger.info("[3/7] top factor contributors: %s",
                         ", ".join(f"{n}={v:+.4f}" for n, v in top3))
 
         # Soft cutoff: top_fraction controls attenuation, not hard kill

@@ -15,7 +15,7 @@ def _init_state() -> dict:
         sys.path.insert(0, _root)
     from data.trade_repo import TradeRepo
     from config.loader import get as cfg
-    
+
     state = {"status": "休市", "progress": "",
              "mood": {}, "signals": [], "sectors": [],
              "summary": {}, "timestamp": ""}
@@ -27,7 +27,7 @@ def _init_state() -> dict:
         positions = []
         for p in raw_positions:
             positions.append({
-                "symbol": p["symbol"], "name": "", 
+                "symbol": p["symbol"], "name": "",
                 "shares": p["shares"], "price": p.get("price", 0),
                 "board_count": p.get("board_count", 0),
                 "date": p.get("date", ""),

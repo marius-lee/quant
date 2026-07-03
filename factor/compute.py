@@ -44,16 +44,16 @@ def _cs_zscore(series: pd.Series, min_count: int = 30) -> pd.Series:
 
 def compute_momentum(data: pd.DataFrame, date: str, window: int) -> pd.Series:
     """价格动量: (P_t / P_{t-window}) - 1.
-    
+
     来源: ② Jegadeesh & Titman (1993) — 过去 3-12 个月赢家继续赢。
     使用对数收益率加总: sum(log_returns[-window:]) 更鲁棒。
     """
     close = data["close"]
     log_ret = _log_returns(close)
-    
+
     if date not in log_ret.index:
         return pd.Series(np.nan, index=close.columns, name=f"momentum_{window}d")
-    
+
     idx = log_ret.index.get_loc(date)
     start = max(0, idx - window + 1)
     cum = log_ret.iloc[start:idx + 1].sum()  # 累加对数收益
@@ -67,16 +67,16 @@ def compute_momentum(data: pd.DataFrame, date: str, window: int) -> pd.Series:
 
 def compute_reversal(data: pd.DataFrame, date: str, window: int = 5) -> pd.Series:
     """短期反转: -1 × (过去 window 日收益率)。
-    
+
     来源: ② Lehmann (1990) — 周度收益反转; Jegadeesh (1990) — 月度收益反转。
     在 A 股市场, 短期反转通常比动量更强 (retail-dominated turnover)。
     """
     close = data["close"]
     log_ret = _log_returns(close)
-    
+
     if date not in log_ret.index:
         return pd.Series(np.nan, index=close.columns, name=f"reversal_{window}d")
-    
+
     idx = log_ret.index.get_loc(date)
     start = max(0, idx - window + 1)
     cum = log_ret.iloc[start:idx + 1].sum()
@@ -90,16 +90,16 @@ def compute_reversal(data: pd.DataFrame, date: str, window: int = 5) -> pd.Serie
 
 def compute_volatility(data: pd.DataFrame, date: str, window: int = 20) -> pd.Series:
     """已实现波动率: std(log_returns[-window:]) × sqrt(252) 年化。
-    
+
     来源: ② Andersen et al. (2001) — 已实现波动率作为风险度量。
     低波动异象 (low-vol anomaly): 低波动股票未来收益更高。因子值取 -1 × vol。
     """
     close = data["close"]
     log_ret = _log_returns(close)
-    
+
     if date not in log_ret.index:
         return pd.Series(np.nan, index=close.columns, name=f"volatility_{window}d")
-    
+
     idx = log_ret.index.get_loc(date)
     start = max(0, idx - window + 1)
     # 窗口内日收益的 std, 年化
@@ -110,15 +110,15 @@ def compute_volatility(data: pd.DataFrame, date: str, window: int = 20) -> pd.Se
 
 def compute_downside_volatility(data: pd.DataFrame, date: str, window: int = 20) -> pd.Series:
     """下行波动率: std(负收益) × sqrt(252)。只惩罚亏损波动。
-    
+
     来源: ② Sortino & Price (1994) — 下行风险比总波动更有信息量。
     """
     close = data["close"]
     log_ret = _log_returns(close)
-    
+
     if date not in log_ret.index:
         return pd.Series(np.nan, index=close.columns, name=f"downside_vol_{window}d")
-    
+
     idx = log_ret.index.get_loc(date)
     start = max(0, idx - window + 1)
     window_ret = log_ret.iloc[start:idx + 1]
@@ -135,18 +135,18 @@ def compute_downside_volatility(data: pd.DataFrame, date: str, window: int = 20)
 def compute_volume_ratio(data: pd.DataFrame, date: str, window: int = 5,
                          long_window: int = 20) -> pd.Series:
     """量比: avg_volume(short_window) / avg_volume(long_window)。
-    
+
     来源: ② Gervais, Kaniel & Mingelegrin (2001) — 高成交量预示未来收益。
     """
     volume = data["volume"]
-    
+
     if date not in volume.index:
         return pd.Series(np.nan, index=volume.columns, name=f"vol_ratio_{window}d")
-    
+
     idx = volume.index.get_loc(date)
     short_start = max(0, idx - window + 1)
     long_start = max(0, idx - long_window + 1)
-    
+
     short_avg = volume.iloc[short_start:idx + 1].mean()
     long_avg = volume.iloc[long_start:idx + 1].mean()
     ratio = short_avg / long_avg.replace(0, np.nan)
@@ -155,14 +155,14 @@ def compute_volume_ratio(data: pd.DataFrame, date: str, window: int = 5,
 
 def compute_turnover_change(data: pd.DataFrame, date: str, window: int = 5) -> pd.Series:
     """换手率变化: (turnover_t - turnover_{t-window}) / turnover_{t-window}。
-    
+
     来源: ② 换手率上升通常伴随短期 alpha, 但长期均值回复。
     """
     turnover = data["turnover"]
-    
+
     if date not in turnover.index:
         return pd.Series(np.nan, index=turnover.columns, name=f"turnover_chg_{window}d")
-    
+
     idx = turnover.index.get_loc(date)
     prev_idx = max(0, idx - window)
     current = turnover.iloc[idx]
@@ -177,21 +177,21 @@ def compute_turnover_change(data: pd.DataFrame, date: str, window: int = 5) -> p
 
 def compute_amihud(data: pd.DataFrame, date: str, window: int = 20) -> pd.Series:
     """Amihud 非流动性: mean(|r_t| / dollar_volume_t) × 10^6。
-    
+
     来源: ② Amihud (2002) — 非流动性溢价: 流动性差的股票预期收益更高。
     amount 在数据库中单位是千元, dollar_volume = amount × 1000。
-    
+
     高分 = 流动性差 = 预期收益高。
     """
     close = data["close"]
     amount = data["amount"]  # 千元
-    
+
     if date not in close.index:
         return pd.Series(np.nan, index=close.columns, name=f"amihud_{window}d")
-    
+
     idx = close.index.get_loc(date)
     start = max(0, idx - window + 1)
-    
+
     # Vectorized Amihud: all stocks at once
     p_slice = close.iloc[start:idx + 1]
     a_slice = amount.iloc[start:idx + 1]
@@ -202,7 +202,7 @@ def compute_amihud(data: pd.DataFrame, date: str, window: int = 20) -> pd.Series
     min_valid = max(1, int(window * 0.5))
     valid_mask = (p_slice.count() >= min_valid) & (a_slice.count() >= min_valid)
     illiq = illiq.where(valid_mask)
-    
+
     series = illiq
     # 高分=高非流动性=高预期收益
     return _cs_zscore(series).rename(f"amihud_{window}d")
@@ -214,16 +214,16 @@ def compute_amihud(data: pd.DataFrame, date: str, window: int = 20) -> pd.Series
 
 def compute_skewness(data: pd.DataFrame, date: str, window: int = 20) -> pd.Series:
     """收益率偏度: skew(log_returns[-window:])。
-    
+
     来源: ② Barberis & Huang (2008) — 正偏度股票被高估, 负偏度有溢价。
     因子值取负偏度 → 高分=负偏度=高预期收益。
     """
     close = data["close"]
     log_ret = _log_returns(close)
-    
+
     if date not in log_ret.index:
         return pd.Series(np.nan, index=close.columns, name=f"skewness_{window}d")
-    
+
     idx = log_ret.index.get_loc(date)
     start = max(0, idx - window + 1)
     window_ret = log_ret.iloc[start:idx + 1]
@@ -554,7 +554,7 @@ def compute_all_factors(data: pd.DataFrame, date: str,
                       fundamentals: pd.DataFrame = None,
                       benchmark_ret: Optional["pd.Series"] = None) -> dict:
     """批量计算所有已注册因子 → {factor_name: Series(index=symbol)}。
-    
+
     价格因子从 data 计算, 基本面因子从 fundamentals 计算。
     benchmark_ret 用于特质波动率因子(对指数回归取残差)。
     """

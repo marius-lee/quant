@@ -29,7 +29,7 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
     返回: DataFrame(index=date, columns=[cash, positions_value, total_wealth, return])
     """
     import pipeline
-    from optimizer.rebalance import Order as PipelineOrder  # P0-2: for daily stop-loss
+    from execution.engine import Order  # P0-2: unified Order dataclass
 
     # 清理旧交易记录
     if os.path.exists(TRADE_DB):
@@ -90,7 +90,7 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
                         shares = int(p["shares"])
                         if shares > 0:
                             logger.warning(f"[SL-DAILY] {date_str}: {p['symbol']} drop={drop:.1%}, selling {shares} shares")
-                            engine.execute([PipelineOrder(symbol=p["symbol"], side="sell", shares=shares, price=current_px, cost=0)], date_str, "quant")
+                            engine.execute([Order(symbol=p["symbol"], side="sell", shares=shares, price=current_px, cost=0)], date_str, "quant")
                             sl_checks += 1
             
             # Only run full pipeline on rebalance dates

@@ -1,23 +1,8 @@
 """调仓计算 — 目标 vs 当前持仓 → 买卖订单列表。"""
 
-from dataclasses import dataclass, field
 from typing import Optional
 import pandas as pd
 import numpy as np
-
-
-@dataclass
-class Order:
-    """模拟订单。shares 必须是 100 的整数倍。"""
-    symbol: str
-    side: str        # buy | sell
-    shares: int      # 100 的整数倍
-    price: float
-    cost: float      # 预估总成本 (含佣金印花税)
-
-    @property
-    def side_label(self) -> str:
-        return "买入" if self.side == "buy" else "卖出"
 
 
 LOT_SIZE = 100

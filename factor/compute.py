@@ -621,9 +621,11 @@ def compute_limit_up_proximity(data: "pd.DataFrame", date: str, window: int = 5)
     import sqlite3
     db_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "market.db")
     conn = sqlite3.connect(db_path)
-    symbols_str = ",".join(f"'{s}'" for s in close.columns[:100])  # sample for market check
+    symbols_sample = list(close.columns[:100])  # sample for market check
+    placeholders = ",".join("?" * len(symbols_sample))
     market_rows = conn.execute(
-        f"SELECT symbol, market FROM stocks WHERE symbol IN ({symbols_str})"
+        f"SELECT symbol, market FROM stocks WHERE symbol IN ({placeholders})",
+        symbols_sample
     ).fetchall()
     conn.close()
     market_map = {r[0]: r[1] for r in market_rows}

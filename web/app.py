@@ -11,6 +11,7 @@ from utils.logger import get_logger
 
 logger = get_logger("web.app")
 app = Flask(__name__)
+_DEBUG = os.environ.get("FLASK_DEBUG", "0") == "1"
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
@@ -99,7 +100,7 @@ def api_positions():
                 "name": "", "change_pct": 0,
             })
     except Exception:
-        logger.warning("api_positions: query failed", exc_info=True)
+        logger.warning("api_positions: query failed", exc_info=_DEBUG)
         return jsonify({"positions": [], "error": "internal"}), 500
     return jsonify({"positions": positions})
 
@@ -140,7 +141,7 @@ def api_trades():
                        "board_count": r[3], "date": r[4]} for r in buys]
         conn.close()
     except Exception:
-        logger.warning("api_trades: query failed (schema mismatch?)", exc_info=True)
+        logger.warning("api_trades: query failed (schema mismatch?)", exc_info=_DEBUG)
         return jsonify({"trades": [], "positions": [], "error": "internal"}), 500
     return jsonify({"trades": trades, "positions": positions})
 

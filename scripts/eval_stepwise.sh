@@ -56,7 +56,7 @@ for i, (name, mic, r) in enumerate(ranked):
 # 4. 筛选: t-test 通过 + 边际贡献正向
 candidates = [
     (name, mic, r) for name, mic, r in ranked
-    if r.get("t_pass") and (mic is not None and mic > 0.005)
+    if r.get("t_pass") and (mic is not None and mic > 0)
 ]
 
 print(f"\n=== Candidates for stepwise backtest ({len(candidates)}) ===")
@@ -96,7 +96,6 @@ echo "============================================"
 .venv/bin/python3 << 'PYEOF'
 import json, sqlite3, subprocess, sys, os, re, time, numpy as np
 
-os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, '.')
 
 with open('/tmp/_eval_candidates.json') as f:
@@ -167,7 +166,7 @@ print(f'IR={{ir:.4f}}')
     ir = float(im.group(1)) if im else 0
 
     prev_ir = best_ir
-    if ir >= best_ir * 0.95:
+    if ir >= best_ir:
         action = "KEEP"
         kept.append(name)
         best_ir = ir

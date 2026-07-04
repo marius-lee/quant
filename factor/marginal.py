@@ -106,18 +106,15 @@ def compute_marginal_evaluation(
             # 边际 IC 的近似 t 检验 (Delta method)
             # Var(marginal_IC) ≈ Var(IC_g) + Var(explained)
             # 简化: 如果 |marginal_IC| 远小于 IC 标准差, 则不显著
-            ic_std = abs(ic_new / (ic_irs.get(name, 0.01) or 0.01))
+            ic_std = abs(ic_new / ic_irs[name]) if ic_irs.get(name, 0) != 0 else float('inf')
             marginal_t = abs(marginal_ic) / (ic_std / np.sqrt(n_days)) if ic_std > 0 else 0
 
-            marginal_pass = marginal_t >= t_threshold and abs(marginal_ic) > 0.005
+            marginal_pass = marginal_t >= t_threshold
 
             if marginal_pass:
                 reason = f"边际IC={marginal_ic:+.4f}, 增量显著 (t={marginal_t:.1f})"
             else:
-                if abs(marginal_ic) <= 0.005:
-                    reason = f"边际IC={marginal_ic:+.4f}≈0, 信息已被已有因子覆盖"
-                else:
-                    reason = f"边际IC={marginal_ic:+.4f}, t={marginal_t:.1f}<{t_threshold}, 增量不显著"
+                reason = f"边际IC={marginal_ic:+.4f}, t={marginal_t:.1f}<{t_threshold}, 增量不显著"
 
             marginal_results[name] = {
                 "ic": ic_new,
@@ -209,14 +206,15 @@ def stepwise_selection(
                 explained = rho @ sigma_inv @ ic_existing
                 new_marginal = marginal_results[name]["ic"] - explained
 
-                if new_marginal > best_marginal and abs(new_marginal) > 0.005:
+                if new_marginal > best_marginal:
                     best_marginal = new_marginal
                     best_to_add = name
             except np.linalg.LinAlgError:
                 pass
 
         if best_to_add and best_marginal > 0:
-            ic_std = abs(marginal_results[best_to_add]["ic"] / max(0.001, marginal_results[best_to_add].get("ir", 0.01)))
+            ir_val = marginal_results[best_to_add].get("ic_ir", 0) or 0.001
+            ic_std = abs(marginal_results[best_to_add]["ic"] / ir_val)
             marginal_t = abs(best_marginal) / (ic_std / np.sqrt(90))
 
             if marginal_t >= t_threshold:

@@ -444,3 +444,61 @@ zt_streak 激活后回测 +80.5%。已淘汰 amihud_20d (IC=0.025)。
 **最终因子阵容**: bp_ratio + size + gap_5d + zt_streak + amihud_20d = +80.5%
 
 ---
+
+
+---
+
+## 2026-07-04: 评估标准重构 + 4个新财务因子
+
+### 背景
+
+上一轮会话中创建了 `scripts/reset_eval.sh`，将因子评估简化为两步：
+1. `compute_factor_stats()` → IC 值
+2. `|IC|>0.01` → 激活
+
+这个简化流程有两个问题：
+- **阈值无依据**: 0.01（后来改为 0.02）是随手设的，`eb402d3` 提交中无任何推导
+- **缺少回测终判**: 23 个因子全过阈值，6 因子 baseline +54.2% → 23 因子 -18.0%
+
+### 根因修复: `get_financials()` cash_flow 合并 bug
+
+新增 4 个财务因子（roe_reported, roa, debt_ratio, accruals）IC 全为 0，排查发现 `data/store.py` 中 `get_financials()` 方法：
+- `SELECT f.symbol, f.stat_date, f.*` 创建重复列
+- 三表合并时 `stat_date_dup` 列冲突导致 pandas `MergeError`
+- `except Exception as e: pass` 静默吞错，cash_flow 数据全部丢失
+- 导致 `compute_accruals` 始终返回 NaN
+
+**修复**: 重写为 `WHERE (symbol, stat_date) IN (subquery)` + 只合并新列。
+
+修复后 4 个因子均有真实信号：
+| 因子 | IC | IR | 含义 |
+|------|-----|-----|------|
+| roa | +0.028 | +0.28 | 高 ROA → 高收益 |
+| roe_reported | +0.024 | +0.24 | 高 ROE → 高收益 |
+| debt_ratio | -0.024 | -0.21 | 高负债 → 低收益 |
+| accruals | -0.018 | -0.23 | 高应计 → 低收益 |
+
+### 评估标准重构: ADR 007
+
+取消固定 IC 阈值，采用三层统计推断（详见 `docs/adr/007-factor-evaluation-standard.md`）:
+
+| 层 | 方法 | 依据 |
+|----|------|------|
+| Layer 1 | IC t-test: t = |IR| × √n, t ≥ 2.0 | Harvey, Liu & Zhu (2016) |
+| Layer 2 | 边际 IC = IC_g - ρ'Σ⁻¹IC_F | Grinold & Kahn (1999) |
+| Layer 3 | 步进回测, IR 下降则淘汰 | 实证验证 |
+
+**新增/修改**:
+- `factor/marginal.py`: 边际贡献计算
+- `scripts/eval_stepwise.sh`: 三层流程自动化（替代 `reset_eval.sh` 的角色）
+- `scripts/reset_eval.sh`: 阈值恢复 0.02（过渡）
+- `scripts/build_fin_factors.sh`: 幂等化
+- `data/store.py`: `get_financials()` bug 修复
+
+### 待执行
+
+```bash
+bash scripts/eval_stepwise.sh
+```
+
+这将按新标准重新评估所有因子，仅保留通过三层检验的因子进入最终组合。

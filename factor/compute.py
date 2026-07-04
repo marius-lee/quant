@@ -1219,10 +1219,13 @@ def update_factor_evaluation(name: str, ic_mean: float, ic_ir: float):
 # ═══════════════════════════════════════════════════════════
 
 def compute_ep_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
-    """EP 比率 (1/PE) — 价值因子。低PE = 高EP = 高分。
+    """EP 比率 (1/PE_TTM) — 价值因子。低PE_TTM = 高EP = 高分。
+    数据来源: daily_basic.pe_ttm (baostock每日更新), 回退 stocks.pe
     来源: Fama & French (1992) — 价值因子 (HML)
     """
-    ep = 1.0 / fundamentals["pe"]
+    # 优先使用 daily_basic.pe_ttm (每日更新), 回退到 stocks.pe
+    pe_col = "pe_ttm" if "pe_ttm" in fundamentals.columns and fundamentals["pe_ttm"].notna().any() else "pe"
+    ep = 1.0 / fundamentals[pe_col]
     ep = ep.replace([np.inf, -np.inf], np.nan)
     return _cs_zscore(ep).rename("ep_ratio")
 
@@ -1270,6 +1273,85 @@ _FUNDAMENTAL_FN_MAP = {
     "high52w_dist":  ("high52w",        compute_high52w_dist),
     "size":          ("size_large_cap", compute_size),  # A股大盘溢价
 }
+
+
+def compute_roe_reported(fundamentals, date):
+    """报告期 ROE = net_profit / total_owner_equities
+    来源: Fama & French (2015) — 盈利能力因子
+    """
+    from data.store import DataStore
+    store = DataStore()
+    fin = store.get_financials(fundamentals.index.tolist(), date=date)
+    store.close()
+    if fin.empty or "net_profit" not in fin.columns or "total_owner_equities" not in fin.columns:
+        return pd.Series(np.nan, index=fundamentals.index, name="roe_reported")
+    roe = fin["net_profit"] / fin["total_owner_equities"]
+    roe = roe.replace([np.inf, -np.inf], np.nan)
+    roe = roe.where((roe > -1) & (roe < 1))  # filter extreme
+    return _cs_zscore(roe.reindex(fundamentals.index)).rename("roe_reported")
+
+
+def compute_roa(fundamentals, date):
+    """ROA = net_profit / total_assets
+    来源: Novy-Marx (2013) — 盈利能力
+    """
+    from data.store import DataStore
+    store = DataStore()
+    fin = store.get_financials(fundamentals.index.tolist(), date=date)
+    store.close()
+    if fin.empty or "net_profit" not in fin.columns or "total_assets" not in fin.columns:
+        return pd.Series(np.nan, index=fundamentals.index, name="roa")
+    roa = fin["net_profit"] / fin["total_assets"]
+    roa = roa.replace([np.inf, -np.inf], np.nan)
+    roa = roa.where((roa > -0.5) & (roa < 0.5))
+    return _cs_zscore(roa.reindex(fundamentals.index)).rename("roa")
+
+
+def compute_debt_ratio(fundamentals, date):
+    """资产负债率 = total_liability / total_assets（低分=低负债=好）
+    来源: Penman et al. (2007)
+    """
+    from data.store import DataStore
+    store = DataStore()
+    fin = store.get_financials(fundamentals.index.tolist(), date=date)
+    store.close()
+    if fin.empty or "total_liability" not in fin.columns or "total_assets" not in fin.columns:
+        return pd.Series(np.nan, index=fundamentals.index, name="debt_ratio")
+    dr = fin["total_liability"] / fin["total_assets"]
+    dr = dr.replace([np.inf, -np.inf], np.nan)
+    dr = dr.where((dr > 0) & (dr < 2))
+    # 低负债=高分 (取负号), IC=可能正向(高负债在A股可能预示扩张)
+    return _cs_zscore(dr).rename("debt_ratio")
+
+
+def compute_accruals(fundamentals, date):
+    """应计利润 = (net_profit - net_operate_cash_flow) / total_assets
+    来源: Sloan (1996) — 低应计利润=高质量盈利=未来高收益
+    取负号: 低应计→高分
+    """
+    from data.store import DataStore
+    store = DataStore()
+    fin = store.get_financials(fundamentals.index.tolist(), date=date)
+    store.close()
+    needed = ["net_profit", "net_operate_cash_flow", "total_assets"]
+    if fin.empty or not all(c in fin.columns for c in needed):
+        return pd.Series(np.nan, index=fundamentals.index, name="accruals")
+    acc = (fin["net_profit"] - fin["net_operate_cash_flow"]) / fin["total_assets"]
+    acc = acc.replace([np.inf, -np.inf], np.nan)
+    acc = acc.where((acc > -1) & (acc < 1))
+    # 低应计→高分 (IC=负向)
+    return _cs_zscore(-acc).rename("accruals")
+
+# 注册到 _FUNDAMENTAL_FN_MAP
+if "roe_reported" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["roe_reported"] = ("profitability", compute_roe_reported)
+if "roa" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["roa"] = ("profitability", compute_roa)
+if "debt_ratio" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["debt_ratio"] = ("leverage", compute_debt_ratio)
+if "accruals" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["accruals"] = ("quality", compute_accruals)
+
 
 def get_factor_names() -> list:
     """返回所有 status='active' 的因子名 (从 factor_registry 表读取)。"""

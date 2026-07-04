@@ -77,6 +77,19 @@ class DataStore:
                 reason    TEXT,
                 PRIMARY KEY (symbol, trade_date)
             );
+            CREATE TABLE IF NOT EXISTS daily_valuation (
+                symbol TEXT,
+                date TEXT,
+                pe_ttm REAL,
+                pb REAL,
+                ps_ttm REAL,
+                pcf_ttm REAL,
+                market_cap REAL,
+                turnover_rate REAL,
+                source TEXT DEFAULT 'jqdata',
+                PRIMARY KEY (symbol, date)
+
+            );
         """)
         conn.commit()
         # 为基本面因子添加列 (安全迁移, 列已存在时不报错)
@@ -1004,6 +1017,49 @@ class DataStore:
         ).fetchall()
         return {r[0]: r[1] for r in rows}
 
+
+    def get_financials(self, symbols: list, date: str = None) -> "pd.DataFrame":
+        """读取最近季度的财务报表数据(合并三表 balance + income + cash_flow)。
+
+        symbols: 股票代码列表
+        date: 交易日期 → 取最近 stat_date <= date 的季度数据
+        返回: DataFrame(index=symbol, 三表合并后的所有列)
+        """
+        import pandas as pd
+
+        conn = self._connect()
+        if not date:
+            date = datetime.today().strftime("%Y-%m-%d")
+
+        placeholders = ",".join("?" * len(symbols))
+        df = pd.DataFrame()
+
+        for tbl in ["balance", "income", "cash_flow"]:
+            sub = pd.read_sql_query(f"""
+                SELECT * FROM financial_{tbl}
+                WHERE (symbol, stat_date) IN (
+                    SELECT symbol, MAX(stat_date)
+                    FROM financial_{tbl}
+                    WHERE stat_date <= ? AND symbol IN ({placeholders})
+                    GROUP BY symbol
+                )
+            """, conn, params=[date] + symbols)
+
+            if sub.empty:
+                continue
+
+            sub = sub.set_index("symbol")
+            if df.empty:
+                df = sub
+            else:
+                # 只合并新列，不用 rsuffix，避免 stat_date_dup 冲突
+                cols_to_add = [c for c in sub.columns if c not in df.columns]
+                if cols_to_add:
+                    df = df.join(sub[cols_to_add], how="outer")
+
+        return df
+
+
     def get_fundamentals(self, symbols: list = None, date: str = None) -> pd.DataFrame:
         """读取基本面数据: PE, PB, 总市值, ROE, 行业, 52周高点, 最新收盘价。
 
@@ -1012,7 +1068,7 @@ class DataStore:
         返回: DataFrame(index=symbol, columns=[pe,pb,total_mv,roe,industry,high_52w,close_latest])
         """
         conn = self._connect()
-        base_cols = "symbol, pe, pb, total_mv, roe, industry, high_52w, eps, bvps"
+        base_cols = "symbol, pe, pe_ttm, pb, total_mv, roe, industry, high_52w, eps, bvps"
         if symbols:
             placeholders = ",".join("?" for _ in symbols)
             df = pd.read_sql_query(
@@ -1026,8 +1082,26 @@ class DataStore:
         df.loc[df["pe"] <= 0, "pe"] = None
         df.loc[df["pe"] > 1000, "pe"] = None
         df.loc[df["pb"] <= 0, "pb"] = None
-        # 加入最新收盘价 (从 daily 表取指定日期的 close)
+        # 如果有 date, 用 daily_valuation 的当日估值覆盖 stocks 快照
         if date:
+            val_df = pd.read_sql_query(
+                "SELECT symbol, pe_ttm, pb, ps_ttm, pcf_ttm, market_cap, turnover_rate "
+                "FROM daily_valuation WHERE date=?",
+                conn, params=(date,))
+            if not val_df.empty:
+                val_df = val_df.set_index("symbol")
+                # 用 JQData 当日估值覆盖 akshare 快照
+                for col in ["pe_ttm", "pb", "ps_ttm", "pcf_ttm", "market_cap"]:
+                    if col in val_df.columns:
+                        df[col] = val_df[col].combine_first(df.get(col, pd.Series(dtype=float)))
+                if "market_cap" in val_df.columns:
+                    # JQData market_cap 单位是亿元, akshare total_mv 是元 → 统一到元
+                    val_df["market_cap"] = val_df["market_cap"] * 1e8
+                    df["total_mv"] = val_df["market_cap"].combine_first(df["total_mv"])
+                # pe_ttm 同时覆盖 pe (compute_ep_ratio 优先用 pe_ttm)
+                if "pe_ttm" in val_df.columns:
+                    df["pe"] = val_df["pe_ttm"].combine_first(df["pe"])
+            # 加入最新收盘价
             df_date = pd.read_sql_query(
                 "SELECT symbol, close FROM daily WHERE date=?", conn, params=(date,))
             df_date = df_date.set_index("symbol").rename(columns={"close": "close_latest"})

@@ -557,9 +557,10 @@ if __name__ == "__main__":
         print(f"  临时目录: {sm.tmpdir}")
 
     except Exception as e:
+        import logging
+        _log = logging.getLogger("hikyuu_poc")
+        _log.error("Hikyuu component init failed: %s", e, exc_info=True)
         print(f"  ❌ 组件创建失败: {e}")
-        import traceback
-        traceback.print_exc()
 
     print("\n" + "=" * 60)
     print("下一步 (POC验证完成后):")

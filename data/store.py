@@ -61,6 +61,7 @@ class DataStore:
                 PRIMARY KEY (symbol, date)
             );
             CREATE INDEX IF NOT EXISTS idx_daily_date ON daily(date);
+            CREATE INDEX IF NOT EXISTS idx_stocks_market_sym ON stocks(market, symbol);
             CREATE TABLE IF NOT EXISTS meta (
                 key   TEXT PRIMARY KEY,
                 value TEXT

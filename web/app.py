@@ -92,6 +92,8 @@ def api_positions():
     """持仓 (从 trades.db 读取 — 通过 TradeRepo). ?strategy=过滤"""
     from flask import request
     strategy = request.args.get("strategy", "quant")
+    limit = min(int(request.args.get("limit", 100)), 100)  # 模板6: max 100
+    offset = int(request.args.get("offset", 0))
     positions = []
     try:
         from data.trade_repo import TradeRepo
@@ -109,14 +111,17 @@ def api_positions():
     except Exception:
         logger.warning("api_positions: query failed", exc_info=_DEBUG)
         return _api_response(error={"code": "INTERNAL", "message": "positions query failed"}), 500
-    return _api_response(data={"positions": positions})
+    paged = positions[offset:offset + limit]
+    return _api_response(data={"positions": paged}, meta={"total": len(positions), "limit": limit, "offset": offset})
 
 
 @app.route("/api/trades")
 def api_trades():
-    """交易历史. ?strategy=过滤"""
+    """交易历史. ?strategy=过滤&limit=N&offset=M (模板6分页)"""
     from flask import request
     strategy = request.args.get("strategy", "quant")
+    limit = min(int(request.args.get("limit", 100)), 100)
+    offset = int(request.args.get("offset", 0))
     trades = []
     positions = []
     try:
@@ -150,7 +155,7 @@ def api_trades():
     except Exception:
         logger.warning("api_trades: query failed (schema mismatch?)", exc_info=_DEBUG)
         return _api_response(error={"code": "INTERNAL", "message": "trades query failed"}), 500
-    return _api_response(data={"trades": trades, "positions": positions})
+    return _api_response(data={"trades": trades[offset:offset + limit], "positions": positions}, meta={"total_trades": len(trades), "limit": limit, "offset": offset})
 
 
 @app.route("/api/trade", methods=["POST"])
@@ -165,7 +170,7 @@ def api_record_trade():
     cost = float(data.get("cost", 0))
 
     if not symbol or price <= 0 or shares < 100:
-        return jsonify({"ok": False, "error": "参数不完整"})
+        return _api_response(error={"code": "INVALID_PARAMETER", "message": "参数不完整", "field": "symbol/price/shares"}), 400
 
     today = date.today().isoformat()
     conn = sqlite3.connect(TRADE_DB)
@@ -176,7 +181,7 @@ def api_record_trade():
                      (today, symbol, "buy", price, shares, data.get("board_count", 0)))
         conn.commit()
         conn.close()
-        return jsonify({"ok": True})
+        return _api_response(data={"ok": True})
 
     elif side == "sell":
         pnl = (price - cost) * shares
@@ -193,11 +198,11 @@ def api_record_trade():
                      (today, symbol, "sell", price, shares, round(pnl, 2), pnl_pct, round(capital_after, 2)))
         conn.commit()
         conn.close()
-        return jsonify({"ok": True, "pnl": round(pnl, 2), "pnl_pct": pnl_pct})
+        return _api_response(data={"ok": True, "pnl": round(pnl, 2), "pnl_pct": pnl_pct})
 
     else:
         conn.close()
-        return jsonify({"ok": False, "error": "side必须是buy或sell"})
+        return _api_response(error={"code": "INVALID_PARAMETER", "message": "side必须是buy或sell", "field": "side"}), 400
 
 
 @app.route("/api/state", methods=["POST"])
@@ -207,7 +212,7 @@ def api_update_state():
     data = request.get_json(force=True)
     data["timestamp"] = datetime.now().isoformat()
     update_state(data)
-    return jsonify({"ok": True})
+    return _api_response(data={"ok": True})
 
 
 @app.route("/api/quotes")
@@ -295,6 +300,27 @@ def api_performance():
         "valuation_method": valuation_method,
     }
     return _api_response(data=result)
+
+
+@app.route("/openapi.json")
+def api_openapi():
+    """OpenAPI 3.0 规范 (模板 6)"""
+    return jsonify({
+        "openapi": "3.0.3",
+        "info": {"title": "quant API", "version": "1.0.0", "description": "A股量化选股系统 API"},
+        "paths": {
+            "/api/state": {
+                "get": {"summary": "系统状态", "responses": {"200": {"description": "OK"}}},
+                "post": {"summary": "更新系统状态", "responses": {"200": {"description": "OK"}}}
+            },
+            "/api/factors": {"get": {"summary": "因子评估数据", "parameters": [{"name": "refresh", "in": "query", "schema": {"type": "boolean"}}], "responses": {"200": {"description": "OK"}}}},
+            "/api/positions": {"get": {"summary": "当前持仓", "parameters": [{"name": "strategy", "in": "query"}, {"name": "limit", "in": "query", "schema": {"type": "integer", "maximum": 100}}, {"name": "offset", "in": "query", "schema": {"type": "integer"}}], "responses": {"200": {"description": "OK"}}}},
+            "/api/trades": {"get": {"summary": "交易历史", "parameters": [{"name": "strategy", "in": "query"}, {"name": "limit", "in": "query", "schema": {"type": "integer", "maximum": 100}}, {"name": "offset", "in": "query", "schema": {"type": "integer"}}], "responses": {"200": {"description": "OK"}}}},
+            "/api/trade": {"post": {"summary": "记录交易", "requestBody": {"content": {"application/json": {"schema": {"type": "object"}}}}, "responses": {"200": {"description": "OK"}, "400": {"description": "参数错误"}}}},
+            "/api/quotes": {"get": {"summary": "实时行情", "parameters": [{"name": "symbols", "in": "query", "required": True}], "responses": {"200": {"description": "OK"}}}},
+            "/api/performance": {"get": {"summary": "绩效统计", "parameters": [{"name": "strategy", "in": "query"}, {"name": "quotes", "in": "query", "schema": {"type": "boolean"}}], "responses": {"200": {"description": "OK"}}}},
+        }
+    })
 
 
 if __name__ == "__main__":

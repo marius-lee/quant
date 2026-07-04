@@ -502,3 +502,20 @@ bash scripts/eval_stepwise.sh
 ```
 
 这将按新标准重新评估所有因子，仅保留通过三层检验的因子进入最终组合。
+
+
+## 2026-07-04 (续): IO-计算分离 (模板 2a)
+
+### 改动
+
+所有因子函数遵循模板 2a（量化/数据科学架构）：编排层负责 IO，因子函数纯计算。
+
+**具体变更**:
+- `compute_all_factors()`: 在调用基本面因子前预加载 financials，复用同一份数据传给 4 个财务因子
+- `compute_roe_reported/roa/debt_ratio/accruals`: 新增 `financials=None` 参数。有值时直接用，无值时回退到 DataStore 自加载（兼容旧调用）
+- 新增 `_FIN_FACTORS` 集合，声明哪些因子需要三表合并数据
+
+**收益**:
+- 4 个因子共享一次 IO，不再各自打开 DataStore
+- 因子函数可独立单测（传 mock DataFrame）
+- 换数据源只需改编排层，不动因子逻辑

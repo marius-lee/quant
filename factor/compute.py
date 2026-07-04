@@ -1275,14 +1275,16 @@ _FUNDAMENTAL_FN_MAP = {
 }
 
 
-def compute_roe_reported(fundamentals, date):
+def compute_roe_reported(fundamentals, date, financials=None):
     """报告期 ROE = net_profit / total_owner_equities
     来源: Fama & French (2015) — 盈利能力因子
     """
-    from data.store import DataStore
-    store = DataStore()
-    fin = store.get_financials(fundamentals.index.tolist(), date=date)
-    store.close()
+    fin = financials
+    if fin is None:
+        from data.store import DataStore
+        store = DataStore()
+        fin = store.get_financials(fundamentals.index.tolist(), date=date)
+        store.close()
     if fin.empty or "net_profit" not in fin.columns or "total_owner_equities" not in fin.columns:
         return pd.Series(np.nan, index=fundamentals.index, name="roe_reported")
     roe = fin["net_profit"] / fin["total_owner_equities"]
@@ -1291,14 +1293,16 @@ def compute_roe_reported(fundamentals, date):
     return _cs_zscore(roe.reindex(fundamentals.index)).rename("roe_reported")
 
 
-def compute_roa(fundamentals, date):
+def compute_roa(fundamentals, date, financials=None):
     """ROA = net_profit / total_assets
     来源: Novy-Marx (2013) — 盈利能力
     """
-    from data.store import DataStore
-    store = DataStore()
-    fin = store.get_financials(fundamentals.index.tolist(), date=date)
-    store.close()
+    fin = financials
+    if fin is None:
+        from data.store import DataStore
+        store = DataStore()
+        fin = store.get_financials(fundamentals.index.tolist(), date=date)
+        store.close()
     if fin.empty or "net_profit" not in fin.columns or "total_assets" not in fin.columns:
         return pd.Series(np.nan, index=fundamentals.index, name="roa")
     roa = fin["net_profit"] / fin["total_assets"]
@@ -1307,14 +1311,16 @@ def compute_roa(fundamentals, date):
     return _cs_zscore(roa.reindex(fundamentals.index)).rename("roa")
 
 
-def compute_debt_ratio(fundamentals, date):
+def compute_debt_ratio(fundamentals, date, financials=None):
     """资产负债率 = total_liability / total_assets（低分=低负债=好）
     来源: Penman et al. (2007)
     """
-    from data.store import DataStore
-    store = DataStore()
-    fin = store.get_financials(fundamentals.index.tolist(), date=date)
-    store.close()
+    fin = financials
+    if fin is None:
+        from data.store import DataStore
+        store = DataStore()
+        fin = store.get_financials(fundamentals.index.tolist(), date=date)
+        store.close()
     if fin.empty or "total_liability" not in fin.columns or "total_assets" not in fin.columns:
         return pd.Series(np.nan, index=fundamentals.index, name="debt_ratio")
     dr = fin["total_liability"] / fin["total_assets"]
@@ -1324,15 +1330,17 @@ def compute_debt_ratio(fundamentals, date):
     return _cs_zscore(dr).rename("debt_ratio")
 
 
-def compute_accruals(fundamentals, date):
+def compute_accruals(fundamentals, date, financials=None):
     """应计利润 = (net_profit - net_operate_cash_flow) / total_assets
     来源: Sloan (1996) — 低应计利润=高质量盈利=未来高收益
     取负号: 低应计→高分
     """
-    from data.store import DataStore
-    store = DataStore()
-    fin = store.get_financials(fundamentals.index.tolist(), date=date)
-    store.close()
+    fin = financials
+    if fin is None:
+        from data.store import DataStore
+        store = DataStore()
+        fin = store.get_financials(fundamentals.index.tolist(), date=date)
+        store.close()
     needed = ["net_profit", "net_operate_cash_flow", "total_assets"]
     if fin.empty or not all(c in fin.columns for c in needed):
         return pd.Series(np.nan, index=fundamentals.index, name="accruals")
@@ -1351,6 +1359,11 @@ if "debt_ratio" not in _FUNDAMENTAL_FN_MAP:
     _FUNDAMENTAL_FN_MAP["debt_ratio"] = ("leverage", compute_debt_ratio)
 if "accruals" not in _FUNDAMENTAL_FN_MAP:
     _FUNDAMENTAL_FN_MAP["accruals"] = ("quality", compute_accruals)
+
+
+# 需要三表(资产负债表+利润表+现金流量表)合并数据的因子名
+# 模板 2a: 这些因子接收 financials=DataFrame 参数, 不内部访问 DataStore
+_FIN_FACTORS = {"roe_reported", "roa", "debt_ratio", "accruals"}
 
 
 def get_factor_names() -> list:
@@ -1378,9 +1391,20 @@ def compute_all_factors(data: pd.DataFrame, date: str,
             get_logger("factor.compute").warning(f"price factor {name} failed: {e}")
             results[name] = pd.Series(dtype=float)
     if fundamentals is not None and not fundamentals.empty:
-        for name, (cat, fn) in load_active_fundamental_factors().items():
+        active_factors = load_active_fundamental_factors()
+        # 模板 2a: IO-计算分离 — 编排层预加载财务数据, 因子函数纯计算
+        financials = None
+        if fundamentals is not None and any(n in active_factors for n in _FIN_FACTORS):
+            from data.store import DataStore
+            store = DataStore()
+            financials = store.get_financials(fundamentals.index.tolist(), date=date)
+            store.close()
+        for name, (cat, fn) in active_factors.items():
             try:
-                results[name] = fn(fundamentals, date)
+                if name in _FIN_FACTORS and financials is not None:
+                    results[name] = fn(fundamentals, date, financials=financials)
+                else:
+                    results[name] = fn(fundamentals, date)
             except Exception as e:
                 from utils.logger import get_logger
                 get_logger("factor.compute").warning(f"fundamental factor {name} failed: {e}")

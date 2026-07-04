@@ -356,16 +356,14 @@ def _load_ic_from_db(filter_names=None) -> dict:
         db = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
         conn = _sql.connect(db)
         rows = conn.execute(
-            "SELECT name, ic_mean FROM factor_registry WHERE status='active' AND ABS(ic_mean) > 0.01"
+            "SELECT name, ic_mean FROM factor_registry WHERE status='active'"
         ).fetchall()
         conn.close()
         if not rows:
             return {}
         ic_map = {}
         for name, ic in rows:
-            ic_val = ic if isinstance(ic, (int, float)) else 0.0
-            if abs(ic_val) >= 0.01:
-                ic_map[name] = ic_val
+            ic_map[name] = ic if isinstance(ic, (int, float)) else 0.0
         if filter_names and ic_map:
             ic_map = {k: v for k, v in ic_map.items() if k in filter_names}
         total = sum(abs(v) for v in ic_map.values())

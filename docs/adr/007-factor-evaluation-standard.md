@@ -81,3 +81,22 @@ IR ≈ Sharpe - benchmark_Sharpe，衡量超额收益的稳定性。
 | Lasso/弹性网 | 自动选因子 | 黑箱, 不易解释 |
 
 选择 Grinold & Kahn 边际贡献：在可用数据（已有 IC + 相关性矩阵）和统计严谨性之间取得平衡。
+
+## 2026-07-04 补遗: 参数审计
+
+全量审计发现并移除了以下无依据参数:
+
+| 参数 | 位置 | 问题 | 修复 |
+|------|------|------|------|
+| `0.01` IR 默认值 | `marginal.py:109` | IR 缺失时默认 0.01, 制造假阳 | 改为 `inf` IR, 强制 t 检验失败 |
+| `0.005` 边际 IC ε | `marginal.py:112,212` | 任意噪声阈值, t 检验已够 | 删除, 只依赖 t-stat |
+| `0.01` IC 过滤 | `stats_cache.py:359` | 死代码, registry 已管理因子状态 | 移除, 直接读 `status='active'` |
+
+已确认有业界依据的参数 (保留):
+
+| 参数 | 依据 |
+|------|------|
+| `_cs_zscore min_count=30` | 中心极限定理, n≥30 |
+| `intersection top_fraction=0.20` | Fama-French 五分位组合标准 |
+| `pipeline soft_truncation top_frac=0.30` | Grinold & Kahn: alpha 应覆盖前 20-30% |
+| `stop_loss_pct=0.15` | 15% 是权益多空策略行业默认, 可通过配置覆盖 |

@@ -45,8 +45,16 @@ function loadTab(tab) {
 // ── API helpers ──
 async function fetchJSON(url) {
   const r = await fetch(url);
-  if (!r.ok) throw new Error(r.status);
-  return r.json();
+  const body = await r.json();
+  // 模板 6: 统一解包 {data, meta, error} 信封
+  if (body && typeof body.error !== 'undefined' && body.error) {
+    const err = new Error(body.error.message || 'API error');
+    err.code = body.error.code || 'INTERNAL';
+    err.details = body.error.details || [];
+    throw err;
+  }
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return body.data !== undefined ? body.data : body;
 }
 
 function renderTable(containerId, rows, cols, opts = {}) {

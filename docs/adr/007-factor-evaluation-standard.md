@@ -1,0 +1,83 @@
+# ADR 007: 因子评估标准 — 统计推断替代固定 IC 阈值
+
+**日期**: 2026-07-04
+**状态**: 已采纳
+**替代**: 此前 `scripts/reset_eval.sh` 中的 `|IC|≥0.02` 固定阈值
+
+---
+
+## 背景
+
+此前因子启用/淘汰依赖一个固定 IC 阈值（0.01 或 0.02）。该阈值：
+- 没有文献出处或统计推导
+- 在 `eb402d3` 提交中首次出现时无任何依据
+- 0.01 在上一轮被无理由降低，导致 23 个弱因子激活，回测从 +54.2% 跌至 -18.0%
+
+## 问题
+
+固定 IC 阈值有三个根本缺陷：
+
+1. **不考虑统计显著性**: IC=0.02 但只有 20 个数据点和 IC=0.02 但有 200 个数据点，置信度完全不同
+2. **不考虑边际贡献**: IC=0.04 但与已有因子相关性 0.95 的因子，增量信息为零
+3. **不过回测验证**: IC 高 ≠ 实盘有效。之前 high52w_dist IC=+0.095 但回测仅 +12.1%
+
+## 决策
+
+采用三层统计推断框架，对标 Grinold & Kahn (1999) 和 Harvey, Liu & Zhu (2016)。
+
+### Layer 1: 统计显著性 (IC t-test)
+
+```
+H0: IC_mean = 0
+t = |IC_mean| / (σ_IC / √n) = |IR| × √n
+
+阈值: t ≥ 2.0 (Harvey 等建议 3.0 用于多重检验修正)
+对应: |IR| ≥ 0.21 (n=90)
+```
+
+### Layer 2: 边际贡献 (Grinold & Kahn)
+
+```
+边际 IC(g|F) = IC_g - ρ_gF' · Σ_FF^{-1} · IC_F
+
+其中:
+- ρ_gF: 新因子与已有因子的截面相关性向量
+- Σ_FF: 已有因子的相关性矩阵
+- IC_F: 已有因子的 IC 向量
+
+阈值: 边际 IC > 0.005 且边际 t ≥ 2.0
+```
+
+直觉：如果新因子的 alpha 信号已被已有因子组合完全解释，边际 IC ≈ 0，不应加入。
+
+### Layer 3: 步进回测验证
+
+所有通过统计检验的因子，按边际 IC 排序，逐个加入回测。每加一个因子：
+- 如果组合 IR 提升，保留
+- 如果 IR 下降，淘汰并回退
+
+IR ≈ Sharpe - benchmark_Sharpe，衡量超额收益的稳定性。
+
+## 参考文献
+
+- Grinold, R. & Kahn, R. (1999). *Active Portfolio Management*. McGraw-Hill.
+- Harvey, C.R., Liu, Y. & Zhu, H. (2016). "...and the Cross-Section of Expected Returns." *Review of Financial Studies*, 29(1), 5-68.
+- Fama, E.F. & MacBeth, J.D. (1973). "Risk, Return, and Equilibrium: Empirical Tests." *Journal of Political Economy*, 81(3), 607-636.
+
+## 影响
+
+- `factor/marginal.py`: 新增，实现边际贡献计算
+- `scripts/eval_stepwise.sh`: 更新，三层流程替代固定阈值
+- `scripts/reset_eval.sh`: IC 阈值步骤待退役，由 eval_stepwise.sh 替代
+- 所有因子启用/淘汰决策需记录在 FACTOR-AUDIT 中，包含 t-stat 和边际 IC
+
+## 替代方案考虑
+
+| 方案 | 优点 | 缺点 |
+|------|------|------|
+| 固定 IC 阈值 | 简单 | 无统计依据, 阈值任意 |
+| Fama-MacBeth 回归 | 黄金标准 | 计算成本高, 需逐日截面回归 |
+| Grinold & Kahn 边际贡献 | 有理论支撑, 可用已有数据 | 依赖相关性矩阵稳定性 |
+| Lasso/弹性网 | 自动选因子 | 黑箱, 不易解释 |
+
+选择 Grinold & Kahn 边际贡献：在可用数据（已有 IC + 相关性矩阵）和统计严谨性之间取得平衡。

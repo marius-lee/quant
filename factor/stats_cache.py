@@ -93,11 +93,18 @@ def compute_factor_stats(
     except ImportError:
         logger.info("tqdm not installed, computing without progress bar")
         date_iter = eval_dates
-    # Load fundamentals for fundamental factor computation
-    fundamentals = store.get_fundamentals(symbols, date=end_date)
+    # Pre-load daily_valuation for all eval dates (avoids per-date DB queries)
+    val_conn = store._connect()
+    val_df = pd.read_sql_query(
+        "SELECT * FROM daily_valuation WHERE date >= ? AND date <= ?",
+        val_conn, params=(eval_dates[0].strftime("%Y-%m-%d") if hasattr(eval_dates[0], 'strftime') else str(eval_dates[0])[:10],
+                          eval_dates[-1].strftime("%Y-%m-%d") if hasattr(eval_dates[-1], 'strftime') else str(eval_dates[-1])[:10]))
+    has_daily_val = not val_df.empty
 
     for d in date_iter:
         date_str = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10]
+        # Load per-date fundamentals (with daily_valuation override if available)
+        fundamentals = store.get_fundamentals(symbols, date=date_str)
         try:
             fv = compute_all_factors(data, date_str, fundamentals=fundamentals)
             for name in factor_names:
@@ -264,6 +271,15 @@ def compute_factor_stats(
         "meta": meta,
         "cached_at": datetime.now().isoformat(),
     }
+    # 每次计算后同步写入 factor_registry，防止不同步
+    try:
+        from factor.compute import update_factor_evaluation
+        for k, ic_val in ic_means.items():
+            ir_val = ic_irs.get(k, 0.0)
+            update_factor_evaluation(k, ic_val, ir_val)
+    except Exception as e:
+        logger.warning(f"factor_registry update failed: {e}")
+
     return result
 
 
@@ -322,11 +338,7 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = 200) -
         conn.close()
         logger.info("factor snapshot saved to factor_snapshot table")
 
-        from factor.compute import update_factor_evaluation
-        factor_keys = stats.get("factor_keys", [])
-        ic_vals = stats.get("ic", [])
-        for k, ic in zip(factor_keys, ic_vals):
-            update_factor_evaluation(k, ic, 0.0)
+
     except Exception as e:
         logger.warning(f"Factor snapshot write failed: {e}")
 

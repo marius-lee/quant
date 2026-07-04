@@ -3,6 +3,9 @@
 计算成本高（需遍历历史数据算 IC/IR/相关性），每次刷新页面不应该重算。
 评估结果存入 factor_snapshot 表，24h 过期自动重算。
 
+benchmark (模板 5): ~1.0s/factor @ 300 stocks × 120 dates (M1 Max).
+regression threshold: >2.0s/factor 时排查 (索引丢失 / O(n²)退化 / 磁盘IO瓶颈).
+
 用法:
   from factor.stats_cache import get_cached_factor_stats
   stats = get_cached_factor_stats()  # 返回前端需要的 dict

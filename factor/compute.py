@@ -619,8 +619,8 @@ def compute_limit_up_proximity(data: "pd.DataFrame", date: str, window: int = 5)
     # Determine board limit: use market info from stocks table
     # 主板 ±10%, 科创(688xxx) ±20%, 创业(300xxx) ±20%, 北交(8/9xxxxx) ±30%
     import sqlite3
-    db_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "market.db")
-    conn = sqlite3.connect(db_path)
+    db_path = _market_db_path()
+    conn = _db_connect()
     symbols_sample = list(close.columns[:100])  # sample for market check
     placeholders = ",".join("?" * len(symbols_sample))
     market_rows = conn.execute(
@@ -833,8 +833,8 @@ def compute_lhb_net_buy(data: "pd.DataFrame", date: str, window: int = 20) -> "p
     添加日期: 2026-07-03 — lhb_detail 表补齐后激活.
     """
     import sqlite3
-    db_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "market.db")
-    conn = sqlite3.connect(db_path)
+    db_path = _market_db_path()
+    conn = _db_connect()
 
     symbols = list(data["close"].columns)
 
@@ -891,8 +891,8 @@ def compute_lhb_post_quality(data: "pd.DataFrame", date: str, window: int = 90) 
     添加: 2026-07-03 — lhb_detail 表补齐后, post_5d 字段已有 24,386 行.
     """
     import sqlite3
-    db_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "market.db")
-    conn = sqlite3.connect(db_path)
+    db_path = _market_db_path()
+    conn = _db_connect()
 
     symbols = list(data["close"].columns)
 
@@ -943,8 +943,8 @@ def compute_margin_balance_chg(data: "pd.DataFrame", date: str, window: int = 5)
     添加: 2026-07-03 — Phase 8 P2, margin_detail 表同步后激活.
     """
     import sqlite3
-    db_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "market.db")
-    conn = sqlite3.connect(db_path)
+    db_path = _market_db_path()
+    conn = _db_connect()
     symbols = list(data["close"].columns)
     date_str = str(date)[:10]
 
@@ -972,7 +972,7 @@ def compute_margin_balance_chg(data: "pd.DataFrame", date: str, window: int = 5)
         pass
 
     # Re-query properly
-    conn2 = sqlite3.connect(db_path)
+    conn2 = _db_connect()
     today_rows = conn2.execute(
         "SELECT symbol, margin_balance FROM margin_detail WHERE date=?", (date_str,)
     ).fetchall()
@@ -1006,8 +1006,8 @@ def compute_margin_buy_ratio(data: "pd.DataFrame", date: str, window: int = 5) -
     添加: 2026-07-03 — Phase 8 P2.
     """
     import sqlite3
-    db_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "market.db")
-    conn = sqlite3.connect(db_path)
+    db_path = _market_db_path()
+    conn = _db_connect()
     symbols = list(data["close"].columns)
     date_str = str(date)[:10]
 
@@ -1045,8 +1045,8 @@ def compute_main_flow_ratio(data: "pd.DataFrame", date: str, window: int = 5) ->
     添加: 2026-07-03 — Phase 8 P2.
     """
     import sqlite3
-    db_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "market.db")
-    conn = sqlite3.connect(db_path)
+    db_path = _market_db_path()
+    conn = _db_connect()
     symbols = list(data["close"].columns)
     date_str = str(date)[:10]
 
@@ -1086,8 +1086,8 @@ def compute_fund_change(data: "pd.DataFrame", date: str, window: int = 0) -> "pd
     添加: 2026-07-03 — Phase 9.
     """
     import sqlite3
-    db_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "market.db")
-    conn = sqlite3.connect(db_path)
+    db_path = _market_db_path()
+    conn = _db_connect()
     symbols = list(data["close"].columns)
     date_str = str(date)[:10]
 
@@ -1118,8 +1118,8 @@ def compute_analyst_buy(data: "pd.DataFrame", date: str, window: int = 0) -> "pd
     添加: 2026-07-03 — Phase 9.
     """
     import sqlite3
-    db_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "market.db")
-    conn = sqlite3.connect(db_path)
+    db_path = _market_db_path()
+    conn = _db_connect()
     symbols = list(data["close"].columns)
     date_str = str(date)[:10]
 
@@ -1171,6 +1171,15 @@ _PRICE_FN_MAP = {
 
 def _market_db_path():
     return _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "market.db")
+
+
+def _db_connect():
+    """模板 5: 模块级共享连接 + WAL 模式. 避免每个因子函数独立 connect()."""
+    conn = sqlite3.connect(_market_db_path())
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
 
 def load_active_price_factors():
     """从 factor_registry 表加载 status='active' 的价格因子 → {name: (cat, window, fn)}."""

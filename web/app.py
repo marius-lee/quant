@@ -12,6 +12,13 @@ from utils.logger import get_logger
 logger = get_logger("web.app")
 app = Flask(__name__)
 _DEBUG = os.environ.get("FLASK_DEBUG", "0") == "1"
+
+
+def _api_response(data=None, *, meta=None, error=None):
+    """模板 6: 统一 API 响应信封 {data, meta, error}.
+    error 格式: {"code": "ERROR_CODE", "message": "人类可读描述", "details": [...]} (可选)
+    """
+    return jsonify({"data": data, "meta": meta, "error": error})
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
@@ -56,8 +63,8 @@ def index():
 
 @app.route("/api/state")
 def api_state():
-    """当前完整状态: 资金 + 持仓 + 信号 + 暴露"""
-    return jsonify(get_state())
+    """当前完整状态 (模板6: {data, error} 信封): 资金 + 持仓 + 信号 + 暴露"""
+    return _api_response(data=get_state())
 
 
 @app.route("/api/factors")
@@ -73,11 +80,11 @@ def api_factors():
     force = request.args.get("refresh", "false").lower() == "true"
     try:
         stats = get_cached_factor_stats(force_refresh=force)
-        return jsonify(stats)
+        return _api_response(data=stats)
     except Exception as e:
         from utils.logger import get_logger
         get_logger("web.app").warning(f"Factor stats failed: {e}")
-        return jsonify({"error": str(e), "factors": [], "ic": [], "ic_ir": []})
+        return _api_response(error={"code": "FACTOR_ERROR", "message": str(e)})
 
 
 @app.route("/api/positions")
@@ -101,8 +108,8 @@ def api_positions():
             })
     except Exception:
         logger.warning("api_positions: query failed", exc_info=_DEBUG)
-        return jsonify({"positions": [], "error": "internal"}), 500
-    return jsonify({"positions": positions})
+        return _api_response(error={"code": "INTERNAL", "message": "positions query failed"}), 500
+    return _api_response(data={"positions": positions})
 
 
 @app.route("/api/trades")
@@ -142,8 +149,8 @@ def api_trades():
         conn.close()
     except Exception:
         logger.warning("api_trades: query failed (schema mismatch?)", exc_info=_DEBUG)
-        return jsonify({"trades": [], "positions": [], "error": "internal"}), 500
-    return jsonify({"trades": trades, "positions": positions})
+        return _api_response(error={"code": "INTERNAL", "message": "trades query failed"}), 500
+    return _api_response(data={"trades": trades, "positions": positions})
 
 
 @app.route("/api/trade", methods=["POST"])
@@ -215,14 +222,14 @@ def api_quotes():
     from execution.quote import fetch_quotes, is_trading_time
     syms_str = request.args.get("symbols", "")
     if not syms_str:
-        return jsonify({"quotes": {}})
+        return _api_response(data={"quotes": {}})
     symbols = [s.strip() for s in syms_str.split(",") if s.strip() and len(s.strip()) == 6]
     if not symbols:
-        return jsonify({"quotes": {}})
+        return _api_response(data={"quotes": {}})
     if not is_trading_time():
-        return jsonify({"quotes": {}, "status": "closed"})
+        return _api_response(data={"quotes": {}, "status": "closed"})
     quotes = fetch_quotes(symbols)
-    return jsonify({"quotes": quotes, "status": "open"})
+    return _api_response(data={"quotes": quotes, "status": "open"})
 
 
 @app.route("/api/performance")
@@ -287,7 +294,7 @@ def api_performance():
         "capital": round(capital, 2),
         "valuation_method": valuation_method,
     }
-    return jsonify(result)
+    return _api_response(data=result)
 
 
 if __name__ == "__main__":

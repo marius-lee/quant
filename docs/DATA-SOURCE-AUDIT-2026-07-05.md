@@ -210,3 +210,25 @@ pytdx → tencent → akshare
 2. **P1 — 将 tushare 接入 daily 回退链**: 有 token 时，`_fetch_batch_tushare` 应作为第二源，给 akshare 减负。
 3. **P2 — 清理僵尸代码**: 移除 sina/tickflow/zzshare 的未用 fetch 函数，或接入 `all_sources`。
 4. **P3 — 为 akshare 添加第二个源**: 至少行业分类和 PE/PB 应该有备选方案。
+
+---
+
+## 附录 B: 凭证就绪后重测 (2026-07-05 PM)
+
+**凭证状态**: TUSHARE_TOKEN 已配置, JQDATA_USER/PASS 已配置 (`config/.env`)
+
+| 数据源 | 结果 | 详情 |
+|--------|:--:|------|
+| baostock | ❌ | 脚本语法错误 (已修复) — 重新测试待定 |
+| tushare | ✅ | stock_basic 5行, daily_basic 1行. Token 有效, 200call/min |
+| JQData | ⚠️ | Auth 成功, valuation 返回 0 行 — trial 过期确认 |
+| akshare | ⚠️ | stock list 5528行 ✅, stock_zh_a_hist ConnectionError ❌ — IP 封禁范围扩大 |
+| tencent | ✅ | 500行 qfq, 稳定 |
+| pytdx | ✅ | 3 bars, 可达 |
+
+**关键变化**:
+- **tushare 重新可用**: Token 有效, 应接入 daily 回退链作为第二源
+- **akshare OHLCV 进一步退化**: stock_zh_a_hist 现在连接被拒, 仅 stock list 可用
+- **JQData 无恢复可能**: trial 确认过期, PE/PB 真空问题仍需修复
+
+**建议更新回退链**: `pytdx → tencent → tushare → akshare` (akshare 放最后)

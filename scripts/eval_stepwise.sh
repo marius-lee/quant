@@ -170,7 +170,7 @@ print(f'WEALTH={{wealth:.2f}}')
 print(f'SHARPE={{sharpe:.4f}}')
 print(f'IR={{ir:.4f}}')
 """
-    ], capture_output=True, text=True, timeout=600, env={**os.environ, 'PYTHONPATH': '.'})
+    ], capture_output=True, text=True, timeout=1200, env={**os.environ, 'PYTHONPATH': '.'})
 
     elapsed = time.time() - tt
 

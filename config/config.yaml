@@ -1,6 +1,11 @@
 data:
   tushare_token: ${TUSHARE_TOKEN}
   start_date: '2020-01-01'
+  stale_days: 250                      # 数据过期阈值 (1年交易日)
+  batch_size: 50                       # 批量拉取大小 (TickFlow 最优)
+  gap_fill_limit: 100                  # 单次 gap fill 上限
+  pe_max: 1000                         # PE 极端值过滤 (>此值视为噪声)
+  derived_ratio_max: 100               # 派生比率过滤 (PE/PB 衍生值上限)
 factor:
   windows:
     volatility: 20           # Andersen et al. (2001): 20-60日标准
@@ -22,6 +27,11 @@ factor:
   - 5
   - 20
   enable_quality: false
+  stats:
+    snapshot_ttl_sec: 86400            # 因子快照缓存有效期 (24h)
+    ic_min_periods: 20                 # IC 计算最少截面数
+  compute:
+    zscore_min_count: 30               # 截面 z-score 最少股票数 (CLT n>=30)
 alpha:
   # 2026-07-03: intersection → ic_weighted (see HANDOFF for analysis)
   method: ic_weighted
@@ -40,6 +50,11 @@ risk:
   exclude_star_st: true
   exclude_markets:
   - BJ
+  covariance:
+    window: 60                         # 协方差估计滚动窗口 (交易日)
+    min_periods: 30                    # 协方差估计最少数据量
+  neutralization:
+    industry_min_count: 30             # 行业中性化最少标签数
 optimizer:
   method: equal_weight
   rebalance_freq: weekly
@@ -51,7 +66,13 @@ execution:
   stamp_tax: 0.001
   slippage: 0.001
 backtest:
-  benchmark: '000300'
+  benchmark: '000300'                  # 基准指数
+  lot_size: 100                        # A股每手100股, 交易所规则
+  default_capital: 5000                # 回测默认初始资金 (元)
+  default_start: '2026-01-01'          # 回测默认起始日期
+  default_end: '2026-06-30'            # 回测默认结束日期
+  rebalance_interval_days: 5           # 调仓间隔 (交易日)
+  min_backtest_days: 250               # 回测最少交易日数 (Grinold & Kahn 1999)
 web:
   port: 8521
 

@@ -674,7 +674,7 @@ class DataStore:
 
         baostock 在 Python 3.14 不可用，改用 akshare。
         limit=0 表示全部（很慢, ~5000 stocks × 1.5s each ≈ 2h）。
-        建议: limit=100 测试，增量同步会自然填充新数据。
+        默认 limit 来自 config data.gap_fill_limit, 增量同步会自然填充新数据。
         """
         try:
             import akshare as ak
@@ -776,7 +776,7 @@ class DataStore:
         from datetime import date, timedelta, datetime
         from utils.date import to_str
         cutoff = to_str(date.today() - timedelta(days=2))
-        stale_days = 250
+        stale_days = cfg("data.stale_days", 250)  # 数据过期阈值
 
         # 单次查询: PK(symbol,date) 覆盖索引, GROUP BY symbol 只取首尾
         rows = conn.execute("""
@@ -856,7 +856,7 @@ class DataStore:
                 pass
 
         total_new = 0
-        batch_size = 50  # TickFlow batch 效率最高
+        batch_size = cfg("data.batch_size", 50)  # 批量大小
         sources = {}     # source → count
 
         for i in range(0, len(symbols), batch_size):
@@ -1215,7 +1215,7 @@ class DataStore:
         null_roe = df["roe"].isna() | (df["roe"] <= 0)
         if null_roe.any():
             derived = df["pb"] / df["pe"].replace(0, None)
-            derived = derived.where((derived > 0) & (derived < 100))
+            derived = derived.where((derived > 0) & (derived < cfg("data.derived_ratio_max", 100)))
             df.loc[null_roe, "roe"] = derived.loc[null_roe]
 
         # high52w: compute from daily table (MAX close over 252 trading days)

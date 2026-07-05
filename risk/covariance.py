@@ -112,8 +112,8 @@ def ledoit_wolf_cov(
 def covariance_matrix(
     returns: pd.DataFrame,
     method: str = "ledoit_wolf",
-    window: int = 60,
-    min_periods: int = 30,
+    window: int = None,
+    min_periods: int = None,
 ) -> pd.DataFrame:
     """统一的协方差估计入口。
 
@@ -124,11 +124,17 @@ def covariance_matrix(
 
     返回: 协方差矩阵 DataFrame
     """
+    if window is None:
+        window = _cfg("risk.covariance.window", 60)
+    if min_periods is None:
+        min_periods = _cfg("risk.covariance.min_periods", 30)
+
     # 取最近 window 个有效交易日
     recent = returns.iloc[-window:].dropna(axis=1, how="all")
 
     if len(recent) < min_periods:
         from utils.logger import get_logger
+from config.loader import get as _cfg
         get_logger("risk.covariance").warning(
             f"covariance: only {len(recent)}/{min_periods} periods available"
         )

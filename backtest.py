@@ -20,18 +20,26 @@ from utils.logger import get_logger
 
 logger = get_logger("backtest")
 TRADE_DB = os.path.join(os.path.dirname(__file__), "data", "trades.db")
-LOT_SIZE = 100
+LOT_SIZE = cfg("backtest.lot_size", 100)
 
 # 回测区间最低交易日数 — Grinold & Kahn (1999): 60月≈250日, 量化策略评估最低线
 # Lo (2002): SE(Sharpe) = √[(1+½S²)/T], T<1年时无统计价值
-_MIN_BACKTEST_DAYS = 250
+cfg("backtest.min_backtest_days", 250) = 250
 
 
-def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
+def run_backtest(start_date=None, end_date=None, capital=None):
     """在 [start_date, end_date] 区间内逐日运行 pipeline。
+    默认值来源: config.yaml backtest.default_* (单一真相源).
 
     返回: DataFrame(index=date, columns=[cash, positions_value, total_wealth, return])
     """
+    if start_date is None:
+        start_date = cfg("backtest.default_start", "2026-01-01")
+    if end_date is None:
+        end_date = cfg("backtest.default_end", "2026-06-30")
+    if capital is None:
+        capital = cfg("backtest.default_capital", 5000)
+
     import pipeline
     from execution.engine import Order  # P0-2: unified Order dataclass
 
@@ -41,7 +49,7 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
 
     store = DataStore()
     # 同步基准指数数据
-    sync_benchmark("000300")
+    sync_benchmark(cfg("backtest.benchmark", "000300"))
     engine = ExecutionEngine()
     engine.set_initial_capital("quant", capital)
 
@@ -53,15 +61,16 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
 
     # 回测周期需覆盖至少 250 个交易日 (≈1年, 50次调仓) 以保证 Sharpe/IR 估计的统计意义
     # Grinold & Kahn (1999): 60月≈250日; Lo (2002): SE(Sharpe) = √[(1+½S²)/T]
-    if len(all_dates) < _MIN_BACKTEST_DAYS:
+    if len(all_dates) < cfg("backtest.min_backtest_days", 250):
         logger.warning(
             f"回测区间仅 {len(all_dates)} 个交易日 ({len(rebalance_dates)} 次调仓), "
-            f"少于业界最低标准 {_MIN_BACKTEST_DAYS} 天 (1年), Sharpe/IR 估计不可靠"
+            f"少于业界最低标准 {cfg("backtest.min_backtest_days", 250)} 天 (1年), Sharpe/IR 估计不可靠"
         )
         # 仍继续执行 — 短期回测仍有相对比较价值
 
     # 每2周调仓一次 (减少交易成本)
-    rebalance_dates = all_dates[::5]  # 每5个交易日一次
+    rebalance_interval = cfg("backtest.rebalance_interval_days", 5)
+    rebalance_dates = all_dates[::rebalance_interval]  # 默认每5个交易日一次
     logger.info(f"Backtest: {len(all_dates)} trading days, {len(rebalance_dates)} rebalance dates")
 
     results = []

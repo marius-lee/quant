@@ -6,6 +6,12 @@ PROJECT=/Users/mariusto/project/quant
 V12=$PROJECT/.venv-tushare/bin/python3
 V14=$PROJECT/.venv/bin/python3
 
+
+# 自动加载 config/.env 凭证
+ENV_FILE="$PROJECT/config/.env"
+if [ -f "$ENV_FILE" ]; then
+  export $(grep -v '^#' "$ENV_FILE" | grep -v '^$' | xargs)
+fi
 SEP="============================================================"
 echo "$SEP"
 echo "数据源连通性测试 — 2026-07-05"

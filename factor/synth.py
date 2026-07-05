@@ -76,6 +76,9 @@ def ic_weighted(
     return composite
 
 
+import logging
+_log = logging.getLogger("quant.factor.synth")
+
 def sleeve_compose(
     factor_values: dict,
     positions_per_factor: int = 8,
@@ -93,12 +96,16 @@ def sleeve_compose(
     返回: Series(index=symbol), 值 = 1.0 (标记入选)
     """
     if len(factor_values) < min_factors:
+        _log.debug("sleeve_compose: %d factors < min_factors=%d, returning empty", len(factor_values), min_factors)
         return pd.Series(dtype=float)
 
     selected = set()
 
     for name, scores in factor_values.items():
         valid = scores.dropna()
+        cnt = len(valid)
+        sel_n = min(positions_per_factor, cnt)
+        _log.debug("sleeve: %s → %d/%d valid, picking top %d", name, cnt, len(scores), sel_n)
         if len(valid) == 0:
             continue
 
@@ -108,7 +115,9 @@ def sleeve_compose(
         selected.update(top_stocks)
 
     if not selected:
+        _log.warning("sleeve_compose: 0 stocks selected from %d factors", len(factor_values))
         return pd.Series(dtype=float)
+    _log.info("sleeve: %d factors → %d stocks (positions_per_factor=%d)", len(factor_values), len(selected), positions_per_factor)
 
     # 所有入选股票得分 = 1.0 (等权交给 risk 层)
     return pd.Series(1.0, index=sorted(selected))

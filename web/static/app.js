@@ -3,7 +3,7 @@
    ══════════════════════════════════════════════ */
 
 const API = '/api';
-const POLL_MS = 15000;
+const POLL_MS = 5000;
 const PLOTLY_CONFIG = { responsive: true, displayModeBar: false };
 const PLOTLY_FONT = { color: '#8b949e', family: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif', size: 11 };
 const PLOTLY_BG = { paper_bgcolor: '#161b22', plot_bgcolor: '#161b22' };
@@ -444,11 +444,39 @@ function updateNavStatus(state) {
   el.innerHTML = `<span class="status-badge ${cls}">${status}</span>`;
 }
 
+// ── SSE 实时推送 (primary channel for state updates) ──
+let _sseRetry = 0;
+let _sseConn = null;
+function connectSSE() {
+  if (_sseConn) _sseConn.close();
+  _sseConn = new EventSource(API + '/stream');
+  _sseConn.onmessage = (e) => {
+    _sseRetry = 0;  // reset on success
+    try {
+      const state = JSON.parse(e.data);
+      if (state) {
+        // SSE pushes state only; performance (KPIs) still via poll
+        renderSignals(state);
+        updateNavStatus(state);
+        window._stateData = state;
+      }
+    } catch (_) { /* ignore parse errors */ }
+  };
+  _sseConn.onerror = () => {
+    _sseConn.close();
+    // exponential backoff: 5s, 10s, 20s... max 30s
+    const delay = Math.min(5000 * Math.pow(2, Math.min(_sseRetry, 3)), 30000);
+    _sseRetry++;
+    setTimeout(connectSSE, delay);
+  };
+}
+
 // ── Init: render text content immediately, defer charts ──
 document.addEventListener('DOMContentLoaded', () => {
+  connectSSE();                         // Primary: SSE push state
   pollOverview();                       // Fast: KPI + tables only
-  setInterval(pollOverview, POLL_MS);
-
+  setInterval(pollOverview, POLL_MS);   // Fallback: 5s poll for perf + SSE backup
+ 
   // Defer chart rendering until Plotly is fully loaded and parsed
   const checkPlotly = () => {
     if (typeof Plotly !== 'undefined' && !_chartsRendered) {

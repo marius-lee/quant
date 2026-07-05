@@ -253,3 +253,23 @@ pytdx → tencent → akshare
 | `stock_zh_a_hist` (K线) | push2his.eastmoney.com | ❌ RemoteDisconnected |
 
 如果 IP 被封，所有接口都会挂。实际是 K 线接口被东方财富根据请求特征 (User-Agent / Referer / 频率) 主动掐断连接。这是东方财富近期的反爬升级，和免费/付费无关。
+
+---
+
+## 附录 D: 脚本修复后全源重测 (2026-07-05 PM, 第二次)
+
+**修复**: baostock heredoc 语法, akshare northbound 参数名
+
+| 数据源 | 结果 | 详情 |
+|--------|:--:|------|
+| baostock | ✅ | K线 3行, 行业 5532行, 股票列表 8819行. **确认存活** |
+| tushare | ⚠️ | Token 有效但 stock_basic 频率超限 (免费 1次/小时) |
+| JQData | ⚠️ | Auth 成功, valuation @2026-07-01 0行 — trial 范围外 |
+| akshare | ✅ | 全过: stock list 5528, OHLCV 3, lhb 452, margin 1981, fund flow 120. northbound 参数修正后待测 |
+| tencent | ✅ | 500行 qfq, 稳定 |
+| pytdx | ✅ | 3 bars, 可达 |
+
+**关键修正**:
+- **baostock 从未宕机** — 此前附录 B 的 "❌ 脚本语法错误" 和正文的 "Socket error / 服务端宕机" 均为误判。真正原因: 沙箱 TCP 阻断 + 脚本 heredoc 语法 bug
+- **akshare 从未被封 IP** — 此前附录 B 的 "ConnectionError" 为网络波动，不是 IP 封禁。所有接口正常
+- **tushare 免费 tier 极严** — stock_basic 仅 1次/小时，不适合高频同步。适合作为 backup 备源

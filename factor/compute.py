@@ -367,13 +367,12 @@ def compute_hsgt_flow(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.S
 # ═══════════════════════════════════════════════════════════
 # 因子注册表 (经 IC/IR 实证验证, 2025Q1-2026Q2 截面评估)
 # ═══════════════════════════════════════════════════════════
-#  动量:     momentum_10d   IC=+0.017  — Jegadeesh & Titman (1993)
-#  低波:     volatility_20d IC=+0.034  — 低波动异象 (最强价格因子)
-#  偏度:     skewness_20d   IC=-0.016  — 负偏度溢价 (A股取+skew方向)
-#  换手反转: turnover_rev_5d           — Lee & Swaminathan (2000)
-#  特质波动: idio_vol_20d              — Ang et al. (2006) 特质波动异象
-#  北向资金: hsgt_flow_5d              — 陆股通资金流 (数据待同步)
-#  流动性:   amihud_20d                — Amihud (2002) 非流动性溢价
+#  动量:     momentum_63d/126d/252d   — Jegadeesh & Titman (1993) 标准窗口
+#  低波:     volatility_126d            — 低波动异象 (Kakushadze & Serur Ch.3.4)
+#  偏度:     skewness_60d               — 负偏度溢价 (Barberis & Huang 2008)
+#  换手反转: turnover_rev_5d            — Lee & Swaminathan (2000)
+#  特质波动: idio_vol_126d              — Ang et al. (2006)
+#  流动性:   amihud_250d                — Amihud (2002) 非流动性溢价
 # ═══════════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════════

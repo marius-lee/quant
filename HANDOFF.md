@@ -47,7 +47,7 @@
 ### 因子评估现状
 - 当前 active: 1 个 (zt_streak, IC=+0.0424, t=7.1, IR=+0.65)
 - n=800 / lookback=120 下 bp_ratio/size/gap_5d 不显著 (t<2.0)
-- reversal_5d/volatility_20d/amihud_20d 不显著 (t<2.0)
+- reversal_5d/volatility_126d/amihud_250d 不显著 (t<2.0)
 - 每日估值数据 425,493 行，基本面数据完整
 
 ### 回测基线

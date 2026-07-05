@@ -29,13 +29,7 @@ for name, category, func, reason in variants:
         """, (reason, name))
         print(f"  ~ {name} reactivated")
 
-# Ensure momentum_10d stays deprecated
-conn.execute("""
-    UPDATE factor_registry SET status='deprecated',
-    status_reason='窗口10d偏离标准下限21d (ADR 022); 替代: momentum_63d/126d/252d'
-    WHERE name='momentum_10d'
-""")
-print("  - momentum_10d stays deprecated")
+# momentum_10d already deleted from registry (ADR 023)
 
 conn.commit()
 

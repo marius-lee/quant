@@ -64,7 +64,7 @@
     "bp_ratio",
     "size",
     "gap_5d",
-    "amihud_20d"
+    "amihud_250d"
   ],
   "best_method": "intersection (top 20%, primary=gap_5d)",
   "backtest_result": {

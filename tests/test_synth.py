@@ -21,7 +21,10 @@ class TestSleeveCompose:
         # f2 top 2: B(0.8), D(0.7)
         # union: A, B, D
         assert set(result.index) == {'A', 'B', 'D'}
-        assert (result == 1.0).all()
+        # P43: sleeve_compose now returns raw z-score, not equal-weight 1.0
+        assert result["A"] == 0.9
+        assert result["B"] == 0.8  # max(f1=0.5, f2=0.8) = 0.8
+        assert result["D"] == 0.7
 
     def test_overlap_sleeve(self):
         fv = {

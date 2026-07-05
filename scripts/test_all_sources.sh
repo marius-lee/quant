@@ -34,11 +34,13 @@ while rs.next(): data.append(rs.get_row_data())
 print(f"K线: {len(data)} rows")
 
 rs2 = bs.query_stock_industry()
-rows2 = []; while rs2.next(): rows2.append(rs2.get_row_data())
+rows2 = []
+while rs2.next(): rows2.append(rs2.get_row_data())
 print(f"行业分类: {len(rows2)} rows")
 
 rs3 = bs.query_stock_basic()
-rows3 = []; while rs3.next(): rows3.append(rs3.get_row_data())
+rows3 = []
+while rs3.next(): rows3.append(rs3.get_row_data())
 print(f"股票列表: {len(rows3)} rows")
 
 bs.logout()

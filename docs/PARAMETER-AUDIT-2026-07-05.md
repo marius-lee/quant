@@ -14,7 +14,7 @@
 | 有依据 | 12 | 30% |
 | 已修复 (本轮) | 6 | 15% |
 | 工程经验值 (可接受) | 18 | 45% |
-| 待修复 | 4 | 10% |
+| 待修复 | 3 | 8% |
 
 ---
 
@@ -76,12 +76,12 @@
 
 ## 待修复
 
-### 1. marginal.py:stepwise_selection — marginal_results 未定义
+### 1. ~~marginal.py:stepwise_selection — marginal_results 未定义~~ ✅ 已删除
 
-位置: factor/marginal.py:205
-marginal_results 是 compute_marginal_evaluation 的局部变量, stepwise_selection 无法访问。
-影响: 函数一旦被调用会抛 NameError。目前无调用者 (死代码)。
-建议: 重构为从 ranked_candidates 中的 result dict 提取。
+位置: factor/marginal.py (已移除)
+原因: 死代码, 从未被调用。功能已被 eval_stepwise.sh 的回测版 Layer 3 覆盖。
+Grinold & Kahn 纯数学版步进筛选理论上可作快速预筛, 但未经验证 IC→IR 映射可靠性。
+如需未来复用, 应基于实际回测数据验证后重写, 不应保留含 bug 的未验证代码。
 
 ### 2. pipeline.py:286 — window=60 无注释
 

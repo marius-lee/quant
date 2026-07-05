@@ -13,6 +13,7 @@ Ledoit-Wolf (2004) 收缩估计:
 
 import numpy as np
 import pandas as pd
+from config.loader import get as _cfg
 from typing import Optional
 
 
@@ -134,7 +135,6 @@ def covariance_matrix(
 
     if len(recent) < min_periods:
         from utils.logger import get_logger
-from config.loader import get as _cfg
         get_logger("risk.covariance").warning(
             f"covariance: only {len(recent)}/{min_periods} periods available"
         )

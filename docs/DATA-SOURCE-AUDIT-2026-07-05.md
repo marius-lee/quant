@@ -273,3 +273,40 @@ pytdx → tencent → akshare
 - **baostock 从未宕机** — 此前附录 B 的 "❌ 脚本语法错误" 和正文的 "Socket error / 服务端宕机" 均为误判。真正原因: 沙箱 TCP 阻断 + 脚本 heredoc 语法 bug
 - **akshare 从未被封 IP** — 此前附录 B 的 "ConnectionError" 为网络波动，不是 IP 封禁。所有接口正常
 - **tushare 免费 tier 极严** — stock_basic 仅 1次/小时，不适合高频同步。适合作为 backup 备源
+
+---
+
+## 附录 E: 新浪 + 网易扩展测试 (2026-07-05 PM)
+
+### sina (新浪财经)
+✅ **可用但有限制**。历史K线接口正常返回 3 行。但数据为未复权格式 — 除权日会出现单日跳变。
+
+| 接口 | 结果 | 说明 |
+|------|:--:|------|
+| K线 (sh600519) | ✅ 3行 | 字段: day/open/high/low/close/volume |
+| 复权 | ❌ | 不支持前复权, 不适合量化回测 |
+
+**结论**: 仅在需要"真实成交价"场景（如龙虎榜价格校验）时有参考价值，不做为 OHLCV 源使用。
+
+### netease (网易财经)
+❌ **已不可用**。
+
+| 接口 | 错误 |
+|------|------|
+| 历史日线 (quotes.money.163.com) | HTTP 502 Bad Gateway |
+| 实时行情 (api.money.126.net) | DNS 解析失败 |
+
+**结论**: 网易财经的免费 API 已经停运或更换域名。从待测试列表中移除。
+
+### akshare 间歇性 ConnectionError 分析
+
+akshare 的 `stock_zh_a_hist` 在两次测试中状态不同:
+- 第一次 (PM 早): ✅ 正常
+- 第二次 (PM 晚): ❌ RemoteDisconnected
+
+同一台机器、同一网络，短时间内状态翻转。这不符合"IP 封禁"的特征（封禁后不会短时间恢复）。更可能是:
+- 东方财富服务器负载波动
+- 连接池耗尽后拒绝新连接
+- 请求频率触发短暂熔断（非永久封禁）
+
+**策略**: 保持 akshare 在回退链中末位，配合 Redis RateLimiter 控制频率。

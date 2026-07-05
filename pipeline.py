@@ -205,6 +205,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         # composite: weighted/equal/intersection compression into single score
         combine_mode = cfg("alpha.combine_mode", "sleeve")
         if combine_mode == "sleeve":
+            method = 'sleeve'
             alpha_raw = sleeve_compose(
                 factor_values,
                 positions_per_factor=cfg("alpha.sleeve.positions_per_factor", 8),

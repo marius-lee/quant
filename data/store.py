@@ -2,6 +2,7 @@
     首次: 下载全部A股列表 + 全部历史日线 → SQLite
     后续: 对比 SQLite 已有数据，只拉取增量日期
 """
+import os
 import sqlite3
 import time
 from datetime import datetime
@@ -56,9 +57,9 @@ class DataStore:
     """全A股 SQLite 数据仓库 — 单连接复用，任务结束时关闭。"""
 
     def __init__(self, db_path: str = "data/market.db",
-                 tushare_token: str = ""):
+                 tushare_token: str = None):
         self.db_path = db_path
-        self.token = tushare_token
+        self.token = tushare_token if tushare_token is not None else os.environ.get("TUSHARE_TOKEN", "")
         self._conn = None
         conn = self._connect()
         conn.executescript("""

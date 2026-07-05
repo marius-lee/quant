@@ -341,15 +341,42 @@ class DataStore:
             logger.debug(f"[{source}] sample: {r[0]} {r[1]} O={r[2]} H={r[3]} L={r[4]} "
                         f"C={r[5]} V={r[6]} Amt={r[7]} To={r[8]}")
 
-    def _fetch_batch_tushare(self, pro, ts_codes: str, batch_start: str):
-        """tushare 批量获取日线: vol=手, amt=千元 ✅ 无需换算"""
+    def _fetch_batch_tushare(self, symbols: list, start_date: str) -> list:
+        """tushare 批量获取日线 (Token认证, 200call/min). 返回 None 表示不可用"""
+        if not self.token:
+            return None
+        try:
+            import tushare as ts
+            ts.set_token(self.token)
+            pro = ts.pro_api()
+        except Exception:
+            return None
+
+        # 6位代码 → tushare ts_code 格式 (000001.SZ,600519.SH)
+        ts_codes_parts = []
+        for s in symbols:
+            if s.startswith(("6", "5", "9")):
+                ts_codes_parts.append(f"{s}.SH")
+            elif s.startswith(("0", "2", "3")):
+                ts_codes_parts.append(f"{s}.SZ")
+            elif s.startswith(("4", "8")):
+                ts_codes_parts.append(f"{s}.BJ")
+        if not ts_codes_parts:
+            return None
+        code_str = ",".join(ts_codes_parts)
+
         _init_cache()
         _tushare_limiter.wait()
-        df = pro.daily(
-            ts_code=ts_codes,
-            start_date=batch_start,
-            end_date=to_compact(datetime.today()),  # tushare API只接受YYYYMMDD, 不接受YYYY-MM-DD
-        )
+        try:
+            df = pro.daily(
+                ts_code=code_str,
+                start_date=start_date,
+                end_date=to_compact(datetime.today()),
+            )
+        except Exception as e:
+            logger.warning(f"[tushare] batch fetch failed: {e}")
+            return None
+
         if df is None or df.empty:
             return None
         rows = []
@@ -360,7 +387,7 @@ class DataStore:
                 float(row.get("low", 0)), float(row.get("close", 0)),
                 float(row.get("vol", 0)), float(row.get("amount", 0)),
                 float(row.get("turnover_rate", 0) or 0)))
-        logger.info(f"[tushare] {ts_codes}: {len(rows)} rows (vol=手, amt=千元)")
+        logger.info(f"[tushare] {code_str}: {len(rows)} rows")
         return rows
 
     def _fetch_sina_daily(self, symbols: list, start_date: str) -> list:
@@ -856,6 +883,7 @@ class DataStore:
             all_sources = [
                 ("pytdx",    lambda: self._fetch_pytdx_daily(chunk, batch_start)),
                 ("tencent",  lambda: self._fetch_tencent_daily(chunk, batch_start)),
+                ("tushare",  lambda: self._fetch_batch_tushare(chunk, batch_start)),
                 ("akshare",  lambda: self._fetch_akshare_daily(chunk, batch_start)),
             ]
             ordered = sorted(all_sources, key=lambda x: self._source_speed.get(x[0], 999), reverse=True)

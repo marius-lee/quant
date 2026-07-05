@@ -232,3 +232,24 @@ pytdx → tencent → akshare
 - **JQData 无恢复可能**: trial 确认过期, PE/PB 真空问题仍需修复
 
 **建议更新回退链**: `pytdx → tencent → tushare → akshare` (akshare 放最后)
+
+---
+
+## 附录 C: JQData 与 akshare 状态修正 (2026-07-05 PM)
+
+### JQData "0 行"根因
+
+**不是 trial 过期导致不可用。** 测试脚本查询 `date="2026-07-01"`，该日期超出 trial 数据范围 (2025-03-26 ~ 2026-04-02)，故返回 0 行。对 trial 范围内的历史日期 (如 2025-12-31) 查询仍可返回数据。
+
+**结论**: JQData 对历史估值数据仍可用，仅缺少 2026-04-03 至今的新数据。审计文档原 "已停 (trial expired)" 措辞有误导性，应改为 "trial 数据截止 2026-04-02"。
+
+### akshare ConnectionError 根因
+
+**不是 IP 被封。** 东方财富对不同接口实施差异化反爬：
+
+| 接口 | 服务器 | 结果 |
+|------|--------|:--:|
+| `stock_info_a_code_name` (股票列表) | 东方财富 | ✅ 5528 行 |
+| `stock_zh_a_hist` (K线) | push2his.eastmoney.com | ❌ RemoteDisconnected |
+
+如果 IP 被封，所有接口都会挂。实际是 K 线接口被东方财富根据请求特征 (User-Agent / Referer / 频率) 主动掐断连接。这是东方财富近期的反爬升级，和免费/付费无关。

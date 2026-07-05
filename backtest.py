@@ -96,7 +96,7 @@ def run_backtest(start_date=None, end_date=None, capital=None):
                         if date_str in close_sl.index:
                             prices_for_sl = close_sl.loc[date_str].to_dict()
                 except Exception:
-                    pass
+                    pass  # stop-loss optional: skip if daily price unavailable
                 for p in current_positions:
                     cost_basis = p.get("price", 0)
                     current_px = prices_for_sl.get(p["symbol"], None)

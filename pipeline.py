@@ -196,7 +196,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
                 # get_benchmark 已返回日收益率(dropna), 截断到 actual_date
                 benchmark_ret = bm[:pd.Timestamp(actual_date)]
         except Exception:
-            pass
+            pass  # benchmark optional: backtest runs without it if unavailable
 
         factor_values = compute_all_factors(data, actual_date,
                                             fundamentals=fundamentals,

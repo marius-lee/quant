@@ -14,6 +14,7 @@ Ledoit-Wolf (2004) 收缩估计:
 import numpy as np
 import pandas as pd
 from config.loader import get as _cfg
+from factor.compute import _require_cfg
 from typing import Optional
 
 
@@ -126,9 +127,9 @@ def covariance_matrix(
     返回: 协方差矩阵 DataFrame
     """
     if window is None:
-        window = _cfg("risk.covariance.window", 60)
+        window = _require_cfg("risk.covariance.window")
     if min_periods is None:
-        min_periods = _cfg("risk.covariance.min_periods", 30)
+        min_periods = _require_cfg("risk.covariance.min_periods")
 
     # 取最近 window 个有效交易日
     recent = returns.iloc[-window:].dropna(axis=1, how="all")

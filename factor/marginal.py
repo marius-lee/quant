@@ -18,6 +18,7 @@ from typing import Dict, List, Tuple
 from scipy import stats as scipy_stats
 
 from config.loader import get as _cfg
+from factor.compute import _require_cfg
 
 
 def compute_marginal_evaluation(
@@ -46,7 +47,7 @@ def compute_marginal_evaluation(
 
     # ── Layer 1: IC t 检验 ──
     if n_days is None:
-        n_days = _cfg("factor.evaluation.n_days", 120)
+        n_days = _require_cfg("factor.evaluation.n_days")
 
     # H0: IC_mean = 0
     # t = IC / (σ_IC / √n) = (IC / σ_IC) × √n = IR × √n

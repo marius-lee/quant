@@ -32,7 +32,7 @@ def _log_returns(close: pd.DataFrame) -> pd.DataFrame:
 
 def _cs_zscore(series: pd.Series, min_count: int = None) -> pd.Series:
     if min_count is None:
-        min_count = _cfg("factor.compute.zscore_min_count", 30)
+        min_count = _require_cfg("factor.compute.zscore_min_count")
     """截面 z-score 标准化: (x - cross_sectional_mean) / cross_sectional_std.
     若截面有效值<min_count, 返回全 NaN。"""
     if series.count() < min_count:

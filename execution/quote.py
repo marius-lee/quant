@@ -112,6 +112,8 @@ def is_trading_time() -> bool:
         from execution.calendar import is_market_open
         return is_market_open()
     except Exception:
+        from utils.logger import get_logger
+        get_logger("execution.quote").warning("failed to check trading hours from calendar, using wall-clock fallback")
         now = datetime.now()
         t = now.time()
         import datetime as _dt

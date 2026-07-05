@@ -18,7 +18,10 @@ class TargetPortfolio:
 
     @property
     def positions(self) -> int:
-        return (self.lots > 0).sum()
+        # REVIEWED: 2026-07-05 — .sum() on pd.Series returns numpy.int64,
+        # which is not JSON-serializable by Python 3.14 simplejson.
+        # Cast to native int.
+        return int((self.lots > 0).sum())
 
     @property
     def invested(self) -> float:

@@ -166,12 +166,22 @@ def api_record_trade():
     data = request.get_json(force=True)
     side = data.get("side")
     symbol = data.get("symbol")
-    price = float(data.get("price", 0))
-    shares = int(data.get("shares", 0))
-    cost = float(data.get("cost", 0))
+    try:
+        price = float(data.get("price", 0))
+        shares = int(data.get("shares", 0))
+        cost = float(data.get("cost", 0))
+    except (TypeError, ValueError):
+        return _api_response(error={"code": "INVALID_PARAMETER", "message": "price/shares/cost 格式错误", "field": "price/shares/cost"}), 400
 
-    if not symbol or price <= 0 or shares < 100:
-        return _api_response(error={"code": "INVALID_PARAMETER", "message": "参数不完整", "field": "symbol/price/shares"}), 400
+    # 模板 1: 输入边界校验
+    if not symbol or not isinstance(symbol, str) or len(symbol) != 6:
+        return _api_response(error={"code": "INVALID_PARAMETER", "message": "symbol 必须是6位代码", "field": "symbol"}), 400
+    if price <= 0 or price > 100000:
+        return _api_response(error={"code": "INVALID_PARAMETER", "message": "price 超出范围 (0, 100000]", "field": "price"}), 400
+    if shares < 100 or shares % 100 != 0:
+        return _api_response(error={"code": "INVALID_PARAMETER", "message": "shares 必须是100的整数倍且≥100", "field": "shares"}), 400
+    if side not in ("buy", "sell"):
+        return _api_response(error={"code": "INVALID_PARAMETER", "message": "side 必须是 buy 或 sell", "field": "side"}), 400
 
     today = date.today().isoformat()
     conn = sqlite3.connect(TRADE_DB)

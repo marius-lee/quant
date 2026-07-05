@@ -23,7 +23,7 @@ def to_str(d) -> str:
         return ""
     if isinstance(d, str):
         d = d.strip()
-        if not d:
+        if not d:  # d is str, empty string check OK per template 1
             return ""
         if "-" in d:
             return d[:10]  # already YYYY-MM-DD

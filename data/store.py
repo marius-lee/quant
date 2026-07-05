@@ -15,6 +15,7 @@ logger = get_logger("data.store")
 
 from data.cache import get_backend, DataCache, RateLimiter
 from config.loader import load as _load_config
+from config.loader import get as cfg
 
 # ── Module-level cache (lazy init) ──
 _backend = None

@@ -3,12 +3,13 @@
 导出:
   equal_weight        — 等权平均
   ic_weighted         — IC 加权 (|IC| 比例)
+  sleeve_compose      — 分仓合成 (每因子独立选 top N, 取并集)
   intersection_alpha  — 交集筛选 (每因子排前 X% 才进候选池)
   strict_intersection — 严格交集 (每因子取 top N, 同时出现才进池)
 
-合成方法:
-  equal_weight — 等权平均, 简单但忽略因子质量差异
-  ic_weighted  — IC 加权 (|IC| 比例), 给预测力强的因子更高权重
+合成模式 (config.yaml alpha.combine_mode):
+  composite — 加权压缩为单一得分 (ic_weighted / equal_weight / intersection)
+  sleeve    — 每因子独立分仓, 保留因子间独立信号 (sleeve_compose)
 
 来源: ② Grinold & Kahn (2000) Chapter 8 — Alpha 合成.
 """
@@ -16,7 +17,6 @@
 import numpy as np
 import pandas as pd
 from factor.intersection import intersection_alpha, strict_intersection
-
 
 
 def equal_weight(factor_values: dict) -> pd.Series:
@@ -33,7 +33,6 @@ def equal_weight(factor_values: dict) -> pd.Series:
         return pd.Series(dtype=float)
 
     composite = pd.DataFrame(factor_values)
-    # 等权: 只取有效值, 按行平均
     min_factors = max(1, len(names) // 2)
     composite = composite.dropna(thresh=min_factors)
     return composite.mean(axis=1)
@@ -57,14 +56,12 @@ def ic_weighted(
     if not names:
         return equal_weight(factor_values)
 
-    # 权重: 带符号 IC 归一化
     raw_weights = np.array([ic_scores[n] for n in names])
     total = np.abs(raw_weights).sum()
     if total == 0:
         return equal_weight(factor_values)
     weights = raw_weights / total
 
-    # 每列 z-score 并截断
     df = pd.DataFrame({n: factor_values[n] for n in names})
     for col in df.columns:
         mu = df[col].mean()
@@ -75,6 +72,43 @@ def ic_weighted(
         z = (df[col] - mu) / sigma
         df[col] = z.clip(-clip, clip)
 
-    # 加权求和
     composite = (df * weights).sum(axis=1)
     return composite
+
+
+def sleeve_compose(
+    factor_values: dict,
+    positions_per_factor: int = 8,
+    min_factors: int = 1,
+) -> pd.Series:
+    """分仓合成: 每个因子独立选取 top N 只股票, 取并集。
+
+    与 composite 模式的本质区别: 不做维度压缩。reversal 选超跌、
+    volatility 选低波、momentum 选趋势 — 不同的逻辑不应该被加权冲淡。
+
+    factor_values: {name: Series(index=symbol)} — 已 z-score 的截面因子值
+    positions_per_factor: 每个因子选取的股票数
+    min_factors: 最少有效因子数 (低于此数返回空)
+
+    返回: Series(index=symbol), 值 = 1.0 (标记入选)
+    """
+    if len(factor_values) < min_factors:
+        return pd.Series(dtype=float)
+
+    selected = set()
+
+    for name, scores in factor_values.items():
+        valid = scores.dropna()
+        if len(valid) == 0:
+            continue
+
+        # 取 top N (z-score 高者优先)
+        top_n = min(positions_per_factor, len(valid))
+        top_stocks = valid.nlargest(top_n).index
+        selected.update(top_stocks)
+
+    if not selected:
+        return pd.Series(dtype=float)
+
+    # 所有入选股票得分 = 1.0 (等权交给 risk 层)
+    return pd.Series(1.0, index=sorted(selected))

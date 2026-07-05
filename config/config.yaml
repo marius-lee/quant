@@ -34,10 +34,16 @@ factor:
     zscore_min_count: 30               # 截面 z-score 最少股票数 (CLT n>=30)
 alpha:
   # 2026-07-03: intersection → ic_weighted (see HANDOFF for analysis)
+  # combine_mode: composite (加权压缩) | sleeve (每因子独立分仓)
+  combine_mode: sleeve                                        # P43: 分仓保留因子独立信号
   method: ic_weighted
   train_window: 500                    # IC 训练窗口 (Grinold & Kahn: 60月月频→日频等价500+)
   retrain_freq: 20
   top_fraction: 0.3
+  # sleeve 模式配置 (仅 combine_mode=sleeve 时生效)
+  sleeve:
+    positions_per_factor: 8                                   # 每个因子独立选取 top N 只股票
+    min_factors: 1                                            # 最少需要的有效因子数
   intersection_top_fraction: 0.2
   intersection_primary: gap_5d
 risk:
@@ -87,3 +93,7 @@ cache:
 screening:
 # DEPRECATED (2026-07-05): min_abs_ic: 0.02
 # DEPRECATED (2026-07-05): min_ic_ir: 0.1
+  # sleeve 模式配置 (仅 combine_mode=sleeve 时生效)
+  sleeve:
+    positions_per_factor: 8                                   # 每个因子独立选取 top N 只股票
+    min_factors: 1                                            # 最少需要的有效因子数

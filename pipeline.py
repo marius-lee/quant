@@ -28,6 +28,28 @@ from execution.engine import ExecutionEngine, Order
 from monitor.report import generate_report, push_to_web
 from utils.logger import get_logger
 
+# ── HTTP state push (方案B: pipeline → Flask) ──
+import requests as _requests
+
+def _state_url() -> str:
+    from config.loader import get as _cfg
+    port = int(_cfg("web.port", 8521))
+    return f"http://127.0.0.1:{port}/api/state"
+
+def _post_state(data: dict, timeout: float = 5.0, max_retries: int = 3):
+    url = _state_url()
+    for attempt in range(max_retries):
+        try:
+            r = _requests.post(url, json=data, timeout=timeout)
+            if r.ok:
+                return
+            get_logger("pipeline").warning(f"_post_state HTTP {r.status_code} (attempt {attempt+1})")
+        except _requests.RequestException as e:
+            get_logger("pipeline").warning(f"_post_state failed: {e} (attempt {attempt+1})")
+        if attempt < max_retries - 1:
+            import time as _time; _time.sleep(2 ** attempt)
+
+
 logger = get_logger("pipeline")
 
 LOT_SIZE = 100
@@ -46,6 +68,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
 
     t0 = time.time()
     results = {"date": date_str, "steps": {}}
+    _post_state({"status": "started", "progress": "0/7", "date": date_str})
 
     # ── Step 0: Init ──
     store = DataStore()
@@ -69,6 +92,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
             n_new = store.update_daily(start="2020-01-01")
             results["steps"]["data"] = {"new_rows": n_new, "status": "ok"}
             logger.info(f"[1/7] data: {n_new} new daily rows")
+            _post_state({"status": "data_synced", "progress": "1/7", "new_rows": n_new})
         except Exception as e:
             results["steps"]["data"] = {"error": str(e), "status": "failed"}
             logger.warning(f"[1/7] data failed: {e}")
@@ -95,6 +119,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         pe_cnt = int(fundamentals["pe"].notna().sum()) if "pe" in fundamentals.columns else 0
         pb_cnt = int(fundamentals["pb"].notna().sum()) if "pb" in fundamentals.columns else 0
         logger.info(f"[2/7] load: {len(symbols)} symbols, {data.shape[0]} days, fundamentals: PE/PB={pe_cnt}/{pb_cnt}")
+        _post_state({"status": "data_loaded", "progress": "2/7", "symbols": len(symbols), "days": data.shape[0]})
     except Exception as e:
         results["steps"]["load"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[2/7] load failed: {e}")
@@ -181,6 +206,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
             "status": "ok",
         }
         logger.info(f"[3/7] factor: {len(factor_values)} factors, {alpha.dropna().count()} stocks")
+        _post_state({"status": "factors_computed", "progress": "3/7", "n_factors": len(factor_values)})
     except Exception as e:
         results["steps"]["factor"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[3/7] factor failed: {e}")
@@ -219,6 +245,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
             "status": "ok",
         }
         logger.info(f"[4/7] risk: {len(filtered)} candidates after filters")
+        _post_state({"status": "risk_filtered", "progress": "4/7", "candidates": len(filtered)})
     except Exception as e:
         results["steps"]["risk"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[4/7] risk failed: {e}")
@@ -278,6 +305,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
             "status": "ok",
         }
         logger.info(f"[5/7] optimizer: {portfolio.method}, {portfolio.positions} pos, invested=¥{portfolio.invested:,.0f}")
+        _post_state({"status": "portfolio_built", "progress": "5/7", "positions": portfolio.positions, "invested": portfolio.invested})
     except Exception as e:
         results["steps"]["optimizer"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[5/7] optimizer failed: {e}")
@@ -308,6 +336,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
             "status": "ok",
         }
         logger.info(f"[6/7] execution: {len(orders)} orders")
+        _post_state({"status": "trades_executed", "progress": "6/7", "orders": len(orders)})
     except Exception as e:
         results["steps"]["execution"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[6/7] execution failed: {e}")

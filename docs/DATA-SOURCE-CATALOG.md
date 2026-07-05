@@ -1,6 +1,13 @@
+---
+document: DATA-SOURCE-CATALOG
+version: 2.0
+date: 2026-07-05
+---
 # 数据源目录 — A股量化选股系统
 
-**最后更新**: 2026-07-03
+
+**最后更新**: 2026-07-05
+**最新完整审查**: [DATA-SOURCE-AUDIT-2026-07-05.md](DATA-SOURCE-AUDIT-2026-07-05.md) (9 源逐项审查)
 
 ## 已接入
 

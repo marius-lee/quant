@@ -17,7 +17,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("jq_valuation")
 
 from data.cache import get_backend, DataCache, RateLimiter
-from config.loader import load as _load_config
 
 # ── Module-level cache (lazy init) ──
 _cache = None
@@ -28,7 +27,12 @@ def _init_cache():
     global _cache, _limiter, _tushare_limiter
     if _cache is not None:
         return
-    cfg = _load_config()
+    # .venv-tushare 无 yaml, config.loader 不可用, 直接传空走 NoopBackend
+    try:
+        from config.loader import load as _load_config
+        cfg = _load_config()
+    except Exception:
+        cfg = {}
     backend = get_backend(cfg)
     _cache = DataCache("jq_valuation", ttl_hours=4, backend=backend)
     _limiter = RateLimiter("jqdata", calls_per_minute=30, backend=backend)

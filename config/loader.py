@@ -2,10 +2,29 @@
 
 支持热更新: 每次 get() 检查 config.yaml 修改时间，文件变更后自动重新加载。
 用 getmtime 系统调用（~1μs），零性能影响。
+
+凭证管理: import 时自动加载 config/.env → os.environ。
+  config.yaml 中的 ${TUSHARE_TOKEN} 等占位符将从 os.environ 取值。
+  config/.env 格式: KEY=VALUE, 一行一个, # 注释。
+  config/.env 已在 .gitignore 中, 不会提交。
 """
 import os
 import re
 import yaml
+
+# ── Auto-load config/.env into os.environ ──
+_ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
+if os.path.isfile(_ENV_PATH):
+    with open(_ENV_PATH) as _ef:
+        for _line in _ef:
+            _line = _line.strip()
+            if not _line or _line.startswith('#') or '=' not in _line:
+                continue
+            _key, _, _val = _line.partition('=')
+            _key = _key.strip()
+            _val = _val.strip().strip('"').strip("'")
+            if _key and _key not in os.environ:
+                os.environ[_key] = _val
 
 _config = None
 _config_mtime = 0

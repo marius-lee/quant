@@ -11,6 +11,9 @@ logs/
 *.swp
 *.swo
 
+# 敏感信息 (凭证)
+.env
+
 # 大型二进制 (数据库/模型, 不跟踪)
 data/market.db
 data/market.db-shm
@@ -25,12 +28,9 @@ data/trades.db-shm
 data/trades.db-wal
 .venv-tushare/
 data/models/
-
-# 配置 (敏感信息不跟踪)
-config/config.yaml
 market.db
 data/metrics.db
 
-# Redis 持久化 (不应提交)
+# Redis 持久化文件
 dump.rdb
 appendonly.aof

@@ -29,7 +29,7 @@ from config.loader import get as _cfg
 logger = get_logger("factor.stats_cache")
 
 _DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
-_SNAPSHOT_TTL_SEC = cfg("factor.stats.snapshot_ttl_sec", 86400)  # 24h
+_SNAPSHOT_TTL_SEC = _cfg("factor.stats.snapshot_ttl_sec", 86400)  # 24h
 
 
 def compute_factor_stats(
@@ -132,7 +132,7 @@ def compute_factor_stats(
 
     for name in factor_names:
         fv_dict = factor_values_by_date[name]
-                if len(fv_dict) < cfg("factor.stats.ic_min_periods", 20):
+        if len(fv_dict) < _cfg("factor.stats.ic_min_periods", 20):
             continue
 
         # 逐截面 Rank IC

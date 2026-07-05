@@ -37,3 +37,26 @@
 - [backtest.py](/Users/mariusto/project/quant/backtest.py) — 注释
 - [execution/quote.py](/Users/mariusto/project/quant/execution/quote.py) — logger.warning
 - [data/store.py](/Users/mariusto/project/quant/data/store.py) — logger.warning
+
+## Part C: 废弃引用全面清除 (2026-07-06)
+
+### 原则: 活跃代码不引用已删除的因子/脚本
+
+### 清理清单
+| 文件 | 清理内容 |
+|------|---------|
+| `factor/compute.py` | 注释块: `momentum_10d/volatility_20d/skewness_20d/amihud_20d/hsgt_flow_5d/idio_vol_20d` → 当前因子名 |
+| `CLAUDE.md` | factor registry 描述 + `optimize_factors.py` 引用 → 当前状态 |
+| `HANDOFF.md` | `volatility_20d/amihud_20d` → 当前因子名 |
+| `docs/FACTOR-ANALYSIS-2026-07-03.json` | `amihud_20d` → `amihud_250d` |
+| `scripts/optimize_factors.py` | **删除** (引用已删除的 momentum_10d) |
+| `scripts/register_window_fixes.py` | **删除** (一次性迁移, 已执行) |
+| `scripts/register_momentum_variants.py` | 删除 momentum_10d deprecation 引用 |
+| `scripts/__pycache__/` | 删除 (stale .pyc) |
+
+### 保留不动的历史文档
+- `docs/FACTOR-AUDIT-2026-07-03.md` — 评估历史记录
+- `docs/ANALYSIS-2026-07-03.md` — 分析历史记录
+- `docs/HANDOFF-2026-07-03.md` — 旧 handoff
+- `CHANGELOG.md` — 变更日志
+- `docs/adr/020-022-*.md` — 设计文档引用旧名属正常历史上下文

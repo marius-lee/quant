@@ -96,28 +96,27 @@ def compute_reversal(data: pd.DataFrame, date: str, window: int = 5) -> pd.Serie
 # 所有窗口均有文献或业界依据, 详见 config/config.yaml 注释
 # ═══════════════════════════════════════════════════════════
 from config.loader import get as _cfg
-try:
-    _AMIHUD_WINDOW = _cfg("factor.windows.amihud", 250)
-    _SKEWNESS_WINDOW = _cfg("factor.windows.skewness", 60)
-    _VOLATILITY_WINDOW = _cfg("factor.windows.volatility", 20)
-    _DOWNSIDE_VOL_WINDOW = _cfg("factor.windows.downside_volatility", 20)
-    _IDIO_VOL_WINDOW = _cfg("factor.windows.idiosyncratic_vol", 20)
-    _MAX_RET_WINDOW = _cfg("factor.windows.max_return", 20)
-    _RANGE_WINDOW = _cfg("factor.windows.intraday_range", 20)
-    _LHB_WINDOW = _cfg("factor.windows.lhb_net_buy", 20)
-    _VOL_RATIO_SHORT = _cfg("factor.windows.volume_ratio_short", 5)
-    _VOL_RATIO_LONG = _cfg("factor.windows.volume_ratio_long", 20)
-except Exception:
-    _AMIHUD_WINDOW = 250
-    _SKEWNESS_WINDOW = 60
-    _VOLATILITY_WINDOW = 126
-    _DOWNSIDE_VOL_WINDOW = 126
-    _IDIO_VOL_WINDOW = 126
-    _MAX_RET_WINDOW = 20
-    _RANGE_WINDOW = 20
-    _LHB_WINDOW = 20
-    _VOL_RATIO_SHORT = 5
-    _VOL_RATIO_LONG = 20
+from utils.logger import get_logger as _get_logger
+
+_log = _get_logger("factor.compute")
+
+def _require_cfg(key):
+    """Return config value for key. Raise if missing — no silent defaults."""
+    val = _cfg(key)
+    if val is None:
+        raise KeyError(f"config.yaml missing required key: {key}")
+    return val
+
+_AMIHUD_WINDOW = _require_cfg("factor.windows.amihud")
+_SKEWNESS_WINDOW = _require_cfg("factor.windows.skewness")
+_VOLATILITY_WINDOW = _require_cfg("factor.windows.volatility")
+_DOWNSIDE_VOL_WINDOW = _require_cfg("factor.windows.downside_volatility")
+_IDIO_VOL_WINDOW = _require_cfg("factor.windows.idiosyncratic_vol")
+_MAX_RET_WINDOW = _require_cfg("factor.windows.max_return")
+_RANGE_WINDOW = _require_cfg("factor.windows.intraday_range")
+_LHB_WINDOW = _require_cfg("factor.windows.lhb_net_buy")
+_VOL_RATIO_SHORT = _require_cfg("factor.windows.volume_ratio_short")
+_VOL_RATIO_LONG = _require_cfg("factor.windows.volume_ratio_long")
 
 
 def compute_volatility(data: pd.DataFrame, date: str, window: int = _VOLATILITY_WINDOW) -> pd.Series:

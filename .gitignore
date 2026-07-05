@@ -21,6 +21,9 @@ data/monitor.db-shm
 data/monitor.db-wal
 data/live.db
 data/trades.db
+data/trades.db-shm
+data/trades.db-wal
+.venv-tushare/
 data/models/
 
 # 配置 (敏感信息不跟踪)

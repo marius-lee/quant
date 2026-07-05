@@ -49,7 +49,8 @@ def _capital(strategy: str, fallback: float = None) -> float:
     except Exception:
         return fallback
 
-from web.shared import get_state, update_state
+from web.state_broker import broker
+from web.shared import get_state, update_state  # deprecated, kept for compat
 
 
 # ═══════════════════════════════════════════════════════════
@@ -317,10 +318,31 @@ def api_openapi():
             "/api/positions": {"get": {"summary": "当前持仓", "parameters": [{"name": "strategy", "in": "query"}, {"name": "limit", "in": "query", "schema": {"type": "integer", "maximum": 100}}, {"name": "offset", "in": "query", "schema": {"type": "integer"}}], "responses": {"200": {"description": "OK"}}}},
             "/api/trades": {"get": {"summary": "交易历史", "parameters": [{"name": "strategy", "in": "query"}, {"name": "limit", "in": "query", "schema": {"type": "integer", "maximum": 100}}, {"name": "offset", "in": "query", "schema": {"type": "integer"}}], "responses": {"200": {"description": "OK"}}}},
             "/api/trade": {"post": {"summary": "记录交易", "requestBody": {"content": {"application/json": {"schema": {"type": "object"}}}}, "responses": {"200": {"description": "OK"}, "400": {"description": "参数错误"}}}},
-            "/api/quotes": {"get": {"summary": "实时行情", "parameters": [{"name": "symbols", "in": "query", "required": True}], "responses": {"200": {"description": "OK"}}}},
+            "/api/stream": {"get": {"summary": "SSE 状态推送 (实时)", "responses": {"200": {"description": "text/event-stream"}}}}, "/api/quotes": {"get": {"summary": "实时行情", "parameters": [{"name": "symbols", "in": "query", "required": True}], "responses": {"200": {"description": "OK"}}}},
             "/api/performance": {"get": {"summary": "绩效统计", "parameters": [{"name": "strategy", "in": "query"}, {"name": "quotes", "in": "query", "schema": {"type": "boolean"}}], "responses": {"200": {"description": "OK"}}}},
         }
     })
+
+@app.route("/api/stream")
+def api_stream():
+    """模板 6 + 方案B: SSE 实时推送状态变更 (替代轮询)."""
+    import json, queue
+    from flask import Response
+    q = broker.subscribe()
+    def generate():
+        try:
+            # 先发当前状态
+            yield f"data: {json.dumps(broker.get(), ensure_ascii=False)}\n\n"
+            while True:
+                try:
+                    data = q.get(timeout=30)
+                    yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                except queue.Empty:
+                    yield ": keepalive\n\n"
+        except GeneratorExit:
+            broker.unsubscribe(q)
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 if __name__ == "__main__":

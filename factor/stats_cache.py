@@ -25,6 +25,7 @@ import pandas as pd
 
 from utils.logger import get_logger
 from config.loader import get as _cfg
+from factor.compute import _require_cfg
 
 logger = get_logger("factor.stats_cache")
 
@@ -42,9 +43,9 @@ def compute_factor_stats(
     fallback: n_symbols=800 (中证800), lookback=120 (券商研报惯例).
     """
     if n_symbols is None:
-        n_symbols = _cfg("factor.evaluation.n_symbols", 800)
+        n_symbols = _require_cfg("factor.evaluation.n_symbols")
     if lookback is None:
-        lookback = _cfg("factor.evaluation.lookback", 120)
+        lookback = _require_cfg("factor.evaluation.lookback")
 
     from data.store import DataStore
     from factor.compute import compute_all_factors, get_factor_names
@@ -135,7 +136,7 @@ def compute_factor_stats(
 
     for name in factor_names:
         fv_dict = factor_values_by_date[name]
-        if len(fv_dict) < _cfg("factor.stats.ic_min_periods", 20):
+        if len(fv_dict) < _require_cfg("factor.stats.ic_min_periods"):
             continue
 
         # 逐截面 Rank IC
@@ -320,7 +321,7 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None) 
     返回: compute_factor_stats() 的输出格式
     """
     if n_symbols is None:
-        n_symbols = _cfg("factor.evaluation.n_symbols", 800)
+        n_symbols = _require_cfg("factor.evaluation.n_symbols")
     import sqlite3 as _sql
     if not force_refresh:
         try:
@@ -342,7 +343,7 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None) 
 
     # 重新计算
     logger.info("computing factor stats (this may take ~30s)...")
-    lookback_val = _cfg("factor.evaluation.lookback", 120)
+    lookback_val = _require_cfg("factor.evaluation.lookback")
     stats = compute_factor_stats(n_symbols=n_symbols, lookback=lookback_val)
 
     # 存入 factor_snapshot 表 + 同步更新 factor_registry
@@ -410,7 +411,7 @@ def force_refresh_cache(n_symbols: int = None) -> dict:
     返回: compute_factor_stats() 的输出 dict。
     """
     if n_symbols is None:
-        n_symbols = _cfg("factor.evaluation.n_symbols", 800)
+        n_symbols = _require_cfg("factor.evaluation.n_symbols")
     logger.info(f"Refreshing factor stats with {n_symbols} stocks...")
     stats = get_cached_factor_stats(force_refresh=True, n_symbols=n_symbols)
     logger.info(f"Factor refresh complete: {len(stats.get('factors', []))} factors")

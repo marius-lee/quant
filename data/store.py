@@ -352,6 +352,7 @@ class DataStore:
             ts.set_token(self.token)
             pro = ts.pro_api()
         except Exception:
+            logger.warning(f"tushare basic info fetch failed: {e}")
             return None
 
         # 6位代码 → tushare ts_code 格式 (000001.SZ,600519.SH)

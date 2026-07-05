@@ -22,15 +22,17 @@ from config.loader import load as _load_config
 # ── Module-level cache (lazy init) ──
 _cache = None
 _limiter = None
+_tushare_limiter = None
 
 def _init_cache():
-    global _cache, _limiter
+    global _cache, _limiter, _tushare_limiter
     if _cache is not None:
         return
     cfg = _load_config()
     backend = get_backend(cfg)
     _cache = DataCache("jq_valuation", ttl_hours=4, backend=backend)
     _limiter = RateLimiter("jqdata", calls_per_minute=30, backend=backend)
+    _tushare_limiter = RateLimiter("tushare_valuation", calls_per_minute=180, backend=backend)
     logger.debug("jq_valuation cache initialized (backend=%s)", type(backend).__name__)
 
 DB = os.path.join(os.path.dirname(__file__), "market.db")
@@ -47,6 +49,15 @@ COL_MAP = {
     "turnover_ratio": "turnover_rate",
 }
 
+# tushare daily_basic 字段 → JQData 兼容字段名, 保证 _insert_valuation_rows 无需修改
+TUSHARE_TO_JQ_MAP = {
+    "pe_ttm": "pe_ratio",
+    "pb": "pb_ratio",
+    "ps_ttm": "ps_ratio",
+    "pcf_ratio": "pcf_ratio",
+    "total_mv": "market_cap",
+    "turnover_rate": "turnover_ratio",
+}
 
 def _get_trading_dates(conn, start, end):
     rows = conn.execute(
@@ -64,6 +75,45 @@ def _get_trading_dates(conn, start, end):
         d += timedelta(days=1)
     return dates
 
+
+def _fetch_tushare_valuation_rows(date_str):
+    """从 tushare daily_basic 获取估值数据, 返回 JQData 兼容格式的 rows。
+    JQData trial 截止 2026-04-02 后, 作为 PE/PB 回退源。
+    """
+    token = os.environ.get("TUSHARE_TOKEN", "")
+    if not token:
+        logger.warning("TUSHARE_TOKEN not set, tushare fallback unavailable")
+        return None
+    _init_cache()
+    _tushare_limiter.wait()
+    try:
+        import tushare as ts
+        ts.set_token(token)
+        pro = ts.pro_api()
+        date_compact = date_str.replace("-", "")
+        df = pro.daily_basic(
+            trade_date=date_compact,
+            fields="ts_code,trade_date,pe_ttm,pb,ps_ttm,total_mv,turnover_rate",
+        )
+    except Exception as e:
+        logger.warning(f"tushare daily_basic failed for {date_str}: {e}")
+        return None
+    if df is None or df.empty:
+        return None
+    rows = []
+    for _, row in df.iterrows():
+        ts_code = str(row.get("ts_code", ""))
+        if "." not in ts_code:
+            continue
+        vals = {"code": ts_code}
+        for t_col, jq_col in TUSHARE_TO_JQ_MAP.items():
+            v = row.get(t_col)
+            if v is not None and v == v:
+                vals[jq_col] = float(v)
+        if len(vals) > 1:
+            rows.append(vals)
+    logger.info(f"tushare daily_basic {date_str}: {len(rows)} stocks")
+    return rows or None
 
 def sync_date(date_str, conn):
     """Sync PE_TTM/PB for one date. API 响应缓存到 Redis (4h TTL)。"""
@@ -87,10 +137,16 @@ def sync_date(date_str, conn):
         logger.warning(f"JQData query failed for {date_str}: {e}")
         logout()
         return 0
-    if df is None or df.empty:
-        logger.warning(f"JQData returned empty for {date_str}")
+   if df is None or df.empty:
+        logger.info(f"JQData returned empty for {date_str}, trying tushare...")
         logout()
-        return 0
+        raw = _fetch_tushare_valuation_rows(date_str)
+        if raw is None:
+            return 0
+        _cache.put(date_str, raw)
+        inserted = _insert_valuation_rows(conn, raw, date_str)
+        logger.info(f"daily_valuation {date_str}: {inserted} stocks (tushare)")
+        return inserted
 
     # 3. 缓存原始响应 (msgpack)
     raw = df.to_dict(orient="records")

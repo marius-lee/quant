@@ -85,6 +85,7 @@ def sleeve_compose(
     min_factors: int = 1,
 ) -> pd.Series:
     """分仓合成: 每个因子独立选取 top N 只股票, 取并集。
+    返回原始 z-score (保留信号梯度), 不做等权压扁。
 
     与 composite 模式的本质区别: 不做维度压缩。reversal 选超跌、
     volatility 选低波、momentum 选趋势 — 不同的逻辑不应该被加权冲淡。
@@ -99,7 +100,7 @@ def sleeve_compose(
         _log.debug("sleeve_compose: %d factors < min_factors=%d, returning empty", len(factor_values), min_factors)
         return pd.Series(dtype=float)
 
-    selected = set()
+    score_map = {}
 
     for name, scores in factor_values.items():
         valid = scores.dropna()
@@ -110,14 +111,17 @@ def sleeve_compose(
             continue
 
         # 取 top N (z-score 高者优先)
-        top_n = min(positions_per_factor, len(valid))
-        top_stocks = valid.nlargest(top_n).index
-        selected.update(top_stocks)
+        top_n = min(positions_per_factor, cnt)
+        top_series = valid.nlargest(top_n)
+        for sym, val in top_series.items():
+            # 每个因子贡献其原始 z-score; 被多因子同时选中的取最大值
+            score_map[sym] = max(score_map.get(sym, -999), val)
 
-    if not selected:
+    if not score_map:
         _log.warning("sleeve_compose: 0 stocks selected from %d factors", len(factor_values))
         return pd.Series(dtype=float)
-    _log.info("sleeve: %d factors → %d stocks (positions_per_factor=%d)", len(factor_values), len(selected), positions_per_factor)
+    _log.info("sleeve: %d factors → %d stocks (positions_per_factor=%d, score range %.2f~%.2f)",
+              len(factor_values), len(score_map), positions_per_factor,
+              min(score_map.values()), max(score_map.values()))
 
-    # 所有入选股票得分 = 1.0 (等权交给 risk 层)
-    return pd.Series(1.0, index=sorted(selected))
+    return pd.Series(score_map, name="alpha").sort_values(ascending=False)

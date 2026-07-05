@@ -1,4 +1,4 @@
-# Handoff: quant 项目状态 — 2026-07-05 21:00 CST
+# Handoff: quant 项目状态 — 2026-07-05 21:30 CST
 
 ## 本次会话（2026-07-05）
 
@@ -19,6 +19,14 @@
 - **sleeve_compose 返回值变更**: 旧=等权 1.0 mask, 新=原始 z-score (保留信号梯度)
 - 多因子碰撞规则: 同一股票被多个因子选中时取 max z-score
 - tests/test_synth.py: 6 个 sleeve_compose 测试 (26/26 全通过)
+
+### P44: 回测窗口标准化 — 扩展到 ≥250 天
+- 3 个脚本硬编码 2026-01-01→2026-06-30 (116d) → 统一改为 config.yaml 默认值
+- eval_stepwise.sh Layer 3: 读取 backtest.default_start/end/capital, timeout 300→600s
+- backtest_jq.sh: 读取 config 默认值
+- run_backtest_clean.sh: 读取 config 默认值
+- 实际覆盖: 2023-01-01 → 2026-06-30 ≈ 846 个交易日, 远超 Grinold & Kahn 250 天最低标准
+- 数据验证: DB 7.45M 行, 2020-2026 共 1,574 个交易日, 完整无缺口
 
 ### ADR 016: 数据源注册表
 - 12 个数据源完整分析（tencent/baostock/tushare/JQData/akshare/sina/pytdx 等）
@@ -47,10 +55,10 @@ Python: .venv (3.14.6), .venv-tushare (3.12)
 Redis: localhost:6379
 测试: pytest tests/ -q (26/26)
 DB: data/market.db (7,454,629 行 daily, 2020-01-02 ~ 2026-07-03, 1,574 交易日)
-Git: origin/main @ 11e68e6
+Git: origin/main @ 0d08ac3
 
 ## 待完成
-1. 重新跑 eval_stepwise.sh 验证 sleeve 模式 Wealth 正常
+1. 跑 eval_stepwise.sh (已改为 3.5 年窗口) 验证 sleeve vs composite
 2. 恢复 zt_streak + dt_streak 双因子 sleeve 组合评估
 3. benchmark.py 添加 fallback（sina DNS 偶发失败）
 4. 新因子开发方向: LHB/margin/northbound 数据已有但对应 compute 函数待审查

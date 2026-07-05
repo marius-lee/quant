@@ -29,6 +29,8 @@ from monitor.report import generate_report, push_to_web
 from utils.logger import get_logger
 
 # ── HTTP state push (方案B: pipeline → Flask) ──
+import uuid as _uuid
+
 import requests as _requests, threading as _threading
 
 def _state_url() -> str:
@@ -68,7 +70,7 @@ LOT_SIZE = 100
 
 
 def run(date_str: str = None, capital: float = None, strategy: str = "quant", skip_pull: bool = False):
-    """执行完整 Pipeline。
+    """执行完整 Pipeline。模板9 T1: trace_id 贯穿所有步骤，指标自动计数。
 
     date_str: 交易日期 (YYYY-MM-DD), None = 最近一个交易日
     capital: 本金, None = 从 strategy_config / config 读取
@@ -78,9 +80,15 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
     if date_str is None:
         date_str = datetime.today().strftime("%Y-%m-%d")
 
+    tid = _uuid.uuid4().hex[:12]
+    from utils.logger import set_trace_id as _set_tid; _set_tid(tid)
+    from monitor.metrics import metrics as _m
+    _m.inc("pipeline.runs")
+
     t0 = time.time()
     results = {"date": date_str, "steps": {}}
-    _post_state({"status": "started", "progress": "0/7", "date": date_str})
+    _post_state({"status": "started", "progress": "0/7", "date": date_str, "trace_id": tid})
+    logger.info(f"pipeline started trace_id={tid} date={date_str}")
 
     # ── Step 0: Init ──
     store = DataStore()
@@ -104,8 +112,11 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
             n_new = store.update_daily(start="2020-01-01")
             results["steps"]["data"] = {"new_rows": n_new, "status": "ok"}
             logger.info(f"[1/7] data: {n_new} new daily rows")
-            _post_state({"status": "data_synced", "progress": "1/7", "new_rows": n_new})
+            _post_state({"status": "data_synced", "progress": "1/7", "new_rows": n_new, "trace_id": tid})
+            _m.inc("data.sync.rows", n_new)
+            _m.gauge("data.last_sync_ts", time.time())
         except Exception as e:
+            _m.inc("pipeline.errors")
             results["steps"]["data"] = {"error": str(e), "status": "failed"}
             logger.warning(f"[1/7] data failed: {e}")
     else:
@@ -131,8 +142,9 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         pe_cnt = int(fundamentals["pe"].notna().sum()) if "pe" in fundamentals.columns else 0
         pb_cnt = int(fundamentals["pb"].notna().sum()) if "pb" in fundamentals.columns else 0
         logger.info(f"[2/7] load: {len(symbols)} symbols, {data.shape[0]} days, fundamentals: PE/PB={pe_cnt}/{pb_cnt}")
-        _post_state({"status": "data_loaded", "progress": "2/7", "symbols": len(symbols), "days": data.shape[0]})
+        _post_state({"status": "data_loaded", "progress": "2/7", "symbols": len(symbols), "days": data.shape[0], "trace_id": tid})
     except Exception as e:
+        _m.inc("pipeline.errors")
         results["steps"]["load"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[2/7] load failed: {e}")
         store.close()
@@ -218,8 +230,10 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
             "status": "ok",
         }
         logger.info(f"[3/7] factor: {len(factor_values)} factors, {alpha.dropna().count()} stocks")
-        _post_state({"status": "factors_computed", "progress": "3/7", "n_factors": len(factor_values)})
+        _post_state({"status": "factors_computed", "progress": "3/7", "n_factors": len(factor_values), "trace_id": tid})
+        _m.gauge("factor.n_active", len(factor_values))
     except Exception as e:
+        _m.inc("pipeline.errors")
         results["steps"]["factor"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[3/7] factor failed: {e}")
         store.close()
@@ -257,8 +271,9 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
             "status": "ok",
         }
         logger.info(f"[4/7] risk: {len(filtered)} candidates after filters")
-        _post_state({"status": "risk_filtered", "progress": "4/7", "candidates": len(filtered)})
+        _post_state({"status": "risk_filtered", "progress": "4/7", "candidates": len(filtered), "trace_id": tid})
     except Exception as e:
+        _m.inc("pipeline.errors")
         results["steps"]["risk"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[4/7] risk failed: {e}")
         store.close()
@@ -317,8 +332,9 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
             "status": "ok",
         }
         logger.info(f"[5/7] optimizer: {portfolio.method}, {portfolio.positions} pos, invested=¥{portfolio.invested:,.0f}")
-        _post_state({"status": "portfolio_built", "progress": "5/7", "positions": portfolio.positions, "invested": portfolio.invested})
+        _post_state({"status": "portfolio_built", "progress": "5/7", "positions": portfolio.positions, "invested": portfolio.invested, "trace_id": tid})
     except Exception as e:
+        _m.inc("pipeline.errors")
         results["steps"]["optimizer"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[5/7] optimizer failed: {e}")
         store.close()
@@ -348,8 +364,10 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
             "status": "ok",
         }
         logger.info(f"[6/7] execution: {len(orders)} orders")
-        _post_state({"status": "trades_executed", "progress": "6/7", "orders": len(orders)})
+        _post_state({"status": "trades_executed", "progress": "6/7", "orders": len(orders), "trace_id": tid})
+        _m.inc("pipeline.trades", len(orders))
     except Exception as e:
+        _m.inc("pipeline.errors")
         results["steps"]["execution"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[6/7] execution failed: {e}")
 
@@ -384,7 +402,9 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
     store.close()
     elapsed = time.time() - t0
     results["elapsed_sec"] = round(elapsed, 1)
-    logger.info(f"pipeline done in {elapsed:.1f}s — {date_str}")
+    _m.gauge("pipeline.last_duration_s", round(elapsed, 1))
+    _m.gauge("pipeline.last_run_ts", time.time())
+    logger.info(f"pipeline done trace_id={tid} elapsed={elapsed:.1f}s date={date_str}")
     return results
 
 

@@ -152,12 +152,28 @@ description: >
 
 ## 模板 9：可观测性
 
-- 日志：JSON 结构化，含 trace_id/span_id，生产 ERROR 全量，DEBUG 1% 采样
-- 指标：QPS、P99 延迟、错误率（Prometheus Counter/Gauge/Histogram）
-- 追踪：每个请求生成 trace_id，HTTP Header（X-Trace-Id）传播
-- 埋点：DB 查询 >100ms 标记慢查询，外部 API 调用，缓存命中/未命中
-- 告警：P99 > 500ms 持续 5min，错误率 > 1% 持续 2min
-- 实现：OpenTelemetry SDK
+**约束级别**: 硬约束 — 双级实现。
+
+**T1 (当前: 单人单机)**:
+- 日志: JSON 结构化文件 + 人类可读控制台, trace_id 贯穿 (contextvars)
+- 指标: 本地轻量 Metrics 类 (内存计数+gauge), SQLite 定期落盘, /api/metrics 端点
+- 追踪: trace_id 通过 contextvars 注入日志流 — 一条 pipeline 调用所有日志共享 ID
+- 健康: /api/health (DB连通性 + pipeline最近状态 + 活跃告警)
+- 告警: scheduler 每次 pipeline 后评估规则, 通过 broker→SSE 推前端
+- 埋点: pipeline 每步计数 (runs/errors/trades) + 耗时 gauge + 同步行数
+- 实现: 零新增依赖
+
+**T2 (多人多机: 模板8激活时同步升级)**:
+- 日志: 不变 (结构化 JSON 在 T2 依然适用)
+- 指标: Prometheus Counter/Gauge/Histogram + Grafana 面板
+- 追踪: OpenTelemetry SDK + Jaeger, trace_id 跨服务传播 (HTTP Header X-Trace-Id)
+- 告警: AlertManager, P99>500ms 持续5min, 错误率>1% 持续2min
+- 实现: OpenTelemetry SDK + Prometheus + Grafana + Jaeger
+
+**告警规则** (T1 已启用):
+- 回撤: 累计收益 < -20% (critical) / < -10% (warning)
+- 数据滞后: 最近日线同步 > 2天
+- pipeline: 累计失败 ≥ 3次
 
 ## 模板 10：代码审查清单
 

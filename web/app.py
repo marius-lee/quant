@@ -344,6 +344,40 @@ def api_stream():
     return Response(generate(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
+@app.route("/api/health")
+def api_health():
+    """模板9 T1: 健康检查 — DB连接 + 最近 pipeline 状态."""
+    import sqlite3, os as _os, time as _time
+    status = {"status": "ok", "checks": {}}
+    # DB 连通性
+    try:
+        db = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "market.db")
+        conn = sqlite3.connect(db)
+        conn.execute("SELECT 1").fetchone()
+        conn.close()
+        status["checks"]["market_db"] = "ok"
+    except Exception as e:
+        status["checks"]["market_db"] = f"fail: {e}"
+        status["status"] = "degraded"
+    # 最近 pipeline 状态
+    state = broker.get()
+    status["pipeline"] = {
+        "last_status": state.get("status", "unknown"),
+        "last_progress": state.get("progress", ""),
+        "last_trace_id": state.get("trace_id", ""),
+    }
+    from monitor.metrics import metrics as _mm
+    status["metrics"] = _mm.snapshot()
+    # 告警检查
+    from monitor.alerts import check_alerts
+    status["alerts"] = check_alerts(state, _mm.snapshot())
+    return _api_response(data=status)
+
+@app.route("/api/metrics")
+def api_metrics():
+    """模板9 T1: 指标快照 (Prometheus 本地等价)."""
+    from monitor.metrics import metrics as _mm
+    return _api_response(data=_mm.snapshot())
 
 if __name__ == "__main__":
     from config.loader import get as cfg

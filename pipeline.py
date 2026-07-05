@@ -212,6 +212,11 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
                 min_factors=cfg("alpha.sleeve.min_factors", 1),
             )
             logger.info("[3/7] sleeve: %d factors → %d stocks", len(factor_values), alpha_raw.notna().sum())
+            # Per-factor debug: how many stocks each factor contributed
+            for fn, fv in factor_values.items():
+                valid = fv.dropna()
+                n_valid = len(valid)
+                logger.debug("   %s: %d valid stocks → contributing to sleeve", fn, n_valid)
         else:
             # P1-3: Factor synthesis — method from config.yaml alpha.method
             # ic_weighted: uses factor_registry IC weights (auto-refreshed every 24h)

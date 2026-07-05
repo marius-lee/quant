@@ -1,4 +1,4 @@
-# Handoff: quant 项目状态 — 2026-07-05 21:30 CST
+# Handoff: quant 项目状态 — 2026-07-05 22:15 CST
 
 ## 本次会话（2026-07-05）
 
@@ -19,6 +19,17 @@
 - **sleeve_compose 返回值变更**: 旧=等权 1.0 mask, 新=原始 z-score (保留信号梯度)
 - 多因子碰撞规则: 同一股票被多个因子选中时取 max z-score
 - tests/test_synth.py: 6 个 sleeve_compose 测试 (26/26 全通过)
+
+### P45: 因子评估死锁修复 — 计算层架构分离
+- ADR 018: 识别死锁 (deprecated 因子永不可恢复, 34/35 被排除)
+- ADR 019: 架构修复方案 (Grinold & Kahn 两阶段分离)
+- factor/compute.py: load_active_price_factors/fundamental_factors/get_factor_names 增加 status_filter 参数
+- factor/compute.py: compute_all_factors 增加 factor_names 参数 (显式列表绕过 status)
+- factor/stats_cache.py: compute_factor_stats 增加 factor_names 透传; load_ic_map_from_cache 加载全量 IC
+- eval_stepwise.sh: Layer 1+2 前查询全部 35 个因子名, 传入 compute_factor_stats
+- pipeline.py / validate.py: 不改 (生产默认 active, 校验不变)
+- 26/26 测试通过
+- **下次 eval 将评估全量 35 个因子, 而非仅 1 个 active**
 
 ### P44: 回测窗口标准化 — 扩展到 ≥250 天
 - 3 个脚本硬编码 2026-01-01→2026-06-30 (116d) → 统一改为 config.yaml 默认值
@@ -55,12 +66,12 @@ Python: .venv (3.14.6), .venv-tushare (3.12)
 Redis: localhost:6379
 测试: pytest tests/ -q (26/26)
 DB: data/market.db (7,454,629 行 daily, 2020-01-02 ~ 2026-07-03, 1,574 交易日)
-Git: origin/main @ 0d08ac3
+Git: origin/main @ 17a1377
 
 ## 待完成
-1. 跑 eval_stepwise.sh (已改为 3.5 年窗口) 验证 sleeve vs composite
-2. 恢复 zt_streak + dt_streak 双因子 sleeve 组合评估
-3. benchmark.py 添加 fallback（sina DNS 偶发失败）
-4. 新因子开发方向: LHB/margin/northbound 数据已有但对应 compute 函数待审查
-5. 数据补齐: 从各数据源拉取 2020-2023 年日线数据, 扩展回测区间到 ≥250 天
+1. **跑 eval_stepwise.sh** — 验证全量 34 因子评估 (P45 修复), 预期 dt_streak/gap_5d/size/bp_ratio 等重新进入候选
+2. 多因子 sleeve 组合评估 (需要 ≥3 个候选因子才有意义)
+3. lookback 参数扩展 (120→500, 匹配 alpha.train_window)
+4. benchmark.py 添加 fallback（sina DNS 偶发失败）
+5. 新因子开发方向: LHB/margin/northbound 数据已有但对应 compute 函数待审查
 6. sleeve vs composite 单因子场景语义 — 是否需要自动回退到 composite

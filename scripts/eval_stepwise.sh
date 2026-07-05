@@ -19,7 +19,9 @@ import numpy as np
 # 1. 运行因子统计评估
 print("Computing factor stats...", flush=True)
 from factor.stats_cache import compute_factor_stats
-stats = compute_factor_stats(n_symbols=${N_SYMBOLS:-800}, lookback=${LOOKBACK:-120})
+# n_symbols/lookback read from config.yaml factor.evaluation (see config above)
+from config.loader import get as _ecfg
+stats = compute_factor_stats(n_symbols=_ecfg("factor.evaluation.n_symbols", 800), lookback=_ecfg("factor.evaluation.lookback", 120))
 
 factor_names = stats["factor_keys"]
 ic_means = {name: ic for name, ic in zip(factor_names, stats["ic"])}
@@ -33,7 +35,7 @@ print(f"IC range: {min(ic_means.values()):+.4f} ~ {max(ic_means.values()):+.4f}"
 from factor.marginal import compute_marginal_evaluation, rank_candidates
 
 results = compute_marginal_evaluation(
-    factor_names, ic_means, ic_irs, corr, n_days=${N_DAYS:-120}, t_threshold=2.0
+    factor_names, ic_means, ic_irs, corr, n_days=_ecfg("factor.evaluation.n_days", 120), t_threshold=2.0
 )
 
 # 3. 输出结果
@@ -206,10 +208,3 @@ echo "============================================"
 echo "最终回测"
 echo "============================================"
 bash scripts/backtest_jq.sh
-eval $(.venv/bin/python3 -c "
-import sys; sys.path.insert(0, '.')
-from config.loader import get as _ecfg
-print(f'N_SYMBOLS={_ecfg(\"factor.evaluation.n_symbols\", 800)}')
-print(f'LOOKBACK={_ecfg(\"factor.evaluation.lookback\", 120)}')
-print(f'N_DAYS={_ecfg(\"factor.evaluation.n_days\", 120)}')
-")

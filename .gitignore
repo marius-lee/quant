@@ -29,3 +29,4 @@ data/models/
 # 配置 (敏感信息不跟踪)
 config/config.yaml
 market.db
+data/metrics.db

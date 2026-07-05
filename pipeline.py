@@ -33,6 +33,24 @@ import uuid as _uuid
 
 import requests as _requests, threading as _threading
 
+
+# ── JSON sanitizer: convert numpy types to native Python types ──
+def _sanitize_for_json(obj):
+    """Recursively convert numpy types to Python native types for JSON serialization.
+    Python 3.14 simplejson cannot serialize numpy.int64/float64/etc.
+    """
+    import numpy as _np
+    if isinstance(obj, (_np.integer,)):
+        return int(obj)
+    if isinstance(obj, (_np.floating,)):
+        return float(obj)
+    if isinstance(obj, _np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(x) for x in obj]
+    return obj
 def _state_url() -> str:
     from config.loader import get as _cfg
     port = int(_cfg("web.port", 8521))
@@ -51,18 +69,28 @@ def _post_state(data: dict, timeout: float = 5.0, max_retries: int = 3, async_mo
     _post_state_sync(data, timeout, max_retries)
 
 def _post_state_sync(data: dict, timeout: float, max_retries: int):
+    """POST state to Flask. Sanitizes numpy types. Retries only on transient errors."""
     url = _state_url()
+    data = _sanitize_for_json(data)
     for attempt in range(max_retries):
         try:
             r = _requests.post(url, json=data, timeout=timeout)
             if r.ok:
                 return
+            # 4xx client errors are permanent — do not retry
+            if 400 <= r.status_code < 500:
+                get_logger("pipeline").warning(f"_post_state client error {r.status_code}, not retrying")
+                return
             get_logger("pipeline").warning(f"_post_state HTTP {r.status_code} (attempt {attempt+1})")
+        except _requests.ConnectionError:
+            # Server not running — not a transient error
+            return
+        except _requests.Timeout:
+            get_logger("pipeline").warning(f"_post_state timeout (attempt {attempt+1})")
         except _requests.RequestException as e:
             get_logger("pipeline").warning(f"_post_state failed: {e} (attempt {attempt+1})")
         if attempt < max_retries - 1:
             import time as _time; _time.sleep(2 ** attempt)
-
 
 logger = get_logger("pipeline")
 

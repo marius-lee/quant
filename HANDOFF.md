@@ -75,3 +75,19 @@ Git: origin/main @ 17a1377
 4. benchmark.py 添加 fallback（sina DNS 偶发失败）
 5. 新因子开发方向: LHB/margin/northbound 数据已有但对应 compute 函数待审查
 6. sleeve vs composite 单因子场景语义 — 是否需要自动回退到 composite
+
+### ADR 020: 151 Trading Strategies — 核心理论与公式提取
+- 覆盖 Ch.3 Stocks 核心策略: Price-Momentum, Value, Low-Vol, Residual Momentum, Mean-Reversion Weighted Regression, Multifactor, Risk Model, Alpha Combos
+- 每个策略标注了标准参数 (来源于文献) 及与项目因子的对照
+- 识别出 3 个关键缺口: momentum_10d 窗口过短 (10d vs 63d+), reversal_5d 方法弱 (单变量 vs 加权回归), 缺失 Residual Momentum (Ch.3.7)
+
+### ADR 021: 151 Trading Strategies — 股票策略完整参考手册
+- 21 个策略的完整分类、公式、交易规则、标准参数、关键文献 (525 行)
+- Ch.3 原文逐策略提取 + 公式索引 (Eqs 1-95)
+- 项目缺失因子优先级排序 (P0: Residual Momentum, P1: Momentum 63d+/SUE, P2: Weighted Mean-Reversion)
+- 与 ADR 020 互补: 020 是分析+行动建议, 021 是完整参考手册
+
+### ADR 022: 可落地四档方案 + 波动率拖累诊断
+- Sharpe 0.843 与 -82% 收益同时出现: 根因是波动率拖累 (σ=13.5%日波动, 算术日均 +0.72% 但方差减损 -0.91%)
+- 信号有效 (zt_streak+dt_streak), 仓位管理崩溃级 (σ=沪深300的11倍)
+- 四档推进: 第一档(改参数)→第二档.1(动量变体)→第二档.2(残差动量)→第三档(算法升级)

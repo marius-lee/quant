@@ -67,9 +67,11 @@ for i, (name, mic, r) in enumerate(ranked):
     print(f"  {i+1:2d}. {marg_tag} {name:30s} marginal_IC={mic_str}  ({r['reason']})")
 
 # 4. 筛选: t-test 通过 + 边际贡献正向
+# ADR 022: 候选筛选需同时满足 Layer 1 t-test + Layer 2 marginal IC 显著性 (mic_t ≥ 2.0)
+# 过滤掉 roe_reported (mic=+0.0010, t=0.1) 等边际贡献不显著的因子
 candidates = [
     (name, mic, r) for name, mic, r in ranked
-    if r.get("t_pass") and (mic is not None and mic > 0)
+    if r.get("t_pass") and (mic is not None and mic > 0) and "不显著" not in r.get("reason", "")
 ]
 
 print(f"\n=== Candidates for stepwise backtest ({len(candidates)}) ===")
@@ -103,13 +105,14 @@ PYEOF
 
 echo ""
 echo "============================================"
-echo "Layer 3: 步进回测 (边际贡献排序)"
+echo "Layer 3: 步进回测 — 短期筛选 (边际贡献排序)"
 echo "============================================"
 
 .venv/bin/python3 << 'PYEOF'
 import json, sqlite3, subprocess, sys, os, re, time, numpy as np
 
 sys.path.insert(0, '.')
+from config.loader import get as _ecfg
 
 with open('/tmp/_eval_candidates.json') as f:
     data = json.load(f)
@@ -151,8 +154,8 @@ for idx, (name, marginal_ic) in enumerate(candidates):
 import sys; sys.path.insert(0, '.')
 from backtest import run_backtest
 from config.loader import get as _ecfg
-bt_start = _ecfg("backtest.default_start", "2023-01-01")
-bt_end   = _ecfg("backtest.default_end", "2026-06-30")
+bt_start = _ecfg("screening.backtest_start", "2025-06-30")
+bt_end   = _ecfg("screening.backtest_end", "2026-06-30")
 bt_cap   = _ecfg("backtest.default_capital", 100000)
 result = run_backtest(bt_start, bt_end, bt_cap)
 
@@ -170,7 +173,7 @@ print(f'WEALTH={{wealth:.2f}}')
 print(f'SHARPE={{sharpe:.4f}}')
 print(f'IR={{ir:.4f}}')
 """
-    ], capture_output=True, text=True, timeout=1200, env={**os.environ, 'PYTHONPATH': '.'})
+    ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=_ecfg('screening.timeout', 600), env={**os.environ, 'PYTHONPATH': '.'})
 
     elapsed = time.time() - tt
 

@@ -130,6 +130,57 @@ print(f"qfq K线 (600519): {len(rows)} rows")
 print("tencent: OK")
 EOF
 
+
+# ═══ sina (Py3.14) ═══
+echo ""
+echo "--- sina ---"
+$V14 << 'EOF'
+from urllib.request import Request, urlopen
+from json import loads
+# 新浪历史K线 — 注意: 返回未复权数据, 除权日单日跳变
+url = "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=sh600519&scale=240&ma=no&datalen=3"
+try:
+    r = urlopen(Request(url, headers={"Referer": "https://finance.sina.com.cn"}), timeout=10)
+    data = loads(r.read())
+    print(f"K线 (600519 未复权): {len(data)} rows")
+    if data:
+        print(f"  sample keys: {list(data[0].keys())}")
+        print(f"  sample: {data[0]}")
+    print("sina: OK")
+except Exception as e:
+    print(f"sina: FAIL ({type(e).__name__}: {e})")
+EOF
+
+# ═══ netease (Py3.14) ═══
+echo ""
+echo "--- netease ---"
+$V14 << 'EOF'
+from urllib.request import Request, urlopen
+# 网易历史日线 (CSV格式, GBK编码)
+url = "http://quotes.money.163.com/service/chddata.html?code=0600519&start=20260701&end=20260703&fields=TCLOSE;HIGH;LOW;TOPEN;CHG;PCHG;TURNOVER;VOTURNOVER;VATURNOVER"
+try:
+    r = urlopen(Request(url, headers={"Referer": "http://money.163.com"}), timeout=10)
+    text = r.read().decode("gbk", errors="replace")
+    lines = text.strip().split("\n")
+    print(f"K线 (600519): {len(lines)-1} rows (header + data)")
+    if len(lines) > 1:
+        print(f"  header: {lines[0][:120]}")
+        print(f"  row1:   {lines[1][:120]}")
+    print("netease: OK")
+except Exception as e:
+    print(f"netease: FAIL ({type(e).__name__}: {e})")
+
+# 网易实时行情 (JSONP, GBK)
+url2 = "http://api.money.126.net/data/feed/0600519,money.api"
+try:
+    r = urlopen(Request(url2, headers={"Referer": "http://money.163.com"}), timeout=10)
+    text = r.read().decode("gbk", errors="replace")
+    print(f"realtime: {text[:150]}...")
+    print("netease realtime: OK")
+except Exception as e:
+    print(f"netease realtime: FAIL ({type(e).__name__}: {e})")
+EOF
+
 # ═══ pytdx (Py3.14) ═══
 echo ""
 echo "--- pytdx ---"

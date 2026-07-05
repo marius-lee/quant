@@ -87,34 +87,38 @@ else:
     print("JQData: OK")
 EOF
 
+
 # ═══ akshare (Py3.14) ═══
 echo ""
 echo "--- akshare ---"
 $V14 << 'EOF'
-import akshare as ak
-df = ak.stock_info_a_code_name()
-print(f"stock list: {len(df)} rows")
-df = ak.stock_zh_a_hist("000001", "daily", "20260701", "20260703", "qfq")
-print(f"daily OHLCV (000001): {len(df)} rows")
-df = ak.stock_lhb_detail_em("20260701", "20260703")
-print(f"lhb detail: {len(df)} rows")
-try:
-    df = ak.stock_margin_detail_sse(date="20260703")
-    print(f"margin SSE: {len(df)} rows")
-except Exception as e:
-    print(f"margin SSE: FAIL ({e})")
-try:
-    df = ak.stock_hsgt_individual_em(symbol="600519")
-    print(f"northbound: {len(df)} rows")
-except Exception as e:
-    print(f"northbound: FAIL ({e})")
-try:
-    df = ak.stock_individual_fund_flow(stock="000001", market="sz")
-    print(f"fund flow: {len(df)} rows")
-except Exception as e:
-    print(f"fund flow: FAIL ({e})")
+import akshare as ak, time
+
+def try_call(label, fn):
+    for attempt in range(1, 4):
+        try:
+            result = fn()
+            n = len(result) if result is not None else 0
+            print(f"{label}: {n} rows")
+            return result
+        except Exception as e:
+            if attempt < 3:
+                wait = 2 * attempt
+                print(f"{label}: retry {attempt}/3 after {wait}s ({type(e).__name__})")
+                time.sleep(wait)
+            else:
+                print(f"{label}: FAIL ({type(e).__name__}: {e})")
+    return None
+
+try_call("stock list", lambda: ak.stock_info_a_code_name())
+try_call("daily OHLCV (000001)", lambda: ak.stock_zh_a_hist("000001", "daily", "20260701", "20260703", "qfq"))
+try_call("lhb detail", lambda: ak.stock_lhb_detail_em("20260701", "20260703"))
+try_call("margin SSE", lambda: ak.stock_margin_detail_sse(date="20260703"))
+try_call("northbound", lambda: ak.stock_hsgt_individual_em(symbol="600519"))
+try_call("fund flow", lambda: ak.stock_individual_fund_flow(stock="000001", market="sz"))
 print("akshare: OK")
 EOF
+
 
 # ═══ tencent (Py3.14) ═══
 echo ""
@@ -182,42 +186,43 @@ except Exception as e:
 EOF
 
 
+
 # ═══ 同花顺 (Py3.14) ═══
 echo ""
 echo "--- 同花顺 (10jqka) ---"
 $V14 << 'EOF'
 from urllib.request import Request, urlopen
 from json import loads as jloads
-# 同花顺日K线 — JSONP格式, 需手动提取JSON
-url = "http://d.10jqka.com.cn/v2/line/stock_zh_600519_09/last.js"
-try:
-    r = urlopen(Request(url, headers={"Referer": "http://www.10jqka.com.cn", "User-Agent": "Mozilla/5.0"}), timeout=10)
-    text = r.read().decode("gbk", errors="replace")
-    # JSONP: quotebridge_v2_line_...({...})
-    if "(" in text:
-        js = text[text.index("(")+1 : text.rindex(")")]
-        data = jloads(js)
-        name = data.get("name", "?")
-        rows = data.get("data", [])
-        print(f"股票: {name}, K线: {len(rows)} rows")
-        if rows:
-            print(f"  sample: {rows[0]}")
-    else:
-        print(f"unexpected: {text[:200]}")
-    print("同花顺: OK")
-except Exception as e:
-    print(f"同花顺: FAIL ({type(e).__name__}: {e})")
+import time
 
-# 股票列表页
-url2 = "http://q.10jqka.com.cn/index/index/board/all/field/zdf/order/desc/page/1/ajax/1/"
-try:
-    r = urlopen(Request(url2, headers={"Referer": "http://www.10jqka.com.cn", "User-Agent": "Mozilla/5.0"}), timeout=10)
-    text = r.read().decode("gbk", errors="replace")
-    print(f"股票列表: {len(text)} chars")
-    print("同花顺 list: OK")
-except Exception as e:
-    print(f"同花顺 list: FAIL ({type(e).__name__}: {e})")
+# 尝试多个端点 — v2已404, 试v6和备用域名
+endpoints = [
+    ("v6 HTTPS", "https://d.10jqka.com.cn/v6/line/stock_zh_600519_09/last.js"),
+    ("v6 HTTP",  "http://d.10jqka.com.cn/v6/line/stock_zh_600519_09/last.js"),
+    ("stockpage","https://stockpage.10jqka.com.cn/spService/600519/header/1/"),
+]
+ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+for label, url in endpoints:
+    try:
+        r = urlopen(Request(url, headers={"Referer": "http://www.10jqka.com.cn", "User-Agent": ua}), timeout=10)
+        text = r.read().decode("gbk", errors="replace")
+        print(f"{label}: HTTP {r.status}, {len(text)} chars")
+        if len(text) > 100:
+            print(f"  preview: {text[:200]}")
+        if "{" in text:
+            js = text[text.index("{"):text.rindex("}")+1]
+            data = jloads(js)
+            print(f"  parsed: {list(data.keys())[:5]}")
+        print(f"同花顺 ({label}): OK")
+        break
+    except Exception as e:
+        print(f"{label}: FAIL ({type(e).__name__}: {e})")
+    time.sleep(1)
+else:
+    print("同花顺: FAIL (all endpoints unreachable)")
 EOF
+
+
 
 # ═══ 雪球 (Py3.14) ═══
 echo ""
@@ -228,50 +233,61 @@ from http.cookiejar import CookieJar
 from json import loads as jloads
 import time
 
-# Step 1: 获取cookie
 cj = CookieJar()
 opener = build_opener(HTTPCookieProcessor(cj))
 try:
     r = opener.open("https://xueqiu.com", timeout=10)
     cookies = {c.name: c.value for c in cj}
-    print(f"cookies: {len(cookies)} 个")
+    print(f"cookies: {len(cookies)} 个: {list(cookies.keys())}")
 except Exception as e:
     print(f"cookie获取: FAIL ({type(e).__name__}: {e})")
     cookies = {}
 
 if cookies:
     cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
-    ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+    ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     
-    # Step 2: K线
-    ts = int(time.time() * 1000) - 3 * 86400000
-    url_k = f"https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=SH600519&begin={ts}&period=day&type=before&count=-3&indicator=kline"
+    # K线 — 尝试多种参数格式
+    now_ms = int(time.time() * 1000)
+    three_days_ago = now_ms - 3 * 86400000
+    
+    # 格式1: 原始格式
+    url_k = f"https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=SH600519&begin={three_days_ago}&period=day&type=before&count=-3&indicator=kline,pe,pb"
     try:
         r = urlopen(Request(url_k, headers={"Referer": "https://xueqiu.com/S/SH600519", "User-Agent": ua, "Cookie": cookie_str}), timeout=10)
-        data = jloads(r.read())
-        items = data.get("data", {}).get("item", [])
-        cols = data.get("data", {}).get("column", [])
-        print(f"K线: {len(items)} rows, columns: {cols}")
-        if items:
-            print(f"  sample: {items[0]}")
-        print("雪球 K线: OK")
+        text = r.read().decode()
+        print(f"K线: HTTP {r.status}, {len(text)} chars")
+        if r.status == 200:
+            data = jloads(text)
+            items = data.get("data", {}).get("item", [])
+            cols = data.get("data", {}).get("column", [])
+            print(f"  {len(items)} rows, columns: {cols}")
+            if items:
+                print(f"  sample: {items[0]}")
+            print("雪球 K线: OK")
+        else:
+            print(f"  body: {text[:200]}")
     except Exception as e:
         print(f"雪球 K线: FAIL ({type(e).__name__}: {e})")
     
-    # Step 3: 股票列表
-    url_s = "https://xueqiu.com/service/v5/stock/screener/quote/list?page=1&size=3&order=desc&orderby=percent&market=CN&type=sh_sz"
+    # 股票列表
+    url_s = "https://xueqiu.com/service/v5/stock/screener/quote/list?page=1&size=3&order=desc&orderby=percent&order_by=percent&market=CN&type=sh_sz"
     try:
         r = urlopen(Request(url_s, headers={"Referer": "https://xueqiu.com/hq", "User-Agent": ua, "Cookie": cookie_str}), timeout=10)
-        data = jloads(r.read())
-        total = data.get("data", {}).get("count", 0)
-        items = data.get("data", {}).get("list", [])
-        print(f"股票列表: {total} total, {len(items)} items")
-        print("雪球 股票列表: OK")
+        if r.status == 200:
+            data = jloads(r.read())
+            total = data.get("data", {}).get("count", 0)
+            items = data.get("data", {}).get("list", [])
+            print(f"股票列表: {total} total, {len(items)} items")
+            print("雪球 股票列表: OK")
+        else:
+            print(f"股票列表: HTTP {r.status}, body: {r.read().decode()[:200]}")
     except Exception as e:
         print(f"雪球 股票列表: FAIL ({type(e).__name__}: {e})")
 else:
     print("雪球: SKIP (无cookie)")
 EOF
+
 
 # ═══ pytdx (Py3.14) ═══
 echo ""

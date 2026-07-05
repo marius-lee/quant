@@ -40,7 +40,7 @@ PYTHONPATH=. python3 -m pytest tests/ -v
 
 ### Layer 2: Factor (`factor/`)
 - `base.py` — **Factor** 抽象基类: `compute(data) → Series`, `evaluate(values, returns) → dict`
-- `compute.py` — 因子计算：6因子 (3技术+3基本面) = FACTOR_REGISTRY(momentum_10d/volatility_20d/skewness_20d) + FUNDAMENTAL_FACTOR_REGISTRY(bp_ratio/size/roe_ratio)，覆盖动量/低波/偏度/价值/规模/盈利
+- `compute.py` — 因子计算：6因子 (3技术+3基本面) = PRICE_FN_MAP(26 price: momentum_63d/126d/252d, volatility_126d, skewness_60d, amihud_250d, idio_vol_126d, ...) + FUNDAMENTAL_FN_MAP(9 fundamental)，覆盖动量/低波/偏度/价值/规模/盈利/流动性
 - `evaluate.py` — 截面 Rank IC + IC_IR + 衰减分析 + 相关性矩阵
 - `synth.py` — 因子合成：`equal_weight()` / `ic_weighted()`
 

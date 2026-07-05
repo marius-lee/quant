@@ -100,12 +100,29 @@ description: >
 
 ## 模板 7：数据模型
 
-- 3NF 为主，允许适度反范化
-- 主键：自增 ID（内部）+ UUID（外部），禁止暴露自增 ID
-- 字段：金额 DECIMAL(19,4)，枚举数据库存 TINYINT，JSON 仅用于非查询字段
-- 索引：WHERE/JOIN/ORDER BY 字段建索引，联合索引最左前缀
-- 关系：N:M 用中间表，双外键 + 联合主键
-- 迁移：Alembic/Flyway，支持回滚
+**约束级别**: 硬约束 (量化特例见下)。
+
+量化项目三条特例 (SQLite + 分析工作负载的工程现实):
+
+1. **3NF 豁免分析表**: 因子/筛选/估值等分析型宽表可违反 3NF (JOIN 会严重拖慢计算)。
+   交易表 (sim_trades)、配置表 (strategy_config) 仍须范式化。
+
+2. **迁移工具替换**: SQLite 不支持 Alembic 的 DROP COLUMN / ALTER COLUMN TYPE 等核心操作。
+   改用 `docs/migrations/NNN-description.sql` 编号 SQL 文件 + 应用层幂等 ALTER。
+   所有表必须有 `created_at` 时间戳列。
+
+3. **UUID 仅 API 层**: 内部数据表的主键直接用自增 ID 或自然主键 (symbol, date)。
+   UUID 仅在 API 暴露资源 ID 时引入 (如 `/api/orders/{uuid}`)。
+
+**通用约束** (所有表):
+- 字段类型: 金额 REAL (SQLite 无 DECIMAL)，枚举 CHECK 约束，TEXT 禁用作布尔/状态
+- 索引: 每个表至少有一个复合索引覆盖主查询模式 (symbol+date 是量化的通用模式)
+- 时间戳必备: `created_at TEXT DEFAULT (datetime('now'))`，关键表加 `updated_at`
+- 每表有主: 每张表必须在某个 Python 模块中有且仅有一个建表语句 (不可散落在一
+  次性脚本)。建表由 `ensure_tables(conn)` 模式实现，幂等可重入
+- 主键策略: 优先自然主键 (symbol, date) 避免冗余自增列；交易流水用自增 ID
+- 关系: N:M 用中间表 + 联合主键
+- 禁止: 空表残留 (无数据且无写入计划的表必须删除)、元数据表 (meta key-value) 废弃 → 用文件或配置代替
 
 ## 模板 8：并发控制
 

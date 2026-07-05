@@ -19,14 +19,19 @@ class TradeRepo:
         c.executescript("""
             CREATE TABLE IF NOT EXISTS sim_trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL,
+                date TEXT NOT NULL, symbol TEXT NOT NULL,
+                side TEXT NOT NULL CHECK(side IN ('buy','sell')),
                 price REAL NOT NULL, shares INTEGER NOT NULL,
                 pnl REAL DEFAULT 0, pnl_pct REAL DEFAULT 0,
-                capital_after REAL DEFAULT 0, strategy TEXT DEFAULT 'quant',
-                board_count INTEGER DEFAULT 0
+                capital_after REAL DEFAULT 0,
+                strategy TEXT DEFAULT 'quant',
+                board_count INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now'))
             );
             CREATE TABLE IF NOT EXISTS strategy_config (
-                strategy TEXT PRIMARY KEY, config_json TEXT
+                strategy TEXT PRIMARY KEY,
+                config_json TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
             );
         """)
         c.close()

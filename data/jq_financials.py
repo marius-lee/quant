@@ -1,178 +1,122 @@
-#!/usr/bin/env python3
-"""Sync quarterly financials (balance/income/cash_flow) from JQData to market.db.
+"""JQData 财务数据 — 资产负债表/利润表/现金流量表 (模板7: 每表有主).
 
-用法:
-  .venv-tushare/bin/python3 data/jq_financials.py                    # 最近8个季度
-  .venv-tushare/bin/python3 data/jq_financials.py --quarters 12
+数据源: JQData (joinquant.com), 每日100万条配额.
+更新时间: 季度 (财报发布后3-5个工作日).
 """
-import os, sys, time, sqlite3, logging
-from datetime import datetime, timedelta
-from calendar import monthrange
+import sqlite3
+import logging
+import os as _os
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+_log = logging.getLogger("data.jq_financials")
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-logger = logging.getLogger("jq_financials")
-
-DB = os.path.join(os.path.dirname(__file__), "market.db")
-
-KEY_COLS = {
-    "balance": [
-        "total_assets", "total_liability", "total_owner_equities",
-        "equities_parent_company_owners", "minority_interests",
-        "fixed_assets", "intangible_assets", "good_will",
-        "inventories", "account_receivable", "total_current_assets",
-        "total_current_liability", "shortterm_loan", "longterm_loan",
-    ],
-    "income": [
-        "total_operating_revenue", "operating_revenue", "operating_cost",
-        "operating_profit", "net_profit", "total_profit",
-        "income_tax_expense", "selling_expense", "administration_expense",
-        "finance_expense", "rd_expense",
-    ],
-    "cash_flow": [
-        "net_operate_cash_flow", "net_invest_cash_flow", "net_finance_cash_flow",
-        "cash_and_equivalents_at_end", "goods_sale_and_service_render_cash",
-        "fix_intan_other_asset_acqui_cash",
-    ]
-}
-
-TABLE_OBJECTS = {}  # populated at runtime
+DB = _os.path.join(_os.path.dirname(__file__), "market.db")
 
 
-def _ensure_tables(conn):
-    for tbl in ["balance", "income", "cash_flow"]:
-        conn.execute(f"""
-            CREATE TABLE IF NOT EXISTS financial_{tbl} (
-                symbol TEXT,
-                stat_date TEXT,
-                pub_date TEXT,
-                PRIMARY KEY (symbol, stat_date)
-            )
-        """)
+def ensure_tables(conn: sqlite3.Connection):
+    """幂等建表 + 索引 (模板7: 每表有主, 索引在模块内维护)."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS financial_balance (
+            symbol TEXT NOT NULL,
+            stat_date TEXT NOT NULL,
+            pub_date TEXT,
+            total_assets REAL,
+            total_liability REAL,
+            total_owner_equities REAL,
+            equities_parent_company_owners REAL,
+            minority_interests REAL,
+            fixed_assets REAL,
+            intangible_assets REAL,
+            good_will REAL,
+            inventories REAL,
+            account_receivable REAL,
+            total_current_assets REAL,
+            total_current_liability REAL,
+            shortterm_loan REAL,
+            longterm_loan REAL,
+            created_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (symbol, stat_date)
+        );
+        CREATE TABLE IF NOT EXISTS financial_income (
+            symbol TEXT NOT NULL,
+            stat_date TEXT NOT NULL,
+            pub_date TEXT,
+            total_operating_revenue REAL,
+            operating_revenue REAL,
+            operating_cost REAL,
+            operating_profit REAL,
+            net_profit REAL,
+            total_profit REAL,
+            income_tax_expense REAL,
+            administration_expense REAL,
+            created_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (symbol, stat_date)
+        );
+        CREATE TABLE IF NOT EXISTS financial_cash_flow (
+            symbol TEXT NOT NULL,
+            stat_date TEXT NOT NULL,
+            pub_date TEXT,
+            net_operate_cash_flow REAL,
+            net_invest_cash_flow REAL,
+            net_finance_cash_flow REAL,
+            cash_and_equivalents_at_end REAL,
+            goods_sale_and_service_render_cash REAL,
+            fix_intan_other_asset_acqui_cash REAL,
+            created_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (symbol, stat_date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_fin_balance_date ON financial_balance(stat_date);
+        CREATE INDEX IF NOT EXISTS idx_fin_income_date ON financial_income(stat_date);
+        CREATE INDEX IF NOT EXISTS idx_fin_cashflow_date ON financial_cash_flow(stat_date);
+    """)
     conn.commit()
 
 
-def _quarter_end_dates(n_quarters):
-    """Generate last calendar day of each quarter, going back n quarters."""
-    today = datetime.today()
-    # 当前季度第一天
-    q = ((today.month - 1) // 3) * 3 + 1
-    year = today.year
-    dates = []
-    for _ in range(n_quarters):
-        # 往前退一个季度
-        q -= 3
-        if q < 1:
-            q += 12
-            year -= 1
-        # 季度最后一个月
-        end_month = q + 2
-        end_year = year
-        if end_month > 12:
-            end_month -= 12
-            end_year += 1
-        last_day = monthrange(end_year, end_month)[1]
-        dates.append(datetime(end_year, end_month, min(last_day, 31)).strftime("%Y-%m-%d"))
-    return sorted(dates)
+def upsert_balance(conn: sqlite3.Connection, rows: list[dict]):
+    """批量 upsert 资产负债表."""
+    _log.info(f"upserting {len(rows)} balance rows")
+    for r in rows:
+        cols = [k for k in r if k != "symbol" and k != "stat_date"]
+        placeholders = ",".join(["?" for _ in cols])
+        set_clause = ",".join([f"{c}=excluded.{c}" for c in cols])
+        sql = (
+            f"INSERT INTO financial_balance (symbol,stat_date,{','.join(cols)}) "
+            f"VALUES (?,?,{placeholders}) "
+            f"ON CONFLICT(symbol,stat_date) DO UPDATE SET {set_clause}"
+        )
+        values = [r["symbol"], r["stat_date"]] + [r.get(c) for c in cols]
+        conn.execute(sql, values)
+    conn.commit()
 
 
-def _sync_table(conn, tbl_name, quarter_dates):
-    from jqdatasdk import auth, get_fundamentals, query, logout
-
-    auth(os.environ.get("JQDATA_USER", ""), os.environ.get("JQDATA_PASS", ""))
-
-    tbl_obj = TABLE_OBJECTS[tbl_name]
-    total = 0
-    for i, q_date in enumerate(quarter_dates):
-        t0 = time.time()
-        try:
-            df = get_fundamentals(query(tbl_obj), date=q_date)
-        except Exception as e:
-            logger.warning(f"{tbl_name} {q_date}: {e}")
-            continue
-
-        if df is None or df.empty:
-            logger.warning(f"{tbl_name} {q_date}: empty")
-            continue
-
-        key_cols = KEY_COLS[tbl_name]
-        existing = [c for c in key_cols if c in df.columns]
-        for col in existing:
-            try:
-                conn.execute(f"ALTER TABLE financial_{tbl_name} ADD COLUMN {col} REAL")
-            except sqlite3.OperationalError:
-                pass
-
-        inserted = 0
-        for _, row in df.iterrows():
-            code = str(row.get("code", ""))
-            if not code or "." not in code:
-                continue
-            symbol = code.split(".")[0]
-            if len(symbol) != 6:
-                continue
-            stat_date = str(row.get("statDate", ""))
-            pub_date = str(row.get("pubDate", ""))
-            if not stat_date:
-                continue
-
-            vals = {c: float(row[c]) for c in existing if row.get(c) is not None and row[c] == row[c]}
-            if not vals:
-                continue
-
-            cols_sql = ", ".join(vals.keys())
-            pl = ", ".join("?" * len(vals))
-            params = list(vals.values())
-            conn.execute(
-                f"INSERT OR REPLACE INTO financial_{tbl_name} (symbol, stat_date, pub_date, {cols_sql}) "
-                f"VALUES (?, ?, ?, {pl})",
-                (symbol, stat_date, pub_date, *params),
-            )
-            inserted += 1
-
-        conn.commit()
-        elapsed = time.time() - t0
-        total += inserted
-        print(f"  [{i+1}/{len(quarter_dates)}] {tbl_name} {q_date}: {inserted} stocks, {elapsed:.1f}s")
-
-    logout()
-    return total
+def upsert_income(conn: sqlite3.Connection, rows: list[dict]):
+    """批量 upsert 利润表."""
+    _log.info(f"upserting {len(rows)} income rows")
+    for r in rows:
+        cols = [k for k in r if k not in ("symbol", "stat_date")]
+        placeholders = ",".join(["?" for _ in cols])
+        set_clause = ",".join([f"{c}=excluded.{c}" for c in cols])
+        sql = (
+            f"INSERT INTO financial_income (symbol,stat_date,{','.join(cols)}) "
+            f"VALUES (?,?,{placeholders}) "
+            f"ON CONFLICT(symbol,stat_date) DO UPDATE SET {set_clause}"
+        )
+        values = [r["symbol"], r["stat_date"]] + [r.get(c) for c in cols]
+        conn.execute(sql, values)
+    conn.commit()
 
 
-def sync_financials(n_quarters=8):
-    conn = sqlite3.connect(DB)
-    _ensure_tables(conn)
-
-    # Import JQData table objects
-    from jqdatasdk import balance as bal, income as inc, cash_flow as cf
-    TABLE_OBJECTS["balance"] = bal
-    TABLE_OBJECTS["income"] = inc
-    TABLE_OBJECTS["cash_flow"] = cf
-
-    quarter_dates = _quarter_end_dates(n_quarters)
-    logger.info(f"Syncing {n_quarters} quarters: {quarter_dates[0]} ~ {quarter_dates[-1]}")
-
-    grand_total = 0
-    for tbl_name in ["balance", "income", "cash_flow"]:
-        synced = set(r[0] for r in conn.execute(
-            f"SELECT DISTINCT stat_date FROM financial_{tbl_name}"
-        ).fetchall())
-        todo = [d for d in quarter_dates if d not in synced]
-        if not todo:
-            logger.info(f"{tbl_name}: all {len(quarter_dates)} quarters synced")
-            continue
-        logger.info(f"{tbl_name}: {len(todo)} quarters to sync")
-        n = _sync_table(conn, tbl_name, todo)
-        grand_total += n
-
-    conn.close()
-    logger.info(f"Done: {grand_total} rows total")
-
-
-if __name__ == "__main__":
-    import argparse
-    p = argparse.ArgumentParser()
-    p.add_argument("--quarters", type=int, default=8)
-    args = p.parse_args()
-    sync_financials(n_quarters=args.quarters)
+def upsert_cash_flow(conn: sqlite3.Connection, rows: list[dict]):
+    """批量 upsert 现金流量表."""
+    _log.info(f"upserting {len(rows)} cash_flow rows")
+    for r in rows:
+        cols = [k for k in r if k not in ("symbol", "stat_date")]
+        placeholders = ",".join(["?" for _ in cols])
+        set_clause = ",".join([f"{c}=excluded.{c}" for c in cols])
+        sql = (
+            f"INSERT INTO financial_cash_flow (symbol,stat_date,{','.join(cols)}) "
+            f"VALUES (?,?,{placeholders}) "
+            f"ON CONFLICT(symbol,stat_date) DO UPDATE SET {set_clause}"
+        )
+        values = [r["symbol"], r["stat_date"]] + [r.get(c) for c in cols]
+        conn.execute(sql, values)
+    conn.commit()

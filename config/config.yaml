@@ -42,7 +42,7 @@ alpha:
   top_fraction: 0.3
   # sleeve 模式配置 (仅 combine_mode=sleeve 时生效)
   sleeve:
-    positions_per_factor: 8                                   # 每个因子独立选取 top N 只股票
+    positions_per_factor: 15                                  # 每因子选股数 (Grinold & Kahn 最低20只, 单因子 ≥15 保证分散度; 多因子饱和到 max_positions)
     min_factors: 1                                            # 最少需要的有效因子数
   intersection_top_fraction: 0.2
   intersection_primary: gap_5d
@@ -93,7 +93,3 @@ cache:
 screening:
 # DEPRECATED (2026-07-05): min_abs_ic: 0.02
 # DEPRECATED (2026-07-05): min_ic_ir: 0.1
-  # sleeve 模式配置 (仅 combine_mode=sleeve 时生效)
-  sleeve:
-    positions_per_factor: 8                                   # 每个因子独立选取 top N 只股票
-    min_factors: 1                                            # 最少需要的有效因子数

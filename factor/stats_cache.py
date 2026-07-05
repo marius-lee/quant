@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from utils.logger import get_logger
+from config.loader import get as _cfg
 
 logger = get_logger("factor.stats_cache")
 
@@ -32,26 +33,18 @@ _SNAPSHOT_TTL_SEC = 86400  # 24 小时
 
 
 def compute_factor_stats(
-    symbols: list = None, n_symbols: int = 800, lookback: int = 120
+    symbols: list = None, n_symbols: int = None, lookback: int = None
 ) -> dict:
     """计算所有已注册因子的评估统计量，返回前端可用格式。
 
-    在 n_symbols 只股票的历史数据上，计算:
-      - 截面 Rank IC (均值、IR)
-      - IC 衰减 [1, 5, 20]
-      - 因子截面相关性矩阵
-
-    返回格式与前端 app.js generateDemoFactors() 一致:
-    {
-      "factors": ["动量10d", "波动率20d", ...],
-      "ic": [0.032, 0.028, ...],
-      "ic_ir": [0.35, 0.28, ...],
-      "decay": {"动量10d": [0.032, 0.018, 0.005], ...},
-      "corr": [[1, 0.6, ...], [...], ...],
-      "meta": {"momentum_10d": {"category": "动量", "source": "Jegadeesh & Titman (1993)"}, ...},
-      "cached_at": "2026-07-02T15:30:00"
-    }
+    n_symbols / lookback 默认值来源: config.yaml factor.evaluation (单一真相源).
+    fallback: n_symbols=800 (中证800), lookback=120 (券商研报惯例).
     """
+    if n_symbols is None:
+        n_symbols = _cfg("factor.evaluation.n_symbols", 800)
+    if lookback is None:
+        lookback = _cfg("factor.evaluation.lookback", 120)
+
     from data.store import DataStore
     from factor.compute import compute_all_factors, get_factor_names
 
@@ -309,11 +302,13 @@ def _empty_result() -> dict:
     }
 
 
-def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = 800) -> dict:
+def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None) -> dict:
     """获取缓存的因子评估数据。从 factor_snapshot 表读取，24h 过期自动重算。
 
     返回: compute_factor_stats() 的输出格式
     """
+    if n_symbols is None:
+        n_symbols = _cfg("factor.evaluation.n_symbols", 800)
     import sqlite3 as _sql
     if not force_refresh:
         try:
@@ -335,14 +330,15 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = 800) -
 
     # 重新计算
     logger.info("computing factor stats (this may take ~30s)...")
-    stats = compute_factor_stats(n_symbols=n_symbols, lookback=120)
+    lookback_val = _cfg("factor.evaluation.lookback", 120)
+    stats = compute_factor_stats(n_symbols=n_symbols, lookback=lookback_val)
 
     # 存入 factor_snapshot 表 + 同步更新 factor_registry
     try:
         conn = _sql.connect(_DB_PATH)
         conn.execute(
             "INSERT OR REPLACE INTO factor_snapshot (id, data, created_at, n_symbols, lookback) VALUES (1,?,datetime('now','localtime'),?,?)",
-            (json.dumps(stats, ensure_ascii=False), n_symbols, 120)
+            (json.dumps(stats, ensure_ascii=False), n_symbols, lookback_val)
         )
         conn.commit()
         conn.close()
@@ -394,13 +390,15 @@ def load_ic_map_from_cache(factor_values: dict = None) -> dict:
     return _load_ic_from_db(factor_values)
 
 
-def force_refresh_cache(n_symbols: int = 800) -> dict:
+def force_refresh_cache(n_symbols: int = None) -> dict:
     """强制刷新因子评估 — 重新计算并存入 factor_snapshot 表。
 
     用于: 基本面数据更新后、因子变更后、每日定时任务。
 
     返回: compute_factor_stats() 的输出 dict。
     """
+    if n_symbols is None:
+        n_symbols = _cfg("factor.evaluation.n_symbols", 800)
     logger.info(f"Refreshing factor stats with {n_symbols} stocks...")
     stats = get_cached_factor_stats(force_refresh=True, n_symbols=n_symbols)
     logger.info(f"Factor refresh complete: {len(stats.get('factors', []))} factors")

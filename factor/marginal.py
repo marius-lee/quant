@@ -17,13 +17,16 @@ import numpy as np
 from typing import Dict, List, Tuple
 from scipy import stats as scipy_stats
 
+from config.loader import get as _cfg
+
 
 def compute_marginal_evaluation(
     factor_names: List[str],
     ic_means: Dict[str, float],
     ic_irs: Dict[str, float],
     corr_matrix: np.ndarray,
-    n_days: int = 120,  # 120 交易日 ≈ 半年, 国内券商因子研报标准; t=|IR|×√n 最小可检测 |IR|≥0.18
+    n_days: int = None,
+    # n_days default from config.yaml factor.evaluation.n_days, fallback 120 交易日 ≈ 半年, 国内券商因子研报标准; t=|IR|×√n 最小可检测 |IR|≥0.18
     t_threshold: float = 2.0,
 ) -> Dict[str, dict]:
     """综合评估每个因子的边际贡献。
@@ -42,6 +45,9 @@ def compute_marginal_evaluation(
     n = len(factor_names)
 
     # ── Layer 1: IC t 检验 ──
+    if n_days is None:
+        n_days = _cfg("factor.evaluation.n_days", 120)
+
     # H0: IC_mean = 0
     # t = IC / (σ_IC / √n) = (IC / σ_IC) × √n = IR × √n
     t_stats = {}

@@ -88,7 +88,37 @@ def compute_reversal(data: pd.DataFrame, date: str, window: int = 5) -> pd.Serie
 # 3. 波动率因子 — Andersen et al. (2001)
 # ═══════════════════════════════════════════════════════════
 
-def compute_volatility(data: pd.DataFrame, date: str, window: int = 20) -> pd.Series:
+
+# ═══════════════════════════════════════════════════════════
+# 因子窗口参数 — 由 config.yaml factor.windows 驱动, 代码常量为 fallback
+# 所有窗口均有文献或业界依据, 详见 config/config.yaml 注释
+# ═══════════════════════════════════════════════════════════
+try:
+    from config.loader import get as _cfg
+    _AMIHUD_WINDOW = _cfg("factor.windows.amihud", 250)
+    _SKEWNESS_WINDOW = _cfg("factor.windows.skewness", 60)
+    _VOLATILITY_WINDOW = _cfg("factor.windows.volatility", 20)
+    _DOWNSIDE_VOL_WINDOW = _cfg("factor.windows.downside_volatility", 20)
+    _IDIO_VOL_WINDOW = _cfg("factor.windows.idiosyncratic_vol", 20)
+    _MAX_RET_WINDOW = _cfg("factor.windows.max_return", 20)
+    _RANGE_WINDOW = _cfg("factor.windows.intraday_range", 20)
+    _LHB_WINDOW = _cfg("factor.windows.lhb_net_buy", 20)
+    _VOL_RATIO_SHORT = _cfg("factor.windows.volume_ratio_short", 5)
+    _VOL_RATIO_LONG = _cfg("factor.windows.volume_ratio_long", 20)
+except Exception:
+    _AMIHUD_WINDOW = 250
+    _SKEWNESS_WINDOW = 60
+    _VOLATILITY_WINDOW = 20
+    _DOWNSIDE_VOL_WINDOW = 20
+    _IDIO_VOL_WINDOW = 20
+    _MAX_RET_WINDOW = 20
+    _RANGE_WINDOW = 20
+    _LHB_WINDOW = 20
+    _VOL_RATIO_SHORT = 5
+    _VOL_RATIO_LONG = 20
+
+
+def compute_volatility(data: pd.DataFrame, date: str, window: int = _VOLATILITY_WINDOW) -> pd.Series:
     """已实现波动率: std(log_returns[-window:]) × sqrt(252) 年化。
 
     来源: ② Andersen et al. (2001) — 已实现波动率作为风险度量。
@@ -108,7 +138,7 @@ def compute_volatility(data: pd.DataFrame, date: str, window: int = 20) -> pd.Se
     return _cs_zscore(-vol).rename(f"volatility_{window}d")
 
 
-def compute_downside_volatility(data: pd.DataFrame, date: str, window: int = 20) -> pd.Series:
+def compute_downside_volatility(data: pd.DataFrame, date: str, window: int = _DOWNSIDE_VOL_WINDOW) -> pd.Series:
     """下行波动率: std(负收益) × sqrt(252)。只惩罚亏损波动。
 
     来源: ② Sortino & Price (1994) — 下行风险比总波动更有信息量。
@@ -133,7 +163,7 @@ def compute_downside_volatility(data: pd.DataFrame, date: str, window: int = 20)
 # ═══════════════════════════════════════════════════════════
 
 def compute_volume_ratio(data: pd.DataFrame, date: str, window: int = 5,
-                         long_window: int = 20) -> pd.Series:
+                         long_window: int = _VOL_RATIO_LONG) -> pd.Series:
     """量比: avg_volume(short_window) / avg_volume(long_window)。
 
     来源: ② Gervais, Kaniel & Mingelegrin (2001) — 高成交量预示未来收益。
@@ -175,7 +205,7 @@ def compute_turnover_change(data: pd.DataFrame, date: str, window: int = 5) -> p
 # 5. Amihud 非流动性因子 — Amihud (2002)
 # ═══════════════════════════════════════════════════════════
 
-def compute_amihud(data: pd.DataFrame, date: str, window: int = 20) -> pd.Series:
+def compute_amihud(data: pd.DataFrame, date: str, window: int = _AMIHUD_WINDOW) -> pd.Series:
     """Amihud 非流动性: mean(|r_t| / dollar_volume_t) × 10^6。
 
     来源: ② Amihud (2002) — 非流动性溢价: 流动性差的股票预期收益更高。
@@ -212,7 +242,7 @@ def compute_amihud(data: pd.DataFrame, date: str, window: int = 20) -> pd.Series
 # 6. 偏度因子 — Barberis & Huang (2008)
 # ═══════════════════════════════════════════════════════════
 
-def compute_skewness(data: pd.DataFrame, date: str, window: int = 20) -> pd.Series:
+def compute_skewness(data: pd.DataFrame, date: str, window: int = _SKEWNESS_WINDOW) -> pd.Series:
     """收益率偏度: skew(log_returns[-window:])。
 
     来源: ② Barberis & Huang (2008) — 正偏度股票被高估, 负偏度有溢价。
@@ -264,7 +294,7 @@ def compute_turnover_reversal(data: "pd.DataFrame", date: str, short: int = 5,
 # 9. 特质波动率 — Ang et al. (2006), 低特质波动异象
 # ═══════════════════════════════════════════════════════════
 
-def compute_idiosyncratic_vol(data: "pd.DataFrame", date: str, window: int = 20,
+def compute_idiosyncratic_vol(data: "pd.DataFrame", date: str, window: int = _IDIO_VOL_WINDOW,
                               benchmark_ret: Optional["pd.Series"] = None) -> "pd.Series":
     """特质波动率: std(残差) 对沪深300回归, 取负号。无bm时退化为总波动率。"""
     close = data["close"]
@@ -347,7 +377,7 @@ def compute_hsgt_flow(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.S
 # A 股实证 IC≈0.03-0.04, 出现过涨停/大阳线的股票后续跑输(彩票效应)
 # ═══════════════════════════════════════════════════════════
 
-def compute_max_return(data: "pd.DataFrame", date: str, window: int = 20) -> "pd.Series":
+def compute_max_return(data: "pd.DataFrame", date: str, window: int = _MAX_RET_WINDOW) -> "pd.Series":
     """极端日收益因子: max(daily_return[-window:]), 取负号。
     高分 = 没有极端收益的股票 (非彩票型)。"""
     close = data["close"]
@@ -387,7 +417,7 @@ def compute_overnight_gap(data: "pd.DataFrame", date: str, window: int = 5) -> "
 # 窄幅整理→潜在突破, 宽幅震荡→方向不明
 # ═══════════════════════════════════════════════════════════
 
-def compute_intraday_range(data: "pd.DataFrame", date: str, window: int = 20) -> "pd.Series":
+def compute_intraday_range(data: "pd.DataFrame", date: str, window: int = _RANGE_WINDOW) -> "pd.Series":
     """日内振幅因子: avg((high-low)/close, 20日), 取负号。
     高分 = 窄幅整理 (低振幅→蓄势待发)。"""
     h, l, c = data["high"], data["low"], data["close"]
@@ -475,21 +505,19 @@ def compute_money_flow(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.
 # 当 MA5>MA10>MA20>MA60 时趋势确认, IC≈0.03-0.05
 # ═══════════════════════════════════════════════════════════
 
-def compute_ma_alignment(data: "pd.DataFrame", date: str, window: int = 20) -> "pd.Series":
+def compute_ma_alignment(data: "pd.DataFrame", date: str) -> "pd.Series":
     """均线多头排列强度: MA alignment score.
     
-    算法: 
-      - 计算 MA5, MA10, MA20, MA60
-      - alignment_score = (MA5/MA10-1) + (MA10/MA20-1) + (MA20/MA60-1)
-      - 正值 = 多头排列 (短期均线在上), 负值 = 空头排列
-      - 额外奖励: MA5>MA10>MA20>MA60 完全多头排列加 1 分
+    均线窗口固定为 MA5/MA10/MA20/MA60 (不可调).
+    alignment_score = (MA5/MA10-1) + (MA10/MA20-1) + (MA20/MA60-1).
+    正值 = 多头排列, 负值 = 空头排列. 完全多头排列加 1 分.
     
-    来源: A股技术分析核心信号. 均线多头排列是趋势延续的最基本确认.
+    来源: A股技术分析核心信号.
     """
     close = data["close"]
     
     if date not in close.index:
-        return pd.Series(np.nan, index=close.columns, name="ma_alignment_20d")
+        return pd.Series(np.nan, index=close.columns, name="ma_alignment")
     
     idx = close.index.get_loc(date)
     
@@ -818,7 +846,7 @@ def compute_dt_streak(data: "pd.DataFrame", date: str, window: int = 0) -> "pd.S
     return _cs_zscore(result).rename("dt_streak")
 
 
-def compute_lhb_net_buy(data: "pd.DataFrame", date: str, window: int = 20) -> "pd.Series":
+def compute_lhb_net_buy(data: "pd.DataFrame", date: str, window: int = _LHB_WINDOW) -> "pd.Series":
     """龙虎榜净买入强度因子: total_net_buy / avg(circ_mv), N日窗口.
 
     算法:

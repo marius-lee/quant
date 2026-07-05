@@ -104,7 +104,7 @@ try:
 except Exception as e:
     print(f"margin SSE: FAIL ({e})")
 try:
-    df = ak.stock_hsgt_individual_em(stock="600519")
+    df = ak.stock_hsgt_individual_em(symbol="600519")
     print(f"northbound: {len(df)} rows")
 except Exception as e:
     print(f"northbound: FAIL ({e})")

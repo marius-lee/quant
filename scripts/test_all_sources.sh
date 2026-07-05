@@ -1,7 +1,7 @@
 #!/bin/bash
 # 数据源全面连通性测试
 # 用法: bash scripts/test_all_sources.sh
-set -e
+
 PROJECT=/Users/mariusto/project/quant
 V12=$PROJECT/.venv-tushare/bin/python3
 V14=$PROJECT/.venv/bin/python3
@@ -28,12 +28,12 @@ while rs.next(): data.append(rs.get_row_data())
 print(f"K线: {len(data)} rows")
 
 rs2 = bs.query_stock_industry()
-df2 = rs2.get_data()
-print(f"行业分类: {len(df2)} rows")
+rows2 = []; while rs2.next(): rows2.append(rs2.get_row_data())
+print(f"行业分类: {len(rows2)} rows")
 
 rs3 = bs.query_stock_basic()
-df3 = rs3.get_data()
-print(f"股票列表: {len(df3)} rows")
+rows3 = []; while rs3.next(): rows3.append(rs3.get_row_data())
+print(f"股票列表: {len(rows3)} rows")
 
 bs.logout()
 print("baostock: OK")

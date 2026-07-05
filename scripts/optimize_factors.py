@@ -32,7 +32,7 @@ conn.close()
 # ── Step 2: 重建缓存 ──
 print("\nRebuilding factor_cache.json...")
 from factor.stats_cache import force_refresh_cache
-stats = force_refresh_cache(n_symbols=500)
+stats = force_refresh_cache(n_symbols=800)
 
 # ── Step 3: 同步 IC 到 factor_registry ──
 conn = sqlite3.connect(DB)

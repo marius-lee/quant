@@ -1,8 +1,8 @@
 """P0-2: 重建 factor_cache.json — 前端因子分析 + IC 加权所需。
 
 数据修复完成后运行此脚本。
-n_symbols=500: ~2-3 分钟
-n_symbols=1000: ~5-10 分钟 (更准)
+n_symbols=800: ~3-5 分钟 (中证800, 默认)
+n_symbols=1000: ~5-8 分钟 (更广覆盖)
 """
 
 import sys, os
@@ -10,8 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from factor.stats_cache import force_refresh_cache
 
-print("Rebuilding factor_cache.json with 500 stocks...")
-stats = force_refresh_cache(n_symbols=500)
+print("Rebuilding factor_cache.json with 800 stocks...")
+stats = force_refresh_cache(n_symbols=800)
 
 print(f"\nDone: {len(stats.get('factors', []))} factors evaluated")
 print(f"Cached at: {stats.get('cached_at', '?')[:19]}")

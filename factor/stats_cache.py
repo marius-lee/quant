@@ -3,8 +3,12 @@
 计算成本高（需遍历历史数据算 IC/IR/相关性），每次刷新页面不应该重算。
 评估结果存入 factor_snapshot 表，24h 过期自动重算。
 
-benchmark (模板 5): ~1.0s/factor @ 300 stocks × 120 dates (M1 Max).
-regression threshold: >2.0s/factor 时排查 (索引丢失 / O(n²)退化 / 磁盘IO瓶颈).
+benchmark (模板 5): ~2.5s/factor @ 800 stocks × 120 dates (M1 Max).
+regression threshold: >5.0s/factor 时排查 (索引丢失 / O(n²)退化 / 磁盘IO瓶颈).
+
+参数依据: n_symbols=800 对标中证800 (A股量化策略标准基准, 中证指数有限公司);
+lookback=120 对标国内券商因子研报惯例 (过去120个交易日 ≈ 半年),
+t = |IR| × √n 提供 |IR|≥0.18 的最小可检测效应 (Grinold & Kahn 1999 第6章).
 
 用法:
   from factor.stats_cache import get_cached_factor_stats
@@ -28,7 +32,7 @@ _SNAPSHOT_TTL_SEC = 86400  # 24 小时
 
 
 def compute_factor_stats(
-    symbols: list = None, n_symbols: int = 300, lookback: int = 120
+    symbols: list = None, n_symbols: int = 800, lookback: int = 120
 ) -> dict:
     """计算所有已注册因子的评估统计量，返回前端可用格式。
 
@@ -57,12 +61,15 @@ def compute_factor_stats(
     if symbols is None:
         conn = store._connect()
         # 取日成交额最大的 n_symbols 只股票（保证流动性）
-        rows = conn.execute("""
+        # 用 lookback 参数化选股窗口: 回看 lookback 个日历日, 至少交易一半天数
+        stock_window = int(lookback * 1.5)
+        min_days = max(30, lookback // 2)
+        rows = conn.execute(f"""
             SELECT symbol, AVG(amount) as avg_amt
             FROM daily
-            WHERE date >= date('now', '-120 days')
+            WHERE date >= date('now', '-{stock_window} days')
             GROUP BY symbol
-            HAVING COUNT(*) >= 60
+            HAVING COUNT(*) >= {min_days}
             ORDER BY avg_amt DESC
             LIMIT ?
         """, (n_symbols,)).fetchall()
@@ -302,7 +309,7 @@ def _empty_result() -> dict:
     }
 
 
-def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = 200) -> dict:
+def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = 800) -> dict:
     """获取缓存的因子评估数据。从 factor_snapshot 表读取，24h 过期自动重算。
 
     返回: compute_factor_stats() 的输出格式
@@ -328,14 +335,14 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = 200) -
 
     # 重新计算
     logger.info("computing factor stats (this may take ~30s)...")
-    stats = compute_factor_stats(n_symbols=n_symbols, lookback=90)
+    stats = compute_factor_stats(n_symbols=n_symbols, lookback=120)
 
     # 存入 factor_snapshot 表 + 同步更新 factor_registry
     try:
         conn = _sql.connect(_DB_PATH)
         conn.execute(
             "INSERT OR REPLACE INTO factor_snapshot (id, data, created_at, n_symbols, lookback) VALUES (1,?,datetime('now','localtime'),?,?)",
-            (json.dumps(stats, ensure_ascii=False), n_symbols, 90)
+            (json.dumps(stats, ensure_ascii=False), n_symbols, 120)
         )
         conn.commit()
         conn.close()
@@ -387,7 +394,7 @@ def load_ic_map_from_cache(factor_values: dict = None) -> dict:
     return _load_ic_from_db(factor_values)
 
 
-def force_refresh_cache(n_symbols: int = 500) -> dict:
+def force_refresh_cache(n_symbols: int = 800) -> dict:
     """强制刷新因子评估 — 重新计算并存入 factor_snapshot 表。
 
     用于: 基本面数据更新后、因子变更后、每日定时任务。

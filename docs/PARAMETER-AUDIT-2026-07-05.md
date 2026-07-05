@@ -14,7 +14,7 @@
 | 有依据 | 12 | 30% |
 | 已修复 (本轮) | 6 | 15% |
 | 工程经验值 (可接受) | 18 | 45% |
-| 待修复 | 3 | 8% |
+| 待修复 | 2 | 5% |
 
 ---
 
@@ -83,10 +83,10 @@
 Grinold & Kahn 纯数学版步进筛选理论上可作快速预筛, 但未经验证 IC→IR 映射可靠性。
 如需未来复用, 应基于实际回测数据验证后重写, 不应保留含 bug 的未验证代码。
 
-### 2. pipeline.py:286 — window=60 无注释
+### 2. ~~pipeline.py:286 — window=60 无注释~~ ✅ 已删除
 
-covariance_matrix(log_ret, method="ledoit_wolf", window=60) — 60 天窗口无注释说明选择原因。
-建议: 加注释说明 60 trading days standard for daily cov estimation.
+协方差估计窗口 window=60 等于 covariance_matrix 函数默认值, 显式传参冗余且无注释。
+已改为 covariance_matrix(log_ret, method="ledoit_wolf"), 默认值 60 的理由在函数定义处集中维护。
 
 ### 3. backtest.py:51 — 注释与代码不一致
 

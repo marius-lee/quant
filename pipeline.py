@@ -283,7 +283,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         alpha_neut = neutralize(alpha, industries=industries, market_caps=mcap_real)
 
         log_ret = np.log(close_df).diff().dropna(how="all")
-        cov = covariance_matrix(log_ret, method="ledoit_wolf", window=60)
+        cov = covariance_matrix(log_ret, method="ledoit_wolf")
 
         # amount 在数据库中单位为千元，filter_by_liquidity 内部会 ×1000 转为元
         candidates = pd.DataFrame({

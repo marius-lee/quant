@@ -280,7 +280,8 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         # 行业中性化 — 使用 fundamentals 中的行业分类
         industries = fundamentals["industry"].reindex(prices.index) if "industry" in fundamentals.columns else None
         # P1-2: validate that industries actually has non-null values before neutralizing
-        if industries is not None and industries.notna().sum() < 30:
+        industry_min = cfg("risk.neutralization.industry_min_count", 30)
+        if industries is not None and industries.notna().sum() < industry_min:
             industries = None  # too few industry labels → skip neutralization
         alpha_neut = neutralize(alpha, industries=industries, market_caps=mcap_real)
 

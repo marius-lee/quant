@@ -131,3 +131,55 @@ compute_ma_alignment 的 window=20 参数完全不参与计算 (MAs 硬编码), 
 数值参数检查: 所有函数签名中的数值默认值、SQL 常量、硬编码阈值必须:
 1. 有内联注释说明依据 (文献/业界标准/经验测试结果)
 2. 如无依据, 标注 FIXME: 需确定依据 并记录到本文档
+
+
+## 2026-07-05 终: 全量配置迁移
+
+全代码库参数清点完成后, 15 个遗漏参数一次性迁入 config.yaml。
+
+### 迁移清单
+
+| 模块 | 参数 | yaml 路径 | 旧值 | 类型 |
+|------|------|----------|------|------|
+| backtest | capital | backtest.default_capital | 5000 | 业务参数 |
+| backtest | start_date | backtest.default_start | 2026-01-01 | 默认值 |
+| backtest | end_date | backtest.default_end | 2026-06-30 | 默认值 |
+| backtest | rebalance interval | backtest.rebalance_interval_days | 5 | 策略参数 |
+| backtest | lot_size | backtest.lot_size | 100 | 交易所规则 |
+| pipeline | industry min | risk.neutralization.industry_min_count | 30 | 统计门禁 |
+| store | stale_days | data.stale_days | 250 | 数据时效 |
+| store | batch_size | data.batch_size | 50 | 工程优化 |
+| store | gap_fill_limit | data.gap_fill_limit | 100 | 批量上限 |
+| store | PE max | data.pe_max | 1000 | 数据清洗 |
+| store | derived ratio max | data.derived_ratio_max | 100 | 数据清洗 |
+| stats_cache | snapshot TTL | factor.stats.snapshot_ttl_sec | 86400 | 缓存策略 |
+| stats_cache | IC min periods | factor.stats.ic_min_periods | 20 | 统计门禁 |
+| compute | zscore min | factor.compute.zscore_min_count | 30 | 统计门禁 |
+| covariance | window | risk.covariance.window | 60 | 协方差估计 |
+| covariance | min_periods | risk.covariance.min_periods | 30 | 最少数据量 |
+
+### 不入 yaml 的常量 (确认)
+
+| 常量 | 原因 |
+|------|------|
+| LOT_SIZE=100 (去重后) | 已在 backtest.lot_size |
+| MINUTE=60 | 物理常数 |
+| MAX_SYMBOLS=900 | SQLite SQLITE_MAX_VARIABLE_NUMBER=999 |
+| sqrt(252) | 年化交易日国际标准 |
+| 统计公式 (sqrt(6/N) 等) | 数学恒等式 |
+| API 固定参数 (datalen=2000, scale=240) | 外部服务限制 |
+
+### 配置结构总览
+
+config.yaml 现已覆盖 7 个领域、50+ 配置项:
+- alpha (方法/窗口/阈值)
+- risk (协方差/中性化/约束)
+- execution (费率/滑点)
+- optimizer (方法/频率/上限)
+- backtest (基准/区间/调仓/门槛)
+- data (来源/时效/清洗/批量)
+- factor (窗口/评估/统计/缓存)
+- web (端口)
+- cache (Redis)
+
+单一真相源原则: 所有代码通过 cfg("path", fallback) 读取, fallback 仅作防御.

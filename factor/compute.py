@@ -30,7 +30,9 @@ def _log_returns(close: pd.DataFrame) -> pd.DataFrame:
     return np.log(close).diff()
 
 
-def _cs_zscore(series: pd.Series, min_count: int = 30) -> pd.Series:
+def _cs_zscore(series: pd.Series, min_count: int = None) -> pd.Series:
+    if min_count is None:
+        min_count = _cfg("factor.compute.zscore_min_count", 30)
     """截面 z-score 标准化: (x - cross_sectional_mean) / cross_sectional_std.
     若截面有效值<min_count, 返回全 NaN。"""
     if series.count() < min_count:
@@ -93,8 +95,8 @@ def compute_reversal(data: pd.DataFrame, date: str, window: int = 5) -> pd.Serie
 # 因子窗口参数 — 由 config.yaml factor.windows 驱动, 代码常量为 fallback
 # 所有窗口均有文献或业界依据, 详见 config/config.yaml 注释
 # ═══════════════════════════════════════════════════════════
+from config.loader import get as _cfg
 try:
-    from config.loader import get as _cfg
     _AMIHUD_WINDOW = _cfg("factor.windows.amihud", 250)
     _SKEWNESS_WINDOW = _cfg("factor.windows.skewness", 60)
     _VOLATILITY_WINDOW = _cfg("factor.windows.volatility", 20)

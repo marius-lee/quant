@@ -23,7 +23,7 @@ def compute_marginal_evaluation(
     ic_means: Dict[str, float],
     ic_irs: Dict[str, float],
     corr_matrix: np.ndarray,
-    n_days: int = 90,
+    n_days: int = 120,  # 120 交易日 ≈ 半年, 国内券商因子研报标准; t=|IR|×√n 最小可检测 |IR|≥0.18
     t_threshold: float = 2.0,
 ) -> Dict[str, dict]:
     """综合评估每个因子的边际贡献。
@@ -215,7 +215,7 @@ def stepwise_selection(
         if best_to_add and best_marginal > 0:
             ir_val = marginal_results[best_to_add].get("ic_ir", 0) or 0.001
             ic_std = abs(marginal_results[best_to_add]["ic"] / ir_val)
-            marginal_t = abs(best_marginal) / (ic_std / np.sqrt(90))
+            marginal_t = abs(best_marginal) / (ic_std / np.sqrt(120))  # 120 交易日标准窗口
 
             if marginal_t >= t_threshold:
                 selected.append(best_to_add)

@@ -128,6 +128,11 @@ def sync_month(year: int, month: int, conn=None) -> int:
     return n
 
 
+
+def sync_date(date_str: str) -> int:
+    """同步单日所在月份的龙虎榜。daily_sync.py step4 适配接口。"""
+    dt = datetime.strptime(date_str, "%Y-%m-%d")
+    return sync_month(dt.year, dt.month)
 def sync_range(start_year: int, start_month: int,
                end_year: int = None, end_month: int = None,
                conn=None) -> int:

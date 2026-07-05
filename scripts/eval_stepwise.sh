@@ -1,8 +1,7 @@
 #!/bin/bash
 # 三层因子评估: 统计显著性 → 边际贡献 → 步进回测
-# 原则: Grinold & Kahn (1999) + Harvey, Liu & Zhu (2016)
-# n_symbols=800: 中证800 (A股量化策略标准基准, 中证指数有限公司)
-# lookback=120: 国内券商因子研报惯例 (过去120个交易日), t=|IR|×√n 最小可检测 |IR|≥0.18
+# 参数来源: config.yaml factor.evaluation (单一真相源)
+# Grinold & Kahn (1999) + Harvey, Liu & Zhu (2016)
 # 详见 docs/adr/007-factor-evaluation-standard.md
 set -e
 cd "$(dirname "$0")/.."
@@ -20,7 +19,7 @@ import numpy as np
 # 1. 运行因子统计评估
 print("Computing factor stats...", flush=True)
 from factor.stats_cache import compute_factor_stats
-stats = compute_factor_stats(n_symbols=800, lookback=120)
+stats = compute_factor_stats(n_symbols=${N_SYMBOLS:-800}, lookback=${LOOKBACK:-120})
 
 factor_names = stats["factor_keys"]
 ic_means = {name: ic for name, ic in zip(factor_names, stats["ic"])}
@@ -34,7 +33,7 @@ print(f"IC range: {min(ic_means.values()):+.4f} ~ {max(ic_means.values()):+.4f}"
 from factor.marginal import compute_marginal_evaluation, rank_candidates
 
 results = compute_marginal_evaluation(
-    factor_names, ic_means, ic_irs, corr, n_days=120, t_threshold=2.0
+    factor_names, ic_means, ic_irs, corr, n_days=${N_DAYS:-120}, t_threshold=2.0
 )
 
 # 3. 输出结果
@@ -207,3 +206,10 @@ echo "============================================"
 echo "最终回测"
 echo "============================================"
 bash scripts/backtest_jq.sh
+eval $(.venv/bin/python3 -c "
+import sys; sys.path.insert(0, '.')
+from config.loader import get as _ecfg
+print(f'N_SYMBOLS={_ecfg(\"factor.evaluation.n_symbols\", 800)}')
+print(f'LOOKBACK={_ecfg(\"factor.evaluation.lookback\", 120)}')
+print(f'N_DAYS={_ecfg(\"factor.evaluation.n_days\", 120)}')
+")

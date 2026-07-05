@@ -3,12 +3,20 @@ data:
   start_date: '2020-01-01'
 factor:
   windows:
-  - 5
-  - 10
-  - 20
-  - 60
-# DEPRECATED (2026-07-05): min_abs_ic: 0.02
-# DEPRECATED (2026-07-05): min_ic_ir: 0.1
+    volatility: 20           # Andersen et al. (2001): 20-60日标准
+    downside_volatility: 20  # Sortino & Price (1994): 与波动率一致
+    amihud: 250              # Amihud (2002): 12个月日频, SE(ILLIQ)∝1/√N
+    skewness: 60             # Barberis & Huang (2008): √(6/N)≤0.32, N≥60
+    idiosyncratic_vol: 20    # 市场模型回归, 20日可接受
+    max_return: 20           # Bali et al. (2011): 过去1个月 MAX因子
+    intraday_range: 20       # 日内振幅均值窗口
+    lhb_net_buy: 20          # 龙虎榜信号回溯
+    volume_ratio_short: 5    # Gervais et al. (2001): 短窗口
+    volume_ratio_long: 20    # Gervais et al. (2001): 长窗口
+  evaluation:
+    n_symbols: 800           # 中证800量化基准 (中证指数有限公司)
+    lookback: 120            # 券商因子研报惯例, t=|IR|×√n
+    n_days: 120              # 边际贡献评估交易日数 (同 lookback)
   decay_horizons:
   - 1
   - 5

@@ -12,9 +12,9 @@
 | 类别 | 数量 | 占比 |
 |------|------|------|
 | 有依据 | 12 | 30% |
-| 已修复 (本轮) | 6 | 15% |
-| 工程经验值 (可接受) | 18 | 45% |
-| 待修复 | 1 | 2% |
+| 已修复 (本轮) | 10 | 25% |
+| 工程经验值 (可接受) | 14 | 35% |
+| 已修复 (本轮) | 10 | 25% |
 
 ---
 
@@ -98,11 +98,19 @@ Grinold & Kahn 纯数学版步进筛选理论上可作快速预筛, 但未经验
 - 注释改为准确描述回测统计意义, 删除对因子 lookback 的错误引用
 - 附带修复 pipeline.py:161 start="2026-01-01" 硬编码 → 动态 365 日历日
 
-### 4. factor/compute.py — 多处 window=20 无注释
+### 4. ~~factor/compute.py — 多处 window=20 无注释~~ ✅ 已修复
 
-5 处函数使用 window=20 作为默认窗口。
-文献引用在文件头部, 但与具体值之间的映射不清晰。
-建议: 每个 window: int = 20 后加简短注释。
+根本问题: 9 个因子函数统一使用 window=20, 但各因子的文献推荐窗口不同.
+compute_amihud 需要 250 (Amihud 2002: 12个月), compute_skewness 需要 60+
+(Barberis & Huang 2008: SE(偏度)=√(6/N), N<30 时完全不可靠).
+compute_ma_alignment 的 window=20 参数完全不参与计算 (MAs 硬编码), 属误导.
+
+修复:
+- compute_amihud: window 20 → 250 (Amihud 2002: 12个月日频)
+- compute_skewness: window 20 → 60 (Barberis & Huang 2008: 日频等价)
+- compute_ma_alignment: 删除未使用的 window 参数
+- 全部 9 个因子窗口参数化至 config.yaml factor.windows (单一真相源)
+- 每个窗口均有文献或业界注释
 
 ---
 

@@ -38,6 +38,7 @@ status: accepted
 ### Bug D (LOW): 空表清理
 
 `meta` 和 `fund_flow` 表 0 行且无写入计划，按模板 7 约束删除。`daily_basic` 虽有写入路径但同步失败（Tushare 限流），保留。
+ (2026-07-05 u66f4u65b0: baostock u670du52a1u4e0du53efu7528uff0cdaily_basic.py u6807u8bb0u4e3a DEPRECATEDuff1bPE/PB u6570u636eu5b9eu9645u6765u81ea daily_valuation u800cu975e daily_basic)
 
 ### 非 Bug: 仅 2 因子激活
 

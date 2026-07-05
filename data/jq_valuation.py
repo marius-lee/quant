@@ -16,6 +16,23 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("jq_valuation")
 
+from data.cache import get_backend, DataCache, RateLimiter
+from config.loader import load as _load_config
+
+# ── Module-level cache (lazy init) ──
+_cache = None
+_limiter = None
+
+def _init_cache():
+    global _cache, _limiter
+    if _cache is not None:
+        return
+    cfg = _load_config()
+    backend = get_backend(cfg)
+    _cache = DataCache("jq_valuation", ttl_hours=4, backend=backend)
+    _limiter = RateLimiter("jqdata", calls_per_minute=30, backend=backend)
+    logger.debug("jq_valuation cache initialized (backend=%s)", type(backend).__name__)
+
 DB = os.path.join(os.path.dirname(__file__), "market.db")
 
 TRIAL_START = "2025-03-26"
@@ -49,6 +66,18 @@ def _get_trading_dates(conn, start, end):
 
 
 def sync_date(date_str, conn):
+    """Sync PE_TTM/PB for one date. API 响应缓存到 Redis (4h TTL)。"""
+    _init_cache()
+
+    # 1. 尝试缓存命中
+    cached_data = _cache.get(date_str)
+    if cached_data is not None:
+        inserted = _insert_valuation_rows(conn, cached_data, date_str)
+        logger.info(f"daily_basic {date_str}: {inserted} stocks (cache hit)")
+        return inserted
+
+    # 2. 调用 JQData API
+    _limiter.wait()
     from jqdatasdk import auth, get_fundamentals, query, valuation, logout
     auth(os.environ.get("JQDATA_USER", ""), os.environ.get("JQDATA_PASS", ""))
     try:
@@ -62,8 +91,22 @@ def sync_date(date_str, conn):
         logger.warning(f"JQData returned empty for {date_str}")
         logout()
         return 0
+
+    # 3. 缓存原始响应 (msgpack)
+    raw = df.to_dict(orient="records")
+    _cache.put(date_str, raw)
+
+    # 4. 写入 SQLite
+    inserted = _insert_valuation_rows(conn, raw, date_str)
+    logout()
+    logger.info(f"daily_basic {date_str}: {inserted} stocks (API)")
+    return inserted
+
+
+def _insert_valuation_rows(conn, rows: list, date_str: str) -> int:
+    """将 API 响应行写入 daily_valuation 表。返回插入行数。"""
     inserted = 0
-    for _, row in df.iterrows():
+    for row in rows:
         code = str(row.get("code", ""))
         if not code or "." not in code:
             continue
@@ -83,11 +126,9 @@ def sync_date(date_str, conn):
         conn.execute(
             f"INSERT OR REPLACE INTO daily_valuation (symbol, date, {cols}) "
             f"VALUES (?, ?, {placeholders})",
-            (symbol, date_str, *params),
-        )
+            (symbol, date_str, *params))
         inserted += 1
     conn.commit()
-    logout()
     return inserted
 
 

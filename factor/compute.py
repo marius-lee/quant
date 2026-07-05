@@ -1231,10 +1231,10 @@ def update_factor_evaluation(name: str, ic_mean: float, ic_ir: float):
 
 def compute_ep_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
     """EP 比率 (1/PE_TTM) — 价值因子。低PE_TTM = 高EP = 高分。
-    数据来源: daily_basic.pe_ttm (baostock每日更新), 回退 stocks.pe
+    数据来源: daily_valuation.pe_ttm (JQData, 至 2026-04-02), 回退 stocks.pe
     来源: Fama & French (1992) — 价值因子 (HML)
     """
-    # 优先使用 daily_basic.pe_ttm (每日更新), 回退到 stocks.pe
+    # 优先使用 pe_ttm (daily_valuation via store.get_fundamentals), 回退到 stocks.pe
     pe_col = "pe_ttm" if "pe_ttm" in fundamentals.columns and fundamentals["pe_ttm"].notna().any() else "pe"
     ep = 1.0 / fundamentals[pe_col]
     ep = ep.replace([np.inf, -np.inf], np.nan)

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Sync daily PE_TTM/PB from baostock to market.db."""
+# DEPRECATED (2026-07-05): baostock service 不可用 (Socket error)。
+# daily_basic 表未被 pipeline 使用 — store.get_fundamentals() 实际走 daily_valuation (JQData)。
+# 此模块保留供参考，若 baostock 恢复可复用。
+"""Sync daily PE_TTM/PB from baostock to market.db. (DEPRECATED — see above)"""
 import os, time, sqlite3, logging
 import pandas as pd
 import baostock as bs
@@ -84,4 +87,3 @@ def sync_range(start_date, end_date, conn=None):
     if own_conn:
         conn.close()
     return total
-

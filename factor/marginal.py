@@ -104,8 +104,11 @@ def compute_marginal_evaluation(
         sigma = corr_matrix[np.ix_(other_indices, other_indices)]
 
         try:
-            sigma_inv = np.linalg.inv(sigma)
-            # 被已有因子解释的部分
+            # Ridge 正则化: sigma 可能近奇异 (多因子高度相关时)
+            # L2 penalty λ=1e-4, Harvey, Liu & Zhu (2016) 推荐
+            ridge = 1e-4 * np.eye(len(sigma))
+            sigma_reg = sigma + ridge
+            sigma_inv = np.linalg.inv(sigma_reg)
             explained_ic = rho @ sigma_inv @ ic_others
             marginal_ic = ic_new - explained_ic
 
@@ -155,4 +158,3 @@ def rank_candidates(marginal_results: Dict[str, dict]) -> List[Tuple[str, float,
         ranked.append((name, mic, result))
     ranked.sort(key=lambda x: abs(x[1]), reverse=True)
     return ranked
-

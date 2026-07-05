@@ -21,7 +21,17 @@ print("Computing factor stats...", flush=True)
 from factor.stats_cache import compute_factor_stats
 # n_symbols/lookback read from config.yaml factor.evaluation (see config above)
 from config.loader import get as _ecfg
-stats = compute_factor_stats(n_symbols=_ecfg("factor.evaluation.n_symbols", 800), lookback=_ecfg("factor.evaluation.lookback", 120))
+# P45: 全量因子评估 — 查询 factor_registry 所有因子名, 绕过 status='active' 过滤
+import sqlite3 as _sql
+_conn = _sql.connect("data/market.db")
+_all_factor_names = [r[0] for r in _conn.execute("SELECT name FROM factor_registry").fetchall()]
+_conn.close()
+print(f"Evaluating {len(_all_factor_names)} registered factors (full universe)")
+stats = compute_factor_stats(
+    n_symbols=_ecfg("factor.evaluation.n_symbols", 800),
+    lookback=_ecfg("factor.evaluation.lookback", 120),
+    factor_names=_all_factor_names,
+)
 
 factor_names = stats["factor_keys"]
 ic_means = {name: ic for name, ic in zip(factor_names, stats["ic"])}

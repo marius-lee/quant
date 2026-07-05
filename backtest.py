@@ -1,8 +1,8 @@
 """多日回测 — 在历史数据上批量运行 pipeline，追踪 PnL 曲线。
 
-用法:
-  PYTHONPATH=. python3 backtest.py                    # 最近 60 个交易日
-  PYTHONPATH=. python3 backtest.py 2026-01-01 2026-06-30 5000  # 指定区间+本金
+ 用法:
+   PYTHONPATH=. python3 backtest.py                                    # 默认 2026-01-01 → 2026-06-30
+   PYTHONPATH=. python3 backtest.py 2025-01-01 2026-06-30 5000        # 指定区间+本金
 """
 
 import sys, os, time, json, sqlite3
@@ -21,6 +21,10 @@ from utils.logger import get_logger
 logger = get_logger("backtest")
 TRADE_DB = os.path.join(os.path.dirname(__file__), "data", "trades.db")
 LOT_SIZE = 100
+
+# 回测区间最低交易日数 — Grinold & Kahn (1999): 60月≈250日, 量化策略评估最低线
+# Lo (2002): SE(Sharpe) = √[(1+½S²)/T], T<1年时无统计价值
+_MIN_BACKTEST_DAYS = 250
 
 
 def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
@@ -47,10 +51,14 @@ def run_backtest(start_date="2026-01-01", end_date="2026-06-30", capital=5000):
         (start_date, end_date)
     ).fetchall()]
 
-    # 至少需要 60 天数据做因子计算 (lookback window)
-    if len(all_dates) < 65:
-        logger.warning(f"Only {len(all_dates)} trading days, need >= 65 for factor lookback")
-        all_dates = all_dates  # still try
+    # 回测周期需覆盖至少 250 个交易日 (≈1年, 50次调仓) 以保证 Sharpe/IR 估计的统计意义
+    # Grinold & Kahn (1999): 60月≈250日; Lo (2002): SE(Sharpe) = √[(1+½S²)/T]
+    if len(all_dates) < _MIN_BACKTEST_DAYS:
+        logger.warning(
+            f"回测区间仅 {len(all_dates)} 个交易日 ({len(rebalance_dates)} 次调仓), "
+            f"少于业界最低标准 {_MIN_BACKTEST_DAYS} 天 (1年), Sharpe/IR 估计不可靠"
+        )
+        # 仍继续执行 — 短期回测仍有相对比较价值
 
     # 每2周调仓一次 (减少交易成本)
     rebalance_dates = all_dates[::5]  # 每5个交易日一次

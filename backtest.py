@@ -24,7 +24,7 @@ LOT_SIZE = cfg("backtest.lot_size", 100)
 
 # 回测区间最低交易日数 — Grinold & Kahn (1999): 60月≈250日, 量化策略评估最低线
 # Lo (2002): SE(Sharpe) = √[(1+½S²)/T], T<1年时无统计价值
-cfg("backtest.min_backtest_days", 250) = 250
+# min_backtest_days read from config below
 
 
 def run_backtest(start_date=None, end_date=None, capital=None):
@@ -59,19 +59,19 @@ def run_backtest(start_date=None, end_date=None, capital=None):
         (start_date, end_date)
     ).fetchall()]
 
+    # 每N个交易日调仓一次
+    rebalance_interval = cfg("backtest.rebalance_interval_days", 5)
+    rebalance_dates = all_dates[::rebalance_interval]  # 默认每5个交易日一次
+    logger.info(f"Backtest: {len(all_dates)} trading days, {len(rebalance_dates)} rebalance dates")
+
     # 回测周期需覆盖至少 250 个交易日 (≈1年, 50次调仓) 以保证 Sharpe/IR 估计的统计意义
     # Grinold & Kahn (1999): 60月≈250日; Lo (2002): SE(Sharpe) = √[(1+½S²)/T]
     if len(all_dates) < cfg("backtest.min_backtest_days", 250):
         logger.warning(
             f"回测区间仅 {len(all_dates)} 个交易日 ({len(rebalance_dates)} 次调仓), "
-            f"少于业界最低标准 {cfg("backtest.min_backtest_days", 250)} 天 (1年), Sharpe/IR 估计不可靠"
+            f"少于业界最低标准 {cfg('backtest.min_backtest_days', 250)} 天 (1年), Sharpe/IR 估计不可靠"
         )
         # 仍继续执行 — 短期回测仍有相对比较价值
-
-    # 每2周调仓一次 (减少交易成本)
-    rebalance_interval = cfg("backtest.rebalance_interval_days", 5)
-    rebalance_dates = all_dates[::rebalance_interval]  # 默认每5个交易日一次
-    logger.info(f"Backtest: {len(all_dates)} trading days, {len(rebalance_dates)} rebalance dates")
 
     results = []
     original_capital = capital  # 初始本金，全程不变，用于计算累计收益率

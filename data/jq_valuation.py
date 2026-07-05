@@ -137,7 +137,7 @@ def sync_date(date_str, conn):
         logger.warning(f"JQData query failed for {date_str}: {e}")
         logout()
         return 0
-   if df is None or df.empty:
+    if df is None or df.empty:
         logger.info(f"JQData returned empty for {date_str}, trying tushare...")
         logout()
         raw = _fetch_tushare_valuation_rows(date_str)

@@ -77,7 +77,17 @@ class TradeRepo:
 
 
     # ── 交易记录 ──
-    def record_trade(self, date_str: str, symbol: str, side: str, price: float, shares: int, strategy: str = "chen", board_count: int = 0, capital_after: float = None, pnl: float = None, pnl_pct: float = None):
+    def record_trade(self, trade: dict, strategy: str = "chen"):
+        """记录一笔交易。trade 字典包含: date, symbol, side, price, shares, [board_count, capital_after, pnl, pnl_pct]"""
+        date_str = trade.get("date", "")
+        symbol = trade.get("symbol", "")
+        side = trade.get("side", "")
+        price = float(trade.get("price", 0))
+        shares = int(trade.get("shares", 0))
+        board_count = int(trade.get("board_count", 0))
+        capital_after = trade.get("capital_after")
+        pnl = trade.get("pnl")
+        pnl_pct = trade.get("pnl_pct")
         logger.info(f"[trade] {date_str} {side} {symbol} {shares}@{price}")
         c = self._conn()
         c.execute("INSERT INTO sim_trades (date,symbol,side,price,shares,board_count,pnl,pnl_pct,capital_after,strategy) VALUES (?,?,?,?,?,?,?,?,?,?)",

@@ -181,6 +181,98 @@ except Exception as e:
     print(f"netease realtime: FAIL ({type(e).__name__}: {e})")
 EOF
 
+
+# ═══ 同花顺 (Py3.14) ═══
+echo ""
+echo "--- 同花顺 (10jqka) ---"
+$V14 << 'EOF'
+from urllib.request import Request, urlopen
+from json import loads as jloads
+# 同花顺日K线 — JSONP格式, 需手动提取JSON
+url = "http://d.10jqka.com.cn/v2/line/stock_zh_600519_09/last.js"
+try:
+    r = urlopen(Request(url, headers={"Referer": "http://www.10jqka.com.cn", "User-Agent": "Mozilla/5.0"}), timeout=10)
+    text = r.read().decode("gbk", errors="replace")
+    # JSONP: quotebridge_v2_line_...({...})
+    if "(" in text:
+        js = text[text.index("(")+1 : text.rindex(")")]
+        data = jloads(js)
+        name = data.get("name", "?")
+        rows = data.get("data", [])
+        print(f"股票: {name}, K线: {len(rows)} rows")
+        if rows:
+            print(f"  sample: {rows[0]}")
+    else:
+        print(f"unexpected: {text[:200]}")
+    print("同花顺: OK")
+except Exception as e:
+    print(f"同花顺: FAIL ({type(e).__name__}: {e})")
+
+# 股票列表页
+url2 = "http://q.10jqka.com.cn/index/index/board/all/field/zdf/order/desc/page/1/ajax/1/"
+try:
+    r = urlopen(Request(url2, headers={"Referer": "http://www.10jqka.com.cn", "User-Agent": "Mozilla/5.0"}), timeout=10)
+    text = r.read().decode("gbk", errors="replace")
+    print(f"股票列表: {len(text)} chars")
+    print("同花顺 list: OK")
+except Exception as e:
+    print(f"同花顺 list: FAIL ({type(e).__name__}: {e})")
+EOF
+
+# ═══ 雪球 (Py3.14) ═══
+echo ""
+echo "--- 雪球 (xueqiu) ---"
+$V14 << 'EOF'
+from urllib.request import Request, urlopen, build_opener, HTTPCookieProcessor
+from http.cookiejar import CookieJar
+from json import loads as jloads
+import time
+
+# Step 1: 获取cookie
+cj = CookieJar()
+opener = build_opener(HTTPCookieProcessor(cj))
+try:
+    r = opener.open("https://xueqiu.com", timeout=10)
+    cookies = {c.name: c.value for c in cj}
+    print(f"cookies: {len(cookies)} 个")
+except Exception as e:
+    print(f"cookie获取: FAIL ({type(e).__name__}: {e})")
+    cookies = {}
+
+if cookies:
+    cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+    
+    # Step 2: K线
+    ts = int(time.time() * 1000) - 3 * 86400000
+    url_k = f"https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=SH600519&begin={ts}&period=day&type=before&count=-3&indicator=kline"
+    try:
+        r = urlopen(Request(url_k, headers={"Referer": "https://xueqiu.com/S/SH600519", "User-Agent": ua, "Cookie": cookie_str}), timeout=10)
+        data = jloads(r.read())
+        items = data.get("data", {}).get("item", [])
+        cols = data.get("data", {}).get("column", [])
+        print(f"K线: {len(items)} rows, columns: {cols}")
+        if items:
+            print(f"  sample: {items[0]}")
+        print("雪球 K线: OK")
+    except Exception as e:
+        print(f"雪球 K线: FAIL ({type(e).__name__}: {e})")
+    
+    # Step 3: 股票列表
+    url_s = "https://xueqiu.com/service/v5/stock/screener/quote/list?page=1&size=3&order=desc&orderby=percent&market=CN&type=sh_sz"
+    try:
+        r = urlopen(Request(url_s, headers={"Referer": "https://xueqiu.com/hq", "User-Agent": ua, "Cookie": cookie_str}), timeout=10)
+        data = jloads(r.read())
+        total = data.get("data", {}).get("count", 0)
+        items = data.get("data", {}).get("list", [])
+        print(f"股票列表: {total} total, {len(items)} items")
+        print("雪球 股票列表: OK")
+    except Exception as e:
+        print(f"雪球 股票列表: FAIL ({type(e).__name__}: {e})")
+else:
+    print("雪球: SKIP (无cookie)")
+EOF
+
 # ═══ pytdx (Py3.14) ═══
 echo ""
 echo "--- pytdx ---"

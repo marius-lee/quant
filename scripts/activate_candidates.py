@@ -14,6 +14,5 @@ db.commit()
 rows = db.execute("SELECT name, status FROM factor_registry WHERE status='active'").fetchall()
 for r in rows:
     print(f"  {r[0]:30s} {r[1]}")
-print(f"
-{len(rows)} active factors total")
+print(f"\n{len(rows)} active factors total")
 db.close()

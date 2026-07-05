@@ -30,3 +30,7 @@ data/models/
 config/config.yaml
 market.db
 data/metrics.db
+
+# Redis 持久化 (不应提交)
+dump.rdb
+appendonly.aof

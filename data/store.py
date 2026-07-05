@@ -12,6 +12,27 @@ import pandas as pd
 from utils.logger import get_logger
 logger = get_logger("data.store")
 
+from data.cache import get_backend, DataCache, RateLimiter
+from config.loader import load as _load_config
+
+# ── Module-level cache (lazy init) ──
+_backend = None
+_stock_list_cache = None
+_industry_cache = None
+_tushare_limiter = None
+_akshare_limiter = None
+
+def _init_cache():
+    global _backend, _stock_list_cache, _industry_cache, _tushare_limiter, _akshare_limiter
+    if _backend is not None:
+        return
+    cfg = _load_config()
+    _backend = get_backend(cfg)
+    _stock_list_cache = DataCache("store:stock_list", ttl_hours=24, backend=_backend)
+    _industry_cache = DataCache("store:industry", ttl_hours=24, backend=_backend)
+    _tushare_limiter = RateLimiter("tushare", calls_per_minute=200, backend=_backend)
+    _akshare_limiter = RateLimiter("akshare", calls_per_minute=60, backend=_backend)
+    logger.debug("cache layer initialized (backend=%s)", type(_backend).__name__)
 
 def _ts_code(sym: str) -> str:
     # 北交所优先判断（92开头必须以"92"先匹配，避免被"9"捕获）
@@ -130,10 +151,29 @@ class DataStore:
 
     def sync_stock_list(self) -> int:
         """拉取全A股列表。优先 tushare，失败回退 akshare（免费无频率限制）。"""
+        _init_cache()
         conn = self._connect()
         existing = set(
             r[0] for r in conn.execute("SELECT symbol FROM stocks").fetchall()
         )
+
+        # 1. Cache check — skip API if fresh data in Redis
+        cached = _stock_list_cache.get("symbols")
+        if cached is not None and isinstance(cached, list) and len(cached) > 0:
+            insert_count = 0
+            for item in cached:
+                sym = item.get("symbol", item.get("code", ""))
+                if not sym or len(str(sym)) != 6:
+                    continue
+                if sym not in existing:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO stocks(symbol,name,market,list_date) VALUES(?,?,?,?)",
+                        (sym, item.get("name", ""), item.get("market", ""), item.get("list_date", "")))
+                    insert_count += 1
+            conn.commit()
+            total = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
+            logger.info(f"stock list (cache hit): {total} total ({insert_count} new)")
+            return total
 
         # 尝试 tushare
         if self.token:
@@ -141,9 +181,12 @@ class DataStore:
                 import tushare as ts
                 ts.set_token(self.token)
                 pro = ts.pro_api()
+                _tushare_limiter.wait()
                 df = pro.stock_basic(exchange="", list_status="L",
                     fields="ts_code,symbol,name,list_date,market")
                 if df is not None and not df.empty:
+                    # cache the raw response
+                    _stock_list_cache.put("symbols", df.to_dict(orient="records"))
                     for _, row in df.iterrows():
                         sym = row["symbol"]
                         exchange = row.get("market", "")
@@ -194,6 +237,7 @@ class DataStore:
 
         注意: baostock 当前不支持 Python 3.14。数据已分类时直接跳过。
         """
+        _init_cache()
         conn = self._connect()
         try:
             conn.execute("ALTER TABLE stocks ADD COLUMN industry TEXT")
@@ -206,6 +250,20 @@ class DataStore:
         if classified >= total:
             logger.info(f"industry sync skipped: {classified}/{total} already classified")
             return 0
+
+        # 1. Cache check
+        cached = _industry_cache.get("mapping")
+        if cached is not None and isinstance(cached, dict):
+            updated = 0
+            for sym, ind in cached.items():
+                conn.execute(
+                    "UPDATE stocks SET industry=? WHERE symbol=? AND industry IS NULL",
+                    (ind, sym))
+                updated += conn.total_changes
+            conn.commit()
+            logger.info(f"industry sync (cache hit): {updated} updates")
+            return updated
+
         # baostock attempt
         try:
             import baostock as bs
@@ -219,6 +277,16 @@ class DataStore:
             bs.logout()
             if df.empty:
                 return 0
+            # build cache mapping: symbol -> industry
+            industry_map = {}
+            for _, row in df.iterrows():
+                code = str(row.get("code", ""))
+                sym = code.split(".")[-1] if "." in code else code
+                ind = str(row.get("industry", "")).strip()
+                if len(sym) == 6 and ind:
+                    industry_map[sym] = ind
+            _industry_cache.put("mapping", industry_map)
+
             updated = 0
             for _, row in df.iterrows():
                 code = str(row.get("code", ""))
@@ -275,6 +343,8 @@ class DataStore:
 
     def _fetch_batch_tushare(self, pro, ts_codes: str, batch_start: str):
         """tushare 批量获取日线: vol=手, amt=千元 ✅ 无需换算"""
+        _init_cache()
+        _tushare_limiter.wait()
         df = pro.daily(
             ts_code=ts_codes,
             start_date=batch_start,
@@ -359,6 +429,8 @@ class DataStore:
 
     def _fetch_akshare_daily(self, symbols: list, start_date: str) -> list:
         """akshare 逐只日线: vol=手, amt=元 →/1000→千元, 唯一有历史换手率✅"""
+        _init_cache()
+        _akshare_limiter.wait()
         try:
             import akshare as ak
         except ImportError:

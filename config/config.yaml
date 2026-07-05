@@ -46,6 +46,15 @@ backtest:
   benchmark: '000300'
 web:
   port: 8521
+
+# API 缓存 & 分布式限流 (ADR 014)
+# Redis 仅做 API 去重 + 限流, 消费者不从 Redis 读数据 (从 SQLite 读)。
+# Redis 不可达时自动降级为 NoopBackend (无缓存、不限流)。
+cache:
+  redis:
+    host: localhost
+    port: 6379
+    db: 0
 screening:
 # DEPRECATED (2026-07-05): min_abs_ic: 0.02
 # DEPRECATED (2026-07-05): min_ic_ir: 0.1

@@ -33,7 +33,8 @@ _SNAPSHOT_TTL_SEC = _cfg("factor.stats.snapshot_ttl_sec", 86400)  # 24h
 
 
 def compute_factor_stats(
-    symbols: list = None, n_symbols: int = None, lookback: int = None
+    symbols: list = None, n_symbols: int = None, lookback: int = None,
+    factor_names: list = None,
 ) -> dict:
     """计算所有已注册因子的评估统计量，返回前端可用格式。
 
@@ -84,7 +85,9 @@ def compute_factor_stats(
 
     # 3. 逐日计算因子值
     dates = data.index
-    factor_names = get_factor_names()
+    if factor_names is None:
+        factor_names = get_factor_names()  # 默认: status='active'
+    # else: 使用调用方传入的因子列表 (评估管道传全量)
     factor_values_by_date = {name: {} for name in factor_names}
 
     # 只计算最近 lookback 个交易日
@@ -109,7 +112,7 @@ def compute_factor_stats(
         # Load per-date fundamentals (with daily_valuation override if available)
         fundamentals = store.get_fundamentals(symbols, date=date_str)
         try:
-            fv = compute_all_factors(data, date_str, fundamentals=fundamentals)
+            fv = compute_all_factors(data, date_str, fundamentals=fundamentals, factor_names=factor_names)
             for name in factor_names:
                 if name in fv and not fv[name].dropna().empty:
                     factor_values_by_date[name][date_str] = fv[name]
@@ -289,7 +292,7 @@ def compute_factor_stats(
 def _empty_result() -> dict:
     """返回空结果（数据不足时）。"""
     from factor.compute import get_factor_names
-    names = get_factor_names()
+    names = get_factor_names(status_filter=None)  # P45: 加载全量 IC 缓存
     return {
         "factors": names,
         "factor_keys": names,

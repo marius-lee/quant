@@ -1211,15 +1211,24 @@ def _db_connect():
     return conn
 
 
-def load_active_price_factors():
-    """从 factor_registry 表加载 status='active' 的价格因子 → {name: (cat, window, fn)}."""
+def load_active_price_factors(status_filter='active'):
+    """从 factor_registry 表加载价格因子 → {name: (cat, window, fn)}.
+    
+    status_filter: 'active' (生产), None (全部因子, 评估用).
+    """
     conn = sqlite3.connect(_market_db_path())
     name_list = list(_PRICE_FN_MAP.keys())
     placeholders = ",".join("?" * len(name_list))
-    rows = conn.execute(
-        f"SELECT name FROM factor_registry WHERE status='active' AND name IN ({placeholders})",
-        name_list
-    ).fetchall()
+    if status_filter:
+        rows = conn.execute(
+            f"SELECT name FROM factor_registry WHERE status=? AND name IN ({placeholders})",
+            [status_filter] + name_list
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"SELECT name FROM factor_registry WHERE name IN ({placeholders})",
+            name_list
+        ).fetchall()
     conn.close()
     result = {}
     for (name,) in rows:
@@ -1228,15 +1237,24 @@ def load_active_price_factors():
             result[name] = ("dynamic", win, fn)
     return result
 
-def load_active_fundamental_factors():
-    """从 factor_registry 表加载 status='active' 的基本面因子."""
+def load_active_fundamental_factors(status_filter='active'):
+    """从 factor_registry 表加载基本面因子.
+    
+    status_filter: 'active' (生产), None (全部因子, 评估用).
+    """
     conn = sqlite3.connect(_market_db_path())
     fn_names = list(_FUNDAMENTAL_FN_MAP.keys())
     placeholders = ",".join("?" * len(fn_names))
-    rows = conn.execute(
-        f"SELECT name FROM factor_registry WHERE status='active' AND name IN ({placeholders})",
-        fn_names
-    ).fetchall()
+    if status_filter:
+        rows = conn.execute(
+            f"SELECT name FROM factor_registry WHERE status=? AND name IN ({placeholders})",
+            [status_filter] + fn_names
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"SELECT name FROM factor_registry WHERE name IN ({placeholders})",
+            fn_names
+        ).fetchall()
     conn.close()
     result = {}
     for (name,) in rows:
@@ -1407,21 +1425,36 @@ if "accruals" not in _FUNDAMENTAL_FN_MAP:
 _FIN_FACTORS = {"roe_reported", "roa", "debt_ratio", "accruals"}
 
 
-def get_factor_names() -> list:
-    """返回所有 status='active' 的因子名 (从 factor_registry 表读取)。"""
-    return list(load_active_price_factors().keys()) + list(load_active_fundamental_factors().keys())
+def get_factor_names(status_filter='active') -> list:
+    """返回因子名列表 (从 factor_registry 表读取)。
+    
+    status_filter: 'active' (生产), None (全部, 评估用).
+    """
+    return list(load_active_price_factors(status_filter).keys()) + list(load_active_fundamental_factors(status_filter).keys())
 
 
 def compute_all_factors(data: pd.DataFrame, date: str,
                       fundamentals: pd.DataFrame = None,
-                      benchmark_ret: Optional["pd.Series"] = None) -> dict:
+                      benchmark_ret: Optional["pd.Series"] = None,
+                      factor_names: list = None) -> dict:
     """批量计算所有已注册因子 → {factor_name: Series(index=symbol)}。
 
     价格因子从 data 计算, 基本面因子从 fundamentals 计算。
     benchmark_ret 用于特质波动率因子(对指数回归取残差)。
     """
     results = {}
-    for name, (cat, win, fn) in load_active_price_factors().items():
+    # P45: factor_names 参数允许调用方显式指定要计算的因子
+    # None = 默认行为 (status='active'), 列表 = 显式指定
+    if factor_names is not None:
+        price_factors = {n: ('dynamic', _PRICE_FN_MAP[n][0], _PRICE_FN_MAP[n][1])
+                        for n in factor_names if n in _PRICE_FN_MAP}
+        fund_factors = {n: _FUNDAMENTAL_FN_MAP[n]
+                       for n in factor_names if n in _FUNDAMENTAL_FN_MAP}
+    else:
+        price_factors = load_active_price_factors()
+        fund_factors = load_active_fundamental_factors()
+
+    for name, (cat, win, fn) in price_factors.items():
         try:
             if 'idio_vol' in name and benchmark_ret is not None:
                 results[name] = fn(data, date, win, benchmark_ret=benchmark_ret)
@@ -1432,7 +1465,6 @@ def compute_all_factors(data: pd.DataFrame, date: str,
             get_logger("factor.compute").warning(f"price factor {name} failed: {e}")
             results[name] = pd.Series(dtype=float)
     if fundamentals is not None and not fundamentals.empty:
-        active_factors = load_active_fundamental_factors()
         # 模板 2a: IO-计算分离 — 编排层预加载财务数据, 因子函数纯计算
         financials = None
         if fundamentals is not None and any(n in active_factors for n in _FIN_FACTORS):
@@ -1440,7 +1472,7 @@ def compute_all_factors(data: pd.DataFrame, date: str,
             store = DataStore()
             financials = store.get_financials(fundamentals.index.tolist(), date=date)
             store.close()
-        for name, (cat, fn) in active_factors.items():
+        for name, (cat, fn) in fund_factors.items():
             try:
                 if name in _FIN_FACTORS and financials is not None:
                     results[name] = fn(fundamentals, date, financials=financials)

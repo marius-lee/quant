@@ -10,6 +10,8 @@ status: snapshot
 **审查范围**: 所有 9 个数据源
 **Python 环境**: `.venv` (Py3.14) 和 `.venv-tushare` (Py3.12)
 
+
+**凭证存储**: 详见 `config/env.example` 模板。实际凭证存放于 `config/.env`（在 `.gitignore` 中，不提交 git）。
 ## 双环境包分布
 
 | 包 | .venv (Py3.14) | .venv-tushare (Py3.12) |

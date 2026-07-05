@@ -9,6 +9,8 @@ date: 2026-07-05
 **最后更新**: 2026-07-05
 **最新完整审查**: [DATA-SOURCE-AUDIT-2026-07-05.md](DATA-SOURCE-AUDIT-2026-07-05.md) (9 源逐项审查)
 
+
+**凭证配置**: 复制 `config/env.example` 为 `config/.env` 并填入实际值；`.env` 在 `.gitignore` 中，不提交。
 ## 已接入
 
 | 数据 | 表/模块 | 量级 | 状态 |

@@ -102,7 +102,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         capital = db_cash
     else:
         # 无交易记录 → 种子本金 (CLI参数或默认5000)
-        seed = capital if capital else 5000
+        seed = capital if capital is not None else 5000
         engine.set_initial_capital(strategy, seed)
         capital = seed
 

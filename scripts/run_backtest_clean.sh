@@ -11,4 +11,14 @@ rm -f data/trades.db
 
 echo ""
 echo "=== Step 2: Backtest ==="
-PYTHONPATH=. .venv/bin/python3 backtest.py 2026-01-01 2026-06-30 5000
+PYTHONPATH=. .venv/bin/python3 -c "
+from config.loader import get as cfg
+from backtest import run_backtest
+import sys
+result = run_backtest(
+    cfg('backtest.default_start', '2023-01-01'),
+    cfg('backtest.default_end', '2026-06-30'),
+    cfg('backtest.default_capital', 100000),
+)
+print('Final wealth:', result['total_wealth'].iloc[-1])
+" 

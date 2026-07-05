@@ -140,7 +140,11 @@ for idx, (name, marginal_ic) in enumerate(candidates):
         f"""
 import sys; sys.path.insert(0, '.')
 from backtest import run_backtest
-result = run_backtest('2026-01-01', '2026-06-30', 5000)
+from config.loader import get as _ecfg
+bt_start = _ecfg("backtest.default_start", "2023-01-01")
+bt_end   = _ecfg("backtest.default_end", "2026-06-30")
+bt_cap   = _ecfg("backtest.default_capital", 100000)
+result = run_backtest(bt_start, bt_end, bt_cap)
 
 # Compute IR (Information Ratio)
 ret = result['total_wealth'].pct_change().dropna()
@@ -156,7 +160,7 @@ print(f'WEALTH={{wealth:.2f}}')
 print(f'SHARPE={{sharpe:.4f}}')
 print(f'IR={{ir:.4f}}')
 """
-    ], capture_output=True, text=True, timeout=300, env={**os.environ, 'PYTHONPATH': '.'})
+    ], capture_output=True, text=True, timeout=600, env={**os.environ, 'PYTHONPATH': '.'})
 
     elapsed = time.time() - tt
 

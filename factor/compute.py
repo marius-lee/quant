@@ -1446,7 +1446,7 @@ def compute_all_factors(data: pd.DataFrame, date: str,
     # P45: factor_names 参数允许调用方显式指定要计算的因子
     # None = 默认行为 (status='active'), 列表 = 显式指定
     if factor_names is not None:
-        price_factors = {n: ('dynamic', _PRICE_FN_MAP[n][0], _PRICE_FN_MAP[n][1])
+        price_factors = {n: ('dynamic', _PRICE_FN_MAP[n][1], _PRICE_FN_MAP[n][0])
                         for n in factor_names if n in _PRICE_FN_MAP}
         fund_factors = {n: _FUNDAMENTAL_FN_MAP[n]
                        for n in factor_names if n in _FUNDAMENTAL_FN_MAP}
@@ -1467,7 +1467,7 @@ def compute_all_factors(data: pd.DataFrame, date: str,
     if fundamentals is not None and not fundamentals.empty:
         # 模板 2a: IO-计算分离 — 编排层预加载财务数据, 因子函数纯计算
         financials = None
-        if fundamentals is not None and any(n in active_factors for n in _FIN_FACTORS):
+        if fundamentals is not None and any(n in fund_factors for n in _FIN_FACTORS):
             from data.store import DataStore
             store = DataStore()
             financials = store.get_financials(fundamentals.index.tolist(), date=date)

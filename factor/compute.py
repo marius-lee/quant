@@ -110,9 +110,9 @@ try:
 except Exception:
     _AMIHUD_WINDOW = 250
     _SKEWNESS_WINDOW = 60
-    _VOLATILITY_WINDOW = 20
-    _DOWNSIDE_VOL_WINDOW = 20
-    _IDIO_VOL_WINDOW = 20
+    _VOLATILITY_WINDOW = 126
+    _DOWNSIDE_VOL_WINDOW = 126
+    _IDIO_VOL_WINDOW = 126
     _MAX_RET_WINDOW = 20
     _RANGE_WINDOW = 20
     _LHB_WINDOW = 20
@@ -230,8 +230,11 @@ def compute_amihud(data: pd.DataFrame, date: str, window: int = _AMIHUD_WINDOW) 
     ret = p_slice.pct_change().abs()
     dollar_vol = a_slice * 1000
     illiq = (ret / dollar_vol.replace(0, np.nan)).mean(skipna=True) * 1e6
-    # Stocks with <50% valid data → NaN
-    min_valid = max(1, int(window * 0.5))
+    # Stocks with insufficient data → NaN.
+    # Use min(window, actual_data_len) so the threshold adapts when the
+    # evaluation lookback is shorter than the factor's ideal window.
+    effective = min(window, p_slice.shape[0])
+    min_valid = max(30, int(effective * 0.5))
     valid_mask = (p_slice.count() >= min_valid) & (a_slice.count() >= min_valid)
     illiq = illiq.where(valid_mask)
 
@@ -507,7 +510,7 @@ def compute_money_flow(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.
 # 当 MA5>MA10>MA20>MA60 时趋势确认, IC≈0.03-0.05
 # ═══════════════════════════════════════════════════════════
 
-def compute_ma_alignment(data: "pd.DataFrame", date: str) -> "pd.Series":
+def compute_ma_alignment(data: "pd.DataFrame", date: str, window: int = 20) -> "pd.Series":
     """均线多头排列强度: MA alignment score.
     
     均线窗口固定为 MA5/MA10/MA20/MA60 (不可调).
@@ -1173,16 +1176,17 @@ def compute_analyst_buy(data: "pd.DataFrame", date: str, window: int = 0) -> "pd
 
 _PRICE_FN_MAP = {
     "reversal_5d":           (compute_reversal,            5),
-    "volatility_20d":        (compute_volatility,         20),
     "turnover_rev_5d":       (compute_turnover_reversal,   5),
     "max_ret_20d":           (compute_max_return,         20),
     "gap_5d":                (compute_overnight_gap,       5),
     "range_20d":             (compute_intraday_range,     20),
-    "momentum_10d":          (compute_momentum,           10),
-    "skewness_20d":          (compute_skewness,           20),
-    "idio_vol_20d":          (compute_idiosyncratic_vol,  20),
-    "hsgt_flow_5d":          (compute_hsgt_flow,           5),
-    "amihud_20d":            (compute_amihud,             20),
+    "momentum_63d":          (compute_momentum,           63),
+    "momentum_126d":         (compute_momentum,          126),
+    "momentum_252d":         (compute_momentum,          252),
+    "volatility_126d":       (compute_volatility,        _VOLATILITY_WINDOW),
+    "skewness_60d":          (compute_skewness,          _SKEWNESS_WINDOW),
+    "idio_vol_126d":         (compute_idiosyncratic_vol, _IDIO_VOL_WINDOW),
+    "amihud_250d":           (compute_amihud,            _AMIHUD_WINDOW),
     "rsi_rev_14d":           (compute_rsi_reversal,       14),
     "money_flow_5d":         (compute_money_flow,          5),
     "ma_alignment_20d":      (compute_ma_alignment,       20),

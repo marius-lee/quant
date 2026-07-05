@@ -26,6 +26,7 @@ from optimizer.rebalance import compute_trades, validate_orders
 from execution.cost import CostModel
 from execution.engine import ExecutionEngine, Order
 from monitor.report import generate_report, push_to_web
+from config.loader import get as _ecfg
 from utils.logger import get_logger
 
 # ── HTTP state push (方案B: pipeline → Flask) ──
@@ -159,7 +160,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         ).fetchall()]
         # 因子计算历史窗口: 365 日历日 ≈ 250 个交易日
         # 依据: Grinold & Kahn (1999) 60月≈250日, 对齐 factor.stats_cache lookback=120 并留余量
-        hist_start = (pd.Timestamp(date_str) - pd.Timedelta(days=365)).strftime("%Y-%m-%d")
+        hist_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_ecfg("data.lookback_days", 365))).strftime("%Y-%m-%d")
         data = store.get_daily(symbols, start=hist_start, end=date_str)
         # 基本面数据 — 用于价值因子计算和市值中性化
         fundamentals = store.get_fundamentals(symbols, date=date_str)

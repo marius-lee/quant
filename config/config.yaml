@@ -2,17 +2,18 @@ data:
   tushare_token: ${TUSHARE_TOKEN}
   start_date: '2020-01-01'
   stale_days: 250                      # 数据过期阈值 (1年交易日)
+  lookback_days: 365                  # pipeline 历史数据回溯天数 (覆盖1年, ADR 022)
   batch_size: 50                       # 批量拉取大小 (TickFlow 最优)
   gap_fill_limit: 100                  # 单次 gap fill 上限
   pe_max: 200                          # PE 极端值过滤 (>200 视为噪声/亏损股)
   derived_ratio_max: 100               # 派生比率过滤 (PE/PB 衍生值上限)
 factor:
   windows:
-    volatility: 20           # Andersen et al. (2001): 20-60日标准
-    downside_volatility: 20  # Sortino & Price (1994): 与波动率一致
+    volatility: 126           # Kakushadze & Serur (2018) Ch.3.4: 6-12月=126-252d (原20d偏离标准; ADR 022 Tier 1)
+    downside_volatility: 126  # Sortino & Price (1994): 与波动率一致
     amihud: 250              # Amihud (2002): 12个月日频, SE(ILLIQ)∝1/√N
     skewness: 60             # Barberis & Huang (2008): √(6/N)≤0.32, N≥60
-    idiosyncratic_vol: 20    # 市场模型回归, 20日可接受
+    idiosyncratic_vol: 126    # Ang et al. (2006): 特质波动率窗口对齐 Ch.3.4 低波动标准 126d (ADR 022 Tier 1)
     max_return: 20           # Bali et al. (2011): 过去1个月 MAX因子
     intraday_range: 20       # 日内振幅均值窗口
     lhb_net_buy: 20          # 龙虎榜信号回溯
@@ -42,14 +43,14 @@ alpha:
   top_fraction: 0.3
   # sleeve 模式配置 (仅 combine_mode=sleeve 时生效)
   sleeve:
-    positions_per_factor: 15                                  # 每因子选股数 (Grinold & Kahn 最低20只, 单因子 ≥15 保证分散度; 多因子饱和到 max_positions)
+    positions_per_factor: 20                                  # 每因子选股数 (Grinold & Kahn 最低20只; ADR 022 Tier 1: 15→20 降波动率拖累)
     min_factors: 1                                            # 最少需要的有效因子数
   intersection_top_fraction: 0.2
   intersection_primary: gap_5d
 risk:
   covariance_method: ledoit_wolf
   covariance_window: 60
-  max_single_position: 0.10            # 单票仓位上限 (行业标准 5-10%)
+  max_single_position: 0.05            # 单票仓位上限 (行业标准 5-10%)
   stop_loss_pct: 0.15
   max_positions: 20                     # 多因子组合分散度 (Grinold & Kahn: 20-50只)
   min_daily_amount: 500000
@@ -91,5 +92,7 @@ cache:
     port: 6379
     db: 0
 screening:
-# DEPRECATED (2026-07-05): min_abs_ic: 0.02
-# DEPRECATED (2026-07-05): min_ic_ir: 0.1
+  # Layer 3 步进回测: 短期筛选 → 仅最终候选走全量回测 (ADR 022 效率优化, ~50% 时间节省)
+  backtest_start: '2025-06-30'          # 步进筛选: 最近1年 (~250d, 满足最低统计要求)
+  backtest_end: '2026-06-30'
+  timeout: 600                          # 单次回测超时 (秒)

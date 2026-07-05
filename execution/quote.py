@@ -6,6 +6,7 @@
 只在交易日盘中拉取 (9:30-15:00)，盘后/非交易日跳过。
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 import urllib.request
 from datetime import datetime
@@ -64,7 +65,7 @@ def _parse_sina_line(line: str) -> dict:
 
 
 def fetch_quotes(symbols: list[str]) -> dict[str, dict]:
-    """批量拉取实时行情。
+    """批量拉取实时行情 (模板5: 多批并行 HTTP).
 
     Args:
         symbols: 股票代码列表，如 ["600036", "000001"]
@@ -75,23 +76,32 @@ def fetch_quotes(symbols: list[str]) -> dict[str, dict]:
         return {}
 
     result = {}
-    for i in range(0, len(symbols), _BATCH_SIZE):
-        batch = symbols[i:i + _BATCH_SIZE]
+    batches = [symbols[i:i + _BATCH_SIZE] for i in range(0, len(symbols), _BATCH_SIZE)]
+
+    def _fetch_batch(batch: list[str]) -> dict[str, dict]:
         sina_codes = ",".join(_symbol_to_sina(s) for s in batch)
         url = _SINA_URL + sina_codes
-
+        partial = {}
         try:
             req = urllib.request.Request(url, headers=_HEADERS)
             with urllib.request.urlopen(req, timeout=10) as resp:
                 text = resp.read().decode("gbk")
         except Exception as e:
             logger.warning(f"quote fetch failed: {e}")
-            continue
-
+            return partial
         for line in text.strip().split("\n"):
             parsed = _parse_sina_line(line)
             if parsed:
-                result[parsed["symbol"]] = parsed
+                partial[parsed["symbol"]] = parsed
+        return partial
+
+    if len(batches) > 1:
+        with ThreadPoolExecutor(max_workers=min(len(batches), 4)) as ex:
+            futures = {ex.submit(_fetch_batch, b): i for i, b in enumerate(batches)}
+            for f in as_completed(futures):
+                result.update(f.result())
+    else:
+        result = _fetch_batch(batches[0])
 
     return result
 

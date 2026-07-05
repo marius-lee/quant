@@ -85,6 +85,9 @@ description: >
 - 空间：加载全市场数据时峰值内存 ≤ 输入数据的 3 倍；DataFrame 操作避免 `.copy()` 链式调用
 - 外部调用：JQData/Tushare API 须有超时（连接 5s，读取 30s），失败重试最多 3 次
 - 连接复用：避免每个因子函数独立 `sqlite3.connect()` — 使用模块级共享连接或连接池
+- 多源并行 I/O: 独立数据源 (不同 API key/rate-limit 池) 使用 ThreadPoolExecutor 并行拉取
+  - 示例: JQData + Sina 同时请求，各自 ThreadPoolExecutor worker
+  - 反例: 同一 API (如 Tushare) 多线程并行只会更快触发限流，被拒绝
 - 优化优先级：算法 (O 优化) > 缓存 (因子值、IC 快照) > 向量化 (pandas/numpy 批量) > 并行 (无状态步骤)
 - benchmark：性能敏感模块须在 docstring 标注基线耗时和退化阈值 (如 `stats_cache: ~1s/factor, regression >2x`)
 
@@ -126,6 +129,19 @@ description: >
 
 ## 模板 8：并发控制
 
+**约束级别**: 条件约束 — 当前单人单机限定作用域；多人多机时立即全量启用。
+
+**激活条件** (满足任一即全量启用):
+1. 部署到多台机器 (>1 物理/虚拟服务器)
+2. 多个并发用户 (>1 同时活跃)
+3. 引入消息队列 (Redis/RabbitMQ) 或分布式任务调度 (Celery)
+
+**当前模式 (单人单机)**:
+- IO 密集型: `ThreadPoolExecutor` 多源并行 (见模板5)
+- CPU 密集型: 单进程顺序执行 (因子计算等)
+- 状态同步: 内存 Lock + SSE 广播 (state_broker.py)
+
+**全量启用后**:
 - CPU 密集型 → 进程池，IO 密集型 → 协程
 - 锁：范围最小化，禁止锁内 IO，统一加锁顺序防死锁
 - 原子操作：乐观锁（version 字段）或 Redis Lua 脚本

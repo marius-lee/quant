@@ -15,7 +15,7 @@ from data.store import DataStore
 from config.loader import get as cfg
 
 from factor.compute import compute_all_factors
-from factor.synth import ic_weighted, equal_weight, intersection_alpha
+from factor.synth import ic_weighted, equal_weight, intersection_alpha, sleeve_compose
 from risk.neutralize import neutralize
 
 from factor.stats_cache import load_ic_map_from_cache
@@ -200,41 +200,53 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         factor_values = compute_all_factors(data, actual_date,
                                             fundamentals=fundamentals,
                                             benchmark_ret=benchmark_ret)
-        # P1-3: Factor synthesis — method from config.yaml alpha.method
-        # ic_weighted: uses factor_registry IC weights (auto-refreshed every 24h)
-        # equal_weight: simple average, fallback when cache is unavailable
-        method = cfg("alpha.method", "ic_weighted")
-        if method == "intersection":
-            # Intersection: stocks must rank top X% in ALL factors to be candidates
-            alpha_raw = intersection_alpha(
+        # P43: combine_mode determines how factors are merged
+        # sleeve: each factor independently picks top N stocks (preserves independent signals)
+        # composite: weighted/equal/intersection compression into single score
+        combine_mode = cfg("alpha.combine_mode", "sleeve")
+        if combine_mode == "sleeve":
+            alpha_raw = sleeve_compose(
                 factor_values,
-                top_fraction=cfg("alpha.intersection_top_fraction", 0.20),
-                primary_factor=cfg("alpha.intersection_primary", "gap_5d"),
+                positions_per_factor=cfg("alpha.sleeve.positions_per_factor", 8),
+                min_factors=cfg("alpha.sleeve.min_factors", 1),
             )
-        elif method == "ic_weighted":
-            ic_map = load_ic_map_from_cache(factor_values)
-            if not ic_map:
-                logger.info("IC cache unavailable, falling back to equal_weight")
-                alpha_raw = equal_weight(factor_values)
-            else:
-                alpha_raw = ic_weighted(factor_values, ic_map)
+            logger.info("[3/7] sleeve: %d factors → %d stocks", len(factor_values), alpha_raw.notna().sum())
         else:
-            alpha_raw = equal_weight(factor_values)
-            ic_map = {}
-        if method != 'intersection' and alpha_raw.notna().sum() > 10:
-            top_n = min(50, alpha_raw.notna().sum())
-            top_symbols = alpha_raw.nlargest(top_n).index
-            contribs = []
-            for fn, fv in factor_values.items():
-                if fn in ic_map and not fv.dropna().empty:
-                    common = fv.reindex(top_symbols).dropna()
-                    if len(common) > 5:
-                        avg_contrib = (common * ic_map[fn]).mean()
-                        contribs.append((fn, round(avg_contrib, 4)))
-            contribs.sort(key=lambda x: abs(x[1]), reverse=True)
-            top3 = contribs[:3]
-            logger.info("[3/7] top factor contributors: %s",
-                        ", ".join(f"{n}={v:+.4f}" for n, v in top3))
+            # P1-3: Factor synthesis — method from config.yaml alpha.method
+            # ic_weighted: uses factor_registry IC weights (auto-refreshed every 24h)
+            # equal_weight: simple average, fallback when cache is unavailable
+            method = cfg("alpha.method", "ic_weighted")
+            if method == "intersection":
+                # Intersection: stocks must rank top X% in ALL factors to be candidates
+                alpha_raw = intersection_alpha(
+                    factor_values,
+                    top_fraction=cfg("alpha.intersection_top_fraction", 0.20),
+                    primary_factor=cfg("alpha.intersection_primary", "gap_5d"),
+                )
+            elif method == "ic_weighted":
+                ic_map = load_ic_map_from_cache(factor_values)
+                if not ic_map:
+                    logger.info("IC cache unavailable, falling back to equal_weight")
+                    alpha_raw = equal_weight(factor_values)
+                else:
+                    alpha_raw = ic_weighted(factor_values, ic_map)
+            else:
+                alpha_raw = equal_weight(factor_values)
+                ic_map = {}
+            if method != 'intersection' and alpha_raw.notna().sum() > 10:
+                top_n = min(50, alpha_raw.notna().sum())
+                top_symbols = alpha_raw.nlargest(top_n).index
+                contribs = []
+                for fn, fv in factor_values.items():
+                    if fn in ic_map and not fv.dropna().empty:
+                        common = fv.reindex(top_symbols).dropna()
+                        if len(common) > 5:
+                            avg_contrib = (common * ic_map[fn]).mean()
+                            contribs.append((fn, round(avg_contrib, 4)))
+                contribs.sort(key=lambda x: abs(x[1]), reverse=True)
+                top3 = contribs[:3]
+                logger.info("[3/7] top factor contributors: %s",
+                            ", ".join(f"{n}={v:+.4f}" for n, v in top3))
 
         # Soft cutoff: only for ic_weighted/equal_weight (intersection already filters)
         if method == "intersection":

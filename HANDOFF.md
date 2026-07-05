@@ -48,3 +48,17 @@ trial过期: JQData (自动 fallback 到 tushare)
 Python: .venv (3.14), .venv-tushare (3.12)
 Redis: localhost:6379
 测试: pytest tests/ -q (20/20)
+
+## P43 — 多因子分仓架构 (2026-07-05 19:00)
+
+### 变更
+- config.yaml: alpha.combine_mode (sleeve/composite) + alpha.sleeve 节
+- factor/synth.py: sleeve_compose() — 每因子独立选 top N 取并集
+- pipeline.py: 按 combine_mode 分支, sleeve 跳过 soft cutoff
+- tests/test_synth.py: 6 个 sleeve_compose 测试
+- docs/adr/017-sleeve-architecture.md
+
+### 结果
+- 26/26 测试通过
+- 默认 sleeve 模式保留因子独立信号
+- composite 模式向后兼容

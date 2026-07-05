@@ -29,14 +29,26 @@ from monitor.report import generate_report, push_to_web
 from utils.logger import get_logger
 
 # ── HTTP state push (方案B: pipeline → Flask) ──
-import requests as _requests
+import requests as _requests, threading as _threading
 
 def _state_url() -> str:
     from config.loader import get as _cfg
     port = int(_cfg("web.port", 8521))
     return f"http://127.0.0.1:{port}/api/state"
 
-def _post_state(data: dict, timeout: float = 5.0, max_retries: int = 3):
+def _post_state(data: dict, timeout: float = 5.0, max_retries: int = 3, async_mode: bool = True):
+    """POST 状态到 Flask，指数退避重试。
+
+    async_mode=True (默认): fire-and-forget 线程, 不阻塞 pipeline 步骤.
+    async_mode=False: 同步模式, 用于测试/调试.
+    失败静默 — 不影响 pipeline 执行.
+    """
+    if async_mode:
+        _threading.Thread(target=_post_state_sync, args=(data, timeout, max_retries), daemon=True).start()
+        return
+    _post_state_sync(data, timeout, max_retries)
+
+def _post_state_sync(data: dict, timeout: float, max_retries: int):
     url = _state_url()
     for attempt in range(max_retries):
         try:

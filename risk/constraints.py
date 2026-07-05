@@ -19,7 +19,7 @@ class RiskLimits:
     exclude_star_st:    排除 *ST / ST 股票
     min_price:          最低股价 (元), 低于此值过滤 (仙股风险)
     """
-    max_single_position: float = 0.20
+    max_single_position: float = 0.10
     max_positions: int = 20
     min_daily_amount: float = 5_000_000  # 500万, A股日成交<此值无法有效进出
     max_sector_exposure: float = 0.40    # 单行业最多40%
@@ -111,7 +111,7 @@ def apply_all_filters(
 
 def position_limit_check(
     weights: pd.Series,
-    max_single: float = 0.20,
+    max_single: float = 0.10,
     max_positions: int = 20,
 ) -> tuple[bool, str]:
     """检查持仓是否违反约束。

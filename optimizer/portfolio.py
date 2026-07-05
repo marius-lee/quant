@@ -47,14 +47,14 @@ class PortfolioConstructor:
             config = {
                 "equal_weight_cap": cfg("optimizer.equal_weight_cap", 20000),
                 "weighted_cap": cfg("optimizer.weighted_cap", 100000),
-                "max_positions": cfg("risk.max_positions", 5),
-                "max_single_position": cfg("risk.max_single_position", 0.33),
+                "max_positions": cfg("risk.max_positions", 20),
+                "max_single_position": cfg("risk.max_single_position", 0.10),
                 "risk_aversion": cfg("optimizer.risk_aversion", 2.0),
             }
         self.equal_weight_cap = config.get("equal_weight_cap", 20000)
         self.weighted_cap = config.get("weighted_cap", 100000)
-        self.max_positions = config.get("max_positions", 5)
-        self.max_single = config.get("max_single_position", 0.33)
+        self.max_positions = config.get("max_positions", 20)
+        self.max_single = config.get("max_single_position", 0.10)
         self.risk_aversion = config.get("risk_aversion", 2.0)
 
     def construct(

@@ -4,7 +4,7 @@ data:
   stale_days: 250                      # 数据过期阈值 (1年交易日)
   batch_size: 50                       # 批量拉取大小 (TickFlow 最优)
   gap_fill_limit: 100                  # 单次 gap fill 上限
-  pe_max: 1000                         # PE 极端值过滤 (>此值视为噪声)
+  pe_max: 200                          # PE 极端值过滤 (>200 视为噪声/亏损股)
   derived_ratio_max: 100               # 派生比率过滤 (PE/PB 衍生值上限)
 factor:
   windows:
@@ -35,7 +35,7 @@ factor:
 alpha:
   # 2026-07-03: intersection → ic_weighted (see HANDOFF for analysis)
   method: ic_weighted
-  train_window: 252
+  train_window: 500                    # IC 训练窗口 (Grinold & Kahn: 60月月频→日频等价500+)
   retrain_freq: 20
   top_fraction: 0.3
   intersection_top_fraction: 0.2
@@ -43,9 +43,9 @@ alpha:
 risk:
   covariance_method: ledoit_wolf
   covariance_window: 60
-  max_single_position: 1.0
+  max_single_position: 0.10            # 单票仓位上限 (行业标准 5-10%)
   stop_loss_pct: 0.15
-  max_positions: 1
+  max_positions: 20                     # 多因子组合分散度 (Grinold & Kahn: 20-50只)
   min_daily_amount: 500000
   exclude_star_st: true
   exclude_markets:
@@ -68,8 +68,8 @@ execution:
 backtest:
   benchmark: '000300'                  # 基准指数
   lot_size: 100                        # A股每手100股, 交易所规则
-  default_capital: 5000                # 回测默认初始资金 (元)
-  default_start: '2026-01-01'          # 回测默认起始日期
+  default_capital: 100000              # 回测默认初始资金 (元, 支持20只组合)
+  default_start: '2023-01-01'          # 回测默认起始日期 (Lo 2002: T>=3年)
   default_end: '2026-06-30'            # 回测默认结束日期
   rebalance_interval_days: 5           # 调仓间隔 (交易日)
   min_backtest_days: 250               # 回测最少交易日数 (Grinold & Kahn 1999)

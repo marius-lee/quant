@@ -1886,7 +1886,7 @@ def compute_holder_reduction(fundamentals, date):
     start_date = end_date - pd.DateOffset(days=60)
 
     rows = conn.execute(f"""
-        SELECT symbol, SUM(CASE WHEN direction='out' THEN change_ratio ELSE 0 END) as total_out
+        SELECT symbol, SUM(CASE WHEN direction='out' THEN change_vol ELSE 0 END) as total_out_vol
         FROM holder_trade
         WHERE ann_date BETWEEN '{start_date.strftime("%Y-%m-%d")}' AND '{date}'
           AND symbol IN ('{sym_list}')
@@ -1897,8 +1897,8 @@ def compute_holder_reduction(fundamentals, date):
     vals = {r[0]: r[1] for r in rows if r[1] is not None}
     result = pd.Series(vals, name="holder_reduction")
     result = result.replace([float('inf'), float('-inf')], float('nan'))
-    result = result.clip(-0.5, 0.5)
     # 高减持→低分 (IC为负)
+    # 注: akshare 只返回绝对股数, 横截面 z-score 标准化已处理量纲差异
     return _cs_zscore(-result).rename("holder_reduction")
 
 

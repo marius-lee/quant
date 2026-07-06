@@ -105,7 +105,7 @@ def check_factors():
         ).fetchone()
         if row and row[0] and abs(row[0]) >= 0.02:
             warn(f"Deprecated factor {name} has IC={row[0]:.4f} >= 0.02, "
-                 f"may need re-evaluation")
+                 f"may need re-evaluation (IC threshold met, but check Layer 1 t-test + Layer 2 marginal IC for significance)")
 
     ok(f"Active factors: {len(code_active)} code, {len(db_active)} DB")
     db.close()
@@ -131,16 +131,17 @@ def check_database():
                 warn(f"Table '{table}' is empty")
 
     # 检查 daily 表是否有足够的复权数据
+    # ── 排除 BJ (30% limit) 和 low-price (<2) — 这些不是数据错误 ──
     # (不应该有 >20% 的单日跳空)
     extreme = db.execute("""
         SELECT COUNT(*) FROM (
-            SELECT symbol, date, close,
-                   LAG(close) OVER (PARTITION BY symbol ORDER BY date) as prev_close
-            FROM daily WHERE date >= '2026-01-01'
+            SELECT d.symbol, d.date, d.close,
+                   LAG(close) OVER (PARTITION BY d.symbol ORDER BY date) as prev_close
+            FROM daily d JOIN stocks s ON d.symbol=s.symbol WHERE s.market!="BJ" AND d.close>=2 AND d.date >= '2026-01-01'
         ) WHERE prev_close > 0 AND ABS(close/prev_close - 1) > 0.20
     """).fetchone()[0]
     if extreme > 0:
-        warn(f"Found {extreme} extreme daily returns (>20%) — possible unadjusted data")
+        warn(f"Found {extreme} extreme daily returns (>20%) — possible unadjusted data (excl. BJ/ST/penny; IPO gaps possible unadjusted data (excl. BJ/ST/penny stocks; IPO gaps possible unadjusted data suspended-resume jumps may still appear) suspension-resume jumps may appear)")
     else:
         ok("No extreme daily returns found (data looks qfq-adjusted)")
 

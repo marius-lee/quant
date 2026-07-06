@@ -150,6 +150,9 @@ def compute_factor_stats(
             common = fv_series.dropna().index.intersection(fr.dropna().index)
             if len(common) < 30:
                 continue
+            # Skip constant arrays (e.g., analyst_buy all-zero)
+            if np.std(fv_series.loc[common]) == 0 or np.std(fr.loc[common]) == 0:
+                continue
             from scipy import stats
             rho, _ = stats.spearmanr(fv_series.loc[common], fr.loc[common])
             if not np.isnan(rho):
@@ -175,6 +178,9 @@ def compute_factor_stats(
                     fr = fr.iloc[0]
                 common = fv_series.dropna().index.intersection(fr.dropna().index)
                 if len(common) < 30:
+                    continue
+                # Skip constant arrays
+                if np.std(fv_series.loc[common]) == 0 or np.std(fr.loc[common]) == 0:
                     continue
                 from scipy import stats
                 rho, _ = stats.spearmanr(fv_series.loc[common], fr.loc[common])

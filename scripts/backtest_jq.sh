@@ -17,7 +17,7 @@ if result.empty or 'total_wealth' not in result.columns:
     print('No backtest results (empty or insufficient data)')
 else:
     print('=== KEY METRICS ===')
-        print(f'Final wealth: {result["total_wealth"].iloc[-1]:.2f}')
+    print(f'Final wealth: {result["total_wealth"].iloc[-1]:.2f}')
     print(f'Cumulative return: {(result["total_wealth"].iloc[-1]/cfg("backtest.default_capital",100000)-1)*100:+.1f}%')
     daily_ret = result['total_wealth'].pct_change().dropna()
     if len(daily_ret) > 0:

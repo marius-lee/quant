@@ -81,8 +81,8 @@ _log = logging.getLogger("quant.factor.synth")
 
 def sleeve_compose(
     factor_values: dict,
-    positions_per_factor: int = 8,
-    min_factors: int = 1,
+    positions_per_factor: int,
+    min_factors: int,
 ) -> pd.Series:
     """分仓合成: 每个因子独立选取 top N 只股票, 取并集。
     返回原始 z-score (保留信号梯度), 不做等权压扁。

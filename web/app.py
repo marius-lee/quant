@@ -168,10 +168,10 @@ def api_trades():
         from data.trade_repo import TradeRepo
         repo = TradeRepo(TRADE_DB)
         if strategy:
-            raw_trades = repo.get_trades(strategy, limit=10000)
+            raw_trades = repo.get_trades(strategy, limit=10000)  # 前端展示上限, 防止浏览器卡死, 非业务参数
             raw_positions = repo.get_positions(strategy)
         else:
-            raw_trades = repo.get_trades(None, limit=10000)
+            raw_trades = repo.get_trades(None, limit=10000)  # 前端展示上限, 防止浏览器卡死, 非业务参数
             raw_positions = repo.get_positions(None)
         trades = [{"date": (t.get("date") or "")[:19] if t.get("date") else "",
                     "symbol": t["symbol"], "side": t["side"], "price": t["price"],

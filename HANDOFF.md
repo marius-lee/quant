@@ -12,6 +12,29 @@
 | 6 | scheduler | grep PHASE logs/quant.log | tail -5 |
 | 7 | 退出日志 | grep EXIT logs/app.log |
 
+## P61: 审计收尾 — 消除最后6项硬编码 + neutralize 路径统一
+
+### 改动清单
+
+**#9 — factor/synth.py**: sleeeve_compose() 去掉 positions_per_factor=8, min_factors=1 默认值。
+调用方必须从 config.yaml 读取参数后传入，本函数不提供 fallback。
+
+**#11 — 统一 neutralize 配置路径**:
+- neutralize.py: 3 处 len(common) < 30 改为从 config 读取
+- pipeline.py: risk.neutralization.industry_min_count 改为 risk.neutralize.min_common_stocks
+- config.yaml: risk.neutralization.industry_min_count 改为 risk.neutralize.min_common_stocks + min_stocks_per_industry
+- 原因: 两处都是 Fama-French (1993) OLS 最小样本量 30, 相同概念不同名字, 统一为 min_common_stocks
+
+**#12-14**: web/app.py, data/cache.py, data/store.py 加注释说明硬编码原因
+
+**#15**: attribution.py rf=0.02, periods=252 挪到 config attribution.*
+
+### 审计文档闭合
+docs/audit_magic_numbers_20260706.md 中 16 项全部处理完毕。
+
+### 验证
+validate.py: 0 errors, 8 files compile OK
+
 ## P60: 硬编码数值参数全部挪至 config.yaml（单一真相源）
 
 ### 动机

@@ -251,7 +251,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         mcap_real = fundamentals["total_mv"].reindex(prices.index)
         mcap_real = mcap_real.fillna(prices * 1e8)
         industries = fundamentals["industry"].reindex(prices.index) if "industry" in fundamentals.columns else None
-        industry_min = cfg("risk.neutralization.industry_min_count", 30)
+        industry_min = cfg("risk.neutralize.min_common_stocks")
         if industries is not None and industries.notna().sum() < industry_min:
             industries = None
         alpha_neut = neutralize(alpha, industries=industries, market_caps=mcap_real)

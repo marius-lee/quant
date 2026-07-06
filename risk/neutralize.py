@@ -14,6 +14,9 @@ from utils.logger import get_logger
 logger = get_logger("risk.neutralize")
 
 import numpy as np
+
+from config.loader import get as _cfg
+_MIN_COMMON = _cfg("risk.neutralize.min_common_stocks")
 import pandas as pd
 from scipy import stats
 from typing import Optional
@@ -40,7 +43,7 @@ def industry_neutralize(
     ind_aligned = industries.reindex(aligned.index).dropna()
     common = aligned.index.intersection(ind_aligned.index)
 
-    if len(common) < 30:
+    if len(common) < _MIN_COMMON:
         return scores
 
     neutralized = pd.Series(np.nan, index=scores.index)
@@ -56,7 +59,7 @@ def industry_neutralize(
 
     # 整体再标准化
     valid = neutralized.dropna()
-    if len(valid) < 30:
+    if len(valid) < _MIN_COMMON:
         return scores
 
     result = (valid - valid.mean()) / valid.std(ddof=1)
@@ -81,7 +84,7 @@ def size_neutralize(
     """
     common = scores.dropna().index.intersection(market_caps.dropna().index)
 
-    if len(common) < 30:
+    if len(common) < _MIN_COMMON:
         return scores
 
     y = scores.loc[common].values

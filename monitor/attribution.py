@@ -13,6 +13,10 @@ import numpy as np
 import pandas as pd
 from typing import Optional
 
+from config.loader import get as _cfg
+_RF_RATE = _cfg("attribution.risk_free_rate")       # from config
+_ANNUAL_PERIODS = _cfg("attribution.annual_periods")  # from config
+
 
 def brinson_attribution(
     portfolio_returns: pd.Series,
@@ -88,8 +92,16 @@ def factor_exposure_decomposition(
     return pd.Series(beta, index=factor_returns.columns)
 
 
-def compute_sharpe(returns: pd.Series, rf: float = 0.02, periods: int = 252) -> float:
-    """年化 Sharpe ratio。"""
+def compute_sharpe(returns: pd.Series, rf: float = None, periods: int = None) -> float:
+    """年化 Sharpe ratio。
+
+    rf:      无风险利率 (默认从 config attribution.risk_free_rate 读取)
+    periods: 年化天数 (默认从 config attribution.annual_periods 读取)
+    """
+    if rf is None:
+        rf = _RF_RATE
+    if periods is None:
+        periods = _ANNUAL_PERIODS
     er = returns.mean() * periods - rf
     std = returns.std() * np.sqrt(periods)
     return er / std if std > 0 else 0.0

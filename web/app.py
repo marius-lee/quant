@@ -441,6 +441,9 @@ def api_performance():
                 (strategy, strategy)).fetchall()]
             from execution.quote import fetch_quotes
             quotes = fetch_quotes(pos_symbols)
+            shares_map = dict(tc.execute(
+                "SELECT symbol, SUM(shares) FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?) GROUP BY symbol",
+                (strategy, strategy)).fetchall())
             if quotes:
                 pos_share_map = dict(tc.execute(
                     "SELECT symbol, SUM(shares) FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?) GROUP BY symbol",
@@ -456,6 +459,24 @@ def api_performance():
                     valuation_method = "market"
         except Exception:
             pass  # 报价不可用时回退到账面成本
+
+    # ── fallback to latest close (盘后/休市) ──
+    if valuation_method == "book_cost" and position_cost > 0:
+        try:
+            mc = sqlite3.connect(market_db)
+            close_mv = 0.0
+            for sym, shares in shares_map.items():
+                cr = mc.execute(
+                    "SELECT close FROM daily WHERE symbol=? ORDER BY date DESC LIMIT 1", (sym,)
+                ).fetchone()
+                if cr and cr[0] and cr[0] > 0:
+                    close_mv += cr[0] * shares_map[sym]
+            mc.close()
+            if close_mv > 0:
+                position_market_value = round(close_mv, 2)
+                valuation_method = "latest_close"
+        except Exception:
+            pass
 
     total_asset = round(capital + position_market_value, 2)
     total_pnl = round(total_asset - base, 2)

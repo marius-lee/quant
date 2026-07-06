@@ -60,7 +60,7 @@ class RedisStateBroker(StateBroker):
                     "symbol": p["symbol"], "name": "",
                     "shares": p["shares"], "price": p.get("price", 0),
                     "board_count": p.get("board_count", 0),
-                    "date": p.get("date", ""),
+                    "buy_time": p.get("buy_time", ""),
                     "current": p.get("price", 0), "pnl_pct": 0,
                     "value": round(p["shares"] * p.get("price", 0), 2)
                 })

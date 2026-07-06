@@ -132,7 +132,8 @@ def api_positions():
             px = p.get("price", 0)
             positions.append({
                 "symbol": p["symbol"], "price": px, "shares": p["shares"],
-                "board_count": p.get("board_count", 0), "date": p.get("date", ""),
+                "board_count": p.get("board_count", 0),
+                "buy_time": p.get("buy_time", ""),
                 "current": px, "pnl_pct": 0,
                 "value": round(p["shares"] * px, 2),
                 "name": name_map.get(p["symbol"], ""), "change_pct": 0,
@@ -157,7 +158,7 @@ def api_trades():
         conn = sqlite3.connect(TRADE_DB)
         if strategy:
             rows = conn.execute(
-                "SELECT date, symbol, side, price, shares, pnl, pnl_pct FROM sim_trades WHERE strategy=? ORDER BY id",
+                "SELECT COALESCE(created_at, date) as dt, symbol, side, price, shares, pnl, pnl_pct FROM sim_trades WHERE strategy=? ORDER BY id",
                 (strategy,)
             ).fetchall()
             buys = conn.execute("""
@@ -168,7 +169,7 @@ def api_trades():
             """, (strategy, strategy)).fetchall()
         else:
             rows = conn.execute(
-                "SELECT date, symbol, side, price, shares, pnl, pnl_pct FROM sim_trades ORDER BY id"
+                "SELECT COALESCE(created_at, date) as dt, symbol, side, price, shares, pnl, pnl_pct FROM sim_trades ORDER BY id"
             ).fetchall()
             buys = conn.execute("""
                 SELECT symbol, price, shares, board_count, date FROM sim_trades
@@ -176,8 +177,8 @@ def api_trades():
                     SELECT symbol FROM sim_trades WHERE side='sell'
                 )
             """).fetchall()
-        trades = [{"date": r[0], "symbol": r[1], "side": r[2], "price": r[3],
-                    "shares": r[4], "pnl": r[5], "pnl_pct": r[6]} for r in rows]
+        trades = [{"date": r[0][:19] if r[0] else "", "symbol": r[1], "side": r[2], "price": r[3],
+                    "shares": r[4], "pnl": r[5] or 0, "pnl_pct": r[6] or 0} for r in rows]
         positions = [{"symbol": r[0], "price": r[1], "shares": r[2],
                        "board_count": r[3], "date": r[4]} for r in buys]
         conn.close()

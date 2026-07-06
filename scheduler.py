@@ -1,13 +1,11 @@
-"""量化系统调度器 — 每个交易日 15:30 自动执行。
+"""量化系统调度器 — 三阶段自动化。
 
-流程:
-  1. 等交易日 15:30
-  2. 跑 daily_sync (更新所有数据源)
-  3. 跑 pipeline (选股+调仓)
-  
+阶段一 (08:30): 盘前信号生成 — generate_signals() → 目标持仓
+阶段二 (09:30): 开盘执行 — execute_signals() → 模拟成交
+阶段三 (15:30): 盘后归因 — daily_sync + 绩效报告
+
 启动:
   PYTHONPATH=. .venv/bin/python3 scheduler.py &
-  launchd 开机自启 (见 com.quant.scheduler.plist)
 """
 
 import time, sys
@@ -17,60 +15,122 @@ from execution.calendar import is_trading_day, is_market_open
 
 logger = get_logger("scheduler")
 MINUTE = 60
+_HOUR = 3600
 
 
-def wait_until(target_hour: int = 15, target_minute: int = 30) -> bool:
-    """休眠至下一个目标时间。返回是否到达目标。"""
-    now = datetime.now()
-    target = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
-    if now > target:
-        target += timedelta(days=1)
+def wait_until(target_hour: int, target_minute: int = 0):
+    """休眠至下一个目标时间 (HH:MM)。提前 60s 开始轮询，避免休眠过点。"""
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+        if now >= target:
+            return
+        wait_sec = (target - now).total_seconds()
+        sleep_time = max(1, min(wait_sec - 60, MINUTE))
+        time.sleep(sleep_time)
 
-    wait_sec = (target - now).total_seconds()
-    if wait_sec > 0:
-        logger.info(f"scheduler: sleeping {wait_sec:.0f}s until {target.strftime('%H:%M')}")
-        time.sleep(min(wait_sec, MINUTE))
-        return False
-    return True
+
+def phase1_generate_signals(date_str: str):
+    """阶段一: 08:30 — 用 T-1 数据生成今日目标持仓。"""
+    logger.info(f"[{date_str}] 08:30 — Phase 1: generating signals")
+    from pipeline import generate_signals
+    try:
+        result = generate_signals(date_str)
+        n_targets = len(result.get("target_positions", []))
+        logger.info(f"[{date_str}] Phase 1 done: {n_targets} target positions "
+                     f"({result.get('elapsed_sec', 0):.1f}s)")
+        return result
+    except Exception as e:
+        logger.error(f"[{date_str}] Phase 1 failed: {e}")
+        return None
+
+
+def phase2_execute_signals(date_str: str, target_positions: list):
+    """阶段二: 09:30 — 用开盘价执行调仓。"""
+    logger.info(f"[{date_str}] 09:30 — Phase 2: executing trades")
+    from pipeline import execute_signals
+    try:
+        result = execute_signals(target_positions, date_str)
+        orders = result.get("steps", {}).get("execution", {}).get("orders", 0)
+        logger.info(f"[{date_str}] Phase 2 done: {orders} orders "
+                     f"({result.get('elapsed_sec', 0):.1f}s)")
+        return result
+    except Exception as e:
+        logger.error(f"[{date_str}] Phase 2 failed: {e}")
+        return None
+
+
+def phase3_daily_sync_and_report(date_str: str):
+    """阶段三: 15:30 — 拉取今日完整数据 + 生成日度报告。"""
+    logger.info(f"[{date_str}] 15:30 — Phase 3: post-market sync + report")
+    
+    # Step A: 数据同步
+    from daily_sync import run as sync_run
+    try:
+        sync_results = sync_run(date_str)
+        logger.info(f"[{date_str}] daily_sync: {sync_results}")
+    except Exception as e:
+        logger.error(f"[{date_str}] daily_sync failed: {e}")
+
+    # Step B: 绩效归因报告 (不执行新交易, 只是更新估值+生成报表)
+    try:
+        from execution.engine import ExecutionEngine
+        from monitor.report import generate_report, push_to_web
+        engine = ExecutionEngine()
+        positions = engine.get_positions("quant")
+        trades = engine.get_trades("quant", limit=50)
+        total_wealth = engine.get_capital("quant")
+        cash_balance = engine.get_cash("quant")
+        report = generate_report(
+            date_str, cash_balance, positions, trades,
+            pnl_total=total_wealth - engine.get_cash("quant"),
+            initial_capital=engine.get_cash("quant"),
+        )
+        push_to_web(report)
+        logger.info(f"[{date_str}] Phase 3 report: wealth=Y{report['capital']['total_wealth']:,.2f} "
+                     f"return={report['metrics']['total_return_pct']}%")
+    except Exception as e:
+        logger.error(f"[{date_str}] Phase 3 report failed: {e}")
 
 
 def run_loop():
-    """主循环: 交易日 15:30 自动执行 daily_sync → pipeline。"""
-    logger.info("scheduler started — waiting for next trading day 15:30")
+    """主循环: 等待每个交易日 08:30 → 09:30 → 15:30 依次执行。"""
+    logger.info("scheduler started — three-phase mode (08:30 signals, 09:30 execute, 15:30 attribution)")
+    
+    # 存储阶段一产出的目标持仓, 供阶段二使用
+    pending_targets: list = []
 
     while True:
         try:
             dt = datetime.now()
+            date_str = dt.strftime("%Y-%m-%d")
 
             if not is_trading_day(dt.date()):
-                time.sleep(MINUTE)
+                time.sleep(MINUTE * 5)  # 非交易日: 5分钟轮询
                 continue
 
-            if not wait_until(15, 30):
-                continue
+            # ── Phase 1: 08:30 盘前信号 ──
+            wait_until(8, 30)
+            signals = phase1_generate_signals(date_str)
+            if signals and "target_positions" in signals:
+                pending_targets = signals["target_positions"]
+            else:
+                pending_targets = []
 
-            date_str = dt.strftime("%Y-%m-%d")
-            logger.info(f"[{date_str}] 15:30 — starting daily sync + pipeline")
+            # ── Phase 2: 09:30 开盘执行 ──
+            if pending_targets:
+                wait_until(9, 30)
+                phase2_execute_signals(date_str, pending_targets)
+                pending_targets = []
+            else:
+                logger.info(f"[{date_str}] no pending targets, skipping Phase 2")
 
-            # Step A: 数据同步
-            from daily_sync import run as sync_run
-            try:
-                sync_results = sync_run(date_str)
-                logger.info(f"[{date_str}] daily_sync: {sync_results}")
-            except Exception as e:
-                logger.error(f"[{date_str}] daily_sync failed: {e}")
+            # ── Phase 3: 15:30 盘后归因 ──
+            wait_until(15, 30)
+            phase3_daily_sync_and_report(date_str)
 
-            # Step B: Pipeline 选股 + 调仓
-            from pipeline import run
-            try:
-                result = run(date_str)
-                steps_ok = [k for k, v in result.get('steps', {}).items() if v.get('status') == 'ok']
-                logger.info(f"[{date_str}] pipeline: {result.get('elapsed_sec', 0)}s, {steps_ok}")
-            except Exception as e:
-                logger.error(f"[{date_str}] pipeline failed: {e}")
-
-            # 下一个交易日
-            time.sleep(60 * 60)
+            # 等待到第二天
+            time.sleep(_HOUR)
 
         except KeyboardInterrupt:
             logger.info("scheduler stopped by user")

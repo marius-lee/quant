@@ -112,7 +112,7 @@ logger = get_logger("module.name")
 | File | Status |
 |------|--------|
 | `factor/base.py` | Done |
-| `factor/compute.py` | Done (35因子, 1 active: zt_streak) |
+| `factor/compute.py` | Done (35因子, 2 active: zt_streak + dt_streak) |
 | `factor/evaluate.py` | Done |
 | `factor/synth.py` | Done |
 | `alpha/model.py` | Done |

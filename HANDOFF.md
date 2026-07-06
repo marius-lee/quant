@@ -171,3 +171,19 @@ Git: origin/main @ 17a1377
 **提交前铁律**（涉及数据管线/scheduler/launchd 的改动）：
    改代码 → 跑 pre-commit-check → restart.sh → tail -f 日志确认数值正确 → 提交
 
+
+## 2026-07-06 ~10:25
+
+### P54: 资金追踪统一 — strategy_config.cash_balance 单点真相源
+
+**问题**: 资金状态散落在两处 — `strategy_config.initial_capital`（静态种子）和 `sim_trades.capital_after`（逐笔记录），导致查询现金需要翻 sim_trades 最新一行再做持仓净值计算。之前收益率 bug 就是 get_cash 被误当 initial_capital 传入 generate_report。
+
+**方案**: `strategy_config.cash_balance` 成为唯一现金余额字段，每次交易后原子更新。
+
+**改动**:
+- `data/trade_repo.py`: get_cash() 读 strategy_config.cash_balance（不再查 sim_trades）；set_initial_capital() 同时写 cash_balance
+- `execution/engine.py`: execute() 完结前 UPDATE strategy_config.cash_balance；INSERT 不再写 capital_after 列
+- `web/app.py`: api_performance 用 TradeRepo.get_cash() 替代 capital_after 查询；手动买卖同步更新 cash_balance
+- `scheduler.py`: Phase 3 generate_report 指定正确 seed
+- DB 迁移: strategy_config 新增 cash_balance 列，已有行从 initial_capital 回填
+

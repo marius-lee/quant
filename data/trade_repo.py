@@ -43,7 +43,7 @@ class TradeRepo:
             );
         """)
         # ── 迁移: 兼容旧 schema ──
-        for col, typ in [('cash_balance', 'REAL'), ('initialized', 'INTEGER DEFAULT 0')]:
+        for col, typ in [('cash_balance', 'REAL'), ('initialized', 'INTEGER DEFAULT 0'), ('updated_at', 'TEXT')]:
             try:
                 c.execute(f"ALTER TABLE strategy_config ADD COLUMN {col} {typ}")
             except Exception:

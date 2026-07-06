@@ -32,6 +32,9 @@ pipeline.py (benchmark 可选注释), backtest.py (stop-loss 可选注释), exec
 - Pass Layer 1: dt_streak, vol_price_corr_10d, roa, roe_reported, gap_5d
 - 其余 29 个 deprecated
 
+## Part D: 关键路径埋点补齐
+补 5 处: _cs_zscore 静默NaN告警, compute_amihud 全过滤告警, compute_all_factors 汇总, pipeline step4 因子健康度, backtest turnover.
+
 ## 下一步
 ```bash
 bash scripts/eval_stepwise.sh

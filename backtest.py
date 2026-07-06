@@ -48,10 +48,11 @@ def run_backtest(start_date=None, end_date=None, capital=None):
         os.remove(TRADE_DB)
 
     store = DataStore()
+    STRATEGY = "backtest"  # P58: 回测策略隔离, 不污染实盘 'quant'
     # 同步基准指数数据
     sync_benchmark(cfg("backtest.benchmark", "000300"))
     engine = ExecutionEngine()
-    engine.set_initial_capital("quant", capital)
+    engine.set_initial_capital(STRATEGY, capital)
 
     # 获取区间内所有交易日
     all_dates = [r[0] for r in store._connect().execute(
@@ -83,7 +84,7 @@ def run_backtest(start_date=None, end_date=None, capital=None):
         t0 = time.time()
         try:
             # P0-2: On every trading day, check stop-loss first
-            current_positions = engine.get_positions("quant")
+            current_positions = engine.get_positions(STRATEGY)
             prices_for_sl = {}
             if current_positions:
                 stop_loss_pct = cfg("risk.stop_loss_pct", 0.15)
@@ -107,14 +108,14 @@ def run_backtest(start_date=None, end_date=None, capital=None):
                         shares = int(p["shares"])
                         if shares > 0:
                             logger.warning(f"[SL-DAILY] {date_str}: {p['symbol']} drop={drop:.1%}, selling {shares} shares")
-                            engine.execute([Order(symbol=p["symbol"], side="sell", shares=shares, price=current_px, cost=0)], date_str, "quant")
+                            engine.execute([Order(symbol=p["symbol"], side="sell", shares=shares, price=current_px, cost=0)], date_str, STRATEGY)
                             sl_checks += 1
 
             # Only run full pipeline on rebalance dates
             if date_str not in rebalance_dates:
                 # Non-rebalance day: just record wealth
                 # 用当日收盘价 (市场价格) 算持仓市值, 不能用 cost basis
-                cash = engine.get_cash("quant")
+                cash = engine.get_cash(STRATEGY)
                 position_value = 0.0
                 if current_positions and prices_for_sl:
                     for p in current_positions:
@@ -145,8 +146,8 @@ def run_backtest(start_date=None, end_date=None, capital=None):
 
             # 计算当日总资产
             # get_capital() now returns total wealth (cash + positions_value)
-            total_wealth = engine.get_capital("quant")
-            positions_after = engine.get_positions("quant")
+            total_wealth = engine.get_capital(STRATEGY)
+            positions_after = engine.get_positions(STRATEGY)
             pos_value = sum(p["price"] * p["shares"] for p in positions_after)
 
             # 累计收益率 (全期, 基于初始本金)

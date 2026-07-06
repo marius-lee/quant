@@ -33,6 +33,8 @@ class RedisStateBroker(StateBroker):
         self._clients: list[queue.Queue] = []
         self._key = f'{prefix}:data'
         self._r = None
+        self._quote_ts = 0.0
+        self._quote_result = None
         try:
             import redis as _redis
             self._r = _redis.from_url(redis_url)
@@ -167,11 +169,53 @@ class RedisStateBroker(StateBroker):
     def get(self) -> dict:
         cached = self._read_state()
         if not cached:
-            return self._init_state()
-        # Merge: Redis has pipeline status, trades.db has financial truth.
-        init = self._init_state()
-        cached.update(init)
-        return cached
+            state = self._init_state()
+        else:
+            state = self._init_state()
+            cached.update(state)
+            state = cached
+
+        # ── 实时报价 overlay (盘中) ──
+        import time as _time
+        try:
+            from execution.quote import fetch_quotes
+            from execution.calendar import is_market_open
+            if is_market_open() and state.get("positions"):
+                now = _time.time()
+                # 5s throttle on quote API calls
+                if self._quote_result is None or now - self._quote_ts > 5:
+                    syms = [p["symbol"] for p in state["positions"]]
+                    try:
+                        self._quote_result = fetch_quotes(syms)
+                    except Exception:
+                        self._quote_result = {}
+                    self._quote_ts = now
+                quotes = self._quote_result or {}
+                if quotes:
+                    new_pos_value = 0.0
+                    for p in state["positions"]:
+                        sym = p["symbol"]
+                        q = quotes.get(sym, {})
+                        if q and q.get("price", 0) > 0:
+                            cur = q["price"]
+                            p["current"] = cur
+                            p["pnl_pct"] = round((cur / p["price"] - 1) * 100, 2) if p.get("price", 0) > 0 else 0
+                            p["value"] = round(p["shares"] * cur, 2)
+                        new_pos_value += p["value"]
+                    state["pos_value"] = round(new_pos_value, 2)
+                    cap = state.get("capital", 0)
+                    state["total_asset"] = round(cap + new_pos_value, 2)
+                    base = state.get("metrics", {}).get("initial_capital", 5000)
+                    new_total_pnl = round(cap + new_pos_value - base, 2)
+                    if state.get("pnl"):
+                        state["pnl"]["total"] = new_total_pnl
+                        state["pnl"]["unrealized"] = round(new_total_pnl - state["pnl"].get("realized", 0), 2)
+                    if state.get("metrics"):
+                        state["metrics"]["total_return_pct"] = round(new_total_pnl / base * 100, 2) if base > 0 else 0
+        except Exception:
+            pass
+
+        return state
 
     def update(self, data: dict):
         with self._lock:

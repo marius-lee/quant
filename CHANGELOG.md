@@ -1,3 +1,16 @@
+## [P65] — 2026-07-07
+
+### SUE 因子 (标准化未预期盈余)
+Step 2/3: SUE (PEAD) 因子集成。新增 total_shares 列支持。
+
+- stocks 表新增 total_shares 列
+- fundamental.py 存储 stock_value_em 返回的总股本
+- compute_sue: 季度 EPS 同比 / 8季标准差
+- 来源: Bernard & Thomas (1989); 中信金工 2022
+
+活跃因子数: 6 → 7
+
+---
 ## [P64] — 2026-07-07
 
 ### 新因子集成 (4/10)

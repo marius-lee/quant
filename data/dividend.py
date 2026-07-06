@@ -68,12 +68,6 @@ def sync_range(start_date: str = None, end_date: str = None, conn=None) -> int:
         df = pd.concat(rows_list, ignore_index=True)
     else:
         df = None
-    except Exception as e:
-        logger.warning(f"dividend failed: {e}")
-        if close_conn:
-            conn.close()
-        return 0
-
     if df is None or df.empty:
         if close_conn:
             conn.close()

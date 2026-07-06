@@ -2,7 +2,7 @@
 
 ## 项目概况
 A股量化因子评估管道。Python 3.14, SQLite (WAL), 2020-2026 数据。
-36 因子 (27 price + 9 fundamental), 1 active (zt_streak).
+36 因子 (27 price + 9 fundamental), 2 active (zt_streak + dt_streak).
 
 ## 本轮完成的工作
 

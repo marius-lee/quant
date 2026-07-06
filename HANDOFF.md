@@ -1,5 +1,18 @@
 # Handoff: quant 项目状态 — 2026-07-06 12:10 CST
 
+## 进入检查清单（每次会话必过）
+
+| # | 检查项 | 命令/方法 |
+|---|--------|----------|
+| 1 | **先看日志** | `tail -50 data/scheduler.log` + `tail -30 logs/app.log` |
+| 2 | 服务存活 | `lsof -i:8521` + `launchctl list | grep quant` |
+| 3 | 界面 KPI 逐项核 | 总资产、PnL、现金、持仓市值、交易次数、胜率——值是否正确？标签是否清晰？0% 是否有意义？ |
+| 4 | 数据一致性 | `cash_balance` 是否 = 可用资金？持仓数量是否 = 总交易(买-卖)？总资产 = 现金 + 持仓市值？ |
+| 5 | scheduler 状态 | `grep 'PHASE.*STATUS' data/scheduler.log | tail -5` — 今日是否正常执行？ |
+| 6 | 退出日志 | `grep EXIT logs/app.log` — 有没有异常退出？ |
+
+
+
 ## 本次会话（P56）: 进程保活 + 日志轮转 + 资金显示修复
 
 ### 问题

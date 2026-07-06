@@ -117,30 +117,41 @@ def run_loop():
         try:
             dt = datetime.now()
             date_str = dt.strftime("%Y-%m-%d")
+            now_t = dt.time()
+            skip_morning = now_t >= datetime.strptime("09:30", "%H:%M").time()
+            skip_phase3 = now_t >= datetime.strptime("15:45", "%H:%M").time()
 
             if not is_trading_day(dt.date()):
                 time.sleep(MINUTE * 5)  # 非交易日: 5分钟轮询
                 continue
 
             # ── Phase 1: 08:30 盘前信号 ──
-            wait_until(8, 30)
-            signals = phase1_generate_signals(date_str)
-            if signals and "target_positions" in signals:
-                pending_targets = signals["target_positions"]
-            else:
+            if skip_morning:
+                logger.info(f"[{date_str}] Phase 1+2 skipped (past 09:30)")
                 pending_targets = []
+            else:
+                wait_until(8, 30)
+                signals = phase1_generate_signals(date_str)
+                if signals and "target_positions" in signals:
+                    pending_targets = signals["target_positions"]
+                else:
+                    pending_targets = []
 
             # ── Phase 2: 09:30 开盘执行 ──
-            if pending_targets:
+            if not skip_morning and pending_targets:
                 wait_until(9, 30)
                 phase2_execute_signals(date_str, pending_targets)
                 pending_targets = []
-            else:
-                logger.info(f"[{date_str}] no pending targets, skipping Phase 2")
+            elif pending_targets:
+                logger.info(f"[{date_str}] Phase 2 skipped (past 09:30)")
+                pending_targets = []
 
             # ── Phase 3: 15:30 盘后归因 ──
-            wait_until(15, 30)
-            phase3_daily_sync_and_report(date_str)
+            if skip_phase3:
+                logger.info(f"[{date_str}] Phase 3 skipped (past 15:45), waiting for next day")
+            else:
+                wait_until(15, 30)
+                phase3_daily_sync_and_report(date_str)
 
             # 等待到第二天
             time.sleep(_HOUR)

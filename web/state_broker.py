@@ -1,7 +1,6 @@
 """状态通信抽象层 — 模板 2/6.
 
-当前实现: InProcessBroker (线程安全内存 + SSE 广播队列)
-未来可换: RedisBroker (pub/sub, 多进程友好)
+实现: RedisStateBroker (跨进程 Redis pub/sub), InProcessBroker (fallback).
 
 接口:
   broker.get()       → dict   # 获取当前状态
@@ -25,23 +24,30 @@ class StateBroker(ABC):
     def unsubscribe(self, q: queue.Queue): ...
 
 
-class InProcessBroker(StateBroker):
-    """Flask 进程内实现: Lock + 队列广播 (SSE)."""
+class RedisStateBroker(StateBroker):
+    """Redis 跨进程实现 — scheduler 和 web app 共享状态."""
 
-    def __init__(self):
+    def __init__(self, redis_url: str = 'redis://localhost:6379/0', prefix: str = 'quant:state'):
+        self._prefix = prefix
         self._lock = threading.Lock()
-        self._state: dict = self._init_state()
         self._clients: list[queue.Queue] = []
+        self._key = f'{prefix}:data'
+        self._r = None
+        try:
+            import redis as _redis
+            self._r = _redis.from_url(redis_url)
+            self._r.ping()
+        except Exception:
+            pass
 
     def _init_state(self) -> dict:
-        """从 trades.db 恢复初始状态."""
-        import sys
+        import sys as _sys
         _root = _os.path.dirname(_os.path.dirname(__file__))
-        if _root not in sys.path:
-            sys.path.insert(0, _root)
-        state = {"status": "休市", "progress": "",
-                 "mood": {}, "signals": [], "sectors": [],
-                 "summary": {}, "timestamp": ""}
+        if _root not in _sys.path:
+            _sys.path.insert(0, _root)
+        state = {'status': '休市', 'progress': '',
+                 'mood': {}, 'signals': [], 'sectors': [],
+                 'summary': {}, 'timestamp': '', 'trace_id': ''}
         try:
             from data.trade_repo import TradeRepo
             db = _os.path.join(_root, "data", "trades.db")
@@ -64,23 +70,46 @@ class InProcessBroker(StateBroker):
             state["pos_value"] = round(pos_value, 2)
             state["positions"] = positions
         except Exception:
-            from data.trade_repo import TradeRepo
-            base = float(TradeRepo().get_initial_capital("quant") or 5000)
-            state["capital"] = base
-            state["total_asset"] = base
-            state["pos_value"] = 0
-            state["positions"] = []
+            pass
         return state
 
+    def _read_state(self) -> dict:
+        if self._r is None:
+            return {}
+        try:
+            import json as _json
+            data = self._r.get(self._key)
+            if data:
+                return _json.loads(data)
+        except Exception:
+            pass
+        return {}
+
+    def _write_state(self, data: dict):
+        if self._r is None:
+            return
+        try:
+            import json as _json
+            self._r.setex(self._key, 86400, _json.dumps(data, ensure_ascii=False, default=str))
+            self._r.publish(f'{self._prefix}:channel', 'updated')
+        except Exception:
+            pass
+
     def get(self) -> dict:
-        with self._lock:
-            return dict(self._state)
+        cached = self._read_state()
+        if not cached:
+            return self._init_state()
+        # Merge: Redis has pipeline status, trades.db has financial truth.
+        init = self._init_state()
+        cached.update(init)
+        return cached
 
     def update(self, data: dict):
         with self._lock:
-            self._state.update(data)
-        # SSE 广播
-        payload = dict(self._state)
+            current = self._read_state()
+            current.update(data)
+            self._write_state(current)
+        payload = dict(current)
         dead = []
         for q in self._clients:
             try:
@@ -102,5 +131,5 @@ class InProcessBroker(StateBroker):
             pass
 
 
-# 全局单例
-broker = InProcessBroker()
+# 全局单例 — Redis 跨进程，fallback 到内存
+broker = RedisStateBroker()

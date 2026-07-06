@@ -60,6 +60,8 @@ factor:
   synth:
     zscore_clip: 3.0             # Grinold & Kahn (2000) Ch.8: z-score 3σ截断防极端因子值主导合成
   stats:
+    snapshot_ttl_sec: 86400            # 因子快照缓存有效期 (24h, stats_cache 使用)
+    ic_min_periods: 20                 # IC 计算最少截面数 (stats_cache 使用)
     lookback_amplification: 1.5  # 50%余量确保足够历史数据用于统计估计
     min_valid_days: 30           # Grinold & Kahn (1999): 30天最低统计可靠性
 alpha:

@@ -129,7 +129,7 @@ class TradeRepo:
 
 
 | `factor/base.py` | Factor 抽象基类 | `Factor.compute(data) → pd.Series` |
-| `factor/compute.py` | 因子计算函数（纯函数、向量化） | `compute_momentum(close, window) → Series` 等 |
+| `factor/compute.py` | 35因子计算（26 price + 9 fundamental，纯函数、向量化） | `compute_momentum(close, window) → Series` 等 |
 | `factor/evaluate.py` | 截面 Rank IC + 衰减分析 + 相关性矩阵 | `rank_ic(factor, fwd) → float` |
 | `factor/synth.py` | 因子合成（等权 / IC加权） | `equal_weight(factors) → Series` |
 
@@ -156,10 +156,10 @@ class Factor(ABC):
 
 ```yaml
 factor:
-  windows: [5, 10, 20, 60]
-  min_abs_ic: 0.02
-  min_ic_ir: 0.10
+  windows:  # 各因子独立窗口 (volatility:126d, amihud:250d, skewness:60d 等)
+  evaluation: {n_symbols: 800, lookback: 120, n_days: 120}
   decay_horizons: [1, 5, 20]
+  # 详见 config/config.yaml 完整因子配置
 ```
 
 ## Layer 3: Alpha 层 (alpha/)
@@ -254,8 +254,8 @@ class RiskLimits:
 risk:
   covariance_method: ledoit_wolf
   covariance_window: 60
-  max_single_position: 0.33
-  max_positions: 5
+  max_single_position: 0.05
+  max_positions: 20
   min_daily_amount: 500000
   exclude_star_st: true
 ```
@@ -554,3 +554,8 @@ execution:   # 执行层（保留核心参数）
 backtest:    # 初始资金 + 基准（保留）
 web:         # Web 端口（保留）
 ```
+
+
+---
+
+> **注意**: 本文档为 v3.0 架构设计快照。运行时配置值（如窗口参数、仓位上限等）以 `config/config.yaml` 为准，设计文档中的示例配置可能与当前实际值有差异。因子数量已从设计时的 11 个发展到 35 个。

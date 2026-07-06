@@ -198,13 +198,13 @@ w = γ * (C^{-1} E - (1^T C^{-1} E / 1^T C^{-1} 1) * C^{-1} 1)
 ## 10. 行动建议
 
 ### 立即可行
-1. 注册 `residual_momentum_126d`: 基于 benchmark 回归残差的动量 (Ch.3.7)
-2. 注册 `momentum_21d` / `momentum_63d`: 替代当前 10d 极短期版本 (Ch.3.1)
-3. `optimizer/portfolio.py`: 增加 dollar-neutral 约束选项 (Eq 3.93)
+1. ✅ 注册 `residual_momentum_126d` (P58, 2026-07-06) — factor/compute.py + factor_registry, 待 eval
+2. ✅ 注册 `momentum_63d` / `momentum_126d` / `momentum_252d` (P33) — **A股实证: IC≈0 (0.005/0.001/0.001), 经典价格动量在A股不成立,** 全部 deprecated
+3. ❌ `optimizer/portfolio.py`: 增加 dollar-neutral 约束选项 (Eq 3.93) — 未实现
 
 ### 需要讨论
-4. `factor.evaluation.lookback: 120 → 250/500`: 书中无直接值，但所有标准策略的 lookback 都在 20-250 天范围，120 处于中下 — 配合 P45 的 5-factor 结果再决定
-5. 3.20 Alpha Combos: 如果 sleeve 模式在 ≥3 因子时仍不理想，切换到 PCA+回归 组合方案
+4. ❌ `factor.evaluation.lookback: 120 → 250/500` — 未决策 (P45运行后仍剩1 active因子, 扩窗口待议)
+5. ❌ 3.20 Alpha Combos: PCA+回归 组合方案 — 未讨论
 
 ### 文档
-6. 每个 `compute_*` 函数增加 "Literature" 注释行，引用书中具体公式编号
+6. ❌ 每个 `compute_*` 函数增加 "Literature" 注释行 — 未执行 (仅 compute_momentum + compute_residual_momentum 有)

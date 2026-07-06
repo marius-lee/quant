@@ -63,6 +63,36 @@ def compute_momentum(data: pd.DataFrame, date: str, window: int) -> pd.Series:
     return _cs_zscore(cum).rename(f"momentum_{window}d")
 
 
+def compute_residual_momentum(data: pd.DataFrame, date: str, window: int = 126) -> pd.Series:
+    """残差动量: 股票收益扣除基准收益（β=1近似）— Ch.3.7.
+
+    算法: 股票window日对数收益 - 沪深300(000300)同期对数收益 → 截面z-score。
+    β=1 近似 (全量β回归需36月滚动窗口, 初始实现先简化)。
+    来源: Kakushadze & Serur (2018) Ch.3.7 Eqs 15-17; Blitz et al. (2011).
+    """
+    close = data["close"]
+    log_ret = _log_returns(close)
+
+    if date not in log_ret.index:
+        return pd.Series(np.nan, index=close.columns, name="residual_momentum_126d")
+
+    idx = log_ret.index.get_loc(date)
+    start = max(0, idx - window + 1)
+    cum = log_ret.iloc[start:idx + 1].sum()
+
+    # 基准收益: 沪深300 或 截面均值 fallback
+    if "000300" in cum.index:
+        bench_ret = cum["000300"]
+    else:
+        bench_ret = cum.mean()
+
+    residual = cum - bench_ret
+    result = _cs_zscore(residual).rename("residual_momentum_126d")
+    if "000300" in result.index:
+        result = result.drop("000300")
+    return result
+
+
 # ═══════════════════════════════════════════════════════════
 # 2. 反转因子 — Lehmann (1990)
 # ═══════════════════════════════════════════════════════════
@@ -1179,6 +1209,7 @@ _PRICE_FN_MAP = {
     "gap_5d":                (compute_overnight_gap,       5),
     "range_20d":             (compute_intraday_range,     20),
     "momentum_63d":          (compute_momentum,           63),
+    "residual_momentum_126d": (compute_residual_momentum,  126),  # Ch.3.7 Kakushadze & Serur 2018
     "momentum_126d":         (compute_momentum,          126),
     "momentum_252d":         (compute_momentum,          252),
     "volatility_126d":       (compute_volatility,        _VOLATILITY_WINDOW),

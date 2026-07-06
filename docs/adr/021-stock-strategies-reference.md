@@ -457,7 +457,7 @@
  ### 缺失因子 (优先级排序)
  | 优先级 | 因子 | 书中策略 | 实现难度 | 预期效果 |
  |--------|------|---------|---------|---------|
- | P0 | Residual Momentum | 3.7 | 中 (需 Fama-French) | 与 zt_streak 互补, 信号更纯 |
+ | P0 | ✅ Residual Momentum | 3.7 | 中 (β=1近似) | P58实现, 待eval |
  | P1 | Momentum 63d/126d/252d | 3.1 | 低 (仅改参数) | 替代 10d, 应符合 t≥2.0 |
  | P1 | Earnings Momentum (SUE) | 3.2 | 中 (需季度 EPS) | 基本面动量, 与价格动量互补 |
  | P2 | Mean-Reversion Weighted | 3.10 | 中 | 替代 reversal_5d, 行业中性化后反转 |

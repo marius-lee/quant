@@ -6,7 +6,7 @@
 
 ```
 基础层 → 数据层 → 因子层 → Alpha层 → 风控层 → 优化层 → 执行层 → 监控层 → Web
-config    SQLite   6类12+   IC加权   行业中性  得分排序   成本模型   绩效归因   Flask
+config    SQLite   35 (26价格+9基本面)   IC加权   行业中性  得分排序   成本模型   绩效归因   Flask
 utils             因子               Ledoit-Wolf 整手约束            风险报告   8521
 calendar                                         资本自适应
 ```

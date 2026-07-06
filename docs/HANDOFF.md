@@ -1,8 +1,8 @@
-# HANDOFF — 2026-07-06 02:30 (Audit + Cleanup Complete)
+# HANDOFF — 2026-07-06 14:30 (Deadlock Fix Verified, Docs Updated)
 
 ## 项目概况
 A股量化因子评估管道。Python 3.14, SQLite (WAL), 2020-2026 数据。
-35 因子 (26 price + 9 fundamental), 1 active (zt_streak).
+36 因子 (27 price + 9 fundamental), 1 active (zt_streak).
 
 ## 本轮完成的工作
 
@@ -27,19 +27,20 @@ pipeline.py (benchmark 可选注释), backtest.py (stop-loss 可选注释), exec
 删除 2 个一次性脚本 (`optimize_factors.py`, `register_window_fixes.py`)。
 历史文档保留不动。
 
-## 因子现状
+## 因子状态
+- **死锁已修复 (P45, commit 17a1377)**: eval_stepwise.sh 不再过滤 deprecated 因子, 35 因子全量评估
 - Active: zt_streak (IC=+0.0424, t=7.1)
-- Pass Layer 1: dt_streak, vol_price_corr_10d, roa, roe_reported, gap_5d
-- 其余 29 个 deprecated
+- Pass Layer 1+2 (IC + t-test): dt_streak, vol_price_corr_10d, roa, roe_reported, gap_5d
+- Layer 3 步进回测淘汰: 上述候选因子添加后 IR 未改善, 被 DROP
+- 其余 29 个 deprecated (包含多个 |IC|>0.02 的因子)
 
 ## Part D: 关键路径埋点补齐
 补 5 处: _cs_zscore 静默NaN告警, compute_amihud 全过滤告警, compute_all_factors 汇总, pipeline step4 因子健康度, backtest turnover.
 
 ## 下一步
-```bash
-bash scripts/eval_stepwise.sh
-```
-预期: 无 import/argument 错误, amihud_250d 非零 IC.
+- 34 个 deprecated 因子中有多个 |IC|>0.02 (dt_streak +0.037, vol_price_corr_10d -0.025, roa +0.023 等)
+- 需决定: 扩回测窗口 (当前仅 1 年) 或调整步进回测淘汰条件, 让更多因子进入 sleeve 组合
+- 详见 [docs/adr/018-factor-eval-deadlock.md](/Users/mariusto/project/quant/docs/adr/018-factor-eval-deadlock.md)
 
 ## 关键架构规则
 1. **config.yaml 是单一真相源** — 行为参数缺失必须 fail-fast, 不静默 fallback
@@ -51,5 +52,6 @@ bash scripts/eval_stepwise.sh
 - [factor/compute.py](/Users/mariusto/project/quant/factor/compute.py) — `_require_cfg`, `_PRICE_FN_MAP` (26 items)
 - [factor/stats_cache.py](/Users/mariusto/project/quant/factor/stats_cache.py) — eval pipeline
 - [config/config.yaml](/Users/mariusto/project/quant/config/config.yaml) — single source of truth
+- [docs/adr/018-factor-eval-deadlock.md](/Users/mariusto/project/quant/docs/adr/018-factor-eval-deadlock.md) — deadlock diagnosis + fix record
 - [docs/adr/023-bugfix-factor-cleanup.md](/Users/mariusto/project/quant/docs/adr/023-bugfix-factor-cleanup.md) — full change log
 - [data/market.db](/Users/mariusto/project/quant/data/market.db) — factor_registry (35 rows)

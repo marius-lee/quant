@@ -11,7 +11,7 @@ import os
 import threading
 import contextvars
 import json
-from logging.handlers import RotatingFileHandler
+from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 
 _log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
 _log_file = os.path.join(_log_dir, "quant.log")
@@ -36,6 +36,12 @@ def _init():
 
     os.makedirs(_log_dir, exist_ok=True)
 
+    # TUI-01: 日轮转日志 (INFO+, 30天保留)
+    _daily = TimedRotatingFileHandler(
+        os.path.join(_log_dir, "app.log"), when="midnight", interval=1,
+        backupCount=10, encoding="utf-8"
+    )
+
     root = logging.getLogger("quant")
     root.setLevel(logging.DEBUG)
 
@@ -48,6 +54,14 @@ def _init():
         defaults={"trace_id": ""}
     ))
     root.addHandler(console)
+
+    # 日轮转文件 (INFO+, 人类可读, 30天)
+    _daily.setLevel(logging.INFO)
+    _daily.setFormatter(logging.Formatter(
+        "[%(asctime)s] %(levelname)-5s %(name)s | %(trace_id)s%(message)s",
+        datefmt="%m-%d %H:%M:%S", defaults={"trace_id": ""}
+    ))
+    root.addHandler(_daily)
 
     # 文件: JSON 结构化 DEBUG (模板9 T1)
     file_handler = RotatingFileHandler(

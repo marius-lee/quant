@@ -7,6 +7,20 @@
 import json, os, sqlite3
 from datetime import date, datetime
 from flask import Flask, jsonify, render_template
+# ── 进程退出埋点 ──
+import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr
+def _log_exit(reason: str = ""):
+    try:
+        from utils.logger import get_logger
+        get_logger("web.app").warning(
+            f"EXIT | reason={reason or 'unknown'} | pid={os.getpid()} | "
+            f"thread={_thr.current_thread().name}")
+    except Exception:
+        print(f"[EXIT] {reason} pid={os.getpid()}", flush=True)
+_atexit.register(_log_exit, "atexit")
+_signal.signal(_signal.SIGTERM, lambda s, f: (_log_exit("SIGTERM"), _sys.exit(0)))
+_signal.signal(_signal.SIGINT,  lambda s, f: (_log_exit("SIGINT"), _sys.exit(0)))
+
 from utils.logger import get_logger
 
 logger = get_logger("web.app")

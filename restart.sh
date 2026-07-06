@@ -11,7 +11,7 @@ find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null && echo "  pycach
 sleep 2
 
 echo "=== 启动 Web 应用 ==="
-PYTHONPATH=. .venv/bin/python3 web/app.py &
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.quant.webapp.plist 2>/dev/null ||   launchctl kickstart gui/$(id -u)/com.quant.webapp 2>/dev/null || echo "  webapp already loaded"
 sleep 2
 
 echo "=== 加载调度器 ==="

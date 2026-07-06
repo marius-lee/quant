@@ -1,4 +1,50 @@
 # Handoff: quant 项目状态 — 2026-07-05 22:15 CST
+# Handoff: quant 项目状态 — 2026-07-06 10:50 CST
+
+## 当前运行状态
+- Web 应用：端口 8521，运行中
+- Scheduler：launchd 管理（com.quant.scheduler.plist），三时段模式
+- 今日 Phase 1+2 已执行（10:08），持仓 2 只（002072, 002767），总权益 ~¥440K
+- 因子缓存预热中（每次重启 ~2-3 分钟）
+
+## 最近修改（P55）
+- pipeline.py:128 改用 is_initialized() 防重复注资
+- strategy_config 表：initialized 标志位，cash_balance 为单一现金来源
+
+## 启动/重启命令
+```bash
+cd /Users/mariusto/project/quant && ./restart.sh
+```
+
+## 关键文件
+- Web: web/app.py (Flask, 8521)
+- 调度: scheduler.py (launchd)
+- 流水线: pipeline.py (generate_signals + execute_signals)
+- 资金: data/trade_repo.py (TradeRepo: cash_balance, initialized, positions)
+- 前端: web/static/app.js (SSE + 5s poll)
+- 数据: data/store.py (DataStore: daily pull, gap analysis)
+- 因子: factor/compute.py, factor/stats_cache.py
+
+## 数据库
+- data/market.db: 5208 只股票，日线到 2026-07-06
+- data/trades.db: sim_trades (quant/manual/backtest 三策略隔离)
+
+## 策略
+- quant: 实盘纸交易，¥5,000 本金，zt_streak 单因子
+- manual: 手动录单（接真实券商）
+- backtest: 因子回测
+
+## 下次进入时优先处理
+1. 等因子预热完成，打开 http://localhost:8520 确认仪表盘
+2. 观察 15:30 Phase 3（归因报告）是否正常执行
+3. 检查 scheduler.log 确认没有重复拉取数据的问题
+
+
+### P55: pipeline.py 防重复注资修复
+- `data/trade_repo.py` (e9cd3a2): 新增 `is_initialized()` 查 `strategy_config.initialized` 标志 + `set_initial_capital()` 写入 `initialized=1`
+- `pipeline.py` (7194393): `generate_signals()` 改用 `is_initialized()` 判断，亏完不自动重新注资
+- 逻辑：`cash_balance` 可降到 0，但 `initialized=1` 不会回退 → 不会再触发 `set_initial_capital()`
+
 
 ## 本次会话（2026-07-05）
 

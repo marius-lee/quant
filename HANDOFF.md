@@ -131,3 +131,9 @@ Git: origin/main @ 17a1377
 - 因子: 35 注册 (1 active: zt_streak)
 - 本金: ¥5000 strategy_config.initial_capital
 - 交易日流程: 08:30 信号 → 09:30 执行 → 盘中 5s 报价+止损 → 15:30 归因
+
+## 2026-07-06 ~09:05
+
+### P50: Scheduler 统一日志格式
+- 每阶段增加 `[SCHEDULER] YYYY-MM-DD | PHASE=N | STATUS=OK/FAIL | ...` 日志行
+- 事后排查: `grep 'SCHEDULER.*STATUS=FAIL'` 一键定位所有出问题的交易日

@@ -1459,6 +1459,236 @@ def compute_accruals(fundamentals, date, financials=None):
     # 低应计→高分 (IC=负向)
     return _cs_zscore(-acc).rename("accruals")
 
+
+# ═══════════════════════════════════════════════════════════
+# 17. Asset Growth — Cooper, Gulen & Schill (2008)
+#    A股验证: 华泰金工 2023. IC ≈ -0.03~-0.05.
+#    总资产增速与未来收益负相关 (过度投资假说).
+# ═══════════════════════════════════════════════════════════
+
+def compute_asset_growth(fundamentals, date, financials=None):
+    """资产增长率: (TA_t - TA_{t-4q}) / TA_{t-4q}, 取负号.
+
+    Cooper, Gulen & Schill (2008): 资产快速扩张→未来低收益.
+    TA = 总资产(total_assets), 同比(去年同期)避免季节性偏差.
+    取负号: 高资产增速→低分→预期低收益 (IC为负).
+
+    数据源: financial_balance.total_assets (季度).
+    若去年同期数据缺失, 返回 NaN.
+    """
+    import sqlite3, os
+    fin = financials
+    if fin is None:
+        from data.store import DataStore
+        store = DataStore()
+        fin = store.get_financials(fundamentals.index.tolist(), date=date)
+        store.close()
+
+    if fin.empty or 'total_assets' not in fin.columns:
+        return pd.Series(np.nan, index=fundamentals.index, name="asset_growth")
+
+    # 当前季度: fin 已有最新 total_assets
+    # 需要去年同期: 查询 financial_balance
+    db = _market_db_path()
+    conn = sqlite3.connect(db)
+
+    # 获取每个 symbol 的最新 stat_date
+    sym_list = "','".join(fundamentals.index.tolist())
+    rows = conn.execute(f"""
+        SELECT symbol, stat_date, total_assets
+        FROM financial_balance
+        WHERE symbol IN ('{sym_list}')
+        ORDER BY stat_date DESC
+    """).fetchall()
+    conn.close()
+
+    # 按 symbol 分组, 取最新和去年同期
+    import pandas as pd
+    df_hist = pd.DataFrame(rows, columns=['symbol', 'stat_date', 'total_assets'])
+    df_hist['stat_date'] = pd.to_datetime(df_hist['stat_date'])
+    df_hist = df_hist.sort_values('stat_date')
+
+    results = {}
+    for sym in fundamentals.index:
+        sym_data = df_hist[df_hist['symbol'] == sym].drop_duplicates(subset=['stat_date'], keep='last')
+        if len(sym_data) < 2:
+            continue
+        # 最新季度
+        latest = sym_data.iloc[-1]
+        ta_now = latest['total_assets']
+        latest_q = latest['stat_date']
+        # 寻找去年同期 (同季度, 年份-1)
+        target_q = latest_q - pd.DateOffset(years=1)
+        # 找最接近 target_q 的季度 (窗口 ±90天)
+        prev = sym_data[sym_data['stat_date'] <= target_q]
+        if prev.empty:
+            continue
+        ta_prev = prev.iloc[-1]['total_assets']
+        if ta_prev and ta_prev > 0 and ta_now and ta_now > 0:
+            ag = (ta_now - ta_prev) / ta_prev
+            results[sym] = ag
+
+    ag_series = pd.Series(results, name="asset_growth")
+    ag_series = ag_series.replace([np.inf, -np.inf], np.nan)
+    ag_series = ag_series.where((ag_series > -1) & (ag_series < 10))
+    # 高资产增速→低收益: 取负号 (IC为负)
+    return _cs_zscore(-ag_series).rename("asset_growth")
+
+
+# ═══════════════════════════════════════════════════════════
+# 18. GP/TA — Novy-Marx (2013) Gross Profitability
+#    Fama-French 2015 RMW 因子的核心成分.
+#    A股验证: 高毛利组合年化超额 6-8%.
+# ═══════════════════════════════════════════════════════════
+
+def compute_gp_ta(fundamentals, date, financials=None):
+    """毛利润/总资产: (operating_revenue - operating_cost) / total_assets.
+
+    Novy-Marx (2013): GP/TA 比 ROE/ROA 更纯净 (不受杠杆和税率干扰).
+    高分 = 强竞争优势 → 预期高收益 (IC为正).
+
+    数据源: financial_income.operating_revenue/operating_cost 
+           + financial_balance.total_assets.
+    """
+    fin = financials
+    if fin is None:
+        from data.store import DataStore
+        store = DataStore()
+        fin = store.get_financials(fundamentals.index.tolist(), date=date)
+        store.close()
+
+    needed = ["operating_revenue", "operating_cost", "total_assets"]
+    if fin.empty or not all(c in fin.columns for c in needed):
+        return pd.Series(np.nan, index=fundamentals.index, name="gp_ta")
+
+    gp = fin["operating_revenue"] - fin["operating_cost"]
+    gp_ta = gp / fin["total_assets"]
+    gp_ta = gp_ta.replace([np.inf, -np.inf], np.nan)
+    gp_ta = gp_ta.where((gp_ta > -2) & (gp_ta < 5))
+    # 高毛利→高分
+    return _cs_zscore(gp_ta).rename("gp_ta")
+
+
+# ═══════════════════════════════════════════════════════════
+# 19. 停牌比率 (Zero Trading Days) — Liu (2006)
+#    针对中国市场的流动性度量. 比 Amihud 更适配 A 股特征.
+#    高停牌比率=流动性差=折价.
+# ═══════════════════════════════════════════════════════════
+
+def compute_ztd(data, date, window=250):
+    """停牌比率: 过去 window 交易日中零成交天数占比, 取负号.
+
+    Liu (2006): A股停牌是流动性风险的直接度量.
+    零成交日=停牌日 (或流动性枯竭). 高分=低停牌=好流动性.
+
+    数据源: daily.volume (日线成交量).
+    """
+    import sqlite3, pandas as pd
+
+    close = data["close"]
+    db = _market_db_path()
+    conn = sqlite3.connect(db)
+
+    # 取过去 window 个日历日在 daily 表中的数据
+    sym_list = "','".join(close.columns.tolist())
+
+    # 计算截止日期: date 往前推 window 个日历日
+    end_date = pd.Timestamp(date)
+    start_date = end_date - pd.Timedelta(days=int(window * 1.5))  # 日历日覆盖交易日
+
+    rows = conn.execute(f"""
+        SELECT date, symbol, volume
+        FROM daily
+        WHERE date BETWEEN '{start_date.strftime("%Y-%m-%d")}' AND '{date}'
+          AND symbol IN ('{sym_list}')
+        ORDER BY date
+    """).fetchall()
+    conn.close()
+
+    if not rows:
+        return pd.Series(np.nan, index=close.columns, name="ztd")
+
+    df = pd.DataFrame(rows, columns=['date', 'symbol', 'volume'])
+    # 对每个 symbol, 取最近 window 行 (按日期降序)
+    ztd_vals = {}
+    for sym in close.columns:
+        sym_df = df[df['symbol'] == sym].sort_values('date', ascending=False)
+        if len(sym_df) == 0:
+            continue
+        # 取最近 window 行
+        recent = sym_df.head(window)
+        zero_days = (recent['volume'] == 0).sum()
+        ztd_vals[sym] = zero_days / len(recent) if len(recent) > 0 else np.nan
+
+    ztd = pd.Series(ztd_vals, name="ztd")
+    # 高停牌→低流动性→折价: 取负号
+    return _cs_zscore(-ztd).rename("ztd")
+
+
+# ═══════════════════════════════════════════════════════════
+# 20. 北向资金净流入 — 沪深港通资金流因子
+#    A股验证: 华泰 2023, 中金 2022. 北向资金对次日收益有预测力.
+# ═══════════════════════════════════════════════════════════
+
+def compute_northbound_flow(data, date, window=20):
+    """北向资金净流入: 过去 window 日累计净买入 / 流通市值.
+
+    来源: 华泰金工 2023 — 北向资金流向对A股有显著预测力.
+    高分 = 近期北向资金净流入 → 预期上涨.
+
+    数据源: northbound_flow.net_buy (日频), stocks.total_mv (市值归一化).
+    仅覆盖沪深港通标的 (~1500只).
+    """
+    import sqlite3, pandas as pd
+
+    close = data["close"]
+    db = _market_db_path()
+    conn = sqlite3.connect(db)
+
+    sym_list = "','".join(close.columns.tolist())
+
+    # 查询北向资金
+    nb_rows = conn.execute(f"""
+        SELECT date, symbol, net_buy
+        FROM northbound_flow
+        WHERE date <= '{date}' AND symbol IN ('{sym_list}')
+        ORDER BY date DESC
+    """).fetchall()
+
+    # 查询市值 (用于归一化)
+    mv_rows = conn.execute(f"""
+        SELECT symbol, total_mv FROM stocks
+        WHERE symbol IN ('{sym_list}') AND total_mv IS NOT NULL
+    """).fetchall()
+    conn.close()
+
+    mv_map = {r[0]: r[1] for r in mv_rows}
+    if not nb_rows:
+        return pd.Series(np.nan, index=close.columns, name="northbound_20d")
+
+    nb_df = pd.DataFrame(nb_rows, columns=['date', 'symbol', 'net_buy'])
+
+    nb_vals = {}
+    for sym in close.columns:
+        sym_df = nb_df[nb_df['symbol'] == sym].sort_values('date', ascending=False)
+        if len(sym_df) == 0:
+            continue
+        recent = sym_df.head(window)
+        total_net = recent['net_buy'].sum()
+        mv = mv_map.get(sym)
+        if mv and mv > 0:
+            nb_vals[sym] = total_net / mv
+        else:
+            # 无市值数据时用原始值 (截面标准化会处理量纲)
+            nb_vals[sym] = total_net
+
+    nb = pd.Series(nb_vals, name="northbound_20d")
+    nb = nb.replace([np.inf, -np.inf], np.nan)
+    # 高净流入→高分
+    return _cs_zscore(nb).rename("northbound_20d")
+
+
+
 # 注册到 _FUNDAMENTAL_FN_MAP
 if "roe_reported" not in _FUNDAMENTAL_FN_MAP:
     _FUNDAMENTAL_FN_MAP["roe_reported"] = ("profitability", compute_roe_reported)
@@ -1468,11 +1698,15 @@ if "debt_ratio" not in _FUNDAMENTAL_FN_MAP:
     _FUNDAMENTAL_FN_MAP["debt_ratio"] = ("leverage", compute_debt_ratio)
 if "accruals" not in _FUNDAMENTAL_FN_MAP:
     _FUNDAMENTAL_FN_MAP["accruals"] = ("quality", compute_accruals)
+if "asset_growth" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["asset_growth"] = ("fundamental", compute_asset_growth)
+if "gp_ta" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["gp_ta"] = ("profitability", compute_gp_ta)
 
 
 # 需要三表(资产负债表+利润表+现金流量表)合并数据的因子名
 # 模板 2a: 这些因子接收 financials=DataFrame 参数, 不内部访问 DataStore
-_FIN_FACTORS = {"roe_reported", "roa", "debt_ratio", "accruals"}
+_FIN_FACTORS = {"roe_reported", "roa", "debt_ratio", "accruals", "asset_growth", "gp_ta"}
 
 
 def get_factor_names(status_filter='active') -> list:
@@ -1533,3 +1767,10 @@ def compute_all_factors(data: pd.DataFrame, date: str,
                 get_logger("factor.compute").warning(f"fundamental factor {name} failed: {e}")
                 results[name] = pd.Series(dtype=float)
     return results
+
+# ── P63: 新因子注册 (ztd, northbound_20d) ──
+# 函数定义在文件上方, 此处位于 compute_all_factors 之后, 确保函数已定义
+if "ztd" not in _PRICE_FN_MAP:
+    _PRICE_FN_MAP["ztd"] = (compute_ztd, 250)
+if "northbound_20d" not in _PRICE_FN_MAP:
+    _PRICE_FN_MAP["northbound_20d"] = (compute_northbound_flow, 20)

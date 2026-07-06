@@ -244,6 +244,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         return results
 
     # ── Step 4: Risk ──
+    cov = None  # 协方差矩阵, Step 4 内计算, 供 Step 5 的 construct() 使用
     try:
         close_df = data["close"]
         risk_date = actual_date if actual_date in close_df.index else close_df.index[-1].strftime("%Y-%m-%d")
@@ -280,6 +281,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         portfolio = constructor.construct(
             filtered["alpha"], filtered["close"],
             total_capital,
+            covariance=cov,
         )
         # Build target positions list for the scheduler to consume
         target_positions = []

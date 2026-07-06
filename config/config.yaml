@@ -101,7 +101,6 @@ optimizer:
   method: equal_weight
   rebalance_freq: weekly
   min_holding_days: 5
-  equal_weight_cap: 20000
 execution:
   commission: 0.0003
   min_commission: 5

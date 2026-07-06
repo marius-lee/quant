@@ -1,4 +1,12 @@
-"""组合构建器 — 资本自适应分配 (等权 / 得分倾斜 / 均值-方差)。"""
+"""组合构建器 — 资本自适应分配 (等权 / 得分倾斜 / 均值-方差)。
+
+risk_aversion (Markowitz λ):
+  不写入 config.yaml，不使用实例默认值。
+  进入均值-方差分支时由 calibrate_risk_aversion() 实时网格搜索确定最优 λ。
+  校准函数是模块级纯函数，不依赖 PortfolioConstructor 实例。
+  来源: Markowitz (1952) 均值-方差框架, λ 决定收益/风险权衡。
+  典型范围 1-10, 越低越激进 (追求收益), 越高越保守 (规避风险)。
+"""
 from utils.logger import get_logger
 logger = get_logger("optimizer.portfolio")
 
@@ -18,14 +26,10 @@ class TargetPortfolio:
 
     @property
     def positions(self) -> int:
-        # REVIEWED: 2026-07-05 — .sum() on pd.Series returns numpy.int64,
-        # which is not JSON-serializable by Python 3.14 simplejson.
-        # Cast to native int.
         return int((self.lots > 0).sum())
 
     @property
     def invested(self) -> float:
-        """已投入资金 = 持仓总市值（total_value 已是 手数×价格×100 股）。"""
         return self.total_value
 
 
@@ -33,30 +37,121 @@ from config.loader import get as _cfg
 LOT_SIZE = _cfg("backtest.lot_size")  # A股每手 100 股, ① 交易所规则
 
 
+# ── risk_aversion 校准网格 ──
+# 来源: Markowitz (1952) 框架下 λ 典型范围 1-10。
+# 0.5 为极端激进, 10.0 为极端保守, 网格覆盖全范围。
+_CALIBRATION_GRID = [0.5, 1.0, 2.0, 5.0, 10.0]
+
+
+def calibrate_risk_aversion(
+    alpha: pd.Series,
+    prices: pd.Series,
+    capital: float,
+    covariance: pd.DataFrame,
+    max_positions: int = 20,
+    max_single: float = 0.05,
+) -> float:
+    """网格搜索最优 Markowitz 风险厌恶系数 λ。
+
+    方法:
+      对 _CALIBRATION_GRID 中每个候选 λ:
+        1. 取 alpha 前 max_positions 只股票
+        2. 用协方差矩阵做均值-方差优化: w = inv(Σ) @ α / λ → normalize
+        3. 计算组合预期收益 μ_p = w'α, 标准差 σ_p = sqrt(w'Σw)
+        4. 计算 Sharpe = μ_p / σ_p (近似, 未减无风险利率)
+      选 Sharpe 最大的 λ。
+
+    返回:
+      最优 λ (float)。若数据不足无法校准, 返回 2.0。
+    """
+    n_stocks = min(max_positions, len(alpha))
+    top = alpha.iloc[:n_stocks]
+    common = [s for s in top.index if s in covariance.index]
+    if len(common) < 3:
+        logger.warning(
+            "[calibrate] insufficient common stocks in covariance (%d < 3), "
+            "cannot calibrate — returning conservative λ=2.0", len(common)
+        )
+        return 2.0
+
+    alpha_vec = top.loc[common].values
+    Sigma = covariance.loc[common, common].values
+
+    try:
+        inv_Sigma = np.linalg.inv(Sigma)
+    except np.linalg.LinAlgError:
+        logger.warning("[calibrate] singular covariance matrix — returning conservative λ=2.0")
+        return 2.0
+
+    best_lambda = 2.0
+    best_sharpe = -np.inf
+
+    for lam in _CALIBRATION_GRID:
+        w_raw = inv_Sigma @ alpha_vec / lam
+        w_raw = np.maximum(w_raw, 0)
+        if w_raw.sum() <= 0:
+            continue
+        w = w_raw / w_raw.sum()
+        w = np.minimum(w, max_single)
+        w = w / w.sum()
+
+        mu_p = np.dot(w, alpha_vec)
+        sigma_p = np.sqrt(np.dot(w.T, np.dot(Sigma, w)))
+        sharpe = mu_p / sigma_p if sigma_p > 0 else 0.0
+
+        if sharpe > best_sharpe:
+            best_sharpe = sharpe
+            best_lambda = lam
+
+    logger.info(
+        "[calibrate] grid search complete: best λ=%.1f (Sharpe=%.4f) "
+        "from grid %s", best_lambda, best_sharpe, _CALIBRATION_GRID
+    )
+    return best_lambda
+
+
 class PortfolioConstructor:
     """资本自适应组合构建器。
 
-    三档策略:
-      < ¥20,000:  等权贪心 — Top N 等权, 每轮给得分最高的未满仓股票加 1 手
-      ¥20k-100k:  得分倾斜 — 按得分比例分配资金 → 整手舍入 → 修正余数
-      > ¥100,000: 均值-方差 — 连续权重 → 整数规划 → 逐手分配
+    资本自适应分级 (阈值由资金量与股价实时决定, 无硬编码):
+
+      贪心等权:   capital < 均价×lot_size×2
+        → 资金太小 (连2手都买不起), 强制逐手买入得分最高的股票
+
+      得分倾斜:   均价×lot_size×2 ≤ capital < 均价×lot_size×max_positions
+        → 按得分比例分配 → 整手舍入
+
+      均值-方差:  capital ≥ 均价×lot_size×max_positions
+        → Markowitz 均值-方差优化 + 整手离散化
+        → 每次进入此分支时实时调用 calibrate_risk_aversion() 确定 λ
+        → 来源: Markowitz (1952); Grinold & Kahn (2000) Chapter 7
     """
 
     def __init__(self, config: Optional[dict] = None):
         if config is None:
             from config.loader import get as cfg
             config = {
-                "equal_weight_cap": cfg("optimizer.equal_weight_cap", 20000),
-                "weighted_cap": cfg("optimizer.weighted_cap", 100000),
-                "max_positions": cfg("risk.max_positions", 20),
-                "max_single_position": cfg("risk.max_single_position", 0.10),
-                "risk_aversion": cfg("optimizer.risk_aversion", 2.0),
+                "max_positions": cfg("risk.max_positions"),
+                "max_single_position": cfg("risk.max_single_position"),
             }
-        self.equal_weight_cap = config.get("equal_weight_cap", 20000)
-        self.weighted_cap = config.get("weighted_cap", 100000)
-        self.max_positions = config.get("max_positions", 20)
-        self.max_single = config.get("max_single_position", 0.10)
-        self.risk_aversion = config.get("risk_aversion", 2.0)
+        self.max_positions = config.get("max_positions")
+        self.max_single = config.get("max_single_position")
+
+    def _tier(self, capital: float, avg_price: float) -> str:
+        """根据资金量与当前均价自动判定组合优化层级。
+
+        lot_cost = avg_price × LOT_SIZE  — 买1手需要的资金
+        capital < lot_cost × 2  → greedy
+        capital < lot_cost × max_positions → weighted
+        否则 → mean_var
+        """
+        lot_cost = avg_price * LOT_SIZE
+        if capital < lot_cost * 2:
+            return "greedy"
+        elif capital < lot_cost * self.max_positions:
+            return "weighted"
+        else:
+            return "mean_var"
 
     def construct(
         self,
@@ -65,27 +160,49 @@ class PortfolioConstructor:
         capital: float,
         covariance: Optional[pd.DataFrame] = None,
     ) -> TargetPortfolio:
-        """资本自适应组合构建。"""
+        """资本自适应组合构建。
+
+        根据 capital 与当前均价自动选择策略层级。
+        进入均值-方差分支时实时校准 risk_aversion。
+        """
         common = alpha.dropna().index.intersection(prices.dropna().index)
         if len(common) == 0:
             logger.warning(f"[portfolio] empty common universe, returning zero portfolio")
             return TargetPortfolio(pd.Series(dtype=int), capital, "equal_weight", 0.0)
         a = alpha.loc[common].sort_values(ascending=False)
-        logger.info(f"[portfolio] capital=¥{capital:,.0f} → {"greedy" if capital < self.equal_weight_cap else "weighted" if capital < self.weighted_cap else "mean_var"} tier")
         p = prices.loc[common]
-        if capital < self.equal_weight_cap:
+
+        n_top = min(self.max_positions, len(p))
+        avg_price = float(p.iloc[:n_top].mean())
+        tier = self._tier(capital, avg_price)
+        logger.info(
+            f"[portfolio] capital=¥{capital:,.0f} avg_price=¥{avg_price:.2f} "
+            f"→ {tier} tier "
+            f"(threshold_greedy=¥{avg_price * LOT_SIZE * 2:,.0f}, "
+            f"threshold_mv=¥{avg_price * LOT_SIZE * self.max_positions:,.0f})"
+        )
+
+        if tier == "greedy":
             return self._equal_weight_greedy(a, p, capital)
-        elif capital < self.weighted_cap:
+        elif tier == "weighted":
             return self._score_weighted_rounding(a, p, capital)
         else:
-            return self._mean_variance_lot(a, p, capital, covariance)
+            # 均值-方差分支: 实时校准 risk_aversion
+            if covariance is None:
+                raise ValueError(
+                    "Mean-variance tier requires covariance matrix. "
+                    "Pass covariance= to construct()."
+                )
+            risk_aversion = calibrate_risk_aversion(
+                a, p, capital, covariance,
+                self.max_positions, self.max_single,
+            )
+            return self._mean_variance_lot(a, p, capital, covariance, risk_aversion)
 
     def _equal_weight_greedy(
         self, alpha: pd.Series, prices: pd.Series, capital: float,
     ) -> TargetPortfolio:
-        """贪心等权: 每轮给得分最高的未满仓股票加 1 手。
-        来源: ④ 用户确认 — 小资金整手约束极度刚性, 严格等权是唯一稳定解
-        """
+        """贪心等权: 每轮给得分最高的未满仓股票加 1 手。"""
         n_stocks = min(self.max_positions, len(alpha))
         if n_stocks == 0:
             return TargetPortfolio(pd.Series(dtype=int), capital, "equal_weight", 0.0)
@@ -105,9 +222,7 @@ class PortfolioConstructor:
     def _score_weighted_rounding(
         self, alpha: pd.Series, prices: pd.Series, capital: float,
     ) -> TargetPortfolio:
-        """得分倾斜 + 整数舍入。
-        来源: ④ 用户确认 — 每只可买 10-20 手, 按得分倾斜权重后用整数规划修正
-        """
+        """得分倾斜 + 整数舍入。"""
         n_stocks = min(self.max_positions, len(alpha))
         top = alpha.iloc[:n_stocks]
         p = prices.loc[top.index]
@@ -135,10 +250,12 @@ class PortfolioConstructor:
         alpha: pd.Series,
         prices: pd.Series,
         capital: float,
-        covariance: Optional[pd.DataFrame] = None,
+        covariance: Optional[pd.DataFrame],
+        risk_aversion: float,
     ) -> TargetPortfolio:
         """均值-方差优化 + 整手离散化。
-        来源: ② Markowitz (1952); ② Grinold & Kahn (2000) Chapter 7
+        来源: Markowitz (1952); Grinold & Kahn (2000) Chapter 7
+        参数 risk_aversion 由 construct() 实时调用 calibrate_risk_aversion() 确定。
         """
         n_stocks = min(self.max_positions, len(alpha))
         top = alpha.iloc[:n_stocks]
@@ -150,7 +267,7 @@ class PortfolioConstructor:
                 Sigma = covariance.loc[common_cov, common_cov].values
                 try:
                     inv_Sigma = np.linalg.inv(Sigma)
-                    w_raw = inv_Sigma @ alpha_vec / self.risk_aversion
+                    w_raw = inv_Sigma @ alpha_vec / risk_aversion
                     w_raw = np.maximum(w_raw, 0)
                     if w_raw.sum() > 0:
                         w_cont = w_raw / w_raw.sum()

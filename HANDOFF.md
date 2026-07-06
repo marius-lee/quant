@@ -137,3 +137,14 @@ Git: origin/main @ 17a1377
 ### P50: Scheduler 统一日志格式
 - 每阶段增加 `[SCHEDULER] YYYY-MM-DD | PHASE=N | STATUS=OK/FAIL | ...` 日志行
 - 事后排查: `grep 'SCHEDULER.*STATUS=FAIL'` 一键定位所有出问题的交易日
+
+## 2026-07-06 ~09:15
+
+### P51: restart.sh — 代码更新后快速重启
+- `restart.sh`: 一键停旧 → 启 web → 重载 launchd scheduler
+- 解决 launchd `KeepAlive` 不检测代码变更的问题
+
+### P52: daily_sync bug 修复
+- `data/store.py`: `cfg` import 在 `if start is None` 内但 `batch_size=cfg(...)` 在外，Python 3.14 报 `cannot access local variable cfg where it is not associated`。将 import 移到 if 之前。
+- `daily_sync.py`: `step5_fundamentals()` 调用 `sync_all(max_fetch=500)` 缺少必传参数 `conn`。补建连接传入。
+

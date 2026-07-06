@@ -87,8 +87,8 @@ def sync_single_stock(symbol: str, market: str = 'sh', conn=None, max_retries: i
                           row.get('mid_net_inflow'), row.get('mid_net_ratio'),
                           row.get('small_net_inflow'), row.get('small_net_ratio')))
                     n += 1
-                except Exception:
-                    pass
+                except Exception as e_row:
+                    logger.debug(f"fund_flow row skip {symbol} {row.get("date", "?")}: {e_row}")
 
             conn.commit()
             if close_conn:

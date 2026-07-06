@@ -83,8 +83,8 @@ def sync_single_stock(symbol: str, conn=None) -> int:
                 """, (row.get('date'), symbol, row.get('net_buy'), row.get('buy_amt'),
                       row.get('sell_amt'), row.get('hold_shares'), row.get('hold_ratio')))
                 n += 1
-            except Exception:
-                pass
+            except Exception as e_row:
+                logger.debug(f"northbound row skip {symbol}: {e_row}")
         
         conn.commit()
         if n > 0:

@@ -83,8 +83,8 @@ def sync_forecasts(conn=None) -> int:
                       row.get('underweight_count'),
                       row.get('eps_2026'), row.get('eps_2027'), row.get('eps_2028')))
                 n += 1
-            except Exception:
-                pass
+            except Exception as e_row:
+                logger.debug(f"analyst row skip {sym} {today}: {e_row}")
         conn.commit()
 
         print(f"  {today}: {n} stocks")

@@ -31,7 +31,8 @@ def _init_cache():
     try:
         from config.loader import load as _load_config
         cfg = _load_config()
-    except Exception:
+    except Exception as e:
+        logger.warning(f"config load failed, using empty config: {e}")
         cfg = {}
     backend = get_backend(cfg)
     _cache = DataCache("jq_valuation", ttl_hours=4, backend=backend)

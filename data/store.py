@@ -351,7 +351,7 @@ class DataStore:
             import tushare as ts
             ts.set_token(self.token)
             pro = ts.pro_api()
-        except Exception:
+        except Exception as e:
             logger.warning(f"tushare basic info fetch failed: {e}")
             return None
 

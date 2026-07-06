@@ -103,8 +103,8 @@ def sync_date(date_str: str, conn=None) -> int:
                       row.get('open_times'), row.get('zt_stat'), row.get('limit_up_times'),
                       row.get('industry')))
                 n += 1
-            except Exception:
-                pass
+            except Exception as e_row:
+                logger.debug(f"limit_up row skip {row.get("symbol", "?")} {date_str}: {e_row}")
         
         conn.commit()
         logger.info(f"limit_up: {date_str} — {n} stocks")

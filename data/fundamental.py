@@ -97,7 +97,8 @@ def _fetch_value_em(conn: sqlite3.Connection, symbols: list, sleep_ms: int = 200
                 )
                 updated += 1
                 print(f"\r{updated}/{total}", end="", flush=True)
-        except Exception:
+        except Exception as e_row:
+            logger.debug(f"value_em row skip {sym}: {e_row}")
             skipped += 1
             continue
 

@@ -111,8 +111,9 @@ def api_positions():
         from data.trade_repo import TradeRepo
         repo = TradeRepo(TRADE_DB)
         raw = repo.get_positions(strategy)
-        # ── stock name lookup ──
+        # ── stock name + latest close lookup ──
         name_map = {}
+        close_map = {}
         try:
             import sqlite3 as _sql
             market_db = os.path.join(os.path.dirname(__file__), "..", "data", "market.db")
@@ -125,17 +126,26 @@ def api_positions():
                         f"SELECT symbol, name FROM stocks WHERE symbol IN ({ph})", syms
                     ).fetchall()
                     name_map = {r[0]: r[1] for r in rows}
+                    # latest close price for each symbol
+                    for sym in syms:
+                        cr = mc.execute(
+                            "SELECT close FROM daily WHERE symbol=? ORDER BY date DESC LIMIT 1", (sym,)
+                        ).fetchone()
+                        if cr and cr[0]:
+                            close_map[sym] = cr[0]
                 mc.close()
         except Exception:
             pass
         for p in raw:
             px = p.get("price", 0)
+            close_px = close_map.get(p["symbol"], px)
             positions.append({
                 "symbol": p["symbol"], "price": px, "shares": p["shares"],
                 "board_count": p.get("board_count", 0),
                 "buy_time": p.get("buy_time", ""),
-                "current": px, "pnl_pct": 0,
-                "value": round(p["shares"] * px, 2),
+                "current": close_px,
+                "pnl_pct": round((close_px / px - 1) * 100, 2) if px > 0 else 0,
+                "value": round(p["shares"] * close_px, 2),
                 "name": name_map.get(p["symbol"], ""), "change_pct": 0,
             })
     except Exception:

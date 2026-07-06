@@ -169,10 +169,12 @@ def run_backtest(start_date=None, end_date=None, capital=None):
                 "elapsed": round(time.time() - t0, 1),
             })
 
+            turnover = exec_info.get("turnover", 0)
             logger.info(
                 f"[{rebalance_dates.index(date_str)+1}/{len(rebalance_dates)}] {date_str}: "
                 f"wealth=¥{total_wealth:,.2f}, return={cumulative_return*100:+.2f}%, "
-                f"{optimizer_info.get('positions',0)} pos, {result['elapsed_sec']}s"
+                f"{optimizer_info.get('positions',0)} pos, turnover=¥{turnover:,.0f}, "
+                f"{result['elapsed_sec']}s"
             )
 
         except Exception as e:

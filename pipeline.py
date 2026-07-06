@@ -201,6 +201,9 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
         factor_values = compute_all_factors(data, actual_date,
                                             fundamentals=fundamentals,
                                             benchmark_ret=benchmark_ret)
+        n_valid = sum(1 for v in factor_values.values() if isinstance(v, pd.Series) and v.notna().sum() > 0)
+        logger.info(f"[4/7] factors: {n_valid}/{len(factor_values)} have non-zero values")
+        _post_state({"status": "factors_computed", "progress": "4/7", "factors_total": len(factor_values), "factors_valid": n_valid, "trace_id": tid})
         # P43: combine_mode determines how factors are merged
         # sleeve: each factor independently picks top N stocks (preserves independent signals)
         # composite: weighted/equal/intersection compression into single score

@@ -196,3 +196,14 @@ Complete system architecture overhaul from Chen Xiaoqun board-trading system to 
 - **residual_momentum_126d**: Kakushadze & Serur (2018) Ch.3.7 残差动量落地, 36th factor
 - **backtest.py 策略隔离修复**: 6处硬编码 `"quant"` 改为 `STRATEGY="backtest"` 变量
 - **sqlite3 busy_timeout 全线修复**: daily_sync/factor_compute/stats_cache/eval_stepwise 所有 market.db 写连接加 timeout=30, 消除回测污染实盘数据的风险 (commit e3f1aca 的修复仅改了1/5处)
+
+
+## [3.5.2] — 2026-07-06
+
+### P59: engine.get_capital pos_value bug — eval stepwise 步进回测 Wealth=¥0 修复
+
+- **根因**: `ExecutionEngine.get_capital()` 中 `p.get('value', 0)` 永远返回 0, 因为 `TradeRepo.get_positions()` 返回的 dict 键是 `symbol,price,shares,board_count,buy_time`, 没有 `value`
+- **影响**: `get_capital()` 只返回现金不包含持仓市值, 导致回测 total_wealth 偏小, 下轮资本预算萎缩, 财富逐轮衰减到零
+- **修复**: `p.get('value', 0)` → `(p.get('price',0) or 0) * (p.get('shares',0) or 0)`
+- **eval_stepwise.sh**: `stderr=subprocess.DEVNULL` → `subprocess.PIPE` + 正则失败 debug 打印 (防止静默错误)
+- **验证**: 修复前 wealth=¥16,527 (pipeline total=¥99,847), 修复后 wealth=¥96,799 (完全一致)

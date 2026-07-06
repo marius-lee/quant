@@ -28,6 +28,8 @@ PYTHONPATH=. python3 -m pytest tests/ -v
 
 ## Architecture
 - **Schema 单源**: sim_trades/strategy_config DDL 只在 TradeRepo._ensure_tables() 一个地方定义。其他模块通过 TradeRepo 访问，不得自己开 sqlite3.connect 写入。engine.py 已清理，web/app.py 仅剩 api_performance/api_stats 只读查询。
+- **Position dict keys**: `TradeRepo.get_positions()` 返回 dict 键为 `symbol, price, shares, board_count, buy_time`。没有 `value` 键 — 计算持仓市值必须用 `price * shares`。
+- **Never hide stderr**: subprocess.run 不用 `stderr=subprocess.DEVNULL`。用 `stderr=subprocess.PIPE` 并在异常时打印。
 
 (7 layers, ~25 files)
 

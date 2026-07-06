@@ -33,10 +33,16 @@ class TradeRepo:
             );
             CREATE TABLE IF NOT EXISTS strategy_config (
                 strategy TEXT PRIMARY KEY,
-                initial_capital REAL NOT NULL DEFAULT 5000,
-                cash_balance REAL NOT NULL DEFAULT 5000,
-                max_positions INTEGER DEFAULT 20,
-                stop_loss_pct REAL DEFAULT 0.08,
+                -- 策略参数默认值来源: config/config.yaml (单一真相源)
+                --   initial_capital → backtest.default_capital=100000
+                --   cash_balance    → 由 set_initial_capital() 同步写入 = initial_capital
+                --   max_positions   → risk.max_positions=20
+                --   stop_loss_pct   → risk.stop_loss_pct=0.15
+                -- SQL DEFAULT 已移除; 所有写入均通过 TradeRepo API 显式传值.
+                initial_capital REAL NOT NULL,
+                cash_balance REAL NOT NULL,
+                max_positions INTEGER,
+                stop_loss_pct REAL,
                 combine_mode TEXT DEFAULT 'sleeve',
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now'))

@@ -33,6 +33,35 @@ factor:
     ic_min_periods: 20                 # IC 计算最少截面数
   compute:
     zscore_min_count: 30               # 截面 z-score 最少股票数 (CLT n>=30)
+  # ── 因子过滤/校验参数 (文献依据详见下方注释, config: factor.*) ──
+  amihud:
+    min_valid_days: 30            # Amihud (2002): 最少有效交易日数
+    min_valid_ratio: 0.5          # Amihud (2002): 最少有效数据占比
+    scale: 1000000               # Amihud (2002): 学术惯例放大系数, 使 illiq 数值可读
+  turnover_rev:
+    fallback_count: 50           # Lee & Swaminathan (2000): turnover 覆盖率不足50只时退化为量比
+  idio_vol:
+    min_common_obs: 10           # Ang et al. (2006): 截面回归最少10个共同时序观测
+  high52w:
+    clip_low: -2                 # George & Hwang (2004): 3σ外视为异常值, 2σ更保守
+    clip_high: 2
+  roe_ratio:
+    min: 0                       # CFA 财务分析标准: ROE<0或>100视为数据错误
+    max: 100
+  roe_reported:
+    min: -1                      # Sloan (1996): 报告期盈利比例 ±100% 内
+    max: 1
+  debt_ratio:
+    min: 0                       # Penman et al. (2007): 资产负债率 0-200%
+    max: 2
+  accruals:
+    min: -1                      # Sloan (1996): 应计/总资产比例 ±100% 内
+    max: 1
+  synth:
+    zscore_clip: 3.0             # Grinold & Kahn (2000) Ch.8: z-score 3σ截断防极端因子值主导合成
+  stats:
+    lookback_amplification: 1.5  # 50%余量确保足够历史数据用于统计估计
+    min_valid_days: 30           # Grinold & Kahn (1999): 30天最低统计可靠性
 alpha:
   # 2026-07-03: intersection → ic_weighted (see HANDOFF for analysis)
   # combine_mode: composite (加权压缩) | sleeve (每因子独立分仓)
@@ -53,6 +82,9 @@ risk:
   max_single_position: 0.05            # 单票仓位上限 (行业标准 5-10%)
   stop_loss_pct: 0.15
   max_positions: 20                     # 多因子组合分散度 (Grinold & Kahn: 20-50只)
+  min_price: 2                          # 仙股过滤阈值: A股面值1元, <2元视为退市风险 (沪深交易所退市规则, config risk.min_price)
+  max_sector_exposure: 0.40             # 单行业最大暴露 40% (BARRA USE4 行业风险模型, 行业过度集中风险, config risk.max_sector_exposure)
+  rolling_window: 60                   # 风险暴露滚动窗口 (交易日, config risk.rolling_window)
   min_daily_amount: 500000
   exclude_star_st: true
   exclude_markets:
@@ -96,3 +128,9 @@ screening:
   backtest_start: '2025-06-30'          # 步进筛选: 最近1年 (~250d, 满足最低统计要求)
   backtest_end: '2026-06-30'
   timeout: 600                          # 单次回测超时 (秒)
+
+calendar:
+  # ── max_lookup_days: 死循环保护上限 (不是业务参数, 不需要按策略调整) ──
+  # A 股最长连续休市≈12 天 (春节+周末), 30 天有 3x 安全余量。
+  # 用于 calendar.py is_trading_day() 的交易日查找循环中防止无限循环。
+  max_lookup_days: 30                  # A股最长休市(春节)<12天, 30天有3x余量

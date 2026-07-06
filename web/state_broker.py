@@ -94,8 +94,7 @@ class RedisStateBroker(StateBroker):
 
             # ── PnL + metrics ──
             base = repo.get_initial_capital("quant")
-            if base <= 0:
-                base = 5000.0
+            # 由 _capital() 在 web 启动时保证DB有值, 无需 fallback
             realized = repo.get_pnl("quant")
             total_pnl = round(capital + pos_value - base, 2)
             state["pnl"] = {
@@ -205,7 +204,7 @@ class RedisStateBroker(StateBroker):
                     state["pos_value"] = round(new_pos_value, 2)
                     cap = state.get("capital", 0)
                     state["total_asset"] = round(cap + new_pos_value, 2)
-                    base = state.get("metrics", {}).get("initial_capital", 5000)
+                    base = state.get("metrics", {}).get("initial_capital")
                     new_total_pnl = round(cap + new_pos_value - base, 2)
                     if state.get("pnl"):
                         state["pnl"]["total"] = new_total_pnl

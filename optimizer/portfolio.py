@@ -29,7 +29,8 @@ class TargetPortfolio:
         return self.total_value
 
 
-LOT_SIZE = 100  # A股每手 100 股, ① 交易所规则
+from config.loader import get as _cfg
+LOT_SIZE = _cfg("backtest.lot_size")  # A股每手 100 股, ① 交易所规则
 
 
 class PortfolioConstructor:

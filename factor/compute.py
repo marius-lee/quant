@@ -148,6 +148,23 @@ _LHB_WINDOW = _require_cfg("factor.windows.lhb_net_buy")
 _VOL_RATIO_SHORT = _require_cfg("factor.windows.volume_ratio_short")
 _VOL_RATIO_LONG = _require_cfg("factor.windows.volume_ratio_long")
 
+# ── 因子过滤/校验参数 (config: factor.*. 文献依据详见 config.yaml) ──
+_AMIHUD_MIN_DAYS = _require_cfg("factor.amihud.min_valid_days")
+_AMIHUD_MIN_RATIO = _require_cfg("factor.amihud.min_valid_ratio")
+_AMIHUD_SCALE = _require_cfg("factor.amihud.scale")
+_TURNOVER_FALLBACK = _require_cfg("factor.turnover_rev.fallback_count")
+_IDIO_MIN_OBS = _require_cfg("factor.idio_vol.min_common_obs")
+_H52W_CLIP_LOW = _require_cfg("factor.high52w.clip_low")
+_H52W_CLIP_HIGH = _require_cfg("factor.high52w.clip_high")
+_ROE_RATIO_MIN = _require_cfg("factor.roe_ratio.min")
+_ROE_RATIO_MAX = _require_cfg("factor.roe_ratio.max")
+_ROE_REP_MIN = _require_cfg("factor.roe_reported.min")
+_ROE_REP_MAX = _require_cfg("factor.roe_reported.max")
+_DEBT_MIN = _require_cfg("factor.debt_ratio.min")
+_DEBT_MAX = _require_cfg("factor.debt_ratio.max")
+_ACCRUALS_MIN = _require_cfg("factor.accruals.min")
+_ACCRUALS_MAX = _require_cfg("factor.accruals.max")
+
 
 def compute_volatility(data: pd.DataFrame, date: str, window: int = _VOLATILITY_WINDOW) -> pd.Series:
     """已实现波动率: std(log_returns[-window:]) × sqrt(252) 年化。

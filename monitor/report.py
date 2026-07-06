@@ -13,8 +13,8 @@ def generate_report(
     cash_balance: float,
     positions: list[dict],
     trades: list[dict],
+    initial_capital: float,
     pnl_total: float = 0.0,
-    initial_capital: float = 5000.0,
 ) -> dict:
     """生成日报。
 

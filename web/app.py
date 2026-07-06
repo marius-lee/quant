@@ -268,7 +268,7 @@ def api_quotes():
     # ── 止损扫描 (quant 策略) ──
     stop_loss_triggers = []
     from config.loader import get as cfg
-    sl_pct = cfg("risk.stop_loss_pct", 0.08)
+    sl_pct = cfg("risk.stop_loss_pct")
     try:
         import sqlite3
         tc = sqlite3.connect(TRADE_DB)
@@ -334,8 +334,8 @@ def api_risk():
         mc = sqlite3.connect(market_db)
         for sym in symbols:
             rows = mc.execute(
-                "SELECT close FROM daily WHERE symbol=? ORDER BY date DESC LIMIT 60",
-                (sym,)
+                "SELECT close FROM daily WHERE symbol=? ORDER BY date DESC LIMIT ?",
+                (sym, int(cfg("risk.rolling_window")))
             ).fetchall()
             if len(rows) < 10:
                 result.append({"symbol": sym, "weight_pct": 0, "annual_vol_pct": 0,

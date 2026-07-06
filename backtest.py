@@ -20,7 +20,7 @@ from utils.logger import get_logger
 
 logger = get_logger("backtest")
 TRADE_DB = os.path.join(os.path.dirname(__file__), "data", "trades.db")
-LOT_SIZE = cfg("backtest.lot_size", 100)
+LOT_SIZE = cfg("backtest.lot_size")
 
 # 回测区间最低交易日数 — Grinold & Kahn (1999): 60月≈250日, 量化策略评估最低线
 # Lo (2002): SE(Sharpe) = √[(1+½S²)/T], T<1年时无统计价值
@@ -38,7 +38,7 @@ def run_backtest(start_date=None, end_date=None, capital=None):
     if end_date is None:
         end_date = cfg("backtest.default_end", "2026-06-30")
     if capital is None:
-        capital = cfg("backtest.default_capital", 5000)
+        capital = cfg("backtest.default_capital", 100000)
 
     import pipeline
     from execution.engine import Order  # P0-2: unified Order dataclass
@@ -92,7 +92,7 @@ def run_backtest(start_date=None, end_date=None, capital=None):
             current_positions = engine.get_positions(STRATEGY)
             prices_for_sl = {}
             if current_positions:
-                stop_loss_pct = cfg("risk.stop_loss_pct", 0.15)
+                stop_loss_pct = cfg("risk.stop_loss_pct")
                 try:
                     # Get today's close prices for all held symbols
                     syms = [p["symbol"] for p in current_positions]
@@ -255,7 +255,7 @@ def run_backtest(start_date=None, end_date=None, capital=None):
 if __name__ == "__main__":
     start = sys.argv[1] if len(sys.argv) > 1 else "2026-01-01"
     end = sys.argv[2] if len(sys.argv) > 2 else "2026-06-30"
-    cap = float(sys.argv[3]) if len(sys.argv) > 3 else 5000
+    cap = float(sys.argv[3]) if len(sys.argv) > 3 else cfg("backtest.default_capital", 100000)
 
     df = run_backtest(start, end, cap)
     print(f"\nResults saved ({len(df)} rows)")

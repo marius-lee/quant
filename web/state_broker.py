@@ -55,14 +55,35 @@ class RedisStateBroker(StateBroker):
             capital = repo.get_cash("quant")
             raw_positions = repo.get_positions("quant")
             positions = []
+            # stock name + latest close lookup
+            close_map = {}
+            import sqlite3 as _sql2
+            try:
+                market_db = _os.path.join(_root, "data", "market.db")
+                if _os.path.exists(market_db):
+                    mc = _sql2.connect(market_db)
+                    for sym in [r["symbol"] for r in raw_positions]:
+                        cr = mc.execute(
+                            "SELECT close FROM daily WHERE symbol=? ORDER BY date DESC LIMIT 1",
+                            (sym,)
+                        ).fetchone()
+                        if cr and cr[0]:
+                            close_map[sym] = cr[0]
+                    mc.close()
+            except Exception:
+                pass
+
             for p in raw_positions:
+                sym = p["symbol"]
+                close_px = close_map.get(sym, p.get("price", 0))
                 positions.append({
-                    "symbol": p["symbol"], "name": "",
+                    "symbol": sym, "name": "",
                     "shares": p["shares"], "price": p.get("price", 0),
                     "board_count": p.get("board_count", 0),
                     "buy_time": p.get("buy_time", ""),
-                    "current": p.get("price", 0), "pnl_pct": 0,
-                    "value": round(p["shares"] * p.get("price", 0), 2)
+                    "current": close_px,
+                    "pnl_pct": round((close_px / p.get("price", 1) - 1) * 100, 2),
+                    "value": round(p["shares"] * close_px, 2)
                 })
             pos_value = sum(p["value"] for p in positions)
             state["capital"] = round(capital, 2)

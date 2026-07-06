@@ -113,19 +113,25 @@ async function pollOverview() {
 }
 
 function renderKPIs(p) {
-  setText('kpi-total', fmtMoney(p.total_asset));
-  setText('kpi-pnl', fmtMoney(p.total_pnl));
+  // Use state (latest-close based) for financial truth when available
+  const st = window._stateData;
+  const totalAsset = (st && st.total_asset != null) ? st.total_asset : p.total_asset;
+  const pnlTotal = (st && st.pnl && st.pnl.total != null) ? st.pnl.total : p.total_pnl;
+  const capital = (st && st.capital != null) ? st.capital : (p.capital || 0);
+  var posVal = (st && st.pos_value != null) ? st.pos_value : ((totalAsset || 0) - (capital || 0));
+
+  setText('kpi-total', fmtMoney(totalAsset));
+  setText('kpi-pnl', fmtMoney(pnlTotal));
   const pnlPctEl = document.getElementById('kpi-pnl-pct');
   if (pnlPctEl) {
     const initialCapital = p.initial_capital || 5000;
-    const pct = initialCapital > 0 ? (p.total_pnl / initialCapital) * 100 : 0;
+    const pct = initialCapital > 0 ? (pnlTotal / initialCapital) * 100 : 0;
     pnlPctEl.textContent = fmtPct(pct);
     pnlPctEl.className = 'sub ' + clsPnl(pct);
   }
   setText('kpi-wr', (p.total_sells || 0) === 0 ? '—' : fmtNum(p.win_rate, 1) + '%');
   setText('kpi-count', (p.total_buys || 0) + '/' + (p.total_sells || 0));
-  setText('kpi-cash', fmtMoney(p.capital || 0));
-  const posVal = (p.total_asset || 0) - (p.capital || 0);
+  setText('kpi-cash', fmtMoney(capital));
   setText('kpi-posval', fmtMoney(posVal));
 }
 

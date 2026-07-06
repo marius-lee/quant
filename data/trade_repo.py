@@ -183,7 +183,7 @@ class TradeRepo:
     def record_trade(self, strategy: str, date: str, symbol: str,
                      side: str, price: float, shares: int,
                      pnl: float = 0.0, pnl_pct: float = 0.0,
-                     board_count: int = 0) -> None:
+                     board_count: int = 0, cost: float = 0.0) -> None:
         """写入一笔交易并原子更新现金余额 (单连接事务)。"""
         c = self._conn()
         # 读取当前现金
@@ -194,9 +194,9 @@ class TradeRepo:
         cash = float(cash_row[0]) if cash_row and cash_row[0] is not None else 0.0
 
         if side == 'buy':
-            cash -= price * shares
+            cash -= price * shares + cost
         else:
-            cash += price * shares
+            cash += price * shares - cost
 
         c.execute(
             "INSERT INTO sim_trades(date, symbol, side, price, shares, pnl, pnl_pct, strategy, board_count) VALUES(?,?,?,?,?,?,?,?,?)",

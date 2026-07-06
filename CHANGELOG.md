@@ -185,12 +185,12 @@ Complete system architecture overhaul from Chen Xiaoqun board-trading system to 
 | v3.0 | 11 | — | 初始设计 |
 | v3.3 | 35 | 5 | bp_ratio+size+gap_5d+zt_streak+amihud_20d |
 | v3.4-v3.5 | 35 | 1 | zt_streak 唯一通过步进回测 |
-| v3.5.1 (P58) | 36 | 1 | +residual_momentum_126d (Ch.3.7, 待eval), backtest策略隔离修复 |
+| v3.5.1 (P58) | 36 | 1 | +residual_momentum_126d (IC=-0.0027, A股不成立), backtest策略隔离修复 |
 
 
 ## [3.5.1] — 2026-07-06
 
-### P58: 文档审计 + residual_momentum_126d + 回测隔离修复 + DB 锁修复
+### P58: 10次提交 — 文档审计 + residual_momentum + 回测隔离 + DB 锁 + dt_streak + 界面 + eval 防护
 
 - **14文件文档审计**: 统一因子数 35→36, ADR 状态更新, CHANGELOG 补全 v3.2-v3.5, 旧 HANDOFF 加归档标记
 - **residual_momentum_126d**: Kakushadze & Serur (2018) Ch.3.7 残差动量落地, 36th factor

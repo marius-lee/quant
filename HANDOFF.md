@@ -15,10 +15,12 @@
 
 ## P58: 文档审计 + 策略隔离 + DB 锁修复 + dt_streak 激活 + status 徽章
 
-### 完整改动清单 (7 commits)
+### 完整改动清单 (10 commits)
 
 ```
+6510b03 docs: HANDOFF — add eval guard to P58 commit list
 b909ef9 P58 fix: eval_stepwise.sh guard for empty backtest result (KeyError: total_wealth)
+311d010 docs: HANDOFF P58 section — all 7 commits + interface status confirmed
 0e4207c P58 fix: status badge dynamic coloring — hot/warm/cold per trading period
 89315f2 P58 fix: auto-migrate initialized column in strategy_config
 35f1cd8 P58 final: dt_streak activated (IC=+0.039, IR=0.70) + backtest_jq.sh guard

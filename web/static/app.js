@@ -109,12 +109,13 @@ function renderKPIs(p) {
   setText('kpi-total', fmtMoney(p.total_asset));
   setText('kpi-pnl', fmtMoney(p.total_pnl));
   const pnlPctEl = document.getElementById('kpi-pnl-pct');
-  if (pnlPctEl && p.total_asset) {
-    const pct = (p.total_pnl / (p.total_asset - p.total_pnl + 0.01)) * 100;
+  if (pnlPctEl) {
+    const initialCapital = p.initial_capital || 5000;
+    const pct = initialCapital > 0 ? (p.total_pnl / initialCapital) * 100 : 0;
     pnlPctEl.textContent = fmtPct(pct);
     pnlPctEl.className = 'sub ' + clsPnl(pct);
   }
-  setText('kpi-wr', fmtNum(p.win_rate, 1) + '%');
+  setText('kpi-wr', (p.total_sells || 0) === 0 ? '—' : fmtNum(p.win_rate, 1) + '%');
   setText('kpi-count', (p.total_buys || 0) + '/' + (p.total_sells || 0));
   setText('kpi-cash', fmtMoney(p.capital || 0));
   const posVal = (p.total_asset || 0) - (p.capital || 0);
@@ -404,7 +405,7 @@ function renderPerfStats(perf) {
   const items = [
     ['已实现 PnL', fmtMoney(perf.realized_pnl || 0)],
     ['总 PnL', fmtMoney(perf.total_pnl || 0)],
-    ['胜率', fmtNum(perf.win_rate || 0, 1) + '%'],
+    ['胜率', (perf.total_sells || 0) === 0 ? '—' : fmtNum(perf.win_rate || 0, 1) + '%'],
     ['买入次数', perf.total_buys || 0],
   ];
   el.innerHTML = items.map(([l, v]) =>

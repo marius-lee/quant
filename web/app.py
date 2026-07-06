@@ -188,6 +188,9 @@ def api_record_trade():
         conn.execute("""INSERT INTO sim_trades (date, symbol, side, price, shares, board_count, strategy)
                         VALUES (?,?,?,?,?,?,?)""",
                      (today, symbol, "buy", price, shares, data.get("board_count", 0), strategy))
+        # 更新手动策略现金余额 (买入扣款)
+        conn.execute("UPDATE strategy_config SET cash_balance = cash_balance - ?, updated_at = datetime('now') WHERE strategy = ?",
+                     (round(price * shares, 2), strategy))
         conn.commit()
         conn.close()
         return _api_response(data={"ok": True})
@@ -202,9 +205,12 @@ def api_record_trade():
         from config.loader import get as cfg
         from data.trade_repo import TradeRepo; base = TradeRepo().get_initial_capital(strategy)
         capital_after = base + sells + pnl - buys_cost + (price * shares)
-        conn.execute("""INSERT INTO sim_trades (date, symbol, side, price, shares, pnl, pnl_pct, capital_after, strategy)
-                        VALUES (?,?,?,?,?,?,?,?,?)""",
-                     (today, symbol, "sell", price, shares, round(pnl, 2), pnl_pct, round(capital_after, 2), strategy))
+        conn.execute("""INSERT INTO sim_trades (date, symbol, side, price, shares, pnl, pnl_pct, strategy)
+                        VALUES (?,?,?,?,?,?,?,?)""",
+                     (today, symbol, "sell", price, shares, round(pnl, 2), pnl_pct, strategy))
+        # 更新手动策略现金余额
+        conn.execute("UPDATE strategy_config SET cash_balance = ?, updated_at = datetime('now') WHERE strategy = ?",
+                     (round(capital_after, 2), strategy))
         conn.commit()
         conn.close()
         return _api_response(data={"ok": True, "pnl": round(pnl, 2), "pnl_pct": pnl_pct})
@@ -308,10 +314,7 @@ def api_performance():
     win_rate = round(win_trades / total_sells * 100, 1) if total_sells > 0 else 0
     buys = tc.execute("SELECT COUNT(*) FROM sim_trades WHERE side='buy' AND strategy=?", (strategy,)).fetchone()[0]
     from data.trade_repo import TradeRepo; base = TradeRepo().get_initial_capital(strategy)
-    row = tc.execute(
-        "SELECT capital_after FROM sim_trades WHERE strategy=? AND capital_after IS NOT NULL ORDER BY id DESC LIMIT 1",
-        (strategy,)).fetchone()
-    capital = round(row[0], 2) if row else base
+    capital = TradeRepo().get_cash(strategy) or base
     position_cost = tc.execute(
         "SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)",
         (strategy, strategy)).fetchone()[0]

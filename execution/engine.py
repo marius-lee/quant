@@ -53,9 +53,16 @@ class ExecutionEngine:
             );
             CREATE TABLE IF NOT EXISTS strategy_config (
                 strategy TEXT PRIMARY KEY,
-                initial_capital REAL NOT NULL
+                initial_capital REAL NOT NULL,
+                cash_balance REAL
             );
         """)
+        # 迁移: 添加 cash_balance 列 (资金唯一真相源)
+        try:
+            conn.execute("ALTER TABLE strategy_config ADD COLUMN cash_balance REAL")
+        except sqlite3.OperationalError:
+            pass
+        conn.execute("UPDATE strategy_config SET cash_balance = initial_capital WHERE cash_balance IS NULL")
         # P0-1: 复合索引消除全表扫描
         conn.executescript("""
             CREATE INDEX IF NOT EXISTS idx_st_strategy_id
@@ -69,53 +76,46 @@ class ExecutionEngine:
         conn.close()
 
     def get_capital(self, strategy: str = "quant") -> float:
-        """获取当前策略总资产 (现金 + 持仓市值)。"""
+        """获取当前策略总资产 (现金 + 持仓市值)。资金唯一真相源: strategy_config.cash_balance。"""
         conn = sqlite3.connect(self.db_path)
         try:
+            # 现金余额: strategy_config.cash_balance
             row = conn.execute(
-                "SELECT capital_after FROM sim_trades WHERE strategy=? ORDER BY id DESC LIMIT 1",
+                "SELECT cash_balance FROM strategy_config WHERE strategy=?",
                 (strategy,)
             ).fetchone()
-            if row and row[0] is not None:
-                cash = row[0]
-                # 加上持仓市值
-                positions = conn.execute("""
-                    SELECT symbol, SUM(shares) as net_shares,
-                           SUM(price * shares) / SUM(shares) as avg_price
-                    FROM sim_trades
-                    WHERE side='buy' AND strategy=?
-                    GROUP BY symbol
-                """, (strategy,)).fetchall()
-                sells = conn.execute("""
-                    SELECT symbol, SUM(shares) FROM sim_trades
-                    WHERE side='sell' AND strategy=?
-                    GROUP BY symbol
-                """, (strategy,)).fetchall()
-                sell_map = {r[0]: r[1] for r in sells}
-                pos_value = sum(
-                    round(p[2], 4) * max(0, p[1] - sell_map.get(p[0], 0))
-                    for p in positions if p[2] is not None
-                )
-                return cash + pos_value
-            # 无交易记录: 回退到 strategy_config
-            row2 = conn.execute(
-                "SELECT initial_capital FROM strategy_config WHERE strategy=?",
-                (strategy,)
-            ).fetchone()
-            if row2 and row2[0] is not None:
-                return row2[0]
+            cash = float(row[0]) if row and row[0] is not None else 0.0
+            if cash == 0.0:
+                row2 = conn.execute(
+                    "SELECT initial_capital FROM strategy_config WHERE strategy=?",
+                    (strategy,)
+                ).fetchone()
+                cash = float(row2[0]) if row2 else 0.0
+            # 持仓市值
+            positions = conn.execute("""
+                SELECT symbol, SUM(shares) as net_shares,
+                       SUM(price * shares) / SUM(shares) as avg_price
+                FROM sim_trades
+                WHERE side='buy' AND strategy=?
+                GROUP BY symbol
+            """, (strategy,)).fetchall()
+            sells = conn.execute("""
+                SELECT symbol, SUM(shares) FROM sim_trades
+                WHERE side='sell' AND strategy=?
+                GROUP BY symbol
+            """, (strategy,)).fetchall()
+            sell_map = {r[0]: r[1] for r in sells}
+            pos_value = sum(
+                round(p[2], 4) * max(0, p[1] - sell_map.get(p[0], 0))
+                for p in positions if p[2] is not None
+            )
+            return cash + pos_value
         finally:
             conn.close()
-        from config.loader import get as cfg
-        return 0.0  # no seed found
 
     def get_cash(self, strategy: str = "quant") -> float:
-        """获取当前运行时资产 — sim_trades.capital_after, 空则 strategy_config.initial_capital."""
-        repo = TradeRepo(self.db_path)
-        cash = repo.get_cash(strategy)
-        if cash == 0.0:
-            cash = repo.get_initial_capital(strategy)
-        return cash
+        """获取当前现金余额 — 委托 TradeRepo (strategy_config.cash_balance)。"""
+        return TradeRepo(self.db_path).get_cash(strategy)
 
     def set_initial_capital(self, strategy: str, capital: float):
         """设置策略初始资金。"""
@@ -182,21 +182,24 @@ class ExecutionEngine:
                 capital += proceeds
 
             conn.execute(
-                "INSERT INTO sim_trades(date, symbol, side, price, shares, pnl, pnl_pct, capital_after, strategy) VALUES(?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO sim_trades(date, symbol, side, price, shares, pnl, pnl_pct, strategy) VALUES(?,?,?,?,?,?,?,?)",
                 (date, symbol, side, price, shares,
                  0.0 if side == "buy" else pnl,
                  0.0 if side == "buy" else pnl_pct,
-                 round(capital, 2),
                  strategy),
             )
             executed += 1
 
+        # 更新现金余额到 strategy_config (资金唯一真相源)
+        conn.execute(
+            "UPDATE strategy_config SET cash_balance = ?, updated_at = datetime('now') WHERE strategy = ?",
+            (round(capital, 2), strategy))
         conn.commit()
         conn.close()
 
         from utils.logger import get_logger
         get_logger("execution.engine").info(
-            f"executed {executed} orders, capital_after=¥{capital:,.2f}"
+            f"executed {executed} orders, cash_balance=¥{capital:,.2f}"
         )
         return executed
 

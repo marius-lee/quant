@@ -1,4 +1,4 @@
-# Handoff: quant 项目状态 — 2026-07-06 15:03 CST
+# Handoff: quant 项目状态 — 2026-07-06 22:15 CST
 
 ## 进入检查清单
 
@@ -12,6 +12,36 @@
 | 6 | scheduler | grep PHASE logs/quant.log | tail -5 |
 | 7 | 退出日志 | grep EXIT logs/app.log |
 
+
+
+## P59: engine.get_capital pos_value bug — eval stepwise Wealth=¥0 修复
+
+### 问题
+eval_stepwise.sh Layer 3 步进回测产出 `Wealth=¥0.00`，不是合理范围。
+
+### 根因
+`execution/engine.py:42` — `get_capital()` 中 `p.get('value', 0)` 永远返回 0。
+
+`TradeRepo.get_positions()` 返回的 dict 键是:
+  `symbol, price, shares, board_count, buy_time`
+没有 `value` 键。所以 `pos_value` 恒为 0，`get_capital()` 只返回现金。
+
+### 连锁误差
+rebalance [1]: total_wealth = cash_only = ¥16,527  (实际: ¥99,847)
+rebalance [2]: generate_signals 读到 cash_balance=¥16,527, 用这个做资本预算
+rebalance [n]: 财富逐轮衰减到接近零 → Wealth=¥0.00
+
+### 修复
+- engine.py: p.get('value', 0) → (p.get('price',0) or 0) * (p.get('shares',0) or 0)
+- eval_stepwise.sh: stderr=subprocess.DEVNULL → subprocess.PIPE + 正则失败时 debug 打印
+
+### 验证
+修复前: backtest wealth=¥16,527, pipeline total=¥99,847 (差 83%)
+修复后: wealth=¥96,799, pipeline total=¥96,799 (完全一致)
+烟雾: PASS
+
+### commit
+a97c73b P59 fix: engine.get_capital pos_value bug
 
 ## P58: 文档审计 + 策略隔离 + DB 锁 + dt_streak + 界面 + eval防护 + schema统一
 

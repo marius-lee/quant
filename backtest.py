@@ -141,7 +141,7 @@ def run_backtest(start_date=None, end_date=None, capital=None):
                 continue
 
             # pipeline.run() needs capital for generate_report's initial_capital reference
-            result = pipeline.run(date_str=date_str, capital=capital, strategy="quant", skip_pull=True)
+            result = pipeline.run(date_str=date_str, capital=capital, strategy="backtest", skip_pull=True)
 
             # 计算当日总资产
             # get_capital() now returns total wealth (cash + positions_value)

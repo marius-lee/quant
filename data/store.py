@@ -796,16 +796,7 @@ class DataStore:
             if max_d < cutoff:
                 stale.append(sym)
                 continue
-            try:
-                d1 = datetime.strptime(min_d, "%Y-%m-%d")
-                d2 = datetime.strptime(max_d, "%Y-%m-%d")
-                est_trading = int((d2 - d1).days * 0.7)
-            except Exception:
-                est_trading = 0
-            if est_trading < stale_days:
-                stale.append(sym)
-            else:
-                full.append(sym)
+            full.append(sym)
 
         missing = sorted(all_symbols - have_data)
 

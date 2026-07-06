@@ -39,7 +39,7 @@ class ExecutionEngine:
         repo = TradeRepo(self.db_path)
         cash = repo.get_cash(strategy)
         positions = repo.get_positions(strategy)
-        pos_value = sum(p.get('value', 0) or 0 for p in positions)
+        pos_value = sum((p.get('price', 0) or 0) * (p.get('shares', 0) or 0) for p in positions)
         return cash + pos_value
 
     def get_cash(self, strategy: str = "quant") -> float:

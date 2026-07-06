@@ -1,7 +1,7 @@
 # ADR 018: 因子评估死锁 — 入口过滤导致 deprecated 因子永不可恢复
 
 **日期**: 2026-07-05  
-**状态**: 已识别，待修复  
+**状态**: 已修复 (P45, commit 17a1377, 2026-07-06)
 **关联**: ADR 007 (因子评估标准), P43 (sleeve 架构)
 
 ## 问题描述
@@ -95,4 +95,11 @@ def compute_all_factors(data, date, fundamentals=None, benchmark_ret=None, facto
 
 - P43: 多因子分仓架构 (sleeve) — 需要 ≥3 个因子才有意义
 - P44: 回测窗口标准化 — 让最终回测 Sharpe 可靠
-- 待创建 P45: 因子评估死锁修复
+
+## 修复记录
+
+**P45 (commit 17a1377)**: 采用方案 A — `eval_stepwise.sh` Layer 1+2 查询全量因子名 (`SELECT name FROM factor_registry`)，绕过 `WHERE status='active'` 过滤，传入 `compute_factor_stats(factor_names=...)`。`factor/stats_cache.py` 的 `compute_factor_stats()` 已支持 `factor_names` 参数 (line 89-91)，传入时跳过 `get_factor_names()` 的 status 过滤。
+
+修复后运行结果 (2026-07-06 00:09:50): 35 因子全量评估，zt_streak 通过步进回测保留为 active。其余因子 (包括 IC 显著的 dt_streak/IC=+0.037, vol_price_corr_10d/IC=-0.025, roa/IC=+0.023 等) 在步进回测中被淘汰 — 添加后 IR 未改善。
+
+**死锁本身已解**，当前只剩 1 个 active 因子是因为步进回测淘汰条件严格，非评估入口问题。

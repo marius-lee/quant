@@ -42,3 +42,8 @@ pipeline.py 按 combine_mode 分支:
 ## 测试
 
 26/26 (20 原有 + 6 sleeve_compose 新增)
+
+
+---
+
+> **注意**: 本文档中 `positions_per_factor: 8` 为设计时示例值，当前 `config.yaml` 实际值为 20。`min_factors: 1` 无变化。

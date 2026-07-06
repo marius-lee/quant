@@ -95,3 +95,94 @@ Complete system architecture overhaul from Chen Xiaoqun board-trading system to 
 - Factor IC/IR tested on 200 stocks × 55 periods: momentum_10d IC=0.024, IC_IR=0.253 (strongest signal)
 - Full pipeline end-to-end: 1000 stocks → 495 candidates → 18s runtime
 - All 11 factors compute with correct z-score normalization (mean≈0, std≈1)
+
+## [3.2.0] — 2026-07-03
+
+### Factor Model & Backtest
+
+- **P3: zt_streak 激活** — 涨停连板因子从 daily OHLCV 自算，回测 +80.5% (Sharpe 2.10, α+75.0%)
+- **P4: factor_cache 迁数据库** — factor_snapshot + factor_registry 两表，前端/管道均读 DB
+- **Phase 10: 3新因子审计** (high52w_dist, dt_streak, vol_price_corr_10d) — IC 优秀但回测低于基线，回归 5 因子
+
+### Config & Parameter Management
+
+- **P11: 因子评估标准重构** — 固定 IC 阈值 → 统计推断 (Grinold & Kahn 1999)
+- **P13: 规范修订** — 模板2作用域限定 + 模板3 TDD降级为软约束
+- **P37: 因子窗口参数化** — config.yaml 驱动 amihud/skewness/ma_alignment
+- **P38: 全量参数配置化** — 15个遗漏参数迁入 config.yaml
+- **P39: config.yaml 默认值切换** — 开发测试 → 生产标准
+
+### Coding Standards Audit
+
+- **P12: IO-计算分离** — 因子函数移除 DataStore 依赖 (模板 2a)
+- **P14-P16, P18-P22**: 编码规范审计 — 安全/性能/API/数据模型/防御性编程/并发/可观测性全面审查修复
+
+## [3.3.0] — 2026-07-04
+
+### Factor & Evaluation Pipeline
+
+- **P33: n_symbols/lookback 标准化** — 中证800 + 120交易日
+- **P42: eval_stepwise.sh** — eval 参数从 config.yaml 读取 (_ecfg)
+- **P43: 多因子分仓架构 (sleeve)** — sleeve_compose + combine_mode 分支, positions_per_factor=20
+- **P44: 回测窗口扩展** — 6个月 → 3.5年 (850d+)
+- **P45: 因子评估死锁修复** — 评估管道绕过 status='active' 过滤，35因子全量评估
+
+### Data Sources
+
+- **P25-P28**: 数据源全面审查 + 6源连通性测试 + akshare/同花顺/雪球接入评估
+- **P26: 凭证管理** — config/env.example 模板 + .env 自动加载
+- **P29-P30**: tushare 接入 + daily_basic fallback (PE/PB 真空填补)
+
+## [3.4.0] — 2026-07-05
+
+### Pipeline Architecture
+
+- **P49: 两阶段 Pipeline + 三时段调度** — generate_signals(08:30) / execute_signals(09:30) / daily_sync(15:30)
+- **P50: 调度日志统一** — [SCHEDULER] 标记三阶段完成日志
+- **P51: restart.sh** — 一键启动 web + launchd scheduler
+
+### Pipeline Bugfixes
+
+- **P48: 消除 11 处静默 except-pass** — 核心路径加 logger.debug/warning
+- **P52: daily_sync 修复** — cfg import scope + sync_all(conn) 参数
+- **P53: pre-commit-check.sh** — 含 pycache 清理
+
+### Factor Model Evolution
+
+- **P46: zt_streak 最终验证** — 6个月回测确认 alpha 贡献
+- **P54: 资金追踪统一** — strategy_config.cash_balance 作为单一真相源
+
+## [3.5.0] — 2026-07-06
+
+### Bugfix & Anti-Pattern Cleanup
+
+- **ADR 023 Part A: 7个因子管道 Bug** — amihud min_valid 自适应, ma_alignment window 参数, 5个重复因子删除, 2个死因子删除
+- **ADR 023 Part B: 全代码反模式清除** — 8处 fail-fast (config 缺失→崩溃), 4处静默 except 修复
+- **ADR 023 Part C: 废弃引用全面清除** — 活跃代码禁止引用已删除因子
+- **ADR 023 Part D: 关键路径埋点补齐** — _cs_zscore NaN/amihud全过滤/compute_all汇总/pipeline step4/backtest turnover
+
+### Web & UI (P55-P57)
+
+- **P55: 日志轮转** — 每天新建日志文件，保留10天
+- **P56: 进程保活 + 状态跨进程共享 + 资金显示修复**
+- **P57: 界面全面审计** — 24项修复含 KPI 核验/交易次数（买/卖）/胜率/PnL%/日志清理
+- **P57: 实时报价** — 新浪实时行情 overlay，盘中概览 KPI 随市价变动
+- **P57: 估值三级回退** — 盘中(新浪实时) → 盘后(daily.close) → 极端(成本价)
+- **P57: 持仓表实时刷新** — 5s 轮询 /api/quotes
+- **P57: 风险暴露图** — /api/risk, 60日滚动年化波动率+最大回撤，Plotly 柱状图
+- **P57: 交易时间格式** — YYYY-MM-DD HH:MM:SS + 持仓买入时间列
+
+### Architecture Rules
+
+- config.yaml 为单一真相源 — 行为参数缺失必须 fail-fast
+- 先读目标代码，确认已有模式，最小改动贴合 — 纳入 CLAUDE.md 工作规则
+- Data quirks: cash balance 缺口 = 佣金+滑点 (CostModel 文档化)
+
+## Factor Count Evolution
+
+| 版本 | 因子数 | Active | 备注 |
+|------|--------|--------|------|
+| v3.0 | 11 | — | 初始设计 |
+| v3.3 | 35 | 5 | bp_ratio+size+gap_5d+zt_streak+amihud_20d |
+| v3.4-v3.5 | 35 | 1 | zt_streak 唯一通过步进回测 |
+| v3.5.1 (P58) | 36 | 1 | +residual_momentum_126d (Ch.3.7, 待eval) |

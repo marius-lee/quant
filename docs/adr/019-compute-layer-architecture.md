@@ -1,7 +1,7 @@
 # ADR 019: 因子计算层架构修复 — 分离 production filter 与 evaluation scope
 
 **日期**: 2026-07-05
-**状态**: 已分析，待落地
+**状态**: 已落地 (P45, commit 17a1377, 2026-07-06)
 **关联**: ADR 018 (因子评估死锁), Grinold & Kahn Ch.7-8
 
 ## 架构问题

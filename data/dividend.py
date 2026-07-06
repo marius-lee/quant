@@ -50,8 +50,24 @@ def sync_range(start_date: str = None, end_date: str = None, conn=None) -> int:
     _ensure_table(conn)
 
     total = 0
-    try:
-        df = pro.dividend()
+    # Tushare dividend 必须至少传一个过滤参数 (ts_code/ann_date/record_date/ex_date)
+    # 免费版 1 次/min, 按年份批量获取
+    rows_list = []
+    for year in ['2024', '2025', '2026']:
+        try:
+            df_year = pro.dividend(ann_date=year)
+            if df_year is not None and not df_year.empty:
+                rows_list.append(df_year)
+            logger.info(f"dividend {year}: {len(df_year) if df_year is not None else 0} rows")
+        except Exception as e_year:
+            logger.debug(f"dividend {year}: {e_year}")
+        # Tushare 免费版 dividend 限流 1 次/min, 不同年份调用间等待 61s
+        if year != '2026':
+            time.sleep(61)
+    if rows_list:
+        df = pd.concat(rows_list, ignore_index=True)
+    else:
+        df = None
     except Exception as e:
         logger.warning(f"dividend failed: {e}")
         if close_conn:

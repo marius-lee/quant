@@ -503,8 +503,15 @@ function updateNavStatus(state) {
   const el = document.getElementById('nav-status');
   if (!el) return;
   const status = state?.status || '休市';
-  const cls = 'cold';
+  const cls = statusCls(status);
   el.innerHTML = `<span class="status-badge ${cls}">${status}</span>`;
+}
+
+
+function statusCls(status) {
+  if (status === "上午交易" || status === "下午交易") return "hot";
+  if (status === "盘前" || status === "午休" || status === "盘后") return "warm";
+  return "cold"; // 休市
 }
 
 // ── SSE 实时推送 (primary channel for state updates) ──

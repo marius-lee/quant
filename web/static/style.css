@@ -177,6 +177,7 @@ td.down { color: var(--down); }
 }
 .status-badge.warm { background: rgba(210, 153, 34, .15); color: var(--warning); }
 .status-badge.cold { background: rgba(88, 166, 255, .10); color: var(--accent); }
+.status-badge.hot { background: rgba(63, 185, 80, .15); color: var(--up); }
 
 /* ── Loading & Empty ── */
 .loading, .empty {

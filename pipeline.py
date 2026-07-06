@@ -125,9 +125,8 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     cost_model = CostModel()
     constructor = PortfolioConstructor()
 
-    db_cash = engine.get_cash(strategy)
-    if db_cash > 0:
-        total_capital = db_cash
+    if engine.is_initialized(strategy):
+        total_capital = engine.get_cash(strategy)
     else:
         seed = capital if capital is not None else 5000
         engine.set_initial_capital(strategy, seed)

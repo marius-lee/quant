@@ -79,8 +79,11 @@ def step5_fundamentals():
         logger.info("[5] fundamentals: skipped (not Monday)")
         return 0
     try:
+        import sqlite3, os
+        conn = sqlite3.connect(os.path.join(os.path.dirname(__file__), "data", "market.db"))
         from data.fundamental import sync_all
-        n = sync_all(max_fetch=500)
+        n = sync_all(conn, max_fetch=500)
+        conn.close()
         logger.info(f"[5] fundamentals: {n} stocks updated")
         return n
     except Exception as e:

@@ -160,14 +160,19 @@ bt_cap   = _ecfg("backtest.default_capital", 100000)
 result = run_backtest(bt_start, bt_end, bt_cap)
 
 # Compute IR (Information Ratio)
-ret = result['total_wealth'].pct_change().dropna()
-bench_ret = ret * 0  # simplified: benchmark returns ~0 for short periods
-excess = ret - bench_ret
-ir = float(excess.mean() / excess.std() * (252**0.5)) if len(excess) > 1 and excess.std() > 0 else 0.0
+if result is None or result.empty or 'total_wealth' not in result.columns:
+    wealth = 0.0
+    sharpe = 0.0
+    ir = 0.0
+else:
+    ret = result['total_wealth'].pct_change().dropna()
+    bench_ret = ret * 0  # simplified: benchmark returns ~0 for short periods
+    excess = ret - bench_ret
+    ir = float(excess.mean() / excess.std() * (252**0.5)) if len(excess) > 1 and excess.std() > 0 else 0.0
 
-wealth = result['total_wealth'].iloc[-1]
-daily_ret = result['total_wealth'].pct_change().dropna()
-sharpe = float(daily_ret.mean() / daily_ret.std() * (252**0.5)) if len(daily_ret) > 1 and daily_ret.std() > 0 else 0.0
+    wealth = result['total_wealth'].iloc[-1]
+    daily_ret = result['total_wealth'].pct_change().dropna()
+    sharpe = float(daily_ret.mean() / daily_ret.std() * (252**0.5)) if len(daily_ret) > 1 and daily_ret.std() > 0 else 0.0
 
 print(f'WEALTH={{wealth:.2f}}')
 print(f'SHARPE={{sharpe:.4f}}')

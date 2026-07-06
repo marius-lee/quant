@@ -15,7 +15,10 @@ class TradeRepo:
         self._ensure_tables()
 
     def _ensure_tables(self):
+        """统一 schema 管理: sim_trades + strategy_config + migrations + indexes.
+        所有模块通过此方法确保表存在，不再各自持有 DDL。"""
         c = self._conn()
+        c.execute("PRAGMA journal_mode=WAL")
         c.executescript("""
             CREATE TABLE IF NOT EXISTS sim_trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,6 +42,24 @@ class TradeRepo:
                 updated_at TEXT DEFAULT (datetime('now'))
             );
         """)
+        # ── 迁移: 兼容旧 schema ──
+        for col, typ in [('cash_balance', 'REAL'), ('initialized', 'INTEGER DEFAULT 0')]:
+            try:
+                c.execute(f"ALTER TABLE strategy_config ADD COLUMN {col} {typ}")
+            except Exception:
+                pass
+        c.execute("UPDATE strategy_config SET cash_balance = initial_capital WHERE cash_balance IS NULL")
+        c.execute("UPDATE strategy_config SET initialized = 1 WHERE initialized IS NULL")
+        # ── 索引: 消除全表扫描 ──
+        c.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_st_strategy_id
+                ON sim_trades(strategy, id);
+            CREATE INDEX IF NOT EXISTS idx_st_positions
+                ON sim_trades(strategy, side, symbol);
+            CREATE INDEX IF NOT EXISTS idx_st_t1_check
+                ON sim_trades(symbol, side, date, strategy);
+        """)
+        c.commit()
         c.close()
 
     def _conn(self): return sqlite3.connect(self._db)
@@ -136,6 +157,58 @@ class TradeRepo:
         row = c.execute("SELECT COALESCE(SUM(pnl),0) FROM sim_trades WHERE side='sell' AND strategy=? AND pnl IS NOT NULL", (strategy,)).fetchone()
         c.close()
         return row[0]
+
+
+    # ── 交易辅助查询 ──
+    def check_t1(self, strategy: str, symbol: str, date: str) -> bool:
+        """T+1 检查: 当日是否已有该 symbol 的买入。"""
+        c = self._conn()
+        cnt = c.execute(
+            "SELECT COUNT(*) FROM sim_trades WHERE symbol=? AND side='buy' AND date=? AND strategy=?",
+            (symbol, date, strategy)
+        ).fetchone()[0]
+        c.close()
+        return cnt > 0
+
+    def get_last_buy_price(self, strategy: str, symbol: str) -> tuple | None:
+        """返回最近一次买入的 (price, shares)，用于 PnL 计算。"""
+        c = self._conn()
+        row = c.execute(
+            "SELECT price, shares FROM sim_trades WHERE symbol=? AND side='buy' AND strategy=? ORDER BY id DESC LIMIT 1",
+            (symbol, strategy)
+        ).fetchone()
+        c.close()
+        return (float(row[0]), int(row[1])) if row else None
+
+    def record_trade(self, strategy: str, date: str, symbol: str,
+                     side: str, price: float, shares: int,
+                     pnl: float = 0.0, pnl_pct: float = 0.0,
+                     board_count: int = 0) -> None:
+        """写入一笔交易并原子更新现金余额 (单连接事务)。"""
+        c = self._conn()
+        # 读取当前现金
+        cash_row = c.execute(
+            "SELECT cash_balance FROM strategy_config WHERE strategy=?",
+            (strategy,)
+        ).fetchone()
+        cash = float(cash_row[0]) if cash_row and cash_row[0] is not None else 0.0
+
+        if side == 'buy':
+            cash -= price * shares
+        else:
+            cash += price * shares
+
+        c.execute(
+            "INSERT INTO sim_trades(date, symbol, side, price, shares, pnl, pnl_pct, strategy, board_count) VALUES(?,?,?,?,?,?,?,?,?)",
+            (date, symbol, side, price, shares, pnl, pnl_pct, strategy, board_count)
+        )
+        c.execute(
+            "UPDATE strategy_config SET cash_balance = ?, updated_at = datetime('now') WHERE strategy = ?",
+            (round(cash, 2), strategy)
+        )
+        c.commit()
+        c.close()
+
 
     # ── 统计 ──
     def get_counts(self, strategy: str) -> tuple:

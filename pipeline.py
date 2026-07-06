@@ -441,11 +441,12 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
         trades = engine.get_trades(strategy, limit=50)
         total_wealth = engine.get_capital(strategy)
         cash_balance = engine.get_cash(strategy)
+        from data.trade_repo import TradeRepo; seed = TradeRepo().get_initial_capital(strategy) or 5000
         from monitor.report import generate_report, push_to_web
         report = generate_report(
             date_str, cash_balance, positions, trades,
-            pnl_total=total_wealth - engine.get_cash(strategy),
-            initial_capital=engine.get_cash(strategy),
+            pnl_total=total_wealth - seed,
+            initial_capital=seed,
         )
         push_to_web(report)
         cap = report["capital"]

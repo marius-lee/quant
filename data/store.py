@@ -777,7 +777,12 @@ class DataStore:
         """分析日线数据缺口: 每只股票的状态分类 (增量版 — PK 覆盖索引)。"""
         from datetime import date, timedelta, datetime
         from utils.date import to_str
-        cutoff = to_str(date.today() - timedelta(days=2))
+        # 以数据库全局最新日期为基准, 容忍3天缺口 (覆盖周末+单日假期)
+        max_db = conn.execute('SELECT MAX(date) FROM daily').fetchone()[0]
+        if max_db:
+            cutoff = to_str(datetime.strptime(max_db, '%Y-%m-%d') - timedelta(days=3))
+        else:
+            cutoff = to_str(date.today() - timedelta(days=2))
         stale_days = cfg("data.stale_days", 250)  # 数据过期阈值
 
         # 单次查询: PK(symbol,date) 覆盖索引, GROUP BY symbol 只取首尾

@@ -47,8 +47,8 @@ def run_backtest(start_date=None, end_date=None, capital=None):
     if os.path.exists(TRADE_DB):
         import sqlite3
         c = sqlite3.connect(TRADE_DB)
-        c.execute('DELETE FROM sim_trades')
-        c.execute('DELETE FROM strategy_config')
+        c.execute('DELETE FROM sim_trades WHERE strategy='"'"'backtest'"'"'')
+        c.execute('DELETE FROM strategy_config WHERE strategy='"'"'backtest'"'"'')
         c.commit()
         c.close()
 

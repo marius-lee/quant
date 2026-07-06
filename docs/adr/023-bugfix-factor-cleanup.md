@@ -60,3 +60,22 @@
 - `docs/HANDOFF-2026-07-03.md` — 旧 handoff
 - `CHANGELOG.md` — 变更日志
 - `docs/adr/020-022-*.md` — 设计文档引用旧名属正常历史上下文
+
+## Part D: 关键路径埋点补齐 (2026-07-06)
+
+### 原则: 静默失效必须有日志痕迹
+
+### 补齐的 5 处埋点
+| 位置 | 级别 | 内容 | 场景 |
+|------|------|------|------|
+| `factor/compute.py:_cs_zscore` | DEBUG | 有效值 < min_count → 返回 NaN | 截面标准化静默失效 |
+| `factor/compute.py:compute_amihud` | DEBUG | min_valid 过滤全部股票 | 窗口不足时因子静默空值 |
+| `factor/compute.py:compute_all_factors` | INFO | N price + N fund = total (N all-NaN) | 每期调仓因子健康度 |
+| `pipeline.py:step4` | INFO | N valid / N total factors + post_state | 因子→alpha 可观测 |
+| `backtest.py:rebalance` | INFO | +turnover 到调仓日志 | 换手率可观测 |
+
+### 原有埋点（参考，本次未动）
+- pipeline.py: [1/7]~[3/7], [5/7]~[7/7] 均有日志
+- backtest.py: 起止/止损/汇总/基准对比 均有日志
+- stats_cache.py: 评估全流程 (数据加载/IC计算/相关性/快照) 均有日志
+- compute.py: 单因子失败已有 WARNING

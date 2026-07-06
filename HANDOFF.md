@@ -13,6 +13,39 @@
 | 7 | 退出日志 | grep EXIT logs/app.log |
 
 
+## P58: 文档审计 + 策略隔离 + DB 锁修复 + dt_streak 激活 + status 徽章
+
+### 完整改动清单 (7 commits)
+
+```
+0e4207c P58 fix: status badge dynamic coloring — hot/warm/cold per trading period
+89315f2 P58 fix: auto-migrate initialized column in strategy_config
+35f1cd8 P58 final: dt_streak activated (IC=+0.039, IR=0.70) + backtest_jq.sh guard
+36fc23f docs: update CHANGELOG + HANDOFF for P58 db lock fix + residual_momentum result
+c9e0fb4 P58 fix: sqlite3 busy_timeout on all market.db write paths
+a7d9b42 P58 fix: backtest.py strategy isolation — 6 hardcoded 'quant' → STRATEGY variable
+405d503 P58: doc audit + residual_momentum_126d
+```
+
+### 核心变更
+
+**因子**: 36 因子（27 price + 9 fundamental），2 active (zt_streak, dt_streak)
+**策略隔离**: backtest.py 全部 6 处硬编码 `"quant"` → `STRATEGY="backtest"` 变量
+**DB 锁**: 所有 market.db 写路径加 `timeout=30`（daily_sync, stats_cache, factor compute, eval_stepwise）
+**界面**: status 徽章动态着色 — hot(交易中)/warm(盘前/午休/盘后)/cold(休市)
+**文档**: 14 文件审计，因子数统一为 36，ADR 状态更新，CHANGELOG 补全
+
+### 界面状态确认
+
+- 买入时间列: ✓ P57 已实现
+- 日期格式: ✓ 后端 [:19]，前端无 slice(0,16) 残留
+- 交易次数标签: ✓ HTML 已写 "交易次数（买/卖）"
+- status 徽章: ✓ 6 种状态对应 3 种颜色 (hot/warm/cold)
+- 实时报价: ✓ 5s 轮询 + 新浪 quotes
+- 盘后回退: ✓ 三级 fallback (实时→收盘价→成本价)
+- 风险暴露图: ✓ /api/risk 端点
+
+
 ## P57: 界面审计修复 + 实时报价 + 风险暴露 + 时间格式 + 文档
 
 ### 完整改动清单 (13 commits)

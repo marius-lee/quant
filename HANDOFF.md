@@ -1,4 +1,4 @@
-# Handoff: quant 项目状态 — 2026-07-07 02:30 CST
+# Handoff: quant 项目状态 — 2026-07-07 03:20 CST
 
 ## 进入检查清单
 
@@ -12,6 +12,7 @@
 ## 最新 5 个 commit
 
 ```
+7125743 P67: 数源切换 Tushare→akshare
 68fcd09 P66: 集成 3 个机构/风险/价值新因子 — 大股东减持 + 股权质押 + 股息率
 ae98ffa P65: SUE 因子落地 — 标准化未预期盈余 (PEAD)
 80580c3 docs: P64 文档同步 — CHANGELOG + HANDOFF
@@ -26,6 +27,7 @@ ae98ffa P65: SUE 因子落地 — 标准化未预期盈余 (PEAD)
 | P63 | optimizer 去硬编码: 资本分层自动判定 + risk_aversion 实时校准 | optimizer/portfolio.py, pipeline.py, config.yaml |
 | P64 | 4 新因子: asset_growth, gp_ta, ztd, northbound_20d | factor/compute.py |
 | P65 | SUE 因子 + total_shares 列 | factor/compute.py, data/fundamental.py |
+| P67 | 数源切换: holder_trade/pledge_stat Tushare→akshare | data/holder_trade.py, data/pledge.py, factor/compute.py |
 | P66 | 3 新因子: holder_reduction, pledge_ratio, dividend_yield + 3 个 Tushare 数据模块 | factor/compute.py, data/holder_trade.py, data/pledge.py, data/dividend.py |
 
 ## 当前运行状态
@@ -38,7 +40,7 @@ ae98ffa P65: SUE 因子落地 — 标准化未预期盈余 (PEAD)
 
 ## 待办
 
-- 3 新因子需同步 Tushare 数据: holder_trade, pledge_stat, dividend
+- holder_trade/pledge_stat 改用 akshare (免费), 命令见下
 - 运行 `PYTHONPATH=. bash scripts/eval_layer12.sh` 测试新因子 IC 表现
 - 完整候选清单: docs/adr/023-new-factor-candidates.md
 

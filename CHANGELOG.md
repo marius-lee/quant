@@ -1,3 +1,15 @@
+## [P67] — 2026-07-07
+
+### 数源切换: Tushare → akshare (holder_trade + pledge_stat)
+Tushare stk_holdertrade/pledge_stat 需 2000 积分, 无权限。切换为 akshare 免费源。
+
+- data/holder_trade.py: ak.stock_shareholder_change_ths 逐只拉取
+- data/pledge.py: ak.stock_gpzy_pledge_ratio_em 批拉全市场
+- factor/compute.py: SQL 改用 change_vol, 移除 clip(-0.5, 0.5)
+- dividend.py 保留 Tushare (120 积分门槛低)
+
+---
+
 ## [P66] — 2026-07-07
 
 ### 新增 3 个因子 (Step 3/3): 大股东减持 + 股权质押 + 股息率

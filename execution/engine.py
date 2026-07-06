@@ -52,7 +52,7 @@ class ExecutionEngine:
 
     def set_initial_capital(self, strategy: str, capital: float):
         """设置策略初始资金 — 委托 TradeRepo。"""
-        TradeRepo(self.db_path).seed_capital(strategy, capital)
+        TradeRepo(self.db_path).set_initial_capital(strategy, capital)
 
     def execute(
         self,

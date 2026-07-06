@@ -63,6 +63,12 @@ class ExecutionEngine:
         except sqlite3.OperationalError:
             pass
         conn.execute("UPDATE strategy_config SET cash_balance = initial_capital WHERE cash_balance IS NULL")
+        # 迁移: 添加 initialized 列 (P58 — 防止重复种子)
+        try:
+            conn.execute("ALTER TABLE strategy_config ADD COLUMN initialized INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        conn.execute("UPDATE strategy_config SET initialized = 1 WHERE initialized IS NULL")
         # P0-1: 复合索引消除全表扫描
         conn.executescript("""
             CREATE INDEX IF NOT EXISTS idx_st_strategy_id

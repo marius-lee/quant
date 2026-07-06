@@ -1240,7 +1240,7 @@ def _db_connect():
     """模板 5: 模块级共享连接 + WAL 模式. 避免每个因子函数独立 connect()."""
     conn = sqlite3.connect(_market_db_path())
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
 
@@ -1249,7 +1249,7 @@ def load_active_price_factors(status_filter='active'):
     
     status_filter: 'active' (生产), None (全部因子, 评估用).
     """
-    conn = sqlite3.connect(_market_db_path())
+    conn = _db_connect()
     name_list = list(_PRICE_FN_MAP.keys())
     placeholders = ",".join("?" * len(name_list))
     if status_filter:
@@ -1275,7 +1275,7 @@ def load_active_fundamental_factors(status_filter='active'):
     
     status_filter: 'active' (生产), None (全部因子, 评估用).
     """
-    conn = sqlite3.connect(_market_db_path())
+    conn = _db_connect()
     fn_names = list(_FUNDAMENTAL_FN_MAP.keys())
     placeholders = ",".join("?" * len(fn_names))
     if status_filter:
@@ -1298,7 +1298,7 @@ def load_active_fundamental_factors(status_filter='active'):
 
 def update_factor_evaluation(name: str, ic_mean: float, ic_ir: float):
     """回测后更新因子 IC 到数据库."""
-    conn = sqlite3.connect(_market_db_path())
+    conn = sqlite3.connect(_market_db_path(), timeout=30)
     conn.execute(
         "UPDATE factor_registry SET ic_mean=?, ic_ir=?, last_evaluated=datetime('now','localtime'), updated_at=datetime('now','localtime') WHERE name=?",
         (round(ic_mean, 6), round(ic_ir, 4), name)

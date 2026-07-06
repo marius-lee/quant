@@ -36,8 +36,15 @@ $$('.tab').forEach(btn => {
 });
 
 function loadTab(tab) {
+  // Stop portfolio poll when switching away
+  if (_portfolioTimer) { clearInterval(_portfolioTimer); _portfolioTimer = null; }
+
   if (tab === 'factors') loadFactors();
-  if (tab === 'portfolio') loadPortfolio();
+  if (tab === 'portfolio') {
+    loadPortfolio();
+    // Auto-refresh portfolio during trading hours (every 5s)
+    _portfolioTimer = setInterval(loadPortfolio, POLL_MS);
+  }
   if (tab === 'performance') loadPerformance();
   if (tab === 'overview') renderPNLChart();
 }
@@ -520,6 +527,8 @@ function connectSSE() {
     setTimeout(connectSSE, delay);
   };
 }
+
+let _portfolioTimer = null;
 
 // ── Init: render text content immediately, defer charts ──
 document.addEventListener('DOMContentLoaded', () => {

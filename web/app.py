@@ -165,33 +165,22 @@ def api_trades():
     trades = []
     positions = []
     try:
-        conn = sqlite3.connect(TRADE_DB)
+        from data.trade_repo import TradeRepo
+        repo = TradeRepo(TRADE_DB)
         if strategy:
-            rows = conn.execute(
-                "SELECT COALESCE(created_at, date) as dt, symbol, side, price, shares, pnl, pnl_pct FROM sim_trades WHERE strategy=? ORDER BY id",
-                (strategy,)
-            ).fetchall()
-            buys = conn.execute("""
-                SELECT symbol, price, shares, board_count, date FROM sim_trades
-                WHERE side='buy' AND strategy=? AND symbol NOT IN (
-                    SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?
-                )
-            """, (strategy, strategy)).fetchall()
+            raw_trades = repo.get_trades(strategy, limit=10000)
+            raw_positions = repo.get_positions(strategy)
         else:
-            rows = conn.execute(
-                "SELECT COALESCE(created_at, date) as dt, symbol, side, price, shares, pnl, pnl_pct FROM sim_trades ORDER BY id"
-            ).fetchall()
-            buys = conn.execute("""
-                SELECT symbol, price, shares, board_count, date FROM sim_trades
-                WHERE side='buy' AND symbol NOT IN (
-                    SELECT symbol FROM sim_trades WHERE side='sell'
-                )
-            """).fetchall()
-        trades = [{"date": r[0][:19] if r[0] else "", "symbol": r[1], "side": r[2], "price": r[3],
-                    "shares": r[4], "pnl": r[5] or 0, "pnl_pct": r[6] or 0} for r in rows]
-        positions = [{"symbol": r[0], "price": r[1], "shares": r[2],
-                       "board_count": r[3], "date": r[4]} for r in buys]
-        conn.close()
+            raw_trades = repo.get_trades(None, limit=10000)
+            raw_positions = repo.get_positions(None)
+        trades = [{"date": (t.get("date") or "")[:19] if t.get("date") else "",
+                    "symbol": t["symbol"], "side": t["side"], "price": t["price"],
+                    "shares": t["shares"], "pnl": t.get("pnl") or 0, "pnl_pct": t.get("pnl_pct") or 0}
+                   for t in (raw_trades or [])]
+        positions = [{"symbol": p["symbol"], "price": p.get("price", 0),
+                       "shares": p["shares"], "board_count": p.get("board_count", 0),
+                       "date": p.get("buy_time", "")} for p in (raw_positions or [])]
+        # Clean up any old import
     except Exception:
         logger.warning("api_trades: query failed (schema mismatch?)", exc_info=_DEBUG)
         return _api_response(error={"code": "INTERNAL", "message": "trades query failed"}), 500
@@ -224,37 +213,19 @@ def api_record_trade():
         return _api_response(error={"code": "INVALID_PARAMETER", "message": "side 必须是 buy 或 sell", "field": "side"}), 400
 
     today = date.today().isoformat()
-    conn = sqlite3.connect(TRADE_DB)
+    from data.trade_repo import TradeRepo
+    repo = TradeRepo()
 
     if side == "buy":
-        conn.execute("""INSERT INTO sim_trades (date, symbol, side, price, shares, board_count, strategy)
-                        VALUES (?,?,?,?,?,?,?)""",
-                     (today, symbol, "buy", price, shares, data.get("board_count", 0), strategy))
-        # 更新手动策略现金余额 (买入扣款)
-        conn.execute("UPDATE strategy_config SET cash_balance = cash_balance - ?, updated_at = datetime('now') WHERE strategy = ?",
-                     (round(price * shares, 2), strategy))
-        conn.commit()
-        conn.close()
+        repo.record_trade(strategy, today, symbol, "buy", price, shares,
+                          board_count=data.get("board_count", 0))
         return _api_response(data={"ok": True})
 
     elif side == "sell":
         pnl = (price - cost) * shares
         pnl_pct = round((price / cost - 1) * 100, 2) if cost > 0 else 0
-        sells = conn.execute("SELECT COALESCE(SUM(pnl),0) FROM sim_trades WHERE side='sell' AND strategy=?", (strategy,)).fetchone()[0]
-        buys_cost = conn.execute(
-            "SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=?",
-            (strategy,)).fetchone()[0]
-        from config.loader import get as cfg
-        from data.trade_repo import TradeRepo; base = TradeRepo().get_initial_capital(strategy)
-        capital_after = base + sells + pnl - buys_cost + (price * shares)
-        conn.execute("""INSERT INTO sim_trades (date, symbol, side, price, shares, pnl, pnl_pct, strategy)
-                        VALUES (?,?,?,?,?,?,?,?)""",
-                     (today, symbol, "sell", price, shares, round(pnl, 2), pnl_pct, strategy))
-        # 更新手动策略现金余额
-        conn.execute("UPDATE strategy_config SET cash_balance = ?, updated_at = datetime('now') WHERE strategy = ?",
-                     (round(capital_after, 2), strategy))
-        conn.commit()
-        conn.close()
+        repo.record_trade(strategy, today, symbol, "sell", price, shares,
+                          pnl=round(pnl, 2), pnl_pct=pnl_pct)
         return _api_response(data={"ok": True, "pnl": round(pnl, 2), "pnl_pct": pnl_pct})
 
     else:

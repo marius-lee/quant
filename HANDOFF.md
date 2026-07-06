@@ -106,3 +106,28 @@ Git: origin/main @ 17a1377
 - 因子: 35 注册 (1 active: zt_streak)
 - 本金: ¥5000 已入库 trades.db → strategy_config.initial_capital
 - 所有关键路径均已埋点 (pipeline, synth, backtest, data sync)
+
+## 2026-07-06 ~09:00
+
+### P49: Pipeline 两阶段分离 + 三时段调度 + 策略隔离 (ADR 024)
+
+**问题**: 原有 pipeline 在 15:30 盘后一步完成信号生成+执行，用当日收盘数据产生信号并在收盘价"成交"——因果颠倒（未来函数）。且 manual/quant 策略交易混在同一张表，无隔离。
+
+**架构变更**:
+- `pipeline.py`: 拆为 `generate_signals()` (Steps 0-5, 只产目标持仓不执行) + `execute_signals()` (Steps 6-7, 开盘价 delta 执行)
+- `scheduler.py`: 三时段 — 08:30 信号 → 09:30 执行 → 15:30 归因
+- `web/app.py` `/api/trade`: 修复 strategy 未定义 NameError bug, 所有手动交易固定 `strategy='manual'`
+- `web/app.py` `/api/quotes`: 集成止损扫描, 复用现有 5s 报价路径, 无额外定时器
+- `execution/engine.py`: 无需改动, 已支持 strategy 过滤和开盘价执行
+
+**策略隔离**:
+| strategy | 来源 | 用途 |
+|---|---|---|
+| `quant` | pipeline 自动 | 纸盘模拟, 全自动执行 |
+| `manual` | 前端手动录单 | 券商户实盘追踪 |
+
+### 当前系统状态
+- Web app: 8521 端口 (需重启以应用 /api/trade 修复和 /api/quotes 止损)
+- 因子: 35 注册 (1 active: zt_streak)
+- 本金: ¥5000 strategy_config.initial_capital
+- 交易日流程: 08:30 信号 → 09:30 执行 → 盘中 5s 报价+止损 → 15:30 归因

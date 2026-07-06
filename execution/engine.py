@@ -76,7 +76,12 @@ class ExecutionEngine:
             else:
                 symbol, side, shares, price = o.symbol, o.side, o.shares, o.price
 
-            if side == "sell":
+            # 计算交易成本 (佣金, 滑点)
+            if side == "buy":
+                cost = self.cost_model.buy_cost(price, shares) - price * shares
+                pnl = 0.0
+                pnl_pct = 0.0
+            else:
                 # T+1 检查
                 if repo.check_t1(strategy, symbol, date):
                     from utils.logger import get_logger
@@ -84,22 +89,21 @@ class ExecutionEngine:
                         f"T+1 blocked: {symbol} bought today, cannot sell until next trading day"
                     )
                     continue
-                # 计算 PnL
+                # 计算 PnL (含佣金)
                 proceeds = self.cost_model.sell_proceeds(price, shares)
+                cost = price * shares - proceeds  # 佣金部分
                 orig = repo.get_last_buy_price(strategy, symbol)
                 pnl = 0.0
                 pnl_pct = 0.0
                 if orig:
                     pnl = proceeds - orig[0] * shares
                     pnl_pct = (proceeds / (orig[0] * shares) - 1) if orig[0] * shares > 0 else 0.0
-            else:
-                pnl = 0.0
-                pnl_pct = 0.0
 
             repo.record_trade(
                 strategy, date, symbol, side, price, shares,
                 pnl=round(pnl, 2), pnl_pct=round(pnl_pct, 2),
-                board_count=getattr(o, 'board_count', 0)
+                board_count=getattr(o, 'board_count', 0),
+                cost=round(cost, 2)
             )
             executed += 1
 

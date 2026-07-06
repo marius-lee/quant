@@ -91,3 +91,18 @@ Git: origin/main @ 17a1377
 - Sharpe 0.843 与 -82% 收益同时出现: 根因是波动率拖累 (σ=13.5%日波动, 算术日均 +0.72% 但方差减损 -0.91%)
 - 信号有效 (zt_streak+dt_streak), 仓位管理崩溃级 (σ=沪深300的11倍)
 - 四档推进: 第一档(改参数)→第二档.1(动量变体)→第二档.2(残差动量)→第三档(算法升级)
+
+## 2026-07-06 ~08:42
+
+### P48: 消除全部静默 except-pass 模式
+- **问题**: 前次审计聚焦 return-value fallback 和 DB schema mismatch，遗漏了 10 个数据同步函数中的行级 `except Exception: pass`
+- **修复**: 9 个 data/*.py sync 函数 → `except Exception as e_row: logger.debug(...)`；monitor/report.py push_to_web → logger.debug；jq_valuation.py config load → logger.warning
+- **额外 bug**: data/store.py:356 `except Exception:` 缺少 `as e` 但 f-string 引用了 `{e}`，会导致 NameError
+- **验证**: 全代码扫描确认 0 剩余未标注的静默吞异常；0 DB schema-query 列名不匹配
+- **4 个保留的 bare except-pass**: backtest.py:99 (stop-loss optional), pipeline.py:199 (benchmark optional), store.py:317 (bs.logout cleanup), cache.py:259 (backend probe chain) — 均有注释或为级联探针逻辑
+
+### 当前系统状态
+- Web app: 8521 端口运行中 (PID 43441)
+- 因子: 35 注册 (1 active: zt_streak)
+- 本金: ¥5000 已入库 trades.db → strategy_config.initial_capital
+- 所有关键路径均已埋点 (pipeline, synth, backtest, data sync)

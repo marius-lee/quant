@@ -68,6 +68,54 @@ class RedisStateBroker(StateBroker):
             state["capital"] = round(capital, 2)
             state["total_asset"] = round(capital + pos_value, 2)
             state["pos_value"] = round(pos_value, 2)
+
+            # ── PnL + metrics ──
+            base = repo.get_initial_capital("quant")
+            if base <= 0:
+                base = 5000.0
+            realized = repo.get_pnl("quant")
+            total_pnl = round(capital + pos_value - base, 2)
+            state["pnl"] = {
+                "realized": round(realized, 2),
+                "total": total_pnl,
+                "unrealized": round(total_pnl - realized, 2),
+            }
+            total_return_pct = round(total_pnl / base * 100, 2) if base > 0 else 0
+            _, sells, wins = repo.get_counts("quant")
+            win_rate = round(wins / sells * 100, 1) if sells > 0 else 0
+            state["metrics"] = {
+                "total_return_pct": total_return_pct,
+                "win_rate": win_rate,
+                "total_buys": repo.get_counts("quant")[0],
+                "total_sells": sells,
+                "initial_capital": base,
+            }
+
+            # ── 交易日状态 ──
+            from execution.calendar import get_trading_period
+            state["status"] = get_trading_period()
+
+            # ── 股票名称 lookup ──
+            import sqlite3 as _sql
+            try:
+                market_db = _os.path.join(_root, "data", "market.db")
+                if _os.path.exists(market_db):
+                    mc = _sql.connect(market_db)
+                    syms = [p["symbol"] for p in positions]
+                    if syms:
+                        placeholders = ",".join(["?"] * len(syms))
+                        rows = mc.execute(
+                            f"SELECT symbol, name FROM stocks WHERE symbol IN ({placeholders})",
+                            syms
+                        ).fetchall()
+                        name_map = {r[0]: r[1] for r in rows}
+                        for p in positions:
+                            if name_map.get(p["symbol"]):
+                                p["name"] = name_map[p["symbol"]]
+                    mc.close()
+            except Exception:
+                pass
+
             state["positions"] = positions
         except Exception:
             pass

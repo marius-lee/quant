@@ -1,96 +1,57 @@
-# Handoff: quant 项目状态 — 2026-07-06 12:10 CST
+# Handoff: quant 项目状态 — 2026-07-06 12:34 CST
 
 ## 进入检查清单（每次会话必过）
 
 | # | 检查项 | 命令/方法 |
 |---|--------|----------|
-| 1 | **先看日志** | `tail -50 data/scheduler.log` + `tail -30 logs/app.log` |
-| 2 | 服务存活 | `lsof -i:8521` + `launchctl list | grep quant` |
-| 3 | 界面 KPI 逐项核 | 总资产、PnL、现金、持仓市值、交易次数、胜率——值是否正确？标签是否清晰？0% 是否有意义？ |
-| 4 | 数据一致性 | `cash_balance` 是否 = 可用资金？持仓数量是否 = 总交易(买-卖)？总资产 = 现金 + 持仓市值？ |
-| 5 | scheduler 状态 | `grep 'PHASE.*STATUS' data/scheduler.log | tail -5` — 今日是否正常执行？ |
-| 6 | 退出日志 | `grep EXIT logs/app.log` — 有没有异常退出？ |
+| 1 | 先看日志 | tail -50 logs/app.log + tail -30 logs/quant.log |
+| 2 | 服务存活 | lsof -i:8521 + launchctl list | grep quant |
+| 3 | 界面 KPI 逐项核 | 总资产/PnL/PnL%/胜率/交易次数(买/卖)/可用资金/持仓市值 → 值/标签是否正确 |
+| 4 | 数据一致性 | total_asset === capital + pos_value? pnl === total_asset - base? |
+| 5 | scheduler 状态 | grep PHASE logs/quant.log | tail -5 |
+| 6 | 退出日志 | grep EXIT logs/app.log |
 
 
-
-## 本次会话（P56）: 进程保活 + 日志轮转 + 资金显示修复
+## 本次会话（P57）: 界面审计修复 — state_broker + 前端 + 日志清理
 
 ### 问题
-1. web app 启动后静默退出，无原因记录
-2. scheduler 每次重启都执行 Phase 1+2（无视时间）
-3. 前端现金显示 ¥5,000 而非实际 ¥1,017
-4. launchd 日志无限追加，无轮转
+1. /api/state status 固定"休市"→ 应为交易日判断
+2. state 无 pnl/metrics 字段 → 前端无 PnL
+3. 持仓 name 为空 → 未从 market.db lookup
+4. 胜率 0.0% 无意义 → 0 笔卖出时应显示"—"
+5. PnL 百分比用错基数 → 应使用 initial_capital
+6. 旧日志残留 60MB+
 
 ### 修复
-- **scheduler.py**: run_loop 启动时检查时间，09:30 后跳过 Phase 1+2，15:45 后跳过 Phase 3
-- **restart.sh**: web app 改用 launchd 管理 (com.quant.webapp.plist)，不再用 `&` 后台
-- **web/state_broker.py**: RedisStateBroker 跨进程；_init_state() 从 trades.db 读资金/持仓；get() 合并 trades.db > Redis
-- **web/app.py**: SIGTERM/SIGINT/atexit 退出埋点
-- **utils/logger.py**: TimedRotatingFileHandler → logs/app.log，按天轮转，保留 10 天
-- **data/trades.db**: strategy_config.cash_balance 从 capital_after 回填 (¥1,017.03)
 
-### 日志体系
-| 文件 | 轮转 | 保留 | 日均 |
-|------|------|------|------|
-| logs/app.log | 每天午夜 | 10天 | <500KB |
-| logs/quant.log (JSON) | 10MB | 5份 | ~2MB |
-| data/scheduler.log | 无 (launchd stdout) | 无限 | ~200KB |
-| data/webapp.log | 无 (launchd stdout) | 无限 | ~100KB |
+**web/state_broker.py — _init_state()**
+- 新增 state["pnl"] = {realized, total, unrealized}
+- 新增 state["metrics"] = {total_return_pct, win_rate, total_buys, total_sells, initial_capital}
+- status 改为 is_trading_day() 判定
+- 持仓 name 从 market.db.stocks lookup
 
-### 当前运行
-- Web: PID 47802, 8521 端口, launchd
-- Scheduler: PID 47806, 等待 15:30 Phase 3
-- 持仓: 002072 (200股) + 002767 (100股), 现金 ¥1,017, 总资产 ¥4,986
+**web/app.js — 两处胜率 + PnL%**
+- renderKPIs: total_sells===0 时胜率显示"—"; PnL% 改用 initial_capital
+- renderPerfStats: 同上
+
+**web/app.py — /api/performance**
+- 新增 initial_capital, total_return_pct
+
+**日志清理**
+- 删除旧 quant.log.1-5(50MB+), server.err(25MB), push.log, web.log, server.log
+- 保留: app.log(日轮转10天) + quant.log(10MB×5)
+
+### 验证结果
+- total_asset=4986.03, capital=1017.03, pos_value=3969.00, pnl=-13.97 OK
+- total_asset === capital + pos_value OK
+- pnl === total_asset - base(5000) OK
+- 持仓: 002072凯瑞德×200 + 002767先锋电子×100 OK
+- 胜率: 0卖 → "—" OK
+- status: 运行中 OK
+- 退出日志: SIGTERM→atexit OK
+
 
 ---
-
-# Handoff: quant 项目状态 — 2026-07-05 22:15 CST
-# Handoff: quant 项目状态 — 2026-07-06 10:50 CST
-
-## 当前运行状态
-- Web 应用：端口 8521，运行中
-- Scheduler：launchd 管理（com.quant.scheduler.plist），三时段模式
-- 今日 Phase 1+2 已执行（10:08），持仓 2 只（002072, 002767），总权益 ~¥440K
-- 因子缓存预热中（每次重启 ~2-3 分钟）
-
-## 最近修改（P55）
-- pipeline.py:128 改用 is_initialized() 防重复注资
-- strategy_config 表：initialized 标志位，cash_balance 为单一现金来源
-
-## 启动/重启命令
-```bash
-cd /Users/mariusto/project/quant && ./restart.sh
-```
-
-## 关键文件
-- Web: web/app.py (Flask, 8521)
-- 调度: scheduler.py (launchd)
-- 流水线: pipeline.py (generate_signals + execute_signals)
-- 资金: data/trade_repo.py (TradeRepo: cash_balance, initialized, positions)
-- 前端: web/static/app.js (SSE + 5s poll)
-- 数据: data/store.py (DataStore: daily pull, gap analysis)
-- 因子: factor/compute.py, factor/stats_cache.py
-
-## 数据库
-- data/market.db: 5208 只股票，日线到 2026-07-06
-- data/trades.db: sim_trades (quant/manual/backtest 三策略隔离)
-
-## 策略
-- quant: 实盘纸交易，¥5,000 本金，zt_streak 单因子
-- manual: 手动录单（接真实券商）
-- backtest: 因子回测
-
-## 下次进入时优先处理
-1. 等因子预热完成，打开 http://localhost:8520 确认仪表盘
-2. 观察 15:30 Phase 3（归因报告）是否正常执行
-3. 检查 scheduler.log 确认没有重复拉取数据的问题
-
-
-### P55: pipeline.py 防重复注资修复
-- `data/trade_repo.py` (e9cd3a2): 新增 `is_initialized()` 查 `strategy_config.initialized` 标志 + `set_initial_capital()` 写入 `initialized=1`
-- `pipeline.py` (7194393): `generate_signals()` 改用 `is_initialized()` 判断，亏完不自动重新注资
-- 逻辑：`cash_balance` 可降到 0，但 `initialized=1` 不会回退 → 不会再触发 `set_initial_capital()`
-
 
 ## 本次会话（2026-07-05）
 

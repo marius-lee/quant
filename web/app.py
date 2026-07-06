@@ -367,6 +367,8 @@ def api_performance():
         "realized_pnl": round(realized_pnl, 2),
         "total_pnl": total_pnl,
         "total_asset": total_asset,
+        "initial_capital": base,
+        "total_return_pct": round(total_pnl / base * 100, 2) if base > 0 else 0,
         "total_sells": total_sells,
         "win_rate": win_rate,
         "total_buys": buys,

@@ -1,3 +1,36 @@
+# Handoff: quant 项目状态 — 2026-07-06 12:10 CST
+
+## 本次会话（P56）: 进程保活 + 日志轮转 + 资金显示修复
+
+### 问题
+1. web app 启动后静默退出，无原因记录
+2. scheduler 每次重启都执行 Phase 1+2（无视时间）
+3. 前端现金显示 ¥5,000 而非实际 ¥1,017
+4. launchd 日志无限追加，无轮转
+
+### 修复
+- **scheduler.py**: run_loop 启动时检查时间，09:30 后跳过 Phase 1+2，15:45 后跳过 Phase 3
+- **restart.sh**: web app 改用 launchd 管理 (com.quant.webapp.plist)，不再用 `&` 后台
+- **web/state_broker.py**: RedisStateBroker 跨进程；_init_state() 从 trades.db 读资金/持仓；get() 合并 trades.db > Redis
+- **web/app.py**: SIGTERM/SIGINT/atexit 退出埋点
+- **utils/logger.py**: TimedRotatingFileHandler → logs/app.log，按天轮转，保留 10 天
+- **data/trades.db**: strategy_config.cash_balance 从 capital_after 回填 (¥1,017.03)
+
+### 日志体系
+| 文件 | 轮转 | 保留 | 日均 |
+|------|------|------|------|
+| logs/app.log | 每天午夜 | 10天 | <500KB |
+| logs/quant.log (JSON) | 10MB | 5份 | ~2MB |
+| data/scheduler.log | 无 (launchd stdout) | 无限 | ~200KB |
+| data/webapp.log | 无 (launchd stdout) | 无限 | ~100KB |
+
+### 当前运行
+- Web: PID 47802, 8521 端口, launchd
+- Scheduler: PID 47806, 等待 15:30 Phase 3
+- 持仓: 002072 (200股) + 002767 (100股), 现金 ¥1,017, 总资产 ¥4,986
+
+---
+
 # Handoff: quant 项目状态 — 2026-07-05 22:15 CST
 # Handoff: quant 项目状态 — 2026-07-06 10:50 CST
 

@@ -7,6 +7,7 @@ cd /Users/mariusto/project/quant
 echo "=== 停止旧进程 ==="
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.quant.scheduler.plist 2>/dev/null || echo "  scheduler 未运行"
 pkill -f "python.*web/app.py" 2>/dev/null || echo "  web app 未运行"
+find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null && echo "  pycache cleared"
 sleep 2
 
 echo "=== 启动 Web 应用 ==="

@@ -148,3 +148,26 @@ Git: origin/main @ 17a1377
 - `data/store.py`: `cfg` import 在 `if start is None` 内但 `batch_size=cfg(...)` 在外，Python 3.14 报 `cannot access local variable cfg where it is not associated`。将 import 移到 if 之前。
 - `daily_sync.py`: `step5_fundamentals()` 调用 `sync_all(max_fetch=500)` 缺少必传参数 `conn`。补建连接传入。
 
+
+## 2026-07-06 ~09:55
+
+### P53: 代码变更强校验机制 — 防止静默回归
+
+**根因分析**：今天上午连续出现 4 个可预防的 bug（cfg scope、sync_all 缺参、stale_days 误分类、KeepAlive 自动复活旧代码），共同根因是"改完看 diff 就提交，没让系统实际跑一次验证"。
+
+**落地措施**：
+
+1. `.pre-commit-check.sh` — 模块级提交前校验脚本
+   - `./.pre-commit-check.sh store` → 验证 _analyze_daily_gaps 不含 stale_days 检查 + 语法
+   - `./.pre-commit-check.sh all` → 全模块语法检查
+   - 拒绝通过 → 禁止提交
+
+2. `restart.sh` 增强 — 重启前自动清 `__pycache__/`
+   - 防止 `.pyc` 缓存导致新代码不生效
+
+3. launchd `KeepAlive` → 移除
+   - scheduler 是 while-True 长驻进程，crash 应人工排查，非自动盲复活
+
+**提交前铁律**（涉及数据管线/scheduler/launchd 的改动）：
+   改代码 → 跑 pre-commit-check → restart.sh → tail -f 日志确认数值正确 → 提交
+

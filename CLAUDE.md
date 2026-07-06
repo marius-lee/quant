@@ -132,6 +132,20 @@ logger = get_logger("module.name")
 
 None — all legacy files cleaned as of P57.
 
+
+## Data quirks (not bugs)
+
+### Cash balance ≠ initial_capital - Σ(stock_cost)
+差额是交易成本：佣金(万三，最低¥5/笔) + 滑点(千一，双向)。CostModel 在 `execution/cost.py`。
+验证方法：
+```python
+python3 -c "
+c = __import__('execution.cost', fromlist=['CostModel']).CostModel()
+trades = [(200, 10.60), (100, 18.49)]
+print(sum(c.buy_cost(s, p) - s*p for s,p in trades))  # = 13.97
+"
+```
+
 ## Coding rule: Read before design
 
 Before proposing any solution:

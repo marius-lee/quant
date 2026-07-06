@@ -49,7 +49,8 @@ class ExecutionEngine:
                 pnl_pct REAL DEFAULT 0,
                 capital_after REAL DEFAULT 0,
                 strategy TEXT DEFAULT 'quant',
-                board_count INTEGER DEFAULT 0
+                board_count INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now'))
             );
             CREATE TABLE IF NOT EXISTS strategy_config (
                 strategy TEXT PRIMARY KEY,
@@ -202,7 +203,7 @@ class ExecutionEngine:
 
         # 更新现金余额到 strategy_config (资金唯一真相源)
         conn.execute(
-            "UPDATE strategy_config SET cash_balance = ?, updated_at = datetime('now') WHERE strategy = ?",
+            "UPDATE strategy_config SET cash_balance = ?, updated_at = datetime('now')) WHERE strategy = ?",
             (round(capital, 2), strategy))
         conn.commit()
         conn.close()

@@ -18,6 +18,7 @@
 ### 完整改动清单 (7 commits)
 
 ```
+b909ef9 P58 fix: eval_stepwise.sh guard for empty backtest result (KeyError: total_wealth)
 0e4207c P58 fix: status badge dynamic coloring — hot/warm/cold per trading period
 89315f2 P58 fix: auto-migrate initialized column in strategy_config
 35f1cd8 P58 final: dt_streak activated (IC=+0.039, IR=0.70) + backtest_jq.sh guard

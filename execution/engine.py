@@ -117,6 +117,10 @@ class ExecutionEngine:
         """获取当前现金余额 — 委托 TradeRepo (strategy_config.cash_balance)。"""
         return TradeRepo(self.db_path).get_cash(strategy)
 
+    def is_initialized(self, strategy: str = "quant") -> bool:
+        """策略是否已初始化 (防止亏完后重复种子)。"""
+        return TradeRepo(self.db_path).is_initialized(strategy)
+
     def set_initial_capital(self, strategy: str, capital: float):
         """设置策略初始资金。"""
         conn = sqlite3.connect(self.db_path)

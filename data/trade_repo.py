@@ -52,13 +52,24 @@ class TradeRepo:
         """
         c = self._conn()
         row = c.execute(
-            "SELECT cash_balance FROM strategy_config WHERE strategy=?",
+            "SELECT cash_balance, COALESCE(initialized,0) FROM strategy_config WHERE strategy=?",
             (strategy,)).fetchone()
         c.close()
-        return round(float(row[0]), 2) if row and row[0] is not None else 0.0
+        if row and row[0] is not None:
+            return round(float(row[0]), 2)
+        return 0.0
+
+    def is_initialized(self, strategy: str = "quant") -> bool:
+        """策略是否已初始化 (initial_capital 已写入且不应被覆盖)。"""
+        c = self._conn()
+        row = c.execute(
+            "SELECT COALESCE(initialized,0) FROM strategy_config WHERE strategy=?",
+            (strategy,)).fetchone()
+        c.close()
+        return bool(row and row[0])
 
     def get_initial_capital(self, strategy: str = "quant") -> float:
-        """读取种子本金 (strategy_config 表, backtest.py 启动时写入)."""
+        """读取种子本金 (strategy_config 表, 启动时写入一次)。"""
         c = self._conn()
         row = c.execute(
             "SELECT initial_capital FROM strategy_config WHERE strategy=?",
@@ -69,7 +80,7 @@ class TradeRepo:
         """设置种子本金 (同时初始化现金余额)。"""
         c = self._conn()
         c.execute(
-            "INSERT OR REPLACE INTO strategy_config (strategy, initial_capital, cash_balance, updated_at) VALUES (?, ?, ?, datetime('now'))",
+            "INSERT OR REPLACE INTO strategy_config (strategy, initial_capital, cash_balance, initialized, updated_at) VALUES (?, ?, ?, 1, datetime('now'))",
             (strategy, capital, capital))
         c.commit(); c.close()
         logger.info(f"[capital] {strategy} initial_capital=cash_balance={capital}")

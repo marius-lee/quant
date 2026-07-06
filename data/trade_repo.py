@@ -30,8 +30,12 @@ class TradeRepo:
             );
             CREATE TABLE IF NOT EXISTS strategy_config (
                 strategy TEXT PRIMARY KEY,
-                config_json TEXT,
-                created_at TEXT DEFAULT (datetime('now'))
+                initial_capital REAL NOT NULL DEFAULT 5000,
+                max_positions INTEGER DEFAULT 20,
+                stop_loss_pct REAL DEFAULT 0.08,
+                combine_mode TEXT DEFAULT 'sleeve',
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
             );
         """)
         c.close()
@@ -61,6 +65,14 @@ class TradeRepo:
             (strategy,)).fetchone()
         c.close()
         return float(row[0]) if row else 0.0
+    def set_initial_capital(self, strategy: str, capital: float):
+        """设置种子本金。"""
+        c = self._conn()
+        c.execute(
+            "INSERT OR REPLACE INTO strategy_config (strategy, initial_capital, updated_at) VALUES (?, ?, datetime('now'))",
+            (strategy, capital))
+        c.commit(); c.close()
+        logger.info(f"[capital] {strategy} initial_capital = {capital}")
 
     # ── 持仓 ──
     def get_positions(self, strategy: str) -> list[dict]:

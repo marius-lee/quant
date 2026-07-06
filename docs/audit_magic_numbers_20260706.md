@@ -41,3 +41,18 @@
 4. **#4** — 止损和风险窗口从 config 读
 5. **#5-#11** — 加注释说明依据，部分可 config 化
 6. **#12-#16** — 加注释说明原因即可
+
+---
+
+## 状态更新 — 2026-07-07
+
+**全部 16 项已解决：**
+
+| # | 处理方式 | 关联 |
+|---|----------|------|
+| 1-8,10 | RiskLimits/5000/LOT_SIZE/止损/窗口/因子校准/clip/stats — 全部挪到 config.yaml | P60 |
+| 9 | synth.py sleeve_compose 去掉默认值 | P61 |
+| 11 | neutralize.py + pipeline.py 统一 min_common_stocks | P61 |
+| 12-14 | web/app.py, cache.py, store.py 加注释 | P61 |
+| 15 | attribution.py rf/periods → config | P61 |
+| 16 | daily_sync.py — 经查不存在此文件 (已合并到 store.py) | — |

@@ -45,7 +45,7 @@ PYTHONPATH=. python3 -m pytest tests/ -v
 
 ### Layer 2: Factor (`factor/`)
 - `base.py` — **Factor** 抽象基类: `compute(data) → Series`, `evaluate(values, returns) → dict`
-- `compute.py` — 因子计算：35因子 (26 price + 9 fundamental) = PRICE_FN_MAP(26) + FUNDAMENTAL_FN_MAP(9)，覆盖涨停连板/跌停连板/动量/低波/偏度/价值/规模/盈利/流动性/技术面
+- `compute.py` — 因子计算：36因子 (27 price + 9 fundamental) = PRICE_FN_MAP(26) + FUNDAMENTAL_FN_MAP(9)，覆盖涨停连板/跌停连板/动量/低波/偏度/价值/规模/盈利/流动性/技术面
 - `evaluate.py` — 截面 Rank IC + IC_IR + 衰减分析 + 相关性矩阵
 - `synth.py` — 因子合成：`equal_weight()` / `ic_weighted()`
 
@@ -103,7 +103,7 @@ from config.loader import get as cfg
 value = cfg("factor.min_abs_ic", 0.02)
 ```
 
-Config sections: `data`, `factor`, `alpha`, `risk`, `optimizer`, `execution`, `backtest`, `web`, `screening`, `cache`
+Config sections: `data`, `factor`, `alpha`, `risk`, `risk.neutralize`, `optimizer`, `execution`, `backtest`, `web`, `screening`, `cache`, `calendar`, `attribution`
 
 ## Logging convention
 
@@ -117,7 +117,7 @@ logger = get_logger("module.name")
 | File | Status |
 |------|--------|
 | `factor/base.py` | Done |
-| `factor/compute.py` | Done (35因子, 2 active: zt_streak + dt_streak) |
+| `factor/compute.py` | Done (36因子, 2 active: zt_streak + dt_streak) |
 | `factor/evaluate.py` | Done |
 | `factor/synth.py` | Done |
 | `alpha/model.py` | Done |

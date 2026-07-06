@@ -111,6 +111,23 @@ def api_positions():
         from data.trade_repo import TradeRepo
         repo = TradeRepo(TRADE_DB)
         raw = repo.get_positions(strategy)
+        # ── stock name lookup ──
+        name_map = {}
+        try:
+            import sqlite3 as _sql
+            market_db = os.path.join(os.path.dirname(__file__), "..", "data", "market.db")
+            if os.path.exists(market_db):
+                mc = _sql.connect(market_db)
+                syms = [p["symbol"] for p in raw]
+                if syms:
+                    ph = ",".join(["?"] * len(syms))
+                    rows = mc.execute(
+                        f"SELECT symbol, name FROM stocks WHERE symbol IN ({ph})", syms
+                    ).fetchall()
+                    name_map = {r[0]: r[1] for r in rows}
+                mc.close()
+        except Exception:
+            pass
         for p in raw:
             px = p.get("price", 0)
             positions.append({
@@ -118,7 +135,7 @@ def api_positions():
                 "board_count": p.get("board_count", 0), "date": p.get("date", ""),
                 "current": px, "pnl_pct": 0,
                 "value": round(p["shares"] * px, 2),
-                "name": "", "change_pct": 0,
+                "name": name_map.get(p["symbol"], ""), "change_pct": 0,
             })
     except Exception:
         logger.warning("api_positions: query failed", exc_info=_DEBUG)

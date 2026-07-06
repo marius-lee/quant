@@ -190,8 +190,9 @@ Complete system architecture overhaul from Chen Xiaoqun board-trading system to 
 
 ## [3.5.1] — 2026-07-06
 
-### P58: 文档审计 + residual_momentum_126d + 回测隔离修复
+### P58: 文档审计 + residual_momentum_126d + 回测隔离修复 + DB 锁修复
 
 - **14文件文档审计**: 统一因子数 35→36, ADR 状态更新, CHANGELOG 补全 v3.2-v3.5, 旧 HANDOFF 加归档标记
 - **residual_momentum_126d**: Kakushadze & Serur (2018) Ch.3.7 残差动量落地, 36th factor
-- **backtest.py 策略隔离修复**: 6处硬编码 `"quant"` 改为 `STRATEGY="backtest"` 变量, 消除回测污染实盘数据的风险 (commit e3f1aca 的修复仅改了1/5处)
+- **backtest.py 策略隔离修复**: 6处硬编码 `"quant"` 改为 `STRATEGY="backtest"` 变量
+- **sqlite3 busy_timeout 全线修复**: daily_sync/factor_compute/stats_cache/eval_stepwise 所有 market.db 写连接加 timeout=30, 消除回测污染实盘数据的风险 (commit e3f1aca 的修复仅改了1/5处)

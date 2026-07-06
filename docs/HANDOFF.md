@@ -28,6 +28,8 @@ pipeline.py (benchmark 可选注释), backtest.py (stop-loss 可选注释), exec
 历史文档保留不动。
 
 ## 因子状态
+- **P58**: residual_momentum_126d 实测 IC=-0.0027/t=0.1 — A股不成立 (同原始价格动量)
+- 36因子全量评估: 6个通过 t-test, 2个进候选 (zt_streak+dt_streak)
 - **死锁已修复 (P45, commit 17a1377)**: eval_stepwise.sh 不再过滤 deprecated 因子, 35 因子全量评估
 - Active: zt_streak (IC=+0.0424, t=7.1)
 - Pass Layer 1+2 (IC + t-test): dt_streak, vol_price_corr_10d, roa, roe_reported, gap_5d
@@ -55,3 +57,9 @@ pipeline.py (benchmark 可选注释), backtest.py (stop-loss 可选注释), exec
 - [docs/adr/018-factor-eval-deadlock.md](/Users/mariusto/project/quant/docs/adr/018-factor-eval-deadlock.md) — deadlock diagnosis + fix record
 - [docs/adr/023-bugfix-factor-cleanup.md](/Users/mariusto/project/quant/docs/adr/023-bugfix-factor-cleanup.md) — full change log
 - [data/market.db](/Users/mariusto/project/quant/data/market.db) — factor_registry (35 rows)
+
+
+### P58 基础设施修复
+- `backtest.py` 策略隔离: 6处硬编码 `"quant"` → `STRATEGY` 变量
+- `sqlite3 busy_timeout`: 所有 `market.db` 写连接加 `timeout=30`, 消除 eval vs scheduler 锁冲突
+- `factor/compute.py`: `load_active_price/fundamental_factors` 改用 `_db_connect()` 共享连接

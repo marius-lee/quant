@@ -360,10 +360,58 @@ function renderExposureCharts(positions) {
     elSector.innerHTML = '<div class="empty">暂无持仓数据</div>';
   }
 
-  if (elRisk) {
-    elRisk.innerHTML = '<div class="empty">风险暴露 — 待 pipeline 实现</div>';
+  if (elRisk && positions.length) {
+    renderRiskChart(positions);
+  } else if (elRisk) {
+    elRisk.innerHTML = '<div class="empty">暂无持仓数据</div>';
   }
 }
+async function renderRiskChart(positions) {
+  const el = document.getElementById('chart-exposure-risk');
+  if (!el) return;
+  try {
+    const syms = positions.map(p => p.symbol).join(',');
+    const rd = await fetchJSON(API + '/risk?symbols=' + syms);
+    const symbols = rd?.symbols || [];
+    if (!symbols.length) {
+      el.innerHTML = '<div class="empty">无风险数据</div>';
+      return;
+    }
+    const data = [
+      {
+        type: 'bar', name: '年化波动率%',
+        x: symbols.map(s => s.symbol),
+        y: symbols.map(s => s.annual_vol_pct),
+        marker: { color: '#f85149' },
+        text: symbols.map(s => s.annual_vol_pct + '%'),
+        textposition: 'outside',
+        textfont: { ...PLOTLY_FONT, size: 10 },
+      },
+      {
+        type: 'bar', name: '最大回撤%',
+        x: symbols.map(s => s.symbol),
+        y: symbols.map(s => s.max_dd_pct),
+        marker: { color: '#d29922' },
+        text: symbols.map(s => s.max_dd_pct + '%'),
+        textposition: 'outside',
+        textfont: { ...PLOTLY_FONT, size: 10 },
+      },
+    ];
+    Plotly.newPlot('chart-exposure-risk', data, {
+      ...PLOTLY_BG,
+      title: { text: '风险暴露', font: PLOTLY_FONT },
+      xaxis: { tickfont: PLOTLY_FONT },
+      yaxis: { title: { text: '%', font: PLOTLY_FONT }, tickfont: PLOTLY_FONT },
+      barmode: 'group',
+      margin: { t: 40, b: 40, l: 50, r: 10 },
+      legend: { font: PLOTLY_FONT },
+    }, PLOTLY_CONFIG);
+  } catch (e) {
+    console.warn('risk chart error:', e.message);
+    el.innerHTML = '<div class="empty">风险数据加载失败</div>';
+  }
+}
+
 
 // ═══════════════════════════════════════════
 // PERFORMANCE — render on tab switch

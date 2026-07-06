@@ -331,6 +331,75 @@ def api_quotes():
     })
 
 
+
+@app.route("/api/risk")
+def api_risk():
+    """风险暴露 — 持仓波动率 & 最大回撤 (60日滚动).
+
+    ?symbols=002072,002767 — 需要计算的持仓代码列表
+    返回: {symbols: [{symbol, weight_pct, annual_vol_pct, max_dd_pct}]}
+    """
+    from flask import request
+    syms_str = request.args.get("symbols", "")
+    symbols = [s.strip() for s in syms_str.split(",") if s.strip() and len(s.strip()) == 6]
+    if not symbols:
+        return _api_response(data={"symbols": []})
+
+    import sqlite3, math
+    market_db = os.path.join(os.path.dirname(__file__), "..", "data", "market.db")
+    result = []
+    try:
+        mc = sqlite3.connect(market_db)
+        for sym in symbols:
+            rows = mc.execute(
+                "SELECT close FROM daily WHERE symbol=? ORDER BY date DESC LIMIT 60",
+                (sym,)
+            ).fetchall()
+            if len(rows) < 10:
+                result.append({"symbol": sym, "weight_pct": 0, "annual_vol_pct": 0,
+                               "max_dd_pct": 0, "days": len(rows)})
+                continue
+            closes = [r[0] for r in reversed(rows)]
+            # daily log returns
+            logrets = [math.log(closes[i] / closes[i-1]) for i in range(1, len(closes))]
+            n = len(logrets)
+            if n < 2:
+                result.append({"symbol": sym, "weight_pct": 0, "annual_vol_pct": 0,
+                               "max_dd_pct": 0, "days": len(rows)})
+                continue
+            mean_ret = sum(logrets) / n
+            variance = sum((r - mean_ret) ** 2 for r in logrets) / (n - 1)
+            annual_vol = math.sqrt(variance * 252) * 100  # annualized %
+            # max drawdown
+            peak = closes[0]
+            max_dd = 0.0
+            for c in closes:
+                if c > peak:
+                    peak = c
+                dd = (peak - c) / peak
+                if dd > max_dd:
+                    max_dd = dd
+            result.append({
+                "symbol": sym,
+                "annual_vol_pct": round(annual_vol, 1),
+                "max_dd_pct": round(max_dd * 100, 1),
+                "days": len(rows),
+            })
+        mc.close()
+    except Exception as e:
+        logger.warning(f"risk query failed: {e}")
+        return _api_response(error={"code": "INTERNAL", "message": str(e)}), 500
+
+    # Merge with portfolio weights from state
+    state = broker.get()
+    positions = state.get("positions", [])
+    pos_map = {p["symbol"]: p.get("value", 0) for p in positions}
+    total_val = sum(pos_map.values())
+    for r in result:
+        r["weight_pct"] = round(pos_map.get(r["symbol"], 0) / total_val * 100, 1) if total_val > 0 else 0
+
+    return _api_response(data={"symbols": result, "total_value": round(total_val, 2)})
+
 @app.route("/api/performance")
 def api_performance():
     """累计绩效统计. ?strategy=quant&quotes=true (quotes=true 用市价估值)"""

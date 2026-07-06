@@ -89,7 +89,7 @@ def phase3_daily_sync_and_report(date_str: str):
         trades = engine.get_trades("quant", limit=50)
         total_wealth = engine.get_capital("quant")
         cash_balance = engine.get_cash("quant")
-        from data.trade_repo import TradeRepo; seed = TradeRepo().get_initial_capital("quant") or 5000
+        from data.trade_repo import TradeRepo; seed = TradeRepo().get_initial_capital("quant")
         report = generate_report(
             date_str, cash_balance, positions, trades,
             pnl_total=total_wealth - seed,

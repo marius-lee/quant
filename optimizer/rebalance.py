@@ -6,7 +6,8 @@ import numpy as np
 from execution.engine import Order
 
 
-LOT_SIZE = 100
+from config.loader import get as _cfg
+LOT_SIZE = _cfg("backtest.lot_size")
 
 
 def compute_trades(

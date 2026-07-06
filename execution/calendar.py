@@ -12,6 +12,8 @@ A股交易时段:
 
 import json
 import os
+from config.loader import get as _cfg
+_MAX_LOOKUP = _cfg("calendar.max_lookup_days")  # 安全上限, 不是业务参数
 from datetime import date, datetime, time, timedelta
 from typing import Optional, Tuple
 
@@ -138,7 +140,7 @@ def get_next_trading_day(from_date: Optional[date] = None) -> date:
     trading_days = get_trading_days()
     current = from_date + timedelta(days=1)
     # 最多往后推30天防止死循环
-    for _ in range(30):
+    for _ in range(_MAX_LOOKUP):  # cf. config calendar.max_lookup_days
         if current.strftime("%Y-%m-%d") in trading_days:
             return current
         current += timedelta(days=1)
@@ -154,7 +156,7 @@ def get_prev_trading_day(from_date: Optional[date] = None) -> date:
         from_date = date.today()
     trading_days = get_trading_days()
     current = from_date - timedelta(days=1)
-    for _ in range(30):
+    for _ in range(_MAX_LOOKUP):  # cf. config calendar.max_lookup_days
         if current.strftime("%Y-%m-%d") in trading_days:
             return current
         current -= timedelta(days=1)

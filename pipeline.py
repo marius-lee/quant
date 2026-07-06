@@ -95,7 +95,7 @@ def _post_state_sync(data: dict, timeout: float, max_retries: int):
 
 logger = get_logger("pipeline")
 
-LOT_SIZE = 100
+LOT_SIZE = _ecfg("backtest.lot_size")
 
 
 
@@ -128,7 +128,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     if engine.is_initialized(strategy):
         total_capital = engine.get_cash(strategy)
     else:
-        seed = capital if capital is not None else 5000
+        seed = capital
         engine.set_initial_capital(strategy, seed)
         total_capital = seed
 
@@ -387,7 +387,7 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
 
     # ── Stop-Loss check ──
     from config.loader import get as _cfg
-    sl_pct = _cfg("risk.stop_loss_pct", 0.08)
+    sl_pct = _cfg("risk.stop_loss_pct")
     for p in current_positions:
         cost_basis = p.get("price", 0)
         current_px = prices.get(p["symbol"], None)
@@ -440,7 +440,7 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
         trades = engine.get_trades(strategy, limit=50)
         total_wealth = engine.get_capital(strategy)
         cash_balance = engine.get_cash(strategy)
-        from data.trade_repo import TradeRepo; seed = TradeRepo().get_initial_capital(strategy) or 5000
+        from data.trade_repo import TradeRepo; seed = TradeRepo().get_initial_capital(strategy)
         from monitor.report import generate_report, push_to_web
         report = generate_report(
             date_str, cash_balance, positions, trades,

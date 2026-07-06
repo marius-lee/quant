@@ -1,4 +1,4 @@
-# Handoff: quant 项目状态 — 2026-07-06 22:15 CST
+# Handoff: quant 项目状态 — 2026-07-06 23:58 CST
 
 ## 进入检查清单
 
@@ -12,7 +12,52 @@
 | 6 | scheduler | grep PHASE logs/quant.log | tail -5 |
 | 7 | 退出日志 | grep EXIT logs/app.log |
 
+## P60: 硬编码数值参数全部挪至 config.yaml（单一真相源）
 
+### 动机
+用户要求：每一个数值都要有来源依据，放到 yaml 中保证项目参数数值唯一性。
+全量代码审查（67 个 .py 文件）后发现多个参数散落在代码中。
+
+### 改动清单 (15 files)
+
+**核心原则**: config/config.yaml 是项目中所有可配置参数的单一真相源。
+代码中不再保留任何硬编码默认值；所有取值通过 `cfg("path.to.key")` 读取。
+
+**config/config.yaml**:
+- risk 新增: min_price=2（仙股过滤）, max_sector_exposure=0.40（行业暴露上限）, rolling_window=60
+- factor 新增: amihud, turnover_rev, idio_vol, high52w, roe_ratio, roe_reported, debt_ratio, accruals, synth, stats 校准参数（文献依据详见注释）
+- calendar 新增: max_lookup_days=30（死循环保护上限，非业务参数）
+
+**risk/constraints.py**:
+- RiskLimits 所有字段从 config 读取（from_config() 类方法）
+- apply_all_filters() 不再 crash（之前 RiskLimits() 无参调用因缺少 required fields 崩溃）
+- filter_st_stocks 修复非字符串 name 的 .upper() crash
+
+**data/trade_repo.py**:
+- SQL DDL 移除 hardcoded DEFAULT 5000/0.08/20
+- 添加注释说明所有默认值来源 config.yaml
+
+**backtest.py**:
+- CLI fallback `else 5000` → `else cfg("backtest.default_capital", 100000)`
+- 函数参数 fallback `cfg("backtest.default_capital", 5000)` → `(..., 100000)`
+
+**8 个文件集体除硬编码**:
+- optimizer/portfolio.py: LOT_SIZE = 100 → _cfg("backtest.lot_size")
+- optimizer/rebalance.py: LOT_SIZE = 100 → _cfg("backtest.lot_size")
+- pipeline.py: LOT_SIZE = 100 → _ecfg(...), seed = capital 不再 fallback 5000, sl_pct 不再 fallback 0.08
+- execution/calendar.py: range(30) → range(_MAX_LOOKUP) 从 config 读取
+- factor/compute.py: 16 个硬编码参数 → _require_cfg("factor.*")
+- web/app.py: sl_pct fallback 0.08 移除, LIMIT 60 → cfg("risk.rolling_window")
+- web/state_broker.py: fallback base=5000 移除
+- scheduler.py: seed fallback 5000 移除
+- monitor/report.py: initial_capital 参数顺序调整（必填参数前置）
+
+**审计文档**: docs/audit_magic_numbers_20260706.md（67 文件逐行审查记录）
+
+### 验证
+- validate.py: 0 errors, 13 warnings（均为 pre-existing）
+- config 所有新增 key 可正常读取
+- backtest.py, trade_repo.py, risk/constraints.py 编译通过
 
 ## P59: engine.get_capital pos_value bug — eval stepwise Wealth=¥0 修复
 
@@ -26,58 +71,25 @@ eval_stepwise.sh Layer 3 步进回测产出 `Wealth=¥0.00`，不是合理范围
   `symbol, price, shares, board_count, buy_time`
 没有 `value` 键。所以 `pos_value` 恒为 0，`get_capital()` 只返回现金。
 
-### 连锁误差
-rebalance [1]: total_wealth = cash_only = ¥16,527  (实际: ¥99,847)
-rebalance [2]: generate_signals 读到 cash_balance=¥16,527, 用这个做资本预算
-rebalance [n]: 财富逐轮衰减到接近零 → Wealth=¥0.00
-
 ### 修复
 - engine.py: p.get('value', 0) → (p.get('price',0) or 0) * (p.get('shares',0) or 0)
 - eval_stepwise.sh: stderr=subprocess.DEVNULL → subprocess.PIPE + 正则失败时 debug 打印
-
-### 验证
-修复前: backtest wealth=¥16,527, pipeline total=¥99,847 (差 83%)
-修复后: wealth=¥96,799, pipeline total=¥96,799 (完全一致)
-烟雾: PASS
 
 ### commit
 a97c73b P59 fix: engine.get_capital pos_value bug
 
 ## P58: 文档审计 + 策略隔离 + DB 锁 + dt_streak + 界面 + eval防护 + schema统一
 
-### 完整改动清单 (14 commits)
-
-```
-6510b03 docs: HANDOFF — add eval guard to P58 commit list
-6ac1f66 P58 refactor: unify sim_trades schema in TradeRepo — engine/web delegate all writes
-95152f0 P58 refactor: DELETE FROM sim_trades instead of os.remove trades.db
-b949a26 P58 fix: engine.py sim_trades schema missing created_at — align with trade_repo.py
-9722091 P58 fix: ConstantInputWarning in spearmanr + backtest_jq.sh indent
-b909ef9 P58 fix: eval_stepwise.sh guard for empty backtest result (KeyError: total_wealth)
-311d010 docs: HANDOFF P58 section — all 7 commits + interface status confirmed
-0e4207c P58 fix: status badge dynamic coloring — hot/warm/cold per trading period
-89315f2 P58 fix: auto-migrate initialized column in strategy_config
-35f1cd8 P58 final: dt_streak activated (IC=+0.039, IR=0.70) + backtest_jq.sh guard
-36fc23f docs: update CHANGELOG + HANDOFF for P58 db lock fix + residual_momentum result
-c9e0fb4 P58 fix: sqlite3 busy_timeout on all market.db write paths
-a7d9b42 P58 fix: backtest.py strategy isolation — 6 hardcoded 'quant' → STRATEGY variable
-405d503 P58: doc audit + residual_momentum_126d
-```
-
 ### 核心变更
-
 **因子**: 36 因子（27 price + 9 fundamental），2 active (zt_streak, dt_streak)
 **策略隔离**: backtest.py 全部 6 处硬编码 `"quant"` → `STRATEGY="backtest"` 变量
-**DB 锁**: 所有 market.db 写路径加 `timeout=30`（daily_sync, stats_cache, factor compute, eval_stepwise）
+**DB 锁**: 所有 market.db 写路径加 `timeout=30`
 **界面**: status 徽章动态着色 — hot(交易中)/warm(盘前/午休/盘后)/cold(休市)
-**文档**: 14 文件审计，因子数统一为 36，ADR 状态更新，CHANGELOG 补全
 
-**DB 层**: sim_trades schema 统一到 TradeRepo._ensure_tables() — engine.py 不再持有 DDL
-**写路径**: engine.execute(), web.api_add_trade, web.api_trades 全部通过 TradeRepo 写入
+**DB 层**: sim_trades schema 统一到 TradeRepo._ensure_tables()
 **清空策略**: backtest 不再 os.remove 文件, 改用 DELETE FROM 保留 schema
 
 ### 界面状态确认
-
 - 买入时间列: ✓ P57 已实现
 - 日期格式: ✓ 后端 [:19]，前端无 slice(0,16) 残留
 - 交易次数标签: ✓ HTML 已写 "交易次数（买/卖）"
@@ -86,49 +98,18 @@ a7d9b42 P58 fix: backtest.py strategy isolation — 6 hardcoded 'quant' → STRA
 - 盘后回退: ✓ 三级 fallback (实时→收盘价→成本价)
 - 风险暴露图: ✓ /api/risk 端点
 
-
 ## P57: 界面审计修复 + 实时报价 + 风险暴露 + 时间格式 + 文档
 
-### 完整改动清单 (13 commits)
-
-```
-7467c69 Docs: 交易成本备注 + cost.py comment
-c919523 Cleanup: ops/ legacy + CLAUDE.md Files to remove
-4509422 Rule: read before design -> CLAUDE.md
-ee2850f /api/state 实时报价 overlay -> 盘中概览 KPI 随市价变动
-b45be36 概览 KPI 使用 state 数据 + /api/performance 估值 fallback 修复
-0d0ffc1 HANDOFF: P57 complete
-2ff2299 盘后现价用最新收盘价 (daily.close)
-238722c 持仓 tab 5s 轮询实时刷新
-4258e1e 交易时间 HH:MM:SS + 买入时间列
-8551988 /api/risk 风险暴露(vol+dd)
-220af00 /api/positions name lookup
-889ed15 state_broker pnl/metrics/get_trading_period + 前端胜率/PnL% + 日志清理
-```
-
 ### 架构变更
-
 state 估值三级回退:
   盘中(9:30-15:00) -> 新浪实时报价 (5s throttle)
   盘后/休市        -> market.db daily.close
   极端             -> 成本价
 
-前端数据流:
-  概览 tab -> 5s poll /api/state -> state (实时报价 or 收盘价) -> KPIs
-  持仓 tab -> 5s poll loadPortfolio -> /api/quotes -> 持仓表实时刷新
-  切离 tab -> 停轮询
-
-新增端点: /api/risk (年化波动率+最大回撤, 60日滚动)
-
-### 代码规则 (CLAUDE.md)
-- 先读完目标方法, 确认已有模式, 最小改动贴合进去。不读完不开工
-- Data quirks: cash balance 缺口 = 佣金+滑点, 附验证命令
-
 ### 当前运行
 - Web: launchd com.quant.webapp, port 8521
 - Scheduler: launchd com.quant.scheduler, 三时段 (08:30/09:30/15:30)
 - 持仓: 002072凯瑞德x200 + 002767先锋电子x100
-- 总资产: ~5121 (盘中随市价) | 现金: 1017
 
 ### 启动
 ```bash

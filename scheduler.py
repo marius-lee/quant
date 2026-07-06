@@ -39,9 +39,13 @@ def phase1_generate_signals(date_str: str):
         n_targets = len(result.get("target_positions", []))
         logger.info(f"[{date_str}] Phase 1 done: {n_targets} target positions "
                      f"({result.get('elapsed_sec', 0):.1f}s)")
+        logger.info("[SCHEDULER] %s | PHASE=1 | STATUS=OK | targets=%d | elapsed=%.1fs",
+                     date_str, n_targets, result.get('elapsed_sec', 0))
         return result
     except Exception as e:
         logger.error(f"[{date_str}] Phase 1 failed: {e}")
+        logger.error("[SCHEDULER] %s | PHASE=1 | STATUS=FAIL | error=%s",
+                      date_str, str(e)[:120])
         return None
 
 
@@ -54,9 +58,13 @@ def phase2_execute_signals(date_str: str, target_positions: list):
         orders = result.get("steps", {}).get("execution", {}).get("orders", 0)
         logger.info(f"[{date_str}] Phase 2 done: {orders} orders "
                      f"({result.get('elapsed_sec', 0):.1f}s)")
+        logger.info("[SCHEDULER] %s | PHASE=2 | STATUS=OK | orders=%d | elapsed=%.1fs",
+                     date_str, orders, result.get('elapsed_sec', 0))
         return result
     except Exception as e:
         logger.error(f"[{date_str}] Phase 2 failed: {e}")
+        logger.error("[SCHEDULER] %s | PHASE=2 | STATUS=FAIL | error=%s",
+                      date_str, str(e)[:120])
         return None
 
 
@@ -89,8 +97,12 @@ def phase3_daily_sync_and_report(date_str: str):
         push_to_web(report)
         logger.info(f"[{date_str}] Phase 3 report: wealth=Y{report['capital']['total_wealth']:,.2f} "
                      f"return={report['metrics']['total_return_pct']}%")
+        logger.info("[SCHEDULER] %s | PHASE=3 | STATUS=OK | wealth=%.0f | return=%.1f%%",
+                     date_str, report['capital']['total_wealth'], report['metrics']['total_return_pct'])
     except Exception as e:
         logger.error(f"[{date_str}] Phase 3 report failed: {e}")
+        logger.error("[SCHEDULER] %s | PHASE=3 | STATUS=FAIL | error=%s",
+                      date_str, str(e)[:120])
 
 
 def run_loop():

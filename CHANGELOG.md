@@ -190,7 +190,7 @@ Complete system architecture overhaul from Chen Xiaoqun board-trading system to 
 
 ## [3.5.1] — 2026-07-06
 
-### P58: 10次提交 — 文档审计 + residual_momentum + 回测隔离 + DB 锁 + dt_streak + 界面 + eval 防护
+### P58: 14次提交 — 文档审计 + residual_momentum + 回测隔离 + DB锁 + dt_streak + 界面 + eval防护 + schema统一
 
 - **14文件文档审计**: 统一因子数 35→36, ADR 状态更新, CHANGELOG 补全 v3.2-v3.5, 旧 HANDOFF 加归档标记
 - **residual_momentum_126d**: Kakushadze & Serur (2018) Ch.3.7 残差动量落地, 36th factor

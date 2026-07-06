@@ -1,3 +1,14 @@
+## [P63] — 2026-07-07
+
+### 优化器参数去硬编码
+- 删除 equal_weight_cap / weighted_cap 硬编码阈值, 改为 _tier() 自动判定 (均价 x lot_size x 资金量)
+- risk_aversion 不写入 config.yaml, 由 calibrate_risk_aversion() 实时网格搜索 (lambda in {0.5, 1, 2, 5, 10})
+- calibrate_risk_aversion() 为模块级独立纯函数, 不依赖 PortfolioConstructor 实例
+- pipeline.py 协方差矩阵 cov 作用域提升, 传入 construct(covariance=cov)
+- config.yaml 删除 optimizer.equal_weight_cap
+
+---
+
 # Changelog
 
 All notable changes to this project will be documented in this file.

@@ -131,3 +131,12 @@ logger = get_logger("module.name")
 ## Files to remove (legacy, post-migration)
 
 `intraday_runner.py`, `execution/sell_chain.py`, `archive/*`, `strategies/*`, `ops/*`, `backtest/__init__.py`
+
+## Coding rule: Read before design
+
+Before proposing any solution:
+1. **Read the target method/function** — the exact code path that will be modified
+2. **Identify the existing pattern** — merge, overlay, pipe, fallback, etc.
+3. **Fit the change into that pattern** — minimum addition, same shape
+
+If the existing code already has a merge/overlay step, add to it. Never design alternatives before reading.

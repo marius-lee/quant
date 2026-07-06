@@ -178,7 +178,7 @@ print(f'WEALTH={{wealth:.2f}}')
 print(f'SHARPE={{sharpe:.4f}}')
 print(f'IR={{ir:.4f}}')
 """
-    ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=_ecfg('screening.timeout', 600), env={**os.environ, 'PYTHONPATH': '.'})
+    ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=_ecfg('screening.timeout', 600), env={**os.environ, 'PYTHONPATH': '.'})
 
     elapsed = time.time() - tt
 
@@ -186,6 +186,8 @@ print(f'IR={{ir:.4f}}')
     sm = re.search(r'SHARPE=([\d.-]+)', r.stdout)
     im = re.search(r'IR=([\d.-]+)', r.stdout)
 
+    if wm is None or sm is None or im is None:
+        print(f"  [DEBUG] Regex failed. stdout={r.stdout[:200]!r} stderr={r.stderr[:500]!r}", flush=True)
     w = float(wm.group(1)) if wm else 0
     s = float(sm.group(1)) if sm else 0
     ir = float(im.group(1)) if im else 0

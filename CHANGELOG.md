@@ -185,4 +185,13 @@ Complete system architecture overhaul from Chen Xiaoqun board-trading system to 
 | v3.0 | 11 | — | 初始设计 |
 | v3.3 | 35 | 5 | bp_ratio+size+gap_5d+zt_streak+amihud_20d |
 | v3.4-v3.5 | 35 | 1 | zt_streak 唯一通过步进回测 |
-| v3.5.1 (P58) | 36 | 1 | +residual_momentum_126d (Ch.3.7, 待eval) |
+| v3.5.1 (P58) | 36 | 1 | +residual_momentum_126d (Ch.3.7, 待eval), backtest策略隔离修复 |
+
+
+## [3.5.1] — 2026-07-06
+
+### P58: 文档审计 + residual_momentum_126d + 回测隔离修复
+
+- **14文件文档审计**: 统一因子数 35→36, ADR 状态更新, CHANGELOG 补全 v3.2-v3.5, 旧 HANDOFF 加归档标记
+- **residual_momentum_126d**: Kakushadze & Serur (2018) Ch.3.7 残差动量落地, 36th factor
+- **backtest.py 策略隔离修复**: 6处硬编码 `"quant"` 改为 `STRATEGY="backtest"` 变量, 消除回测污染实盘数据的风险 (commit e3f1aca 的修复仅改了1/5处)

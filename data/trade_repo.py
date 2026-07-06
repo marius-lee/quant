@@ -31,6 +31,7 @@ class TradeRepo:
             CREATE TABLE IF NOT EXISTS strategy_config (
                 strategy TEXT PRIMARY KEY,
                 initial_capital REAL NOT NULL DEFAULT 5000,
+                cash_balance REAL NOT NULL DEFAULT 5000,
                 max_positions INTEGER DEFAULT 20,
                 stop_loss_pct REAL DEFAULT 0.08,
                 combine_mode TEXT DEFAULT 'sleeve',
@@ -44,18 +45,17 @@ class TradeRepo:
 
     # ── 资金 ──
     def get_cash(self, strategy: str) -> float:
-        """返回最新 capital_after (运行时资产), 无交易记录时返回 0.0.
+        """返回当前现金余额 — strategy_config.cash_balance (资金唯一真相源).
 
-        调用方应检查返回值:
-        - > 0: 正常运行时资产
-        - = 0: 无交易记录, 应从 strategy_config.initial_capital 获取种子本金
+        首次启动时 cash_balance = initial_capital (¥5000).
+        每次交易后自动更新.
         """
         c = self._conn()
         row = c.execute(
-            "SELECT capital_after FROM sim_trades WHERE strategy=? AND capital_after IS NOT NULL ORDER BY id DESC LIMIT 1",
+            "SELECT cash_balance FROM strategy_config WHERE strategy=?",
             (strategy,)).fetchone()
         c.close()
-        return round(row[0], 2) if row else 0.0
+        return round(float(row[0]), 2) if row and row[0] is not None else 0.0
 
     def get_initial_capital(self, strategy: str = "quant") -> float:
         """读取种子本金 (strategy_config 表, backtest.py 启动时写入)."""
@@ -66,13 +66,13 @@ class TradeRepo:
         c.close()
         return float(row[0]) if row else 0.0
     def set_initial_capital(self, strategy: str, capital: float):
-        """设置种子本金。"""
+        """设置种子本金 (同时初始化现金余额)。"""
         c = self._conn()
         c.execute(
-            "INSERT OR REPLACE INTO strategy_config (strategy, initial_capital, updated_at) VALUES (?, ?, datetime('now'))",
-            (strategy, capital))
+            "INSERT OR REPLACE INTO strategy_config (strategy, initial_capital, cash_balance, updated_at) VALUES (?, ?, ?, datetime('now'))",
+            (strategy, capital, capital))
         c.commit(); c.close()
-        logger.info(f"[capital] {strategy} initial_capital = {capital}")
+        logger.info(f"[capital] {strategy} initial_capital=cash_balance={capital}")
 
     # ── 持仓 ──
     def get_positions(self, strategy: str) -> list[dict]:
@@ -90,20 +90,19 @@ class TradeRepo:
 
     # ── 交易记录 ──
     def record_trade(self, trade: dict, strategy: str = "chen"):
-        """记录一笔交易。trade 字典包含: date, symbol, side, price, shares, [board_count, capital_after, pnl, pnl_pct]"""
+        """记录一笔交易。trade 字典包含: date, symbol, side, price, shares, [board_count, pnl, pnl_pct]"""
         date_str = trade.get("date", "")
         symbol = trade.get("symbol", "")
         side = trade.get("side", "")
         price = float(trade.get("price", 0))
         shares = int(trade.get("shares", 0))
         board_count = int(trade.get("board_count", 0))
-        capital_after = trade.get("capital_after")
         pnl = trade.get("pnl")
         pnl_pct = trade.get("pnl_pct")
         logger.info(f"[trade] {date_str} {side} {symbol} {shares}@{price}")
         c = self._conn()
-        c.execute("INSERT INTO sim_trades (date,symbol,side,price,shares,board_count,pnl,pnl_pct,capital_after,strategy) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                  (date_str, symbol, side, price, shares, board_count, pnl, pnl_pct, capital_after, strategy))
+        c.execute("INSERT INTO sim_trades (date,symbol,side,price,shares,board_count,pnl,pnl_pct,strategy) VALUES (?,?,?,?,?,?,?,?,?)",
+                  (date_str, symbol, side, price, shares, board_count, pnl, pnl_pct, strategy))
         c.commit(); c.close()
 
     def get_trades(self, strategy: str = "", limit: int = 20) -> list[dict]:

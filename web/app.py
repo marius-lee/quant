@@ -158,10 +158,11 @@ def api_trades():
 
 @app.route("/api/trade", methods=["POST"])
 def api_record_trade():
-    """记录一笔交易 → trades.db (唯一真相源)"""
+    """记录一笔交易 → trades.db (手动交易，strategy='manual')"""
     from flask import request
     data = request.get_json(force=True)
     side = data.get("side")
+    strategy = "manual"
     symbol = data.get("symbol")
     try:
         price = float(data.get("price", 0))
@@ -184,9 +185,9 @@ def api_record_trade():
     conn = sqlite3.connect(TRADE_DB)
 
     if side == "buy":
-        conn.execute("""INSERT INTO sim_trades (date, symbol, side, price, shares, board_count)
-                        VALUES (?,?,?,?,?,?)""",
-                     (today, symbol, "buy", price, shares, data.get("board_count", 0)))
+        conn.execute("""INSERT INTO sim_trades (date, symbol, side, price, shares, board_count, strategy)
+                        VALUES (?,?,?,?,?,?,?)""",
+                     (today, symbol, "buy", price, shares, data.get("board_count", 0), strategy))
         conn.commit()
         conn.close()
         return _api_response(data={"ok": True})
@@ -194,16 +195,16 @@ def api_record_trade():
     elif side == "sell":
         pnl = (price - cost) * shares
         pnl_pct = round((price / cost - 1) * 100, 2) if cost > 0 else 0
-        sells = conn.execute("SELECT COALESCE(SUM(pnl),0) FROM sim_trades WHERE side='sell'").fetchone()[0]
+        sells = conn.execute("SELECT COALESCE(SUM(pnl),0) FROM sim_trades WHERE side='sell' AND strategy=?", (strategy,)).fetchone()[0]
         buys_cost = conn.execute(
-            "SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy'"
-        ).fetchone()[0]
+            "SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=?",
+            (strategy,)).fetchone()[0]
         from config.loader import get as cfg
         from data.trade_repo import TradeRepo; base = TradeRepo().get_initial_capital(strategy)
         capital_after = base + sells + pnl - buys_cost + (price * shares)
-        conn.execute("""INSERT INTO sim_trades (date, symbol, side, price, shares, pnl, pnl_pct, capital_after)
-                        VALUES (?,?,?,?,?,?,?,?)""",
-                     (today, symbol, "sell", price, shares, round(pnl, 2), pnl_pct, round(capital_after, 2)))
+        conn.execute("""INSERT INTO sim_trades (date, symbol, side, price, shares, pnl, pnl_pct, capital_after, strategy)
+                        VALUES (?,?,?,?,?,?,?,?,?)""",
+                     (today, symbol, "sell", price, shares, round(pnl, 2), pnl_pct, round(capital_after, 2), strategy))
         conn.commit()
         conn.close()
         return _api_response(data={"ok": True, "pnl": round(pnl, 2), "pnl_pct": pnl_pct})
@@ -225,11 +226,13 @@ def api_update_state():
 
 @app.route("/api/quotes")
 def api_quotes():
-    """实时行情 — 批量拉取新浪财经报价, 为前端持仓页提供现价和涨跌幅。
+    """实时行情 — 批量拉取新浪财经报价 + 止损扫描。
 
     ?symbols=000001,600036,430047 — 逗号分隔的股票代码列表
-    返回: {quotes: {symbol: {price, change_pct, name, high, low, volume}}}
+    返回: {quotes: {symbol: {price, change_pct, ...}}, status: "open"|"closed",
+           stop_loss_triggers: [{symbol, price, drop_pct}]}
     仅在交易日 9:30-15:00 拉取, 否则返回空。
+    盘中自动扫描 quant 策略持仓: 任一持仓从成本价跌超阈值即模拟卖出。
     """
     from flask import request
     from execution.quote import fetch_quotes, is_trading_time
@@ -242,7 +245,53 @@ def api_quotes():
     if not is_trading_time():
         return _api_response(data={"quotes": {}, "status": "closed"})
     quotes = fetch_quotes(symbols)
-    return _api_response(data={"quotes": quotes, "status": "open"})
+
+    # ── 止损扫描 (quant 策略) ──
+    stop_loss_triggers = []
+    from config.loader import get as cfg
+    sl_pct = cfg("risk.stop_loss_pct", 0.08)
+    try:
+        import sqlite3
+        tc = sqlite3.connect(TRADE_DB)
+        positions = tc.execute("""
+            SELECT symbol, SUM(shares) as net_shares,
+                   SUM(price * shares) / SUM(shares) as cost_basis
+            FROM sim_trades
+            WHERE side='buy' AND strategy='quant'
+            GROUP BY symbol
+        """).fetchall()
+        sells = tc.execute(
+            "SELECT symbol, SUM(shares) FROM sim_trades WHERE side='sell' AND strategy='quant' GROUP BY symbol"
+        ).fetchall()
+        sell_map = {r[0]: r[1] for r in sells}
+        today = __import__('datetime').date.today().isoformat()
+        for sym, shares, cost_basis in positions:
+            net = max(0, shares - sell_map.get(sym, 0))
+            if net <= 0 or sym not in quotes:
+                continue
+            current_px = quotes[sym]["price"]
+            drop = (current_px - cost_basis) / cost_basis if cost_basis > 0 else 0
+            if drop <= -sl_pct:
+                from execution.engine import ExecutionEngine, Order
+                engine = ExecutionEngine()
+                engine.execute(
+                    [Order(symbol=sym, side="sell", shares=net, price=current_px, cost=0)],
+                    today, strategy="quant"
+                )
+                stop_loss_triggers.append({
+                    "symbol": sym, "price": round(current_px, 2),
+                    "drop_pct": round(drop * 100, 1), "shares": net,
+                })
+                logger.warning("[SL] stop-loss via /api/quotes: %s drop=%.1f%% sold %d shares",
+                               sym, drop * 100, net)
+        tc.close()
+    except Exception as e:
+        logger.warning("[SL] stop-loss scan failed: %s", e)
+
+    return _api_response(data={
+        "quotes": quotes, "status": "open",
+        "stop_loss_triggers": stop_loss_triggers,
+    })
 
 
 @app.route("/api/performance")

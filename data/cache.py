@@ -320,7 +320,7 @@ class RateLimiter:
         self.max_per_window = calls_per_minute
         self.window_sec = window_sec
         self.backend = backend or get_backend()
-        self._local_burst = min(calls_per_minute, 10)  # 降级用: 线程内令牌桶
+        self._local_burst = min(calls_per_minute, 10)  # 降级用: 线程内令牌桶, 上限10防止本地无界消费 API
         self._local_tokens = self._local_burst
 
     def acquire(self) -> bool:

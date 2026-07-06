@@ -138,7 +138,7 @@ class DataStore:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.execute("PRAGMA busy_timeout=30000")
-            self._conn.execute("PRAGMA cache_size=-64000")
+            self._conn.execute("PRAGMA cache_size=-64000")  # SQLite WAL 模式 64MB 页面缓存, 非业务参数
         return self._conn
 
     def close(self):

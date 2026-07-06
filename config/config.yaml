@@ -92,8 +92,9 @@ risk:
   covariance:
     window: 60                         # 协方差估计滚动窗口 (交易日)
     min_periods: 30                    # 协方差估计最少数据量
-  neutralization:
-    industry_min_count: 30             # 行业中性化最少标签数
+  neutralize:
+    min_common_stocks: 30             # Fama & French (1993): OLS 回归最小样本30个
+    min_stocks_per_industry: 3        # BARRA USE4: <3只股票的行业不做截面z-score
 optimizer:
   method: equal_weight
   rebalance_freq: weekly
@@ -134,3 +135,7 @@ calendar:
   # A 股最长连续休市≈12 天 (春节+周末), 30 天有 3x 安全余量。
   # 用于 calendar.py is_trading_day() 的交易日查找循环中防止无限循环。
   max_lookup_days: 30                  # A股最长休市(春节)<12天, 30天有3x余量
+
+attribution:
+  risk_free_rate: 0.02                # 中国10年期国债收益率均值 (Sharpe 计算无风险利率基准)
+  annual_periods: 252                 # A股年交易日数 (Sharpe 年化基准)

@@ -826,8 +826,8 @@ class DataStore:
         symbols: None 表示自动分析缺口并只拉缺失/不足的股票
         返回: 新写入的行数
         """
+        from config.loader import get as cfg
         if start is None:
-            from config.loader import get as cfg
             start = cfg("data.start_date", DEFAULT_START_DATE)
 
         conn = self._connect()

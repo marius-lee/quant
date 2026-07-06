@@ -13,12 +13,16 @@
 | 7 | 退出日志 | grep EXIT logs/app.log |
 
 
-## P58: 文档审计 + 策略隔离 + DB 锁修复 + dt_streak 激活 + status 徽章
+## P58: 文档审计 + 策略隔离 + DB 锁 + dt_streak + 界面 + eval防护 + schema统一
 
-### 完整改动清单 (10 commits)
+### 完整改动清单 (14 commits)
 
 ```
 6510b03 docs: HANDOFF — add eval guard to P58 commit list
+6ac1f66 P58 refactor: unify sim_trades schema in TradeRepo — engine/web delegate all writes
+95152f0 P58 refactor: DELETE FROM sim_trades instead of os.remove trades.db
+b949a26 P58 fix: engine.py sim_trades schema missing created_at — align with trade_repo.py
+9722091 P58 fix: ConstantInputWarning in spearmanr + backtest_jq.sh indent
 b909ef9 P58 fix: eval_stepwise.sh guard for empty backtest result (KeyError: total_wealth)
 311d010 docs: HANDOFF P58 section — all 7 commits + interface status confirmed
 0e4207c P58 fix: status badge dynamic coloring — hot/warm/cold per trading period
@@ -37,6 +41,10 @@ a7d9b42 P58 fix: backtest.py strategy isolation — 6 hardcoded 'quant' → STRA
 **DB 锁**: 所有 market.db 写路径加 `timeout=30`（daily_sync, stats_cache, factor compute, eval_stepwise）
 **界面**: status 徽章动态着色 — hot(交易中)/warm(盘前/午休/盘后)/cold(休市)
 **文档**: 14 文件审计，因子数统一为 36，ADR 状态更新，CHANGELOG 补全
+
+**DB 层**: sim_trades schema 统一到 TradeRepo._ensure_tables() — engine.py 不再持有 DDL
+**写路径**: engine.execute(), web.api_add_trade, web.api_trades 全部通过 TradeRepo 写入
+**清空策略**: backtest 不再 os.remove 文件, 改用 DELETE FROM 保留 schema
 
 ### 界面状态确认
 

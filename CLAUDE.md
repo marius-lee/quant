@@ -26,7 +26,10 @@ PYTHONPATH=. python3 -c "from factor.evaluate import factor_report; print(factor
 PYTHONPATH=. python3 -m pytest tests/ -v
 ```
 
-## Architecture (7 layers, ~25 files)
+## Architecture
+- **Schema 单源**: sim_trades/strategy_config DDL 只在 TradeRepo._ensure_tables() 一个地方定义。其他模块通过 TradeRepo 访问，不得自己开 sqlite3.connect 写入。engine.py 已清理，web/app.py 仅剩 api_performance/api_stats 只读查询。
+
+(7 layers, ~25 files)
 
 ### Layer 0: Infra (`config/` + `utils/` + `execution/calendar.py`)
 - `config/loader.py` — YAML 配置热加载，`get("key.path", default)` 取值

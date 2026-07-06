@@ -1774,3 +1774,88 @@ if "ztd" not in _PRICE_FN_MAP:
     _PRICE_FN_MAP["ztd"] = (compute_ztd, 250)
 if "northbound_20d" not in _PRICE_FN_MAP:
     _PRICE_FN_MAP["northbound_20d"] = (compute_northbound_flow, 20)
+
+
+# ═══════════════════════════════════════════════════════════
+# 21. SUE (标准化未预期盈余) — Bernard & Thomas (1989) PEAD
+#    A股验证: 中信 2022. 季报盈余超预期→公告后漂移.
+#    SUE = (EPS_t - EPS_{t-4q}) / σ(EPS_8q), 取正号 (高SUE→高分).
+# ═══════════════════════════════════════════════════════════
+
+def compute_sue(fundamentals, date, financials=None):
+    """标准化未预期盈余: (EPS_latest - EPS_yoy) / std(EPS_8q).
+
+    Bernard & Thomas (1989): 盈余公告后漂移(PEAD).
+    高分=盈余超预期 → 预期正收益 (IC为正).
+
+    数据源: financial_income.net_profit / stocks.total_shares = 季度EPS.
+    需要 total_shares 列 (Step 2 新增, 通过 fundamental.py 同步自 stock_value_em).
+    若 total_shares 为空则返回 NaN.
+    """
+    import sqlite3, pandas as pd, numpy as np
+
+    db = _market_db_path()
+    conn = sqlite3.connect(db)
+
+    sym_list = "','".join(fundamentals.index.tolist())
+
+    # 读取季度净利润 + 总股本
+    rows = conn.execute(f"""
+        SELECT fi.symbol, fi.stat_date, fi.net_profit, s.total_shares
+        FROM financial_income fi
+        JOIN stocks s ON fi.symbol = s.symbol
+        WHERE fi.stat_date <= '{date}'
+          AND fi.symbol IN ('{sym_list}')
+          AND s.total_shares IS NOT NULL
+          AND s.total_shares > 0
+          AND fi.net_profit IS NOT NULL
+        ORDER BY fi.symbol, fi.stat_date DESC
+    """).fetchall()
+    conn.close()
+
+    if not rows:
+        return pd.Series(np.nan, index=fundamentals.index, name="sue")
+
+    df = pd.DataFrame(rows, columns=['symbol', 'stat_date', 'net_profit', 'total_shares'])
+    df['stat_date'] = pd.to_datetime(df['stat_date'])
+    df['eps'] = df['net_profit'] / df['total_shares']
+
+    results = {}
+    for sym in fundamentals.index:
+        sym_data = df[df['symbol'] == sym].sort_values('stat_date', ascending=True)
+        if len(sym_data) < 3:
+            continue  # 需要至少3个季度数据
+
+        # 最新季度
+        latest = sym_data.iloc[-1]
+        eps_latest = latest['eps']
+        latest_q = latest['stat_date']
+
+        # 去年同期
+        target_q = latest_q - pd.DateOffset(years=1)
+        prev = sym_data[sym_data['stat_date'] <= target_q]
+        if prev.empty:
+            continue
+        eps_yoy = prev.iloc[-1]['eps']
+
+        # 8季度标准差
+        eps_series = sym_data['eps'].tail(8)
+        if len(eps_series) < 4:
+            continue  # 至少4个数据点才计算标准差
+        eps_std = eps_series.std()
+
+        if eps_std > 0:
+            sue = (eps_latest - eps_yoy) / eps_std
+            results[sym] = sue
+
+    sue_series = pd.Series(results, name="sue")
+    sue_series = sue_series.replace([np.inf, -np.inf], np.nan)
+    sue_series = sue_series.clip(-5, 5)
+    # 高SUE→高分
+    return _cs_zscore(sue_series).rename("sue")
+
+
+# ── 注册 SUE ──
+if "sue" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["sue"] = ("profitability", compute_sue)
+    _FIN_FACTORS.add("sue")

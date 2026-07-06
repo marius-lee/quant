@@ -76,6 +76,7 @@ def _fetch_value_em(conn: sqlite3.Connection, symbols: list, sleep_ms: int = 200
             pe = _safe_float(last.get("PE(TTM)"))
             pb = _safe_float(last.get("市净率"))
             total_mv = _safe_float(last.get("总市值"))
+            total_shares = _safe_float(last.get("总股本"))
 
             updates = []
             params = []
@@ -88,6 +89,9 @@ def _fetch_value_em(conn: sqlite3.Connection, symbols: list, sleep_ms: int = 200
             if total_mv is not None and total_mv > 0:
                 updates.append("total_mv=?")
                 params.append(round(total_mv, 2))
+            if total_shares is not None and total_shares > 0:
+                updates.append("total_shares=?")
+                params.append(round(total_shares, 0))
 
             if updates:
                 params.append(sym)

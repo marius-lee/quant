@@ -89,14 +89,14 @@ class TradeRepo:
     def get_positions(self, strategy: str) -> list[dict]:
         c = self._conn()
         buys = c.execute(
-            "SELECT symbol, SUM(shares), SUM(price*shares)/SUM(shares), MAX(board_count), MIN(date) FROM sim_trades WHERE side='buy' AND strategy=? GROUP BY symbol",
+            "SELECT symbol, SUM(shares), SUM(price*shares)/SUM(shares), MAX(board_count), MIN(created_at) FROM sim_trades WHERE side='buy' AND strategy=? GROUP BY symbol",
             (strategy,)).fetchall()
         sells = c.execute(
             "SELECT symbol, SUM(shares) FROM sim_trades WHERE side='sell' AND strategy=? GROUP BY symbol",
             (strategy,)).fetchall()
         sell_map = {r[0]: r[1] for r in sells}
         c.close()
-        return [{"symbol": r[0], "price": round(r[2],4) if r[2] else 0, "shares": max(0, r[1] - sell_map.get(r[0], 0)), "board_count": r[3] or 0, "date": r[4]} for r in buys if r[1] > sell_map.get(r[0], 0)]
+        return [{"symbol": r[0], "price": round(r[2],4) if r[2] else 0, "shares": max(0, r[1] - sell_map.get(r[0], 0)), "board_count": r[3] or 0, "buy_time": r[4]} for r in buys if r[1] > sell_map.get(r[0], 0)]
 
 
     # ── 交易记录 ──

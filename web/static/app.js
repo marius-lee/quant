@@ -311,6 +311,7 @@ async function loadPortfolio() {
     renderTable('table-positions', positions, [
       { key: 'symbol', label: '代码' },
       { key: 'name', label: '名称' },
+      { key: 'buy_time', label: '买入时间' },
       { key: 'shares', label: '股数' },
       { key: 'price', label: '成本' },
       { key: 'current', label: '现价' },
@@ -424,7 +425,7 @@ async function loadPerformance() {
     ]);
     const tlist = trades?.trades || [];
     renderTable('table-trades', tlist.slice(0, 50), [
-      { key: 'date', label: '日期' },
+      { key: 'date', label: '时间' },
       { key: 'symbol', label: '代码' },
       { key: 'side', label: '方向' },
       { key: 'price', label: '价格' },

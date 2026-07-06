@@ -130,7 +130,7 @@ logger = get_logger("module.name")
 
 ## Files to remove (legacy, post-migration)
 
-`intraday_runner.py`, `execution/sell_chain.py`, `archive/*`, `strategies/*`, `ops/*`, `backtest/__init__.py`
+None — all legacy files cleaned as of P57.
 
 ## Coding rule: Read before design
 

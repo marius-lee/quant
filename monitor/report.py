@@ -104,5 +104,5 @@ def push_to_web(report: dict):
     try:
         from web.shared import update_state
         update_state(report)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"[web-push] failed to push report: {e}")

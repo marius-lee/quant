@@ -114,8 +114,8 @@ def sync_month(year: int, month: int, conn=None) -> int:
                     [row.get(c) for c in cols]
                 )
                 n += 1
-            except Exception:
-                pass
+            except Exception as e_row:
+                logger.debug(f"lhb row skip: {e_row}")
 
         conn.commit()
         logger.info(f"lhb {year}-{month:02d}: {n} rows")

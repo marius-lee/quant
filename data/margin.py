@@ -94,8 +94,8 @@ def _sync_sse_raw(date_str: str, conn) -> int:
                       _to_float(row.get("rqyl")),
                       None))
                 n += 1
-            except Exception:
-                pass
+            except Exception as e_row:
+                logger.debug(f"margin SSE row skip {sym} {date_str}: {e_row}")
         conn.commit()
         return n
     except Exception as e:
@@ -155,8 +155,8 @@ def _sync_szse_wrapper(date_str: str, conn) -> int:
                           _to_float(row.get('short_balance')),
                           _to_float(row.get('margin_total'))))
                     n += 1
-                except Exception:
-                    pass
+                except Exception as e_row:
+                    logger.debug(f"margin SZSE row skip {sym} {date_str}: {e_row}")
             conn.commit()
             return n
 

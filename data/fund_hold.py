@@ -73,8 +73,8 @@ def sync_quarter(report_date: str, conn=None) -> int:
                       row.get('hold_mv'), row.get('change_type'),
                       row.get('change_ratio')))
                 n += 1
-            except Exception:
-                pass
+            except Exception as e_row:
+                logger.debug(f"fund_hold row skip {sym} {report_date}: {e_row}")
         conn.commit()
 
         print(f"  {report_date}: {n} stocks")

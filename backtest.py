@@ -43,9 +43,14 @@ def run_backtest(start_date=None, end_date=None, capital=None):
     import pipeline
     from execution.engine import Order  # P0-2: unified Order dataclass
 
-    # 清理旧交易记录
+    # 清空旧交易记录 (保留 schema，避免重建不一致)
     if os.path.exists(TRADE_DB):
-        os.remove(TRADE_DB)
+        import sqlite3
+        c = sqlite3.connect(TRADE_DB)
+        c.execute('DELETE FROM sim_trades')
+        c.execute('DELETE FROM strategy_config')
+        c.commit()
+        c.close()
 
     store = DataStore()
     STRATEGY = "backtest"  # P58: 回测策略隔离, 不污染实盘 'quant'

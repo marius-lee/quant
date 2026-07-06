@@ -178,6 +178,39 @@ Complete system architecture overhaul from Chen Xiaoqun board-trading system to 
 - 先读目标代码，确认已有模式，最小改动贴合 — 纳入 CLAUDE.md 工作规则
 - Data quirks: cash balance 缺口 = 佣金+滑点 (CostModel 文档化)
 
+
+## [3.5.3] — 2026-07-06
+
+### P60: 硬编码数值参数全部挪至 config.yaml — 单一真相源
+
+- **核心原则**: config/config.yaml 是项目中所有可配置参数的单一真相源。代码中不再保留任何硬编码默认值。
+- **15 files changed**:
+- config.yaml: risk 新增 min_price=2, max_sector_exposure=0.40; factor 新增 amihud/turnover_rev/idio_vol/high52w/roe_*/debt_ratio/accruals/synth/stats 校准参数; calendar 新增 max_lookup_days=30
+- risk/constraints.py: RiskLimits.from_config() 从 yaml 读取所有约束参数; 修复 apply_all_filters() RiskLimits() 无参调用 crash; 修复 filter_st_stocks 非字符串 name crash
+- data/trade_repo.py: SQL DDL 移除硬编码 DEFAULT 5000/0.08/20; 添加注释说明来源 config.yaml
+- backtest.py: CLI fallback `else 5000` → `cfg("backtest.default_capital", 100000)`
+- 8 files (pipeline.py, scheduler.py, web/app.py, web/state_broker.py, monitor/report.py, optimizer/, execution/calendar.py, factor/compute.py): 全部散落硬编码 → cfg() 读取
+- **审计文档**: docs/audit_magic_numbers_20260706.md (67 files 逐行审查, 16 项)
+
+## [3.5.4] — 2026-07-06
+
+### P61: 审计收尾 — 消除最后6项硬编码 + neutralize 路径统一
+
+- factor/synth.py: sleeeve_compose() 去掉 positions_per_factor=8, min_factors=1 默认值
+- neutralize.py + pipeline.py + config: risk.neutralization.industry_min_count → risk.neutralize.min_common_stocks (统一命名，两处都是 Fama-French 1993 OLS 最小样本量 30)
+- web/app.py, data/cache.py, data/store.py: 加注释说明非业务参数 (limit=10000, _local_burst, cache_size=-64000)
+- attribution.py + config: rf=0.02, periods=252 挪到 config attribution.risk_free_rate + attribution.annual_periods
+- 审计文档 16 项全部闭合
+
+## [3.5.5] — 2026-07-07
+
+### P62: factor_registry 修复 + validate 改进
+
+- factor_registry: dt_streak status deprecated → active (漏入: dt_streak 在 eval 中通过 Layer 1 t-test + Layer 2 边际 IC)
+- validate.py: deprecated 因子警告信息补充说明 IC 阈值 ≠ 统计显著 (需跑 Layer 1+2 全量 eval)
+- validate.py: extreme returns 查询排除 BJ (30% limit) 和仙股 (<2), 改进警告信息
+- 回测/实盘数据隔离验证: trades.db 中 backtest 和 quant 策略完全隔离
+
 ## Factor Count Evolution
 
 | 版本 | 因子数 | Active | 备注 |
@@ -185,7 +218,8 @@ Complete system architecture overhaul from Chen Xiaoqun board-trading system to 
 | v3.0 | 11 | — | 初始设计 |
 | v3.3 | 35 | 5 | bp_ratio+size+gap_5d+zt_streak+amihud_20d |
 | v3.4-v3.5 | 35 | 1 | zt_streak 唯一通过步进回测 |
-| v3.5.1 (P58) | 36 | 1 | +residual_momentum_126d (IC=-0.0027, A股不成立), backtest策略隔离修复 |
+| v3.5.5 (P60-P62) | 36 | 2 | 硬编码全部挪 config.yaml, 审计 16 项闭合, validate 改进 |
+| v3.5.1 (P58) | 36 | 2 | +residual_momentum_126d (IC=-0.0027, A股不成立), dt_streak activated, backtest策略隔离修复 |
 
 
 ## [3.5.1] — 2026-07-06

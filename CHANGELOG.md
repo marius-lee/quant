@@ -1,3 +1,18 @@
+## [P66] — 2026-07-07
+
+### 新增 3 个因子 (Step 3/3): 大股东减持 + 股权质押 + 股息率
+Step 3/3: 需新建 Tushare 数据模块的因子落地。至此 10 因子候选池完成。
+
+- holder_reduction: 大股东减持 — 60 日内减持比例/总股本 (上交所 2020; 海通金工 2023)
+- pledge_ratio: 股权质押比例 (中信建投 2022)
+- dividend_yield: 股息率 — 12 月现金分红/股价 (中信金工 2023)
+- 新建 data/holder_trade.py, data/pledge.py, data/dividend.py 三个 Tushare 数据模块
+- factor_registry 注册, 总计 10 active factors
+
+活跃因子数: 7 → 10
+
+---
+
 ## [P65] — 2026-07-07
 
 ### SUE 因子 (标准化未预期盈余)

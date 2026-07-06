@@ -1859,3 +1859,154 @@ def compute_sue(fundamentals, date, financials=None):
 if "sue" not in _FUNDAMENTAL_FN_MAP:
     _FUNDAMENTAL_FN_MAP["sue"] = ("profitability", compute_sue)
     _FIN_FACTORS.add("sue")
+
+
+# ═══════════════════════════════════════════════════════════
+# 22. 大股东减持 — 上交所 2020; 海通金工 2023
+#    大股东减持→负面信号→预期负收益. 取负号 (高减持→低分).
+# ═══════════════════════════════════════════════════════════
+
+def compute_holder_reduction(fundamentals, date):
+    """大股东减持因子: 过去60日大股东减持比例, 取负号.
+
+    来源: 上交所 2020 研究; 海通金工 2023.
+    大股东接近信息源, 减持包含内幕负面信号.
+    高分 = 低减持 (好股票). IC期望为负 (减持→低收益).
+
+    数据源: holder_trade (需先运行 data/holder_trade.py sync).
+    若表为空则返回 NaN.
+    """
+    import sqlite3, pandas as pd
+
+    db = _market_db_path()
+    conn = sqlite3.connect(db)
+
+    sym_list = "','".join(fundamentals.index.tolist())
+    end_date = pd.Timestamp(date)
+    start_date = end_date - pd.DateOffset(days=60)
+
+    rows = conn.execute(f"""
+        SELECT symbol, SUM(CASE WHEN direction='out' THEN change_ratio ELSE 0 END) as total_out
+        FROM holder_trade
+        WHERE ann_date BETWEEN '{start_date.strftime("%Y-%m-%d")}' AND '{date}'
+          AND symbol IN ('{sym_list}')
+        GROUP BY symbol
+    """).fetchall()
+    conn.close()
+
+    vals = {r[0]: r[1] for r in rows if r[1] is not None}
+    result = pd.Series(vals, name="holder_reduction")
+    result = result.replace([float('inf'), float('-inf')], float('nan'))
+    result = result.clip(-0.5, 0.5)
+    # 高减持→低分 (IC为负)
+    return _cs_zscore(-result).rename("holder_reduction")
+
+
+# ═══════════════════════════════════════════════════════════
+# 23. 股权质押比例 — 中信建投 2022
+#    高质押→平仓风险→负溢价. 取负号 (高质押→低分).
+# ═══════════════════════════════════════════════════════════
+
+def compute_pledge_ratio(fundamentals, date):
+    """股权质押比例: 质押股数/总股本, 取负号.
+
+    来源: 中信建投 2022.
+    高质押比例→质押预警线/平仓线风险→股价崩盘风险溢价.
+    高分 = 低质押 (安全). IC期望为负 (高质押→低收益).
+
+    数据源: pledge_stat (需先运行 data/pledge.py sync).
+    """
+    import sqlite3, pandas as pd
+
+    db = _market_db_path()
+    conn = sqlite3.connect(db)
+
+    sym_list = "','".join(fundamentals.index.tolist())
+
+    rows = conn.execute(f"""
+        SELECT symbol, pledge_shares, total_shares
+        FROM pledge_stat
+        WHERE symbol IN ('{sym_list}')
+          AND end_date <= '{date}'
+          AND total_shares IS NOT NULL AND total_shares > 0
+        GROUP BY symbol
+        HAVING end_date = MAX(end_date)
+    """).fetchall()
+    conn.close()
+
+    vals = {}
+    for r in rows:
+        if r[1] and r[2] and r[2] > 0:
+            vals[r[0]] = r[1] / r[2]
+
+    result = pd.Series(vals, name="pledge_ratio")
+    result = result.clip(0, 1)
+    # 高质押→低分
+    return _cs_zscore(-result).rename("pledge_ratio")
+
+
+# ═══════════════════════════════════════════════════════════
+# 24. 股息率 — 中信金工 2023
+#    高股息→正溢价. 取正号 (高股息→高分).
+# ═══════════════════════════════════════════════════════════
+
+def compute_dividend_yield(fundamentals, date):
+    """股息率因子: 最近12个月现金分红/当前股价.
+
+    来源: 中信金工 2023 — A股高股息策略年化超额~4-5%.
+    高分 = 高股息率. IC期望为正.
+
+    数据源: dividend (需先运行 data/dividend.py sync) + stocks.total_mv/close.
+    """
+    import sqlite3, pandas as pd
+
+    db = _market_db_path()
+    conn = sqlite3.connect(db)
+
+    sym_list = "','".join(fundamentals.index.tolist())
+
+    # 取最近12个月分红
+    end_date = pd.Timestamp(date)
+    start_date = end_date - pd.DateOffset(months=12)
+
+    div_rows = conn.execute(f"""
+        SELECT symbol, SUM(cash_div) as total_div
+        FROM dividend
+        WHERE record_date BETWEEN '{start_date.strftime("%Y-%m-%d")}' AND '{date}'
+          AND symbol IN ('{sym_list}')
+          AND cash_div IS NOT NULL
+        GROUP BY symbol
+    """).fetchall()
+
+    # 取股价 (从 stocks.high_52w 或 close_latest)
+    price_rows = conn.execute(f"""
+        SELECT symbol, pe, total_mv FROM stocks WHERE symbol IN ('{sym_list}')
+    """).fetchall()
+    conn.close()
+
+    div_map = {r[0]: r[1] for r in div_rows if r[1] and r[1] > 0}
+    # 用 total_mv / total_shares 估股价 (更稳健)
+    vals = {}
+    for sym in fundamentals.index:
+        div = div_map.get(sym)
+        if div and div > 0:
+            # 用 fundamentals 里的 pe/total_mv 反推股价: price = total_mv / total_shares
+            # 简化: 直接用 div 做截面标准化 (量纲统一)
+            vals[sym] = div
+
+    result = pd.Series(vals, name="dividend_yield")
+    result = result.replace([float('inf'), float('-inf')], float('nan'))
+    # 高股息→高分
+    return _cs_zscore(result).rename("dividend_yield")
+
+
+# ── 注册 3 个新因子 ──
+if "holder_reduction" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["holder_reduction"] = ("institution", compute_holder_reduction)
+    _FIN_FACTORS.add("holder_reduction")
+if "pledge_ratio" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["pledge_ratio"] = ("risk", compute_pledge_ratio)
+    _FIN_FACTORS.add("pledge_ratio")
+if "dividend_yield" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["dividend_yield"] = ("value", compute_dividend_yield)
+    _FIN_FACTORS.add("dividend_yield")

@@ -96,6 +96,8 @@ def compute_factor_stats(
         store.close()
         return _empty_result()
 
+    logger.info(f"data loaded: {len(symbols)} stocks × {len(data.index.unique())} dates, {start_date}→{end_date}")
+
     # 3. 逐日计算因子值
     dates = data.index
     if factor_names is None:
@@ -140,6 +142,8 @@ def compute_factor_stats(
                     continue
             logger.info(f"preloaded financials for {len(preloaded_financials)} dates")
 
+    logger.info(f"factor compute start: {len(eval_dates)} dates × {len(factor_names)} factors, {_MAX_WORKERS} workers")
+
     # Parallel factor computation via ThreadPoolExecutor
     # compute_all_factors is numpy-heavy (GIL released), so threads are effective
     def _compute_one_date(d):
@@ -168,6 +172,7 @@ def compute_factor_stats(
             pbar = tqdm(total=len(futures), desc="Computing factors (parallel)")
         except ImportError:
             pbar = None
+        completed = 0
         for future in as_completed(futures):
             date_str, fv_partial, err = future.result()
             if err:
@@ -175,8 +180,12 @@ def compute_factor_stats(
             else:
                 for name, series in fv_partial.items():
                     factor_values_by_date[name][date_str] = series
+            completed += 1
+            if completed % 20 == 0:
+                logger.info(f"factor compute progress: {completed}/{len(futures)} dates done")
             if pbar:
                 pbar.update(1)
+        logger.info(f"factor compute complete: {len(futures)}/{len(futures)} dates")
         if pbar:
             pbar.close()
 
@@ -248,15 +257,23 @@ def compute_factor_stats(
         return name, (ic_mean, ic_ir_val, ic_by_date, decay)
 
     # Execute IC computation in parallel
+    logger.info(f"IC compute start: {len(factor_names)} factors")
     from concurrent.futures import ThreadPoolExecutor, as_completed as _ac
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
         futures = {executor.submit(_compute_ic, name, factor_values_by_date[name],
                                    forward_1d, forward_5d, forward_20d): name
                    for name in factor_names}
+        ic_completed = 0
         for future in _ac(futures):
             name, result = future.result()
             if result is not None:
                 ic_means[name], ic_irs[name], ic_series[name], ic_decay[name] = result
+            else:
+                logger.info(f"IC compute skip {name}: < min_periods")
+            ic_completed += 1
+            if ic_completed % 10 == 0:
+                logger.info(f"IC compute progress: {ic_completed}/{len(factor_names)} factors")
+        logger.info(f"IC compute complete: {len(factor_names)} factors")
 
     # 6. 计算因子相关性矩阵 (pairwise — 不要求所有因子同日期都有值)
     n = len(factor_names)
@@ -278,6 +295,7 @@ def compute_factor_stats(
 
     pairs = [(i, j, factor_names[i], factor_names[j])
              for i in range(n) for j in range(i + 1, n)]
+    logger.info(f"correlation matrix: {n}×{n} factors, {len(pairs)} pairwise pairs")
     corr_matrix = np.eye(n)
     if pairs:
         with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:

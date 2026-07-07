@@ -13,6 +13,9 @@ from data.trade_repo import TradeRepo
 
 
 TRADE_DB_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "trades.db")
+MARKET_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
+# A-share daily price limit: ±10% (沪深交易所交易规则). Gap > 10% → ex-dividend event.
+EX_DIVIDEND_THRESHOLD = 0.10
 
 
 @dataclass
@@ -54,6 +57,43 @@ class ExecutionEngine:
         """设置策略初始资金 — 委托 TradeRepo。"""
         TradeRepo(self.db_path).set_initial_capital(strategy, capital)
 
+    def _check_ex_dividend(self, symbol: str, order_price: float, date: str) -> bool:
+        """除权除息检测: 对比昨日收盘 vs 订单价格。
+
+        A股涨跌停限制为 ±10% (交易所硬规则)。若订单价格与前一交易日收盘价
+        偏差超过 10%, 无法用正常交易解释, 判定为除权除息事件, 跳过买入。
+
+        Args:
+            symbol: 股票代码
+            order_price: 订单买入价格
+            date: 交易日期 (YYYY-MM-DD)
+        Returns:
+            True: 检测到除权跳变, 应跳过买入
+            False: 正常, 可执行
+        """
+        import sqlite3
+        try:
+            mc = sqlite3.connect(MARKET_DB)
+            row = mc.execute(
+                "SELECT close FROM daily WHERE symbol=? AND date < ? ORDER BY date DESC LIMIT 1",
+                (symbol, date)
+            ).fetchone()
+            mc.close()
+            if row and row[0]:
+                prev_close = float(row[0])
+                gap = abs(order_price / prev_close - 1)
+                if gap > EX_DIVIDEND_THRESHOLD:
+                    from utils.logger import get_logger
+                    get_logger("execution.engine").warning(
+                        f"Ex-dividend detected: {symbol} order_price={order_price:.2f} "
+                        f"prev_close={prev_close:.2f} gap={gap:.1%} > {EX_DIVIDEND_THRESHOLD:.0%} — skipping buy"
+                    )
+                    return True
+        except Exception as e:
+            from utils.logger import get_logger
+            get_logger("execution.engine").warning(f"Ex-dividend check failed for {symbol}: {e}")
+        return False
+
     def execute(
         self,
         orders: list,
@@ -75,6 +115,10 @@ class ExecutionEngine:
                 symbol, side, shares, price = o[0], o[1], o[2], o[3]
             else:
                 symbol, side, shares, price = o.symbol, o.side, o.shares, o.price
+
+            # ── 除权除息检测 (A股涨跌停 ±10% 硬规则) ──
+            if side == "buy" and self._check_ex_dividend(symbol, price, date):
+                continue
 
             # 计算交易成本 (佣金, 滑点)
             if side == "buy":

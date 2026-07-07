@@ -116,7 +116,7 @@ class TradeRepo:
     def get_positions(self, strategy: str) -> list[dict]:
         c = self._conn()
         buys = c.execute(
-            "SELECT symbol, SUM(shares), SUM(price*shares)/SUM(shares), MAX(board_count), MIN(created_at) FROM sim_trades WHERE side='buy' AND strategy=? GROUP BY symbol",
+            "SELECT symbol, SUM(shares), SUM(price*shares)/SUM(shares), MAX(board_count), MIN(datetime(created_at, 'localtime')) FROM sim_trades WHERE side='buy' AND strategy=? GROUP BY symbol",
             (strategy,)).fetchall()
         sells = c.execute(
             "SELECT symbol, SUM(shares) FROM sim_trades WHERE side='sell' AND strategy=? GROUP BY symbol",

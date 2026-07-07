@@ -36,10 +36,10 @@ def _ensure_table(conn):
 def _get_stock_pool(conn) -> list:
     """从 stocks 表获取股票池 code 列表."""
     try:
-        rows = conn.execute("SELECT DISTINCT code FROM stocks").fetchall()
+        rows = conn.execute("SELECT DISTINCT symbol FROM stocks").fetchall()
         return [r[0] for r in rows if r[0]]
     except Exception:
-        rows = conn.execute("SELECT DISTINCT symbol FROM daily LIMIT 500").fetchall()
+        rows = conn.execute("SELECT DISTINCT symbol FROM daily").fetchall()
         return [r[0] for r in rows if r[0]]
 
 

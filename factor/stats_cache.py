@@ -194,12 +194,12 @@ def compute_factor_stats(
     ic_irs = {}
     ic_decay = {}
 
-    for name in factor_names:
-        fv_dict = factor_values_by_date[name]
-        if len(fv_dict) < _require_cfg("factor.stats.ic_min_periods"):
-            continue
-
-        # 逐截面 Rank IC
+    # Parallel IC computation — each factor independent
+    min_periods = _require_cfg("factor.stats.ic_min_periods")
+    def _compute_ic(name, fv_dict, forward_1d, forward_5d, forward_20d):
+        if len(fv_dict) < min_periods:
+            return name, None
+        from scipy import stats as _stats
         ics = []
         ic_by_date = {}
         for date_str, fv_series in fv_dict.items():
@@ -207,30 +207,17 @@ def compute_factor_stats(
                 continue
             fr = forward_1d.loc[date_str].dropna()
             if isinstance(fr, pd.DataFrame):
-                fr = fr.iloc[0]  # 取第一个symbol的返回
+                fr = fr.iloc[0]
             common = fv_series.dropna().index.intersection(fr.dropna().index)
             if len(common) < 30:
                 continue
-            # Skip constant arrays (e.g., analyst_buy all-zero)
             if np.std(fv_series.loc[common]) == 0 or np.std(fr.loc[common]) == 0:
                 continue
-            from scipy import stats
-            rho, _ = stats.spearmanr(fv_series.loc[common], fr.loc[common])
+            rho, _ = _stats.spearmanr(fv_series.loc[common], fr.loc[common])
             if not np.isnan(rho):
                 ics.append(rho)
                 ic_by_date[date_str] = float(rho)
-
-        ic_series[name] = ic_by_date
-
-        if ics:
-            ic_arr = np.array(ics)
-            ic_means[name] = float(np.mean(ic_arr))
-            ic_irs[name] = float(np.mean(ic_arr) / np.std(ic_arr, ddof=1)) if np.std(ic_arr, ddof=1) > 0 else 0.0
-        else:
-            ic_means[name] = 0.0
-            ic_irs[name] = 0.0
-
-        # IC 衰减 (简化: 按 horizon 分组)
+        # Compute decay per horizon
         decay = {}
         for horizon, fwd_df in [("1d", forward_1d), ("5d", forward_5d), ("20d", forward_20d)]:
             h_ics = []
@@ -251,29 +238,53 @@ def compute_factor_stats(
                 if not np.isnan(rho):
                     h_ics.append(rho)
             decay[horizon] = round(float(np.mean(h_ics)), 4) if h_ics else 0.0
-        ic_decay[name] = decay
+        if ics:
+            ic_arr = np.array(ics)
+            ic_mean = float(np.mean(ic_arr))
+            ic_ir_val = float(np.mean(ic_arr) / np.std(ic_arr, ddof=1)) if np.std(ic_arr, ddof=1) > 0 else 0.0
+        else:
+            ic_mean = 0.0
+            ic_ir_val = 0.0
+        return name, (ic_mean, ic_ir_val, ic_by_date, decay)
+
+    # Execute IC computation in parallel
+    from concurrent.futures import ThreadPoolExecutor, as_completed as _ac
+    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
+        futures = {executor.submit(_compute_ic, name, factor_values_by_date[name],
+                                   forward_1d, forward_5d, forward_20d): name
+                   for name in factor_names}
+        for future in _ac(futures):
+            name, result = future.result()
+            if result is not None:
+                ic_means[name], ic_irs[name], ic_series[name], ic_decay[name] = result
 
     # 6. 计算因子相关性矩阵 (pairwise — 不要求所有因子同日期都有值)
     n = len(factor_names)
+    # Parallel pairwise correlation computation
+    def _compute_pair(i, j, ni, nj):
+        common_d = set(factor_values_by_date[ni].keys()) & set(factor_values_by_date[nj].keys())
+        pair_corrs = []
+        for d in sorted(common_d):
+            si = factor_values_by_date[ni][d].dropna()
+            sj = factor_values_by_date[nj][d].dropna()
+            common_sym = si.index.intersection(sj.index)
+            if len(common_sym) < 30:
+                continue
+            rho = si.loc[common_sym].corr(sj.loc[common_sym], method="spearman")
+            if not np.isnan(rho):
+                pair_corrs.append(rho)
+        avg = float(np.mean(pair_corrs)) if pair_corrs else 0.0
+        return i, j, avg
+
+    pairs = [(i, j, factor_names[i], factor_names[j])
+             for i in range(n) for j in range(i + 1, n)]
     corr_matrix = np.eye(n)
-    corr_counts = np.zeros((n, n))
-    for i in range(n):
-        for j in range(i + 1, n):
-            ni = factor_names[i]
-            nj = factor_names[j]
-            common_d = set(factor_values_by_date[ni].keys()) & set(factor_values_by_date[nj].keys())
-            pair_corrs = []
-            for d in sorted(common_d):
-                si = factor_values_by_date[ni][d].dropna()
-                sj = factor_values_by_date[nj][d].dropna()
-                common_sym = si.index.intersection(sj.index)
-                if len(common_sym) < 30:
-                    continue
-                rho = si.loc[common_sym].corr(sj.loc[common_sym], method="spearman")
-                if not np.isnan(rho):
-                    pair_corrs.append(rho)
-            if pair_corrs:
-                avg = np.mean(pair_corrs)
+    if pairs:
+        with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
+            futures = {executor.submit(_compute_pair, i, j, ni, nj): (i, j)
+                       for i, j, ni, nj in pairs}
+            for future in _ac(futures):
+                i, j, avg = future.result()
                 corr_matrix[i][j] = avg
                 corr_matrix[j][i] = avg
                 corr_counts[i][j] = len(pair_corrs)

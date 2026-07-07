@@ -1,51 +1,36 @@
-# Handoff: quant 项目状态 — 2026-07-07 03:20 CST
+# HANDOFF — quant 项目当前状态
 
-## 进入检查清单
+**最后更新**: 2026-07-07 10:35 CST
 
-| # | 检查项 | 命令/方法 |
-|---|--------|----------|
-| 1 | 先看日志 | tail -30 logs/quant.log |
-| 2 | 服务存活 | lsof -i:8521 |
-| 3 | 活跃因子 | `sqlite3 data/market.db "SELECT name,category FROM factor_registry WHERE status='active'"` |
-| 4 | 最新 commit | git log --oneline -5 |
+## 当前已完成
 
-## 最新 5 个 commit
+| 提交 | 内容 |
+|------|------|
+| 117b6d9 | fix: 除权除息检测 — ExecutionEngine._check_ex_dividend() |
+| 39bb299 | fix: 3新因子函数签名添加 financials=None |
+| 712a8f9 | fix: sim_trades created_at UTC→CST 时区修复 |
+| 8ecd709 | P69 fix: 重建三阶段调度器 quant/scheduler.py |
+| 06cf29e | P69: 修复 scheduler + data sync 漏股 bug |
+| c454daa | P68: dividend 数据源切换 Tushare→akshare |
+| ac5fee4 | P67 hotfix: dividend API + 限流 |
 
-```
-7125743 P67: 数源切换 Tushare→akshare
-68fcd09 P66: 集成 3 个机构/风险/价值新因子 — 大股东减持 + 股权质押 + 股息率
-ae98ffa P65: SUE 因子落地 — 标准化未预期盈余 (PEAD)
-80580c3 docs: P64 文档同步 — CHANGELOG + HANDOFF
-5d71470 P64: 集成 4 个 A 股已验证新因子
-5025a2a docs: P63 文档同步
-```
+## 当前问题 / 待处理
 
-## P64-P66 改动总结
+1. **002072 除权导致错误买入** → 已修复: engine 层 `_check_ex_dividend()` 检测，gap > 10% 跳过
+2. **execution 价格来源**: execute_signals() 在 market.db 无当日数据时回退到昨日收盘价。除权检测能拦截异常跳变，但正常交易日也应用实时报价（后续优化）
+3. **git push 被 keychain 阻塞**: 待下次提交一并推送
 
-| 版本 | 内容 | 文件 |
-|------|------|------|
-| P63 | optimizer 去硬编码: 资本分层自动判定 + risk_aversion 实时校准 | optimizer/portfolio.py, pipeline.py, config.yaml |
-| P64 | 4 新因子: asset_growth, gp_ta, ztd, northbound_20d | factor/compute.py |
-| P65 | SUE 因子 + total_shares 列 | factor/compute.py, data/fundamental.py |
-| P67 | 数源切换: holder_trade/pledge_stat Tushare→akshare | data/holder_trade.py, data/pledge.py, factor/compute.py |
-| P66 | 3 新因子: holder_reduction, pledge_ratio, dividend_yield + 3 个 Tushare 数据模块 | factor/compute.py, data/holder_trade.py, data/pledge.py, data/dividend.py |
+## 关键架构
 
-## 当前运行状态
+- **调度**: 三阶段 (08:30 信号 → 09:30 执行 → 15:30 归因)
+- **状态通信**: web/state_broker.py (Redis pub/sub + fallback)
+- **交易持久**: data/trade_repo.py → data/trades.db
+- **市场数据**: data/store.py → data/market.db
+- **执行引擎**: execution/engine.py → 含除权检测、T+1 检查、止损
+- **实时报价**: execution/quote.py (新浪财经)
 
-- 种子资金: ¥5,000 (TradeRepo 持久化)
-- 活跃因子: 10 (asset_growth, dividend_yield, dt_streak, gp_ta, holder_reduction, northbound_20d, pledge_ratio, sue, zt_streak, ztd)
-- 总因子数: 44
-- 数据库: SQLite WAL 模式, busy_timeout=30s
-- 日志: logs/quant.log (按日期滚动, 保留 10 天)
+## 关键约束
 
-## 待办
-
-- holder_trade/pledge_stat 改用 akshare (免费), 命令见下
-- 运行 `PYTHONPATH=. bash scripts/eval_layer12.sh` 测试新因子 IC 表现
-- 完整候选清单: docs/adr/023-new-factor-candidates.md
-
-## 启动命令
-
-```bash
-cd /Users/mariusto/project/quant && ./restart.sh
-```
+- 所有数值参数放 config/config.yaml，不硬编码（涨跌停 10% 是交易所硬规则除外）
+- 不遗留 fallback 默认值
+- 修改后文档同步更新

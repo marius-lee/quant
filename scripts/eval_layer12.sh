@@ -1,5 +1,5 @@
 #!/bin/bash
-# Layer 1+2 快速评估: IC t-test + 边际贡献 (~3 min)
+# Layer 1+2 快速评估: IC t-test (t from config) + 边际贡献
 # 全量因子评估, 不修改 factor_registry status
 set -e
 cd "$(dirname "$0")/.."
@@ -11,11 +11,11 @@ from config.loader import get as _ecfg
 import numpy as np
 
 conn = sqlite3.connect("data/market.db")
-all_names = [r[0] for r in conn.execute("SELECT name FROM factor_registry").fetchall()]
+all_names = [r[0] for r in conn.execute("SELECT name FROM factor_registry WHERE status='active'").fetchall()]
 conn.close()
 
-print(f"Evaluating {len(all_names)} registered factors (full universe)...")
-stats = compute_factor_stats(n_symbols=800, lookback=120, factor_names=all_names)
+print(f"Evaluating {len(all_names)} active factors (active factors, deprecated excluded)...")
+stats = compute_factor_stats(factor_names=all_names)  # n_symbols/lookback from config.yaml
 
 factor_names = stats["factor_keys"]
 ic_means = dict(zip(factor_names, stats["ic"]))
@@ -23,7 +23,9 @@ ic_irs = dict(zip(factor_names, stats["ic_ir"]))
 corr = np.array(stats["corr"])
 
 from factor.marginal import compute_marginal_evaluation, rank_candidates
-results = compute_marginal_evaluation(factor_names, ic_means, ic_irs, corr, n_days=120)
+from config.loader import get as _ecfg
+t_threshold = _ecfg('factor.evaluation.t_threshold_small', 2.0)
+results = compute_marginal_evaluation(factor_names, ic_means, ic_irs, corr, n_days=120, t_threshold=t_threshold)
 
 print(f"\n=== Layer 1: IC t-test (t >= 2.0) ===")
 passed = 0

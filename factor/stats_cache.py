@@ -59,15 +59,25 @@ def compute_factor_stats(
         # 用 lookback 参数化选股窗口: 回看 lookback 个日历日, 至少交易一半天数
         stock_window = int(lookback * 1.5)
         min_days = max(30, lookback // 2)
-        rows = conn.execute(f"""
-            SELECT symbol, AVG(amount) as avg_amt
-            FROM daily
-            WHERE date >= date('now', '-{stock_window} days')
-            GROUP BY symbol
-            HAVING COUNT(*) >= {min_days}
-            ORDER BY avg_amt DESC
-            LIMIT ?
-        """, (n_symbols,)).fetchall()
+        if n_symbols and n_symbols > 0:
+            rows = conn.execute(f"""
+                SELECT symbol, AVG(amount) as avg_amt
+                FROM daily
+                WHERE date >= date('now', '-{stock_window} days')
+                GROUP BY symbol
+                HAVING COUNT(*) >= {min_days}
+                ORDER BY avg_amt DESC
+                LIMIT ?
+            """, (n_symbols,)).fetchall()
+        else:
+            rows = conn.execute(f"""
+                SELECT symbol, AVG(amount) as avg_amt
+                FROM daily
+                WHERE date >= date('now', '-{stock_window} days')
+                GROUP BY symbol
+                HAVING COUNT(*) >= {min_days}
+                ORDER BY avg_amt DESC
+            """).fetchall()
         symbols = [r[0] for r in rows]
 
     if not symbols:
@@ -100,20 +110,46 @@ def compute_factor_stats(
     except ImportError:
         logger.info("tqdm not installed, computing without progress bar")
         date_iter = eval_dates
-    # Pre-load daily_valuation for all eval dates (avoids per-date DB queries)
-    val_conn = store._connect()
-    val_df = pd.read_sql_query(
-        "SELECT * FROM daily_valuation WHERE date >= ? AND date <= ?",
-        val_conn, params=(eval_dates[0].strftime("%Y-%m-%d") if hasattr(eval_dates[0], 'strftime') else str(eval_dates[0])[:10],
-                          eval_dates[-1].strftime("%Y-%m-%d") if hasattr(eval_dates[-1], 'strftime') else str(eval_dates[-1])[:10]))
-    has_daily_val = not val_df.empty
+
+    # Pre-load fundamentals + financials for all eval dates (eliminates per-date DB queries)
+    preloaded_financials = {}
+    preloaded_fundamentals = {}
+    from factor.compute import _FIN_FACTORS, _FUNDAMENTAL_FN_MAP
+    need_fund = any(n in _FUNDAMENTAL_FN_MAP or n in _FIN_FACTORS for n in factor_names)
+    if need_fund:
+        for d in eval_dates:
+            ds = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10]
+            try:
+                fund = store.get_fundamentals(symbols, date=ds)
+                if fund is not None and not fund.empty:
+                    preloaded_fundamentals[ds] = fund
+            except Exception:
+                continue
+        logger.info(f"preloaded fundamentals for {len(preloaded_fundamentals)} dates")
+        # Financials preload (subset of dates that have fundamentals)
+        if any(n in _FIN_FACTORS for n in factor_names):
+            for d in eval_dates:
+                ds = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10]
+                try:
+                    fin = store.get_financials(symbols, date=ds)
+                    if fin is not None and not fin.empty:
+                        preloaded_financials[ds] = fin
+                except Exception:
+                    continue
+            logger.info(f"preloaded financials for {len(preloaded_financials)} dates")
 
     for d in date_iter:
         date_str = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10]
-        # Load per-date fundamentals (with daily_valuation override if available)
-        fundamentals = store.get_fundamentals(symbols, date=date_str)
+        # Use preloaded fundamentals when available (avoids per-date DB query for 5493 stocks)
+        fundamentals = preloaded_fundamentals.get(date_str)
+        if fundamentals is None:
+            try:
+                fundamentals = store.get_fundamentals(symbols, date=date_str)
+            except Exception:
+                fundamentals = None
         try:
-            fv = compute_all_factors(data, date_str, fundamentals=fundamentals, factor_names=factor_names)
+            fv = compute_all_factors(data, date_str, fundamentals=fundamentals,
+                                     factor_names=factor_names, preloaded_financials=preloaded_financials)
             for name in factor_names:
                 if name in fv and not fv[name].dropna().empty:
                     factor_values_by_date[name][date_str] = fv[name]

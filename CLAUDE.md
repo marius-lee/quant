@@ -43,9 +43,9 @@ PYTHONPATH=. python3 -m pytest tests/ -v
 - `store.py` — **DataStore**: 多源日线增量同步（tickflow→新浪→腾讯→tushare→akshare），速度自适应轮转
 - `trade_repo.py` — **TradeRepo**: `sim_trades` 统一读写，消除重复 SQL
 
-### Layer 2: Factor (`factor/`)
+### Layer 2: Factor (`factor/`) — 55因子注册 (39 price + 16 fundamental), 31 active / 24 deprecated。状态由 factor_registry 管理
 - `base.py` — **Factor** 抽象基类: `compute(data) → Series`, `evaluate(values, returns) → dict`
-- `compute.py` — 因子计算：44因子 (27 price + 17 fundamental) = PRICE_FN_MAP(26) + FUNDAMENTAL_FN_MAP(17)，覆盖机构/风险/价值/盈利/流动性/技术面/质量。10 active: asset_growth, dividend_yield, dt_streak, gp_ta, holder_reduction, northbound_20d, pledge_ratio, sue, zt_streak, ztd
+- `compute.py` — 因子计算: 纯函数、向量化。active 因子由 factor_registry.status 决定，evaluate 阶段自动过滤 deprecated。新增: day_night(OIR), str(STR), abn_turnover, ocfp, seal_turnover_ratio, seal_time, limit_touch_no_seal, net_limit_ratio, epa, trcf, ideal_amplitude
 - `evaluate.py` — 截面 Rank IC + IC_IR + 衰减分析 + 相关性矩阵
 - `synth.py` — 因子合成：`equal_weight()` / `ic_weighted()`
 
@@ -74,7 +74,7 @@ PYTHONPATH=. python3 -m pytest tests/ -v
 ## Data flow
 
 ```
-scheduler.py (交易日 15:30)
+scheduler.py (三阶段: 08:30 信号 → 09:30 执行 → 15:30 归因)
   └─ pipeline.py.run(date)
        ├─ Step 1: DataStore.update_daily()
        ├─ Step 2: factor/evaluate.py → IC/IR report
@@ -112,31 +112,35 @@ from utils.logger import get_logger
 logger = get_logger("module.name")
 ```
 
-## Files pending implementation
+## Factor evaluation commands
 
-| File | Status |
-|------|--------|
-| `factor/base.py` | Done |
-| `factor/compute.py` | Done (44因子, 10 active: asset_growth, dividend_yield, dt_streak, gp_ta, holder_reduction, northbound_20d, pledge_ratio, sue, zt_streak, ztd) |
-| `factor/evaluate.py` | Done |
-| `factor/synth.py` | Done |
-| `alpha/model.py` | Done |
-| `risk/neutralize.py` | Done |
-| `risk/covariance.py` | Done |
-| `risk/constraints.py` | Done |
-| `optimizer/portfolio.py` | Done |
-| `optimizer/rebalance.py` | Done |
-| `execution/engine.py` | Done |
-| `execution/cost.py` | Done |
-| `monitor/attribution.py` | Done |
-| `monitor/report.py` | Done |
-| `pipeline.py` | Done |
-| `scheduler.py` | Done |
+```bash
+# L1+L2 快速评估 — 当前 24 active 因子
+PYTHONPATH=. bash scripts/eval_layer12.sh
+# L1+L2+L3 完整评估 (读写 factor_registry.status)
+PYTHONPATH=. bash scripts/eval_stepwise.sh
+# 五阶段标准评估 (CPCV + walk-forward + PBO, 业界标准)
+PYTHONPATH=. bash scripts/eval_standard.sh
+```
 
-## Files to remove (legacy, post-migration)
+## Key docs
 
-None — all legacy files cleaned as of P57.
-
+| 文档 | 内容 |
+|------|------|
+| `docs/DATA_DICTIONARY.md` | 数据字典 (market.db / trades.db 全表全字段) |
+| `docs/research/A股有效因子普查_2026-07-07.md` | 因子普查汇总 (12家券商研报) |
+| `docs/research/因子失效记录_2026-07-07.md` | 24因子失效记录与原因 |
+| `docs/research/四因子接入分析_2026-07-07.md` | OIR/STR/ABN_TURN/OCFP 接入分析 |
+| `docs/research/oir-factor-deep-dive.md` | OIR 计算细节 |
+| `docs/research/str-factor-deep-dive.md` | STR 计算细节 |
+| `docs/research/abn-turnover-factor-deep-dive.md` | ABN_TURN 计算细节 |
+| `docs/research/ocfp-factor-deep-dive.md` | OCFP 计算细节 |
+| `docs/research/A股量化因子全量研究报告_2026-07-07.md` | 涨跌停制度特有效因子 (50+因子) |
+| `docs/research/涨跌停因子接入分析_2026-07-07.md` | P71 四因子接入分析 |
+| `docs/research/数据源适配因子清单_2026-07-07.md` | P72 数据源适配 — 55因子, 3个落地 |
+| `docs/research/量化因子回测策略业界标准_2026-07-07.md` | 业界标准 — 5阶段流程(CPCV+walk-forward+PBO) |
+| `docs/research/回测策略业界标准分析_2026-07-07.md` | 标准分析 + 与当前流程对比 |
+| `docs/adr/025-launchd-keepalive-policy.md` | ADR 025: KeepAlive 策略 — scheduler ✅ / webapp ❌ |
 
 ## Data quirks (not bugs)
 

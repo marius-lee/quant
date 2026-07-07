@@ -47,6 +47,7 @@ def screen_factors(input_json: str = "/tmp/_eval_phase1.json",
 
     factor_names = stats["factor_keys"]
     ic_means = dict(zip(factor_names, stats["ic"]))
+    meta = stats.get("meta", {})
     ic_irs = dict(zip(factor_names, stats["ic_ir"]))
     decay = stats.get("decay", {})
     ic_series_dict = stats.get("ic_series", {})
@@ -70,8 +71,11 @@ def screen_factors(input_json: str = "/tmp/_eval_phase1.json",
             reasons.append(f"ICIR={ir:.2f}<{min_icir}")
 
         # IC half-life: days until IC drops to half
+        # decay = {display_name: [1d_val, 5d_val, 20d_val]}
         ic_1d = abs(ic_means.get(name, 0.0))
-        ic_20d = abs(decay.get(name, {}).get("20d", 0.0))
+        display_name = meta.get(name, {}).get("display", name)
+        decay_vals = decay.get(display_name, [0.0, 0.0, 0.0])
+        ic_20d = abs(decay_vals[2]) if len(decay_vals) > 2 else 0.0
         half_life_est = 0
         if ic_1d > 0.001 and ic_20d > 0:
             ratio_20 = ic_20d / ic_1d
@@ -93,7 +97,9 @@ def screen_factors(input_json: str = "/tmp/_eval_phase1.json",
         ic = ic_means.get(name, 0.0)
         ir = ic_irs.get(name, 0.0)
         t = abs(ir) * np.sqrt(n_days)
-        ic_20 = decay.get(name, {}).get("20d", 0.0)
+        display_name = meta.get(name, {}).get("display", name)
+        decay_vals = decay.get(display_name, [0.0, 0.0, 0.0])
+        ic_20 = abs(decay_vals[2]) if len(decay_vals) > 2 else 0.0
         ratio = ic_20 / max(abs(ic), 0.001) if ic else 0
         hl = int(-20 / np.log(max(ratio, 0.01))) if ratio > 0 else 0
         print(f"  ✓ {name:30s} IC={ic:+.4f}  t={t:.1f}  IR={ir:+.2f}  HL≈{hl}d")
@@ -108,9 +114,7 @@ def screen_factors(input_json: str = "/tmp/_eval_phase1.json",
         "failed": {k: list(v) for k, v in failed.items()},
         "ic_means": {k: float(v) for k, v in ic_means.items()},
         "ic_irs": {k: float(v) for k, v in ic_irs.items()},
-        "ic_series": {k: v.to_dict() if hasattr(v, 'to_dict') else {}
-                      for k, v in ic_series_dict.items()}
-        if ic_series_dict else {},
+        "ic_series": stats.get("ic_series", {}),
     }
 
     with open(output_json, 'w') as f:

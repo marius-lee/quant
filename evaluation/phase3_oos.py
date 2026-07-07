@@ -42,27 +42,31 @@ def validate_oos(input_json: str = "/tmp/_eval_phase2.json",
 
     # ── 获取 IC 时间序列 ──
     # 从 Phase 2 传入的 IC 序列或重新查询
+    # ic_series = {name: {date_str: ic_val}} — rebuild pd.Series
     ic_series_dict = {}
-    if p2.get("ic_series"):
-        for name, ic_dict in p2["ic_series"].items():
+    raw_ic = p2.get("ic_series", {})
+    if raw_ic:
+        for name, ic_dict in raw_ic.items():
             if ic_dict:
                 s = pd.Series(ic_dict)
-                s.index = pd.to_datetime(s.index)
+                s.index = pd.to_datetime(list(ic_dict.keys()))
                 ic_series_dict[name] = s
 
     if not ic_series_dict:
-        # Fallback: 从 factor_registry 重新计算
-        print("Phase 3: re-computing IC series (no cached data from Phase 2)...")
+        # Fallback: compute from scratch
+        print("Phase 3: re-computing IC series...")
         from factor.stats_cache import compute_factor_stats
         stats = compute_factor_stats(
             factor_names=candidates,
-            n_symbols=None,  # full universe
+            n_symbols=None,
             lookback=lookback,
         )
-        ic_series_dict = {}
         for name in candidates:
-            if name in stats.get("ic_series", {}):
-                ic_series_dict[name] = stats["ic_series"][name]
+            ic_data = stats.get("ic_series", {}).get(name, {})
+            if ic_data:
+                s = pd.Series(ic_data)
+                s.index = pd.to_datetime(list(ic_data.keys()))
+                ic_series_dict[name] = s
 
     # ── CPCV 折叠 ──
     pvf = PurgedWalkForward(n_groups=n_groups, embargo_days=embargo_days)

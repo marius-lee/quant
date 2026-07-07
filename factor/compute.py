@@ -1298,7 +1298,9 @@ def get_factor_names(status_filter='active') -> list:
 def compute_all_factors(data: pd.DataFrame, date: str,
                       fundamentals: pd.DataFrame = None,
                       benchmark_ret: Optional["pd.Series"] = None,
-                      factor_names: list = None) -> dict:
+                      factor_names: list = None,
+                      preloaded_financials: pd.DataFrame = None,
+                      preloaded_fundamentals: pd.DataFrame = None) -> dict:
     """批量计算所有已注册因子 → {factor_name: Series(index=symbol)}。
 
     价格因子从 data 计算, 基本面因子从 fundamentals 计算。
@@ -1327,10 +1329,13 @@ def compute_all_factors(data: pd.DataFrame, date: str,
     if fundamentals is not None and not fundamentals.empty:
         financials = None
         if fundamentals is not None and any(n in fund_factors for n in _FIN_FACTORS):
-            from data.store import DataStore
-            store = DataStore()
-            financials = store.get_financials(fundamentals.index.tolist(), date=date)
-            store.close()
+            if preloaded_financials is not None:
+                financials = preloaded_financials
+            else:
+                from data.store import DataStore
+                store = DataStore()
+                financials = store.get_financials(fundamentals.index.tolist(), date=date)
+                store.close()
         for name, (cat, fn) in fund_factors.items():
             try:
                 if name in _FIN_FACTORS and financials is not None:

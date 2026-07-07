@@ -19,6 +19,7 @@ import json
 import os
 import time
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -31,6 +32,7 @@ logger = get_logger("factor.stats_cache")
 
 _DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
 _SNAPSHOT_TTL_SEC = _cfg("factor.stats.snapshot_ttl_sec", 86400)  # 24h
+_MAX_WORKERS = _cfg("factor.evaluation.max_workers", 6)  # ThreadPoolExecutor workers
 
 
 def compute_factor_stats(
@@ -138,9 +140,10 @@ def compute_factor_stats(
                     continue
             logger.info(f"preloaded financials for {len(preloaded_financials)} dates")
 
-    for d in date_iter:
+    # Parallel factor computation via ThreadPoolExecutor
+    # compute_all_factors is numpy-heavy (GIL released), so threads are effective
+    def _compute_one_date(d):
         date_str = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10]
-        # Use preloaded fundamentals when available (avoids per-date DB query for 5493 stocks)
         fundamentals = preloaded_fundamentals.get(date_str)
         if fundamentals is None:
             try:
@@ -150,11 +153,32 @@ def compute_factor_stats(
         try:
             fv = compute_all_factors(data, date_str, fundamentals=fundamentals,
                                      factor_names=factor_names, preloaded_financials=preloaded_financials)
+            result = {}
             for name in factor_names:
                 if name in fv and not fv[name].dropna().empty:
-                    factor_values_by_date[name][date_str] = fv[name]
+                    result[name] = fv[name]
+            return date_str, result, None
         except Exception as e:
-            logger.warning(f"Factor compute failed at {date_str}: {e}")
+            return date_str, {}, str(e)
+
+    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
+        futures = {executor.submit(_compute_one_date, d): d for d in eval_dates}
+        try:
+            from tqdm import tqdm
+            pbar = tqdm(total=len(futures), desc="Computing factors (parallel)")
+        except ImportError:
+            pbar = None
+        for future in as_completed(futures):
+            date_str, fv_partial, err = future.result()
+            if err:
+                logger.warning(f"Factor compute failed at {date_str}: {err}")
+            else:
+                for name, series in fv_partial.items():
+                    factor_values_by_date[name][date_str] = series
+            if pbar:
+                pbar.update(1)
+        if pbar:
+            pbar.close()
 
     # 4. 计算前瞻收益 (用于 IC 评估)
     close = data["close"]

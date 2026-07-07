@@ -2217,7 +2217,7 @@ def compute_ocfp(data, date, fundamentals=None, financials=None):
     import sqlite3, numpy as np
 
     if fundamentals is None:
-        return pd.Series(np.nan, index=data["close"].columns, name="ocfp")
+        return pd.Series(np.nan, index=data.index, name="ocfp")
 
     syms = fundamentals.index.tolist()
 

@@ -35,6 +35,60 @@ _SNAPSHOT_TTL_SEC = _cfg("factor.stats.snapshot_ttl_sec", 86400)  # 24h
 _MAX_WORKERS = _cfg("factor.evaluation.max_workers", 6)  # ThreadPoolExecutor workers
 
 
+# ══════════════════════════════════════════════════════════════
+# ProcessPoolExecutor worker functions (module-level for pickle)
+# ══════════════════════════════════════════════════════════════
+
+# Per-process globals set by _pp_worker_init
+_pp_data = None
+_pp_preloaded_fundamentals = None
+_pp_preloaded_financials = None
+_pp_symbols = None
+_pp_factor_names = None
+
+
+def _pp_worker_init(data, preloaded_fundamentals, preloaded_financials, symbols, factor_names):
+    """ProcessPoolExecutor initializer: load data once per process."""
+    global _pp_data, _pp_preloaded_fundamentals, _pp_preloaded_financials
+    global _pp_symbols, _pp_factor_names
+    _pp_data = data
+    _pp_preloaded_fundamentals = preloaded_fundamentals
+    _pp_preloaded_financials = preloaded_financials
+    _pp_symbols = symbols
+    _pp_factor_names = factor_names
+
+
+def _pp_worker_compute(d) -> tuple:
+    """Compute all factors for a single date.  Called by ProcessPoolExecutor.
+
+    Returns (date_str, factor_values_dict, error_string_or_None).
+    """
+    date_str = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
+    fundamentals = _pp_preloaded_fundamentals.get(date_str)
+    if fundamentals is None:
+        from data.store import DataStore
+        _store = DataStore()
+        try:
+            fundamentals = _store.get_fundamentals(_pp_symbols, date=date_str)
+        except Exception:
+            fundamentals = None
+        _store.close()
+    try:
+        from factor.compute import compute_all_factors
+        fv = compute_all_factors(_pp_data, date_str,
+                                 fundamentals=fundamentals,
+                                 factor_names=_pp_factor_names,
+                                 preloaded_financials=_pp_preloaded_financials)
+        result = {}
+        for name in _pp_factor_names:
+            if name in fv and not fv[name].dropna().empty:
+                result[name] = fv[name]
+        return date_str, result, None
+    except Exception as e:
+        return date_str, {}, str(e)
+
+
+
 def compute_factor_stats(
     symbols: list = None, n_symbols: int = None, lookback: int = None,
     factor_names: list = None,
@@ -145,44 +199,36 @@ def compute_factor_stats(
                     logger.info(f"  preload financials: {preloaded_cnt}/{len(eval_dates)} dates")
             logger.info(f"preloaded financials for {len(preloaded_financials)}/{len(eval_dates)} dates")
 
-    logger.info(f"factor compute start: {len(eval_dates)} dates (sequential), × {len(factor_names)} factors, {_MAX_WORKERS} workers")
+    logger.info(f"factor compute start: {len(eval_dates)} dates (ProcessPoolExecutor), (sequential), × {len(factor_names)} factors, {_MAX_WORKERS} workers")
 
-    # Factor computation: sequential loop (~17s/date × 117 dates ≈ 33 min)
-    def _compute_one_date(d):
-        date_str = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
-        fundamentals = preloaded_fundamentals.get(date_str)
-        if fundamentals is None:
-            try:
-                fundamentals = store.get_fundamentals(symbols, date=date_str)
-            except Exception:
-                fundamentals = None
+    # Factor computation: parallel via ProcessPoolExecutor
+    # Each worker is an independent OS process: no shared pandas, sqlite3, or GIL
+    from concurrent.futures import ProcessPoolExecutor
+    with ProcessPoolExecutor(max_workers=_MAX_WORKERS,
+                             initializer=_pp_worker_init,
+ initargs=(data, preloaded_fundamentals, preloaded_financials, symbols, factor_names)) as executor:
+        futures = {executor.submit(_pp_worker_compute, d): d for d in eval_dates}
+        logger.info(f"parallel compute: {len(futures)} jobs x {_MAX_WORKERS} processes")
         try:
-            fv = compute_all_factors(data, date_str, fundamentals=fundamentals,
-                                     factor_names=factor_names, preloaded_financials=preloaded_financials)
-            result = {}
-            for name in factor_names:
-                if name in fv and not fv[name].dropna().empty:
-                    result[name] = fv[name]
-            return date_str, result, None
-        except Exception as e:
-            return date_str, {}, str(e)
-
-    try:
-        from tqdm import tqdm
-        date_iter = tqdm(eval_dates, desc="Computing factors")
-    except ImportError:
-        date_iter = eval_dates
-    completed = 0
-    for d in date_iter:
-        date_str, fv_partial, err = _compute_one_date(d)
-        if err:
-            logger.warning(f"Factor compute failed at {date_str}: {err}")
-        else:
-            for name, series in fv_partial.items():
-                factor_values_by_date[name][date_str] = series
-        completed += 1
-        if completed % 5 == 0:
-            logger.info(f"factor compute progress: {completed}/{len(eval_dates)} dates done")
+            from tqdm import tqdm
+            pbar = tqdm(total=len(futures), desc="Computing factors (parallel)")
+        except ImportError:
+            pbar = None
+        completed = 0
+        for future in as_completed(futures):
+            date_str, fv_partial, err = future.result()
+            if err:
+                logger.warning(f"Factor compute failed at {date_str}: {err}")
+            else:
+                for name, series in fv_partial.items():
+                    factor_values_by_date[name][date_str] = series
+            completed += 1
+            if completed % 5 == 0:
+                logger.info(f"factor compute progress: {completed}/{len(futures)} dates done")
+            if pbar:
+                pbar.update(1)
+        if pbar:
+            pbar.close()
     logger.info(f"factor compute complete: {len(eval_dates)}/{len(eval_dates)} dates")
 
     # 4. 计算前瞻收益 (用于 IC 评估)

@@ -1330,7 +1330,8 @@ def compute_all_factors(data: pd.DataFrame, date: str,
         financials = None
         if fundamentals is not None and any(n in fund_factors for n in _FIN_FACTORS):
             if preloaded_financials is not None:
-                financials = preloaded_financials
+                # preloaded_financials is dict {date_str: DataFrame}, look up specific date
+                financials = preloaded_financials.get(date)
             else:
                 from data.store import DataStore
                 store = DataStore()

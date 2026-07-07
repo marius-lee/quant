@@ -170,6 +170,7 @@ def compute_factor_stats(
 
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
         futures = {executor.submit(_compute_one_date, d): d for d in eval_dates}
+        logger.info(f"parallel compute started: {len(futures)} jobs submitted, {_MAX_WORKERS} workers")
         try:
             from tqdm import tqdm
             pbar = tqdm(total=len(futures), desc="Computing factors (parallel)")
@@ -184,7 +185,7 @@ def compute_factor_stats(
                 for name, series in fv_partial.items():
                     factor_values_by_date[name][date_str] = series
             completed += 1
-            if completed % 20 == 0:
+            if completed % 5 == 0:
                 logger.info(f"factor compute progress: {completed}/{len(futures)} dates done")
             if pbar:
                 pbar.update(1)

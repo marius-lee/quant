@@ -108,19 +108,14 @@ def compute_factor_stats(
     # 只计算最近 lookback 个交易日
     eval_dates = dates[-lookback:]
 
-    try:
-        from tqdm import tqdm
-        date_iter = tqdm(eval_dates, desc="Computing factors")
-    except ImportError:
-        logger.info("tqdm not installed, computing without progress bar")
-        date_iter = eval_dates
-
     # Pre-load fundamentals + financials for all eval dates (eliminates per-date DB queries)
     preloaded_financials = {}
     preloaded_fundamentals = {}
     from factor.compute import _FIN_FACTORS, _FUNDAMENTAL_FN_MAP
     need_fund = any(n in _FUNDAMENTAL_FN_MAP or n in _FIN_FACTORS for n in factor_names)
     if need_fund:
+        logger.info(f"preloading fundamentals for {len(eval_dates)} dates...")
+        preloaded_cnt = 0
         for d in eval_dates:
             ds = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10]
             try:
@@ -129,9 +124,14 @@ def compute_factor_stats(
                     preloaded_fundamentals[ds] = fund
             except Exception:
                 continue
-        logger.info(f"preloaded fundamentals for {len(preloaded_fundamentals)} dates")
+            preloaded_cnt += 1
+            if preloaded_cnt % 20 == 0:
+                logger.info(f"  preload fundamentals: {preloaded_cnt}/{len(eval_dates)} dates")
+        logger.info(f"preloaded fundamentals for {len(preloaded_fundamentals)}/{len(eval_dates)} dates")
         # Financials preload (subset of dates that have fundamentals)
         if any(n in _FIN_FACTORS for n in factor_names):
+            logger.info(f"preloading financials for {len(eval_dates)} dates...")
+            preloaded_cnt = 0
             for d in eval_dates:
                 ds = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10]
                 try:
@@ -140,7 +140,10 @@ def compute_factor_stats(
                         preloaded_financials[ds] = fin
                 except Exception:
                     continue
-            logger.info(f"preloaded financials for {len(preloaded_financials)} dates")
+                preloaded_cnt += 1
+                if preloaded_cnt % 20 == 0:
+                    logger.info(f"  preload financials: {preloaded_cnt}/{len(eval_dates)} dates")
+            logger.info(f"preloaded financials for {len(preloaded_financials)}/{len(eval_dates)} dates")
 
     logger.info(f"factor compute start: {len(eval_dates)} dates × {len(factor_names)} factors, {_MAX_WORKERS} workers")
 

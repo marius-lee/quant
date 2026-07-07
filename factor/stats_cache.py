@@ -147,9 +147,12 @@ def compute_factor_stats(
 
     logger.info(f"factor compute start: {len(eval_dates)} dates × {len(factor_names)} factors, {_MAX_WORKERS} workers")
 
-    # Factor computation: sequential loop (ThreadPoolExecutor removed due to
-    # pandas MultiIndex thread-safety deadlocks with shared DataFrame)
-    # compute_all_factors is numpy-heavy (GIL released), so threads are effective
+    # Factor computation: parallel via ThreadPoolExecutor with per-worker data copy
+    # Each worker gets its own copy to avoid pandas MultiIndex _item_cache contention
+    import threading
+    _worker_data_storage = threading.local()
+    def _init_worker():
+        _worker_data_storage.data = data.copy()
     def _compute_one_date(d):
         date_str = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10]
         fundamentals = preloaded_fundamentals.get(date_str)
@@ -159,7 +162,7 @@ def compute_factor_stats(
             except Exception:
                 fundamentals = None
         try:
-            fv = compute_all_factors(data, date_str, fundamentals=fundamentals,
+            fv = compute_all_factors(_worker_data_storage.data, date_str, fundamentals=fundamentals,
                                      factor_names=factor_names, preloaded_financials=preloaded_financials)
             result = {}
             for name in factor_names:
@@ -169,22 +172,29 @@ def compute_factor_stats(
         except Exception as e:
             return date_str, {}, str(e)
 
-    try:
-        from tqdm import tqdm
-        date_iter = tqdm(eval_dates, desc="Computing factors")
-    except ImportError:
-        date_iter = eval_dates
-    completed = 0
-    for d in date_iter:
-        date_str, fv_partial, err = _compute_one_date(d)
-        if err:
-            logger.warning(f"Factor compute failed at {date_str}: {err}")
-        else:
-            for name, series in fv_partial.items():
-                factor_values_by_date[name][date_str] = series
-        completed += 1
-        if completed % 5 == 0:
-            logger.info(f"factor compute progress: {completed}/{len(eval_dates)} dates done")
+    with ThreadPoolExecutor(max_workers=_MAX_WORKERS, initializer=_init_worker) as executor:
+        futures = {executor.submit(_compute_one_date, d): d for d in eval_dates}
+        logger.info(f"parallel compute: {len(futures)} jobs × {_MAX_WORKERS} workers (each with own data copy)")
+        try:
+            from tqdm import tqdm
+            pbar = tqdm(total=len(futures), desc="Computing factors (parallel)")
+        except ImportError:
+            pbar = None
+        completed = 0
+        for future in as_completed(futures):
+            date_str, fv_partial, err = future.result()
+            if err:
+                logger.warning(f"Factor compute failed at {date_str}: {err}")
+            else:
+                for name, series in fv_partial.items():
+                    factor_values_by_date[name][date_str] = series
+            completed += 1
+            if completed % 5 == 0:
+                logger.info(f"factor compute progress: {completed}/{len(futures)} dates done")
+            if pbar:
+                pbar.update(1)
+        if pbar:
+            pbar.close()
     logger.info(f"factor compute complete: {len(eval_dates)}/{len(eval_dates)} dates")
     # 4. 计算前瞻收益 (用于 IC 评估)
     close = data["close"]

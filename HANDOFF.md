@@ -11,6 +11,12 @@
 
 | 提交 | 内容 |
 |------|------|
+| 47fa2df | fix: ThreadPoolExecutor→ProcessPoolExecutor + preloaded_financials dict bug |
+| 4dab489 | fix: 因子计算回归顺序循环，彻底消除ThreadPoolExecutor死锁风险 |
+| 313fd1a | feat: _init_worker 输出线程启动和数据拷贝确认日志 |
+| 32b692b | perf: 恢复ThreadPoolExecutor并行 + per-worker data.copy() 避免MultiIndex行锁 |
+| 4bef2ea | fix: 因子计算从 ThreadPoolExecutor 改为顺序循环 |
+| 51469e2 | fix: 并行心跳从20改为5个 + 启动确认日志 |
 | f0b4b79 | feat: 并行循环加心跳日志 — 每20天/每10因子输出进度 |
 | 60e89b4 | perf: IC 计算 + 相关性矩阵并行化 |
 | 0467da6 | perf: 因子计算并行化 — ThreadPoolExecutor |
@@ -39,7 +45,7 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 | `factor/registry.py` | 45 | _cs_zscore, _db_connect, _FIN_FACTORS |
 | `factor/orchestrator.py` | 25 | get_factor_names (延迟导入) |
 | `factor/synth.py` | — | equal_weight, ic_weighted, sleeve_compose |
-| `factor/stats_cache.py` | ~380 | 计算 IC/IR/decay/corr, 3 路 ThreadPoolExecutor 并行 |
+| `factor/stats_cache.py` | ~560 | IC/IR/decay/corr: 因子计算用ProcessPoolExecutor(6进程), IC+相关性用ThreadPoolExecutor |
 | `factor/__init__.py` | 55 | __getattr__ 惰性导入, 打破循环 |
 | `config/constants.py` | 80 | 全局常量 + _require_cfg + _market_db_path |
 
@@ -61,10 +67,26 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 
 | 模块 | 改动 | 效果 |
 |------|------|------|
-| `stats_cache.py` 因子计算 | for d in dates → ThreadPoolExecutor(6) | ~7min → ~1.5min |
+| `stats_cache.py` 因子计算 | for d in dates → ProcessPoolExecutor(6) | 独立进程,无死锁 |
 | `stats_cache.py` IC 评估 | for name in factors → ThreadPoolExecutor(6) | ~30s → ~6s |
 | `stats_cache.py` 相关性矩阵 | for i,j in pairs → ThreadPoolExecutor(6) | ~10s → ~2s |
-| `config.yaml` | 新增 `factor.evaluation.max_workers: 6` | 可调整并行度 |
+| `config.yaml` | `factor.evaluation.max_workers: 6` | 可调整并行度 |
+
+### 并发架构决策 (2026-07-08)
+
+**ThreadPoolExecutor 死锁诊断**:
+- 根因: `DataStore._conn` 是单一共享 sqlite3 连接, `check_same_thread=False` 只绕过检查但
+  6线程并发 `execute()` 时 sqlite3 内部互斥锁死锁
+- 叠加 `pandas.MultiIndex._item_cache` 多线程竞争
+- 初期尝试 `data.copy()` per-worker → 无效, 因为 `store._conn` 仍共享
+- ThreadPoolExecutor+initializer 12 小时内 4 次提交、反复死锁后最终确定为不可行方案
+
+**最终方案: ProcessPoolExecutor**:
+- 因子计算改用 `concurrent.futures.ProcessPoolExecutor`
+- 每个 worker 是独立 OS 进程: 自带 Python 解释器、pandas、numpy、sqlite3
+- `_pp_worker_init()` 通过 initializer 每个进程只序列化一次 35MB data
+- 6 进程 ≈ +300MB 内存, M1 Max 32GB 无压力
+- IC 计算和相关性矩阵仍用 ThreadPoolExecutor (小数据结构, 无死锁风险)
 
 终端现在输出心跳日志: 数据加载 → 因子计算(每20天) → IC计算(每10因子) → 相关性矩阵 → 评估结果。
 

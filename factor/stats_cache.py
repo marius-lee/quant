@@ -152,7 +152,9 @@ def compute_factor_stats(
     import threading
     _worker_data_storage = threading.local()
     def _init_worker():
-        _worker_data_storage.data = data.copy()
+        _worker_data_storage.data = data.copy();import threading as _th
+        logger.info(f"  worker {_th.current_thread().name}: data.copy() done, "
+                     f"{_worker_data_storage.data.memory_usage(deep=True).sum()/1024/1024:.0f} MB")
     def _compute_one_date(d):
         date_str = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10]
         fundamentals = preloaded_fundamentals.get(date_str)

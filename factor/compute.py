@@ -2010,3 +2010,292 @@ if "pledge_ratio" not in _FUNDAMENTAL_FN_MAP:
 if "dividend_yield" not in _FUNDAMENTAL_FN_MAP:
     _FUNDAMENTAL_FN_MAP["dividend_yield"] = ("value", compute_dividend_yield)
     _FIN_FACTORS.add("dividend_yield")
+
+
+# ═══════════════════════════════════════════════════════════
+# P70: 四新因子 — OIR 昼夜 / STR 量稳 / ABN_TURN 残差 / OCFP 现金流
+# 来源: 2021-2026 券商金工研报系统搜索, docs/research/四因子接入分析_2026-07-07.md
+# ═══════════════════════════════════════════════════════════
+
+def compute_day_night(data, date, night_window=10, intraday_window=20):
+    """OIR 昼夜合成因子: 0.6×日内反转 + 0.4×隔夜跳空绝对值.
+    
+    华安证券(2020): 《昼夜分离，隔夜跳空与日内反转选股因子》.
+    IC=-8.1%, ICIR=4.04, 月度胜率 89.6%.
+    逻辑: T+1制度下日内收益反转(涨→跌), 隔夜跳空绝对值越大→未来收益越低.
+    仅需日频 OHLC, akshare 免费.
+
+    Args:
+        night_window: 隔夜跳空回看窗口 (默认10日, 衰减快)
+        intraday_window: 日内反转回看窗口 (默认20日, 衰减慢)
+    """
+    import numpy as np
+    close = data["close"]
+    open_ = data["open"]
+
+    # 日内反转: 累计对数收益率, 取负 (IC为负)
+    ret_intra = np.log(close / open_)
+    intra_rev = ret_intra.rolling(intraday_window, min_periods=10).sum()
+
+    # 隔夜跳空: 绝对值累计 (无论高开低开, 跳空幅度大→次月反转)
+    ret_night = np.log(open_ / close.shift(1))
+    night_jump = ret_night.abs().rolling(night_window, min_periods=5).sum()
+
+    raw = 0.6 * intra_rev.iloc[-1] + 0.4 * night_jump.iloc[-1]
+    # 取负: 因子值越小 (越负) → 买入信号越强
+    return _cs_zscore(-raw).rename("day_night")
+
+
+def compute_str(data, date, window=20):
+    """STR 量稳换手率: 过去 window 日换手率的标准差, 取负, 市值中性化.
+    
+    东吴证券(2021): 《量稳换手率选股因子——量小、量缩，都不如量稳？》.
+    IC=-7.9%, IR=2.96, 胜率 77.6%.
+    逻辑: 换手率波动大→未来收益低, 稳定性比绝对水平更有预测力.
+    仅需日频换手率.
+
+    Args:
+        window: 标准差回看窗口 (默认20日, 匹配月频调仓; 10-60日均稳健)
+    """
+    import sqlite3, numpy as np
+    close = data["close"]
+    syms = close.columns.tolist()
+    end_date = close.index[-1].strftime("%Y-%m-%d") if hasattr(close.index[-1], 'strftime') else str(close.index[-1])[:10]
+
+    # 从 daily 表读取换手率 (get_daily 不含 turnover 字段)
+    db = _market_db_path()
+    conn = sqlite3.connect(db)
+    sym_list = "','".join(syms)
+    rows = conn.execute(f"""
+        SELECT date, symbol, turnover FROM daily
+        WHERE date <= '{end_date}' AND symbol IN ('{sym_list}')
+        ORDER BY date
+    """).fetchall()
+    conn.close()
+
+    if not rows:
+        return pd.Series(np.nan, index=close.columns, name="str")
+
+    df = pd.DataFrame(rows, columns=['date', 'symbol', 'turnover'])
+    df['date'] = pd.to_datetime(df['date'])
+
+    # 每只股票计算最近 window 日换手率标准差
+    str_vals = {}
+    for sym in syms:
+        sym_df = df[df['symbol'] == sym].sort_values('date')
+        if len(sym_df) < max(window // 2, 10):
+            continue
+        recent = sym_df['turnover'].tail(window)
+        str_vals[sym] = recent.std()
+
+    raw = pd.Series(str_vals, name="str")
+    if raw.empty or raw.count() < 30:
+        return _cs_zscore(-raw).rename("str")
+
+    # 市值中性化 (从 stocks 表取 total_mv)
+    try:
+        conn2 = sqlite3.connect(db)
+        mv_rows = conn2.execute(f"""
+            SELECT symbol, total_mv FROM stocks
+            WHERE symbol IN ('{"','".join(raw.index.tolist())}') AND total_mv IS NOT NULL
+        """).fetchall()
+        conn2.close()
+        mv_map = {r[0]: r[1] for r in mv_rows}
+        log_mv = pd.Series({s: np.log(mv_map[s]) for s in raw.index if s in mv_map})
+        common = raw.index.intersection(log_mv.index)
+        if len(common) >= 30:
+            from sklearn.linear_model import LinearRegression
+            X = log_mv.loc[common].values.reshape(-1, 1)
+            y = raw.loc[common].values
+            resid = y - LinearRegression().fit(X, y).predict(X)
+            raw = pd.Series(resid, index=common)
+    except Exception:
+        pass
+
+    # 取负: 低波动→高分
+    return _cs_zscore(-raw).rename("str")
+
+
+def compute_abn_turnover(data, date, window=20):
+    """ABN_TURN 异常换手率残差: 对 ln(Turnover) 做市值+行业回归取残差, 取负.
+    
+    Chordia, Huh & Subrahmanyam (2007, JFE); 东方证券朱剑涛(2015)首次引入A股.
+    IC=-6.77%, 与 STR 相关 0.3-0.5, 互补.
+    逻辑: 剔除市值和行业效应后的"真正异常"换手率 → 异常高换手→反转下跌.
+    仅需日频换手率+市值+行业分类.
+
+    Args:
+        window: 换手率均值窗口 (默认20日)
+    """
+    import sqlite3, numpy as np
+    close = data["close"]
+    syms = close.columns.tolist()
+    end_date = close.index[-1].strftime("%Y-%m-%d") if hasattr(close.index[-1], 'strftime') else str(close.index[-1])[:10]
+
+    db = _market_db_path()
+    conn = sqlite3.connect(db)
+    sym_list = "','".join(syms)
+
+    # 取换手率
+    rows = conn.execute(f"""
+        SELECT date, symbol, turnover FROM daily
+        WHERE date <= '{end_date}' AND symbol IN ('{sym_list}')
+        ORDER BY date
+    """).fetchall()
+
+    # 取市值 + 行业
+    meta_rows = conn.execute(f"""
+        SELECT symbol, total_mv, industry FROM stocks
+        WHERE symbol IN ('{sym_list}')
+    """).fetchall()
+    conn.close()
+
+    mv_map = {r[0]: r[1] for r in meta_rows if r[1]}
+    ind_map = {r[0]: r[2] for r in meta_rows if r[2]}
+
+    if not rows:
+        return pd.Series(np.nan, index=close.columns, name="abn_turnover")
+
+    df = pd.DataFrame(rows, columns=['date', 'symbol', 'turnover'])
+    df['date'] = pd.to_datetime(df['date'])
+
+    # 每只股票计算最近 window 日均换手率, 取对数
+    avg_turn = {}
+    for sym in syms:
+        sym_df = df[df['symbol'] == sym].sort_values('date')
+        if len(sym_df) < max(window // 2, 10):
+            continue
+        avg = sym_df['turnover'].tail(window).mean()
+        if avg > 0:
+            avg_turn[sym] = np.log(avg)
+
+    turn_series = pd.Series(avg_turn, name="ln_turnover")
+    if turn_series.empty or turn_series.count() < 30:
+        return _cs_zscore(-turn_series).rename("abn_turnover")
+
+    # OLS: ln(Turnover) ~ ln(MktCap) + industry dummies
+    common = [s for s in turn_series.index if s in mv_map]
+    if len(common) < 30:
+        return _cs_zscore(-turn_series).rename("abn_turnover")
+
+    from sklearn.linear_model import LinearRegression
+    import numpy as np
+    y = turn_series.loc[common].values
+    log_mv = np.log([mv_map[s] for s in common])
+    # 行业哑变量 (只保留有 ≥3 只股票的行业)
+    industries = [ind_map.get(s, '') for s in common]
+    ind_counts = pd.Series(industries).value_counts()
+    valid_inds = ind_counts[ind_counts >= 3].index.tolist()
+    ind_dummies = pd.get_dummies(industries)
+    valid_cols = [c for c in ind_dummies.columns if c in valid_inds and c != '']
+    if valid_cols:
+        X = np.column_stack([log_mv, ind_dummies[valid_cols].values])
+    else:
+        X = log_mv.reshape(-1, 1)
+
+    try:
+        resid = y - LinearRegression().fit(X, y).predict(X)
+        raw = pd.Series(resid, index=common)
+    except Exception:
+        raw = turn_series.loc[common]
+
+    # 取负: 异常高换手→低分
+    return _cs_zscore(-raw).rename("abn_turnover")
+
+
+def compute_ocfp(data, date, fundamentals=None, financials=None):
+    """OCFP 经营现金流/市值: TTM 经营活动现金流净额 / 总市值.
+    
+    华泰证券(2016): 《单因子测试之估值类因子》.
+    ICIR=0.526 (所有静态估值因子中最高).
+    逻辑: 经营现金流比利润/净资产更难操纵, 高OCFP=真金白银的廉价.
+    季频更新, 与日频因子天然低相关.
+
+    需 financials['cash_flow'] 数据 (已在 compute_all_factors 中预加载).
+    金融/地产/银行剔除 (季报滞后, 行业中性化必需).
+    """
+    import sqlite3, numpy as np
+
+    if fundamentals is None:
+        return pd.Series(np.nan, index=data["close"].columns, name="ocfp")
+
+    syms = fundamentals.index.tolist()
+
+    # 取总市值
+    db = _market_db_path()
+    conn = sqlite3.connect(db)
+    mv_rows = conn.execute(f"""
+        SELECT symbol, total_mv FROM stocks
+        WHERE symbol IN ('{"','".join(syms)}') AND total_mv IS NOT NULL
+    """).fetchall()
+    # 取行业 (剔除金融/地产/银行)
+    ind_rows = conn.execute(f"""
+        SELECT symbol, industry FROM stocks
+        WHERE symbol IN ('{"','".join(syms)}')
+    """).fetchall()
+    conn.close()
+
+    mv_map = {r[0]: r[1] for r in mv_rows}
+    ind_map = {r[0]: r[2] for r in ind_rows if r[2]}
+
+    # 金融/地产/银行剔除
+    exclude_inds = {'银行', '非银金融', '房地产', '综合金融'}
+    valid_syms = [s for s in syms if s in mv_map and ind_map.get(s, '') not in exclude_inds]
+
+    # 取现金流量表数据 (TTM = 最近4个季度之和)
+    ocfp_vals = {}
+    if financials is not None and 'cash_flow' in financials:
+        cf = financials['cash_flow']
+        if cf is not None and not cf.empty:
+            # cf is DataFrame with columns: symbol, stat_date, net_operate_cash_flow, ...
+            if 'net_operate_cash_flow' in cf.columns:
+                cf_sorted = cf.sort_values(['symbol', 'stat_date'])
+                for sym in valid_syms:
+                    sym_cf = cf_sorted[cf_sorted['symbol'] == sym]
+                    if len(sym_cf) == 0:
+                        continue
+                    # TTM: 最近4个季度
+                    recent = sym_cf.tail(4)
+                    ttm = recent['net_operate_cash_flow'].sum()
+                    mv = mv_map.get(sym)
+                    if mv and mv > 0:
+                        ocfp_vals[sym] = ttm / mv
+
+    raw = pd.Series(ocfp_vals, name="ocfp")
+    if raw.empty or raw.count() < 30:
+        return raw
+
+    # 行业中性化
+    try:
+        import numpy as np
+        common = [s for s in raw.index if s in ind_map]
+        if len(common) >= 30:
+            industries = [ind_map[s] for s in common]
+            ind_counts = pd.Series(industries).value_counts()
+            valid_inds = ind_counts[ind_counts >= 3].index.tolist()
+            ind_dummies = pd.get_dummies(industries)
+            valid_cols = [c for c in ind_dummies.columns if c in valid_inds and c != '']
+            if valid_cols:
+                from sklearn.linear_model import LinearRegression
+                X = ind_dummies[valid_cols].values
+                y = raw.loc[common].values
+                resid = y - LinearRegression().fit(X, y).predict(X)
+                raw = pd.Series(resid, index=common)
+    except Exception:
+        pass
+
+    # 正向: 高OCFP→高分
+    return _cs_zscore(raw).rename("ocfp")
+
+
+# ── P70: 注册四新因子 ──
+if "day_night" not in _PRICE_FN_MAP:
+    _PRICE_FN_MAP["day_night"] = (compute_day_night, 20)
+if "str" not in _PRICE_FN_MAP:
+    _PRICE_FN_MAP["str"] = (compute_str, 20)
+if "abn_turnover" not in _PRICE_FN_MAP:
+    _PRICE_FN_MAP["abn_turnover"] = (compute_abn_turnover, 20)
+
+if "ocfp" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["ocfp"] = ("value", compute_ocfp)
+    _FIN_FACTORS.add("ocfp")

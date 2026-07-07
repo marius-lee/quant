@@ -261,13 +261,13 @@ def compute_factor_stats(
 
     # Execute IC computation in parallel
     logger.info(f"IC compute start: {len(factor_names)} factors")
-    from concurrent.futures import ThreadPoolExecutor, as_completed as _ac
+
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
         futures = {executor.submit(_compute_ic, name, factor_values_by_date[name],
                                    forward_1d, forward_5d, forward_20d): name
                    for name in factor_names}
         ic_completed = 0
-        for future in _ac(futures):
+        for future in as_completed(futures):
             name, result = future.result()
             if result is not None:
                 ic_means[name], ic_irs[name], ic_series[name], ic_decay[name] = result
@@ -304,7 +304,7 @@ def compute_factor_stats(
         with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
             futures = {executor.submit(_compute_pair, i, j, ni, nj): (i, j)
                        for i, j, ni, nj in pairs}
-            for future in _ac(futures):
+            for future in as_completed(futures):
                 i, j, avg = future.result()
                 corr_matrix[i][j] = avg
                 corr_matrix[j][i] = avg

@@ -45,7 +45,7 @@ print(f"IC range: {min(ic_means.values()):+.4f} ~ {max(ic_means.values()):+.4f}"
 from factor.marginal import compute_marginal_evaluation, rank_candidates
 
 results = compute_marginal_evaluation(
-    factor_names, ic_means, ic_irs, corr, n_days=_ecfg("factor.evaluation.n_days", 120), t_threshold=2.0
+    factor_names, ic_means, ic_irs, corr, n_days=_ecfg("factor.evaluation.n_days", 120), t_threshold=_ecfg("factor.evaluation.t_threshold_small", 2.0)
 )
 
 # 3. 输出结果

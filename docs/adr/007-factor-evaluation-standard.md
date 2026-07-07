@@ -154,3 +154,7 @@ IR ≈ Sharpe - benchmark_Sharpe，衡量超额收益的稳定性。
 
 **参数一致性链路:**
 
+
+---
+
+**2026-07-07 更新**: L2/L3 已被 ADR 026 五阶段标准流程替代。L1 IC t-test 框架保留，阈值改为 config.yaml 读取。walk-forward OOS 验证替代了原 stepwise in-sample backtest。详见 `scripts/eval_standard.sh`。

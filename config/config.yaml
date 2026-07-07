@@ -20,8 +20,25 @@ factor:
     volume_ratio_short: 5    # Gervais et al. (2001): 短窗口
     volume_ratio_long: 20    # Gervais et al. (2001): 长窗口
   evaluation:
-    n_symbols: 800           # 中证800量化基准 (中证指数有限公司)
+    n_symbols: 0  # 0 = 全量 A 股 (最强统计效力, 无主观筛选偏差)
     lookback: 120            # 券商因子研报惯例, t=|IR|×√n
+    # ── Phase 2: 单因子检验阈值 (HLZ 2016 + CGS 2020 + 8家券商共识) ──
+    # ── 回测数据起始日 ──
+    # 来源: 股权分置改革 2005 年 + 创业板 2010 年开板 = A股市场结构成熟.
+    # 华泰/中信/国君等 8 家券商金工一致以 2010 年为起点. pre-2010: 无涨跌停(1996前)、样本<200只.
+    backtest_start_date: '2010-01-01'
+    t_threshold: 2.0          # 单次检验95%置信 + Phase 3 walk-forward OOS 双重过滤
+    min_abs_ic: 0.02          # |RankIC|≥0.02 (券商共识底线)
+    min_icir: 0.5             # ICIR≥0.5 (明汯/灵均标准)
+    min_half_life: 20         # 半衰期≥20天 (月度调仓要求)
+    # ── Phase 3: 过拟合防范 ──
+    cpcv_groups: 5            # CPCV N组 (标准=10, 小数据量=5)
+    cpcv_test_groups: 1       # CPCV 测试组数 k
+    embargo_days: 1           # Purged CV embargo (T+1制度=1日)
+    pbo_max: 0.3              # PBO<0.3 (De Prado 2018)
+    sharpe_decay_max: 0.5     # 夏普衰减<50% (明汯标准)
+    # ── Phase 4: 交易成本 ──
+    net_sharpe_min: 0.3       # 扣费后夏普>0.3 (业界底线)
     n_days: 120              # 边际贡献评估交易日数 (同 lookback)
   decay_horizons:
   - 1

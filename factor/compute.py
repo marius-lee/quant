@@ -2288,6 +2288,248 @@ def compute_ocfp(data, date, fundamentals=None, financials=None):
     return _cs_zscore(raw).rename("ocfp")
 
 
+
+# ═══════════════════════════════════════════════════════════
+# P71: 涨跌停制度特有效因子 — 封成比 / 封板时间 / 涨停打开 / 净涨停占比
+# ═══════════════════════════════════════════════════════════
+
+_shared_limit_conn = None  # 模块级共享连接, 避免每个因子重复开 DB
+
+def _get_limit_pool(date_str: str, conn=None):
+    """读取 limit_up_pool 当日数据, 返回 (df_up, df_down) 或 (空df, 空df).
+
+    优先使用传入 conn, 否则回退共享连接, 最后才开新连接.
+    """
+    own = False
+    if conn is None:
+        if _shared_limit_conn is not None:
+            conn = _shared_limit_conn
+        else:
+            conn = _db_connect()
+            own = True
+    df_up = pd.read_sql_query(
+        "SELECT * FROM limit_up_pool WHERE date=?", conn, params=(date_str,)
+    )
+    try:
+        df_down = pd.read_sql_query(
+            "SELECT * FROM limit_down_pool WHERE date=?", conn, params=(date_str,)
+        )
+    except Exception:
+        df_down = pd.DataFrame()
+    if own:
+        conn.close()
+    return df_up, df_down
+
+
+def compute_seal_turnover_ratio(data: "pd.DataFrame", date: str, window: int = 0) -> "pd.Series":
+    """封成比: lock_capital / amount — 涨停封单金额与成交额之比.
+
+    来源: 国金证券(2016), 华安证券(2026).
+    实证: >10→连板概率>60%; <1→警惕炸板. 正向因子(封成比大→买入).
+    """
+    date_str = str(date)[:10]
+    df_up, _ = _get_limit_pool(date_str)
+    symbols_all = list(data["close"].columns)
+
+    if df_up.empty:
+        return pd.Series(0.0, index=symbols_all, name="seal_turnover_ratio")
+
+    df_up = df_up.set_index("symbol")
+    result = pd.Series(0.0, index=symbols_all)
+    for sym in df_up.index.intersection(symbols_all):
+        row = df_up.loc[sym]
+        lock_cap = float(row.get("lock_capital", 0) or 0)
+        amount = float(row.get("amount", 0) or 0)
+        if amount > 0 and lock_cap > 0:
+            result[sym] = lock_cap / amount
+
+    return _cs_zscore(result).rename("seal_turnover_ratio")
+
+
+def compute_seal_time(data: "pd.DataFrame", date: str, window: int = 0) -> "pd.Series":
+    """封板时间: 归一化首次涨停时间, 早封板=高分.
+
+    来源: 国金证券(2016) — 封板时间与次日涨幅严格单调递减.
+    公式: 1 - (first_time_min - 570) / 330 (9:30=570min, 15:00=900min)
+    """
+    date_str = str(date)[:10]
+    df_up, _ = _get_limit_pool(date_str)
+    symbols_all = list(data["close"].columns)
+
+    if df_up.empty:
+        return pd.Series(0.0, index=symbols_all, name="seal_time")
+
+    df_up = df_up.set_index("symbol")
+    result = pd.Series(0.0, index=symbols_all)
+    for sym in df_up.index.intersection(symbols_all):
+        row = df_up.loc[sym]
+        ft = row.get("first_time", None)
+        if ft is None or str(ft) == "nan" or str(ft) == "":
+            continue
+        t = str(ft).strip()
+        parts = t.split(":")
+        minutes = int(parts[0]) * 60 + int(parts[1])
+        if minutes >= 570:  # 不早于 9:30
+            result[sym] = 1.0 - (minutes - 570) / 330.0
+
+    return _cs_zscore(result).rename("seal_time")
+
+
+def compute_limit_touch_no_seal(data: "pd.DataFrame", date: str, window: int = 0) -> "pd.Series":
+    """触板未封: high >= pre_close*1.10*0.995 AND ret < 9.5% → 负信号.
+
+    来源: 东方证券 / 涨跌停溢出效应研究 — 触板未封 = 假突破, 次日往往回落.
+    """
+    date_str = str(date)[:10]
+    symbols_all = list(data["close"].columns)
+    result = pd.Series(0.0, index=symbols_all)
+
+    if "high" not in data.columns or "close" not in data.columns:
+        return result.rename("limit_touch_no_seal")
+
+    try:
+        today = data.loc[date_str]
+    except KeyError:
+        return result.rename("limit_touch_no_seal")
+
+    for sym in symbols_all:
+        try:
+            if sym not in today.index:
+                continue
+            high = float(today.loc[sym, "high"]) if (sym, "high") in today.index else float(today.loc[sym]["high"])
+            pre = float(today.loc[sym, "pre_close"]) if (sym, "pre_close") in today.index else float(today.loc[sym].get("pre_close", 0))
+            if pre <= 0:
+                continue
+            close = float(today.loc[sym, "close"]) if (sym, "close") in today.index else float(today.loc[sym]["close"])
+            limit_price = pre * 1.10
+            ret = (close - pre) / pre
+            if high >= limit_price * 0.995 and ret < 0.095:
+                result[sym] = -1.0
+        except (KeyError, ValueError, TypeError):
+            continue
+
+    return _cs_zscore(result).rename("limit_touch_no_seal")
+
+
+def compute_net_limit_ratio(data: "pd.DataFrame", date: str, window: int = 0) -> "pd.Series":
+    """净涨停占比: (n_up - n_down) / n_total — 市场情绪代理.
+
+    来源: 开源证券 / DL合成因子 — 行业内涨跌停股净占比反映情绪溢出.
+    """
+    date_str = str(date)[:10]
+    df_up, df_down = _get_limit_pool(date_str)
+    symbols_all = list(data["close"].columns)
+
+    if df_up.empty and df_down.empty:
+        return pd.Series(0.0, index=symbols_all, name="net_limit_ratio")
+
+    up_symbols = set(df_up["symbol"].tolist()) if not df_up.empty else set()
+    down_symbols = set(df_down["symbol"].tolist()) if not df_down.empty else set()
+
+    total = max(len(up_symbols) + len(down_symbols), 1)
+    net = (len(up_symbols) - len(down_symbols)) / total
+
+    result = pd.Series(float(net), index=symbols_all)
+    return _cs_zscore(result).rename("net_limit_ratio")
+
+
+# ═══════════════════════════════════════════════════════════
+# P72: 数据源适配因子 — EPA估值异常 / TRCF换手率收敛 / 理想振幅
+# ═══════════════════════════════════════════════════════════
+
+def compute_epa(data: "pd.DataFrame", date: str, window: int = 60) -> "pd.Series":
+    """EPA估值异常: (PE - MA(PE)) / std(PE).
+
+    来源: 东吴证券 — EP偏离+风格正交, ICIR=4.75, 所有静态估值因子最强.
+    """
+    symbols_all = list(data["close"].columns)
+
+    if "pe" not in data.columns.levels[0] if isinstance(data.columns, pd.MultiIndex) else "pe" not in data.columns:
+        return pd.Series(0.0, index=symbols_all, name="epa")
+
+    pe = data["pe"] if "pe" in data.columns else pd.DataFrame()
+    if pe.empty or date not in pe.index:
+        return pd.Series(0.0, index=symbols_all, name="epa")
+
+    pe_row = pe.loc[date].dropna().astype(float)
+    if len(pe_row) < 30:
+        return pd.Series(0.0, index=symbols_all, name="epa")
+
+    pe_mean = pe_row.mean()
+    pe_std = pe_row.std()
+    if pe_std == 0:
+        return pd.Series(0.0, index=symbols_all, name="epa")
+
+    raw = (pe_row - pe_mean) / pe_std
+    result = pd.Series(-raw, index=symbols_all)  # PE 过高→负信号
+    return _cs_zscore(result).rename("epa")
+
+
+def compute_trcf(data: "pd.DataFrame", date: str, window: int = 120) -> "pd.Series":
+    """TRCF换手率收敛: -log(1 + std(MA5/10/20/60/120 turnover)).
+
+    来源: 数据源适配报告 — ICIR=4.19, turnover 类最强.
+    """
+    symbols_all = list(data["close"].columns)
+
+    if "turnover" not in data.columns:
+        return pd.Series(0.0, index=symbols_all, name="trcf")
+
+    turnover = data["turnover"]
+    if date not in turnover.index:
+        return pd.Series(0.0, index=symbols_all, name="trcf")
+
+    windows = [5, 10, 20, 60, 120]
+    result = pd.Series(0.0, index=symbols_all)
+
+    for sym in symbols_all:
+        try:
+            if sym not in turnover.columns:
+                continue
+            ts = turnover[sym].dropna()
+            if len(ts) < 120:
+                continue
+            mas = [ts.tail(w).mean() for w in windows]
+            std_ma = np.std(mas)
+            result[sym] = -np.log(1 + std_ma)
+        except Exception:
+            continue
+
+    return _cs_zscore(result).rename("trcf")
+
+
+def compute_ideal_amplitude(data: "pd.DataFrame", date: str, window: int = 20) -> "pd.Series":
+    """理想振幅: -(avg(high 25% amp) - avg(low 25% amp)).
+
+    来源: 开源证券 — ICIR~3.0, 波动率类最强.
+    """
+    symbols_all = list(data["close"].columns)
+
+    if "high" not in data.columns or "low" not in data.columns:
+        return pd.Series(0.0, index=symbols_all, name="ideal_amplitude")
+
+    result = pd.Series(0.0, index=symbols_all)
+
+    for sym in symbols_all:
+        try:
+            if sym not in data["high"].columns or sym not in data["low"].columns:
+                continue
+            high = data["high"][sym].dropna()
+            low = data["low"][sym].dropna()
+            ampl = (high - low) / low
+            ampl = ampl.dropna()
+            if len(ampl) < window:
+                continue
+            recent = ampl.tail(window)
+            high_q = recent.nlargest(max(int(len(recent) * 0.25), 1)).mean()
+            low_q = recent.nsmallest(max(int(len(recent) * 0.25), 1)).mean()
+            result[sym] = -(high_q - low_q)
+        except Exception:
+            continue
+
+    return _cs_zscore(result).rename("ideal_amplitude")
+
+
 # ── P70: 注册四新因子 ──
 if "day_night" not in _PRICE_FN_MAP:
     _PRICE_FN_MAP["day_night"] = (compute_day_night, 20)
@@ -2299,3 +2541,22 @@ if "abn_turnover" not in _PRICE_FN_MAP:
 if "ocfp" not in _FUNDAMENTAL_FN_MAP:
     _FUNDAMENTAL_FN_MAP["ocfp"] = ("value", compute_ocfp)
     _FIN_FACTORS.add("ocfp")
+
+
+# ── P71: 注册涨跌停制度特有效因子 ──
+if "seal_turnover_ratio" not in _PRICE_FN_MAP:
+    _PRICE_FN_MAP["seal_turnover_ratio"] = (compute_seal_turnover_ratio, 1)
+if "seal_time" not in _PRICE_FN_MAP:
+    _PRICE_FN_MAP["seal_time"] = (compute_seal_time, 1)
+if "limit_touch_no_seal" not in _PRICE_FN_MAP:
+    _PRICE_FN_MAP["limit_touch_no_seal"] = (compute_limit_touch_no_seal, 1)
+if "net_limit_ratio" not in _PRICE_FN_MAP:
+    _PRICE_FN_MAP["net_limit_ratio"] = (compute_net_limit_ratio, 1)
+
+# ── P72: 注册数据源适配因子 ──
+if "epa" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["epa"] = ("value", compute_epa)
+if "trcf" not in _PRICE_FN_MAP:
+    _PRICE_FN_MAP["trcf"] = (compute_trcf, 120)
+if "ideal_amplitude" not in _PRICE_FN_MAP:
+    _PRICE_FN_MAP["ideal_amplitude"] = (compute_ideal_amplitude, 20)

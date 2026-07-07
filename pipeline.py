@@ -349,33 +349,34 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
         sym = tp["symbol"]
         target_lots[sym] = tp["shares"] // LOT_SIZE
 
-    # Load prices (use open prices for execution)
-    try:
-        store = DataStore()
-        conn = store._connect()
-        symbols = list(set(list(current_lots.keys()) + list(target_lots.keys())))
-        data = store.get_daily(symbols, start=date_str, end=date_str)
-        if not data.empty:
-            prices = data["open"].iloc[-1] if "open" in data.columns else data["close"].iloc[-1]
-        else:
-            # Fallback: use cost basis for current, target price for new
-            prices = {}
-            for p in current_positions:
-                prices[p["symbol"]] = p.get("price", 0)
-            for tp in target_positions:
-                if tp["symbol"] not in prices:
-                    prices[tp["symbol"]] = tp["price"]
-            prices = pd.Series(prices)
-        store.close()
-    except Exception as e:
-        logger.warning(f"execute: price load failed: {e}, using cost basis")
-        prices = {}
-        for p in current_positions:
+    # Load prices — 直接用 Sina 实时开盘价, 不走 market.db 回退.
+    # 09:30 开盘后 open 价格已锁定, 用集合竞价确定的开盘价执行买入更接近真实成交.
+    # 拉不到报价 → 不执行 (用错价格比不交易危害大, 且永不 fallback 制造隐形 bug).
+    from execution.quote import fetch_quotes
+    symbols = list(set(list(current_lots.keys()) + list(target_lots.keys())))
+    quotes = fetch_quotes(symbols)
+    if not quotes:
+        logger.error(
+            f"execute: fetch_quotes returned empty for {len(symbols)} symbols — "
+            f"skipping execution to avoid trading at stale prices"
+        )
+        return results
+
+    prices = {}
+    for sym, q in quotes.items():
+        open_px = q.get("open", 0)
+        if open_px > 0:
+            prices[sym] = open_px
+    # 报价未覆盖的持仓保留成本价 (仅用于估值, 不用于新买入)
+    for p in current_positions:
+        if p["symbol"] not in prices:
             prices[p["symbol"]] = p.get("price", 0)
-        for tp in target_positions:
-            if tp["symbol"] not in prices:
-                prices[tp["symbol"]] = tp["price"]
-        prices = pd.Series(prices)
+    # 报价未覆盖的目标 (极罕见) 使用 sina price 而非昨日 close
+    for tp in target_positions:
+        if tp["symbol"] not in prices:
+            q = quotes.get(tp["symbol"], {})
+            prices[tp["symbol"]] = q.get("price", 0) or q.get("open", 0)
+    prices = pd.Series(prices)
 
     # Compute total capital
     cash = engine.get_cash(strategy)

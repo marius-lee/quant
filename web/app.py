@@ -547,4 +547,6 @@ if __name__ == "__main__":
     from config.loader import get as cfg
     port = int(cfg("web.port", 8521))
     logger.info(f"Web 服务启动于端口 {port}")
+    from execution.scheduler import start as start_scheduler
+    start_scheduler(broker)
     app.run(host="0.0.0.0", port=port, debug=False)

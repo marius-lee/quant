@@ -25,19 +25,13 @@ from typing import Optional
 # 内部工具
 # ═══════════════════════════════════════════════════════════
 
+# ── 从拆分模块导入共享组件 ──
+from config.constants import *
+from factor.registry import _cs_zscore, _db_connect, _FIN_FACTORS, _shared_limit_conn
+
 def _log_returns(close: pd.DataFrame) -> pd.DataFrame:
     """对数收益率, 停牌日返回 NaN (不由 ffill 掩盖)。"""
     return np.log(close).diff()
-
-
-def _cs_zscore(series: pd.Series, min_count: int = None) -> pd.Series:
-    if min_count is None:
-        min_count = _require_cfg("factor.compute.zscore_min_count")
-    """截面 z-score 标准化: (x - cross_sectional_mean) / cross_sectional_std.
-    若截面有效值<min_count, 返回全 NaN。"""
-    if series.count() < min_count:
-        return pd.Series(np.nan, index=series.index)
-    return (series - series.mean()) / series.std(ddof=1)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -136,35 +130,6 @@ def _require_cfg(key):
     if val is None:
         raise KeyError(f"config.yaml missing required key: {key}")
     return val
-
-_AMIHUD_WINDOW = _require_cfg("factor.windows.amihud")
-_SKEWNESS_WINDOW = _require_cfg("factor.windows.skewness")
-_VOLATILITY_WINDOW = _require_cfg("factor.windows.volatility")
-_DOWNSIDE_VOL_WINDOW = _require_cfg("factor.windows.downside_volatility")
-_IDIO_VOL_WINDOW = _require_cfg("factor.windows.idiosyncratic_vol")
-_MAX_RET_WINDOW = _require_cfg("factor.windows.max_return")
-_RANGE_WINDOW = _require_cfg("factor.windows.intraday_range")
-_LHB_WINDOW = _require_cfg("factor.windows.lhb_net_buy")
-_VOL_RATIO_SHORT = _require_cfg("factor.windows.volume_ratio_short")
-_VOL_RATIO_LONG = _require_cfg("factor.windows.volume_ratio_long")
-
-# ── 因子过滤/校验参数 (config: factor.*. 文献依据详见 config.yaml) ──
-_AMIHUD_MIN_DAYS = _require_cfg("factor.amihud.min_valid_days")
-_AMIHUD_MIN_RATIO = _require_cfg("factor.amihud.min_valid_ratio")
-_AMIHUD_SCALE = _require_cfg("factor.amihud.scale")
-_TURNOVER_FALLBACK = _require_cfg("factor.turnover_rev.fallback_count")
-_IDIO_MIN_OBS = _require_cfg("factor.idio_vol.min_common_obs")
-_H52W_CLIP_LOW = _require_cfg("factor.high52w.clip_low")
-_H52W_CLIP_HIGH = _require_cfg("factor.high52w.clip_high")
-_ROE_RATIO_MIN = _require_cfg("factor.roe_ratio.min")
-_ROE_RATIO_MAX = _require_cfg("factor.roe_ratio.max")
-_ROE_REP_MIN = _require_cfg("factor.roe_reported.min")
-_ROE_REP_MAX = _require_cfg("factor.roe_reported.max")
-_DEBT_MIN = _require_cfg("factor.debt_ratio.min")
-_DEBT_MAX = _require_cfg("factor.debt_ratio.max")
-_ACCRUALS_MIN = _require_cfg("factor.accruals.min")
-_ACCRUALS_MAX = _require_cfg("factor.accruals.max")
-
 
 def compute_volatility(data: pd.DataFrame, date: str, window: int = _VOLATILITY_WINDOW) -> pd.Series:
     """已实现波动率: std(log_returns[-window:]) × sqrt(252) 年化。
@@ -1253,13 +1218,6 @@ def _market_db_path():
     return _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "market.db")
 
 
-def _db_connect():
-    """模板 5: 模块级共享连接 + WAL 模式. 避免每个因子函数独立 connect()."""
-    conn = sqlite3.connect(_market_db_path())
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=30000")
-    return conn
-
 
 def load_active_price_factors(status_filter='active'):
     """从 factor_registry 表加载价格因子 → {name: (cat, window, fn)}.
@@ -1324,6 +1282,67 @@ def update_factor_evaluation(name: str, ic_mean: float, ic_ir: float):
     conn.close()
 
 # ═══════════════════════════════════════════════════════════
+
+
+def get_factor_names(status_filter='active') -> list:
+    """返回因子名列表 (从 factor_registry 表读取)。
+
+    status_filter: 'active' (生产), None (全部, 评估用).
+    """
+    price_factors = load_active_price_factors(status_filter)
+    fund_factors = load_active_fundamental_factors(status_filter)
+    return list(price_factors.keys()) + list(fund_factors.keys())
+
+
+
+def compute_all_factors(data: pd.DataFrame, date: str,
+                      fundamentals: pd.DataFrame = None,
+                      benchmark_ret: Optional["pd.Series"] = None,
+                      factor_names: list = None) -> dict:
+    """批量计算所有已注册因子 → {factor_name: Series(index=symbol)}。
+
+    价格因子从 data 计算, 基本面因子从 fundamentals 计算。
+    benchmark_ret 用于特质波动率因子(对指数回归取残差)。
+    """
+    results = {}
+    if factor_names is not None:
+        price_factors = {n: ('dynamic', _PRICE_FN_MAP[n][1], _PRICE_FN_MAP[n][0])
+                        for n in factor_names if n in _PRICE_FN_MAP}
+        fund_factors = {n: _FUNDAMENTAL_FN_MAP[n]
+                       for n in factor_names if n in _FUNDAMENTAL_FN_MAP}
+    else:
+        price_factors = load_active_price_factors()
+        fund_factors = load_active_fundamental_factors()
+
+    for name, (cat, win, fn) in price_factors.items():
+        try:
+            if 'idio_vol' in name and benchmark_ret is not None:
+                results[name] = fn(data, date, win, benchmark_ret=benchmark_ret)
+            else:
+                results[name] = fn(data, date, win)
+        except Exception as e:
+            from utils.logger import get_logger
+            get_logger("factor.compute").warning(f"price factor {name} failed: {e}")
+            results[name] = pd.Series(dtype=float)
+    if fundamentals is not None and not fundamentals.empty:
+        financials = None
+        if fundamentals is not None and any(n in fund_factors for n in _FIN_FACTORS):
+            from data.store import DataStore
+            store = DataStore()
+            financials = store.get_financials(fundamentals.index.tolist(), date=date)
+            store.close()
+        for name, (cat, fn) in fund_factors.items():
+            try:
+                if name in _FIN_FACTORS and financials is not None:
+                    results[name] = fn(fundamentals, date, financials=financials)
+                else:
+                    results[name] = fn(fundamentals, date)
+            except Exception as e:
+                from utils.logger import get_logger
+                get_logger("factor.compute").warning(f"fundamental factor {name} failed: {e}")
+                results[name] = pd.Series(dtype=float)
+    return results
+
 # 7. 基本面因子 — Fama & French (1992, 1993, 2015)
 # ═══════════════════════════════════════════════════════════
 
@@ -1706,69 +1725,6 @@ if "gp_ta" not in _FUNDAMENTAL_FN_MAP:
 
 # 需要三表(资产负债表+利润表+现金流量表)合并数据的因子名
 # 模板 2a: 这些因子接收 financials=DataFrame 参数, 不内部访问 DataStore
-_FIN_FACTORS = {"roe_reported", "roa", "debt_ratio", "accruals", "asset_growth", "gp_ta"}
-
-
-def get_factor_names(status_filter='active') -> list:
-    """返回因子名列表 (从 factor_registry 表读取)。
-    
-    status_filter: 'active' (生产), None (全部, 评估用).
-    """
-    return list(load_active_price_factors(status_filter).keys()) + list(load_active_fundamental_factors(status_filter).keys())
-
-
-def compute_all_factors(data: pd.DataFrame, date: str,
-                      fundamentals: pd.DataFrame = None,
-                      benchmark_ret: Optional["pd.Series"] = None,
-                      factor_names: list = None) -> dict:
-    """批量计算所有已注册因子 → {factor_name: Series(index=symbol)}。
-
-    价格因子从 data 计算, 基本面因子从 fundamentals 计算。
-    benchmark_ret 用于特质波动率因子(对指数回归取残差)。
-    """
-    results = {}
-    # P45: factor_names 参数允许调用方显式指定要计算的因子
-    # None = 默认行为 (status='active'), 列表 = 显式指定
-    if factor_names is not None:
-        price_factors = {n: ('dynamic', _PRICE_FN_MAP[n][1], _PRICE_FN_MAP[n][0])
-                        for n in factor_names if n in _PRICE_FN_MAP}
-        fund_factors = {n: _FUNDAMENTAL_FN_MAP[n]
-                       for n in factor_names if n in _FUNDAMENTAL_FN_MAP}
-    else:
-        price_factors = load_active_price_factors()
-        fund_factors = load_active_fundamental_factors()
-
-    for name, (cat, win, fn) in price_factors.items():
-        try:
-            if 'idio_vol' in name and benchmark_ret is not None:
-                results[name] = fn(data, date, win, benchmark_ret=benchmark_ret)
-            else:
-                results[name] = fn(data, date, win)
-        except Exception as e:
-            from utils.logger import get_logger
-            get_logger("factor.compute").warning(f"price factor {name} failed: {e}")
-            results[name] = pd.Series(dtype=float)
-    if fundamentals is not None and not fundamentals.empty:
-        # 模板 2a: IO-计算分离 — 编排层预加载财务数据, 因子函数纯计算
-        financials = None
-        if fundamentals is not None and any(n in fund_factors for n in _FIN_FACTORS):
-            from data.store import DataStore
-            store = DataStore()
-            financials = store.get_financials(fundamentals.index.tolist(), date=date)
-            store.close()
-        for name, (cat, fn) in fund_factors.items():
-            try:
-                if name in _FIN_FACTORS and financials is not None:
-                    results[name] = fn(fundamentals, date, financials=financials)
-                else:
-                    results[name] = fn(fundamentals, date)
-            except Exception as e:
-                from utils.logger import get_logger
-                get_logger("factor.compute").warning(f"fundamental factor {name} failed: {e}")
-                results[name] = pd.Series(dtype=float)
-    return results
-
-# ── P63: 新因子注册 (ztd, northbound_20d) ──
 # 函数定义在文件上方, 此处位于 compute_all_factors 之后, 确保函数已定义
 if "ztd" not in _PRICE_FN_MAP:
     _PRICE_FN_MAP["ztd"] = (compute_ztd, 250)

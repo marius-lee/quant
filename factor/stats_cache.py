@@ -177,6 +177,7 @@ def compute_factor_stats(
 
         # 逐截面 Rank IC
         ics = []
+        ic_by_date = {}
         for date_str, fv_series in fv_dict.items():
             if date_str not in forward_1d.index:
                 continue
@@ -193,6 +194,9 @@ def compute_factor_stats(
             rho, _ = stats.spearmanr(fv_series.loc[common], fr.loc[common])
             if not np.isnan(rho):
                 ics.append(rho)
+                ic_by_date[date_str] = float(rho)
+
+        ic_series[name] = ic_by_date
 
         if ics:
             ic_arr = np.array(ics)
@@ -317,6 +321,9 @@ def compute_factor_stats(
         "factor_keys": factor_names,
         "ic": [round(ic_means.get(n, 0.0), 4) for n in factor_names],
         "ic_ir": [round(ic_irs.get(n, 0.0), 2) for n in factor_names],
+        "ic_series": {
+            n: ic_series.get(n, {}) for n in factor_names
+        },
         "decay": {
             meta[n]["display"]: [
                 ic_decay.get(n, {}).get("1d", 0.0),

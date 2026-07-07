@@ -1,44 +1,52 @@
 # HANDOFF — quant 项目当前状态
 
-**最后更新**: 2026-07-07 22:30 CST
+**最后更新**: 2026-07-07 23:00 CST
 
 ## 最近提交
 
 | 提交 | 内容 |
 |------|------|
-| (未提交) | fix: eval_standard.sh Phase 1 显示有效评估日期范围 (backtest_start_date: 2010-01-01) |
-| (未提交) | feat: 五阶段标准评估流程 — eval_standard.sh (CPCV+walk-forward+PBO) |
+| 0eb2a51 | fix: 修复 compute.py 拆分的循环依赖和缺失函数 |
+| (未提交) | fix: eval_standard.sh Phase 1 显示有效评估日期范围 |
+| (未提交) | feat: 五阶段标准评估流程 — eval_standard.sh |
 | (未提交) | perf: 多进程并行因子计算 + 向量化 epa/trcf/ideal_amplitude |
-| (未提交) | feat: P72 数据源适配三因子 — EPA + TRCF + 理想振幅 |
-| (未提交) | feat: P71 涨跌停四因子 — seal_turnover_ratio + seal_time + limit_touch_no_seal + net_limit_ratio |
-| (未提交) | refactor: 批量标记 24 因子为 deprecated, 记入 notes |
-| 1437db6 | feat: P70 四新因子接入 — OIR + STR + ABN_TURN + OCFP |
-| 9a55dfa | feat: factor_registry 增加 notes 字段 + 数据字典 |
-| e74a00a | fix: execute_signals 执行价格 — Sina 实时开盘价替代 market.db fallback |
-| 117b6d9 | fix: 除权除息检测 — ExecutionEngine._check_ex_dividend() |
+
+## 模块结构 (compute.py 拆分后)
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `config/constants.py` | 70 | 全局常量 (从 config.yaml) + `_require_cfg` + `_market_db_path` |
+| `factor/registry.py` | 45 | `_cs_zscore` + `_db_connect` + `_FIN_FACTORS` |
+| `factor/orchestrator.py` | 25 | `get_factor_names` (延迟导入, 零循环依赖) |
+| `factor/compute.py` | ~2550 | 全部因子函数 + maps + `compute_all_factors` + `load_active_*` |
+| `factor/__init__.py` | 55 | `__getattr__` 惰性导入, 打破循环 |
+
+### 拆分关键设计
+
+- **__init__.py 用 __getattr__ 惰性导入**: factor.compute 的循环通过延迟属性访问解决
+- **orchestrator.py 用函数内导入**: 不在顶层 import factor.compute
+- **maps 留在 compute.py**: 值是函数对象引用, 移走会循环 import
+- **constants 自包含**: 直接 import config.loader, 不依赖 factor 模块
 
 ## 当前状态
 
-- **factor_registry**: 55 因子注册, 31 active / 24 deprecated (详见 docs/research/因子失效记录_2026-07-07.md)
-- **新因子 (11 个)**: P70 (OIR/STR/ABN_TURN/OCFP) + P71 (seal_turnover_ratio/seal_time/limit_touch_no_seal/net_limit_ratio) + P72 (epa/trcf/ideal_amplitude)
-- **评估标准**: ADR 026 — 五阶段标准流程 (CPCV + walk-forward + PBO), 脚本 `scripts/eval_standard.sh`
-- **评估数据起点**: `config.yaml factor.evaluation.backtest_start_date = 2010-01-01` (排除股权分置改革前不可比数据)
-- **执行价格链**: 已修复 (Sina 实时 open, 除权检测 10%) — ADR 017
-- **计算性能**: 向量化 epa/trcf/ideal_amplitude + ThreadPoolExecutor 并行因子计算
-- **launchd KeepAlive**: scheduler ✅ / webapp ❌ (须走 restart.sh) — ADR 025
-- **数据字典**: docs/DATA_DICTIONARY.md
+- **factor_registry**: 55 因子注册, 31 active / 24 deprecated
+- **新因子**: OIR/STR/ABN_TURN/OCFP + seal + epa/trcf/ideal_amplitude
+- **评估标准**: ADR 026 — 五阶段 (CPCV + walk-forward + PBO)
+- **数据起点**: 2010-01-01
+- **执行价格**: Sina 实时 open + 除权检测 10%
+- **launchd**: scheduler ✅ KeepAlive / webapp ❌
 
 ## 下一步
 
-1. ✅ 已完成 — 因子失效记录 (24 deprecated)
-2. ✅ 已完成 — 多进程并行因子计算 (ThreadPoolExecutor)
-3. ✅ 已完成 — 五阶段标准评估流程 (CPCV + walk-forward + PBO)
-4. 下一步: 运行 `PYTHONPATH=. bash scripts/eval_standard.sh` 对 31 active 因子做完整五阶段评估
-5. 根据 Phase 2-3 结果更新 factor_registry status 和 notes
+1. 运行 `bash scripts/eval_standard.sh` 对 31 active 因子做完整五阶段评估
+2. 根据评估结果更新 factor_registry status 和 notes
+3. 可选: Registry 模式 (存储函数名字符串, 运行时 resolve) 进一步拆分
 
 ## 关键约束
 
-- 所有数值参数放 config/config.yaml
+- 修改前先备份
+- 数值参数放 config/config.yaml
 - 永不 fallback 执行价格
-- 因子 status 变更必须记入 notes 字段 (追加式)
-- 修改后文档同步更新
+- 因子 status 变更记入 notes 字段
+- 修改后文档同步 + git 提交

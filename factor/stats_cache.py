@@ -92,6 +92,9 @@ def _pp_compute_chunk(args: tuple) -> list:
                 if name in fv and not fv[name].dropna().empty:
                     result[name] = fv[name]
                     n_filled += 1
+            dt_elapsed = _time.monotonic() - dt0
+            sys.stderr.write(f"[WORKER-PROC] {date_str} {n_filled}/{len(factor_names_list)} factors ({dt_elapsed:.1f}s)\n")
+            sys.stderr.flush()
             results.append((date_str, result, None))
         except Exception as e:
             results.append((date_str, {}, str(e)))

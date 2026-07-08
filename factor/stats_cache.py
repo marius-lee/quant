@@ -15,6 +15,13 @@ t = |IR| × √n 提供 |IR|≥0.18 的最小可检测效应 (Grinold & Kahn 199
   stats = get_cached_factor_stats()  # 返回前端需要的 dict
 """
 
+
+# 确保 spawned worker 进程能找到项目模块 (macOS spawn mode 不保证 PYTHONPATH 传递)
+import sys as _sys, os as _os
+_PROJ_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _PROJ_ROOT not in _sys.path:
+    _sys.path.insert(0, _PROJ_ROOT)
+
 import json
 import os
 import time

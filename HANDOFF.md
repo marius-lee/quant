@@ -114,8 +114,8 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 
 - **config.yaml**: n_symbols=0 (全量 A 股回测, ADR 026 标准配置)
 - **并发**: ProcessPoolExecutor worker 自加载 (ADR 027), 6 进程, 无 as_completed timeout (500×120 单 chunk ~700s, 误杀风险 > 兜底价值)
-- **factor_registry**: 58 因子注册, 35 active / 23 deprecated
-- **因子覆盖**: OIR/STR/ABN_TURN/OCFP + 涨跌停六因子 + EPA/TRCF/ideal_amplitude + margin_buy_ratio (融资买入占余额比, margin_detail 表, 广发2024) + analyst_consensus (分析师共识度, analyst_forecast 表, 中信建投2022) + EPD/EPDS (估值偏离, daily_valuation.pe_ttm, 东吴2022)
+- **factor_registry**: 61 因子注册, 35 active / 23 deprecated
+- **因子覆盖**: OIR/STR/ABN_TURN/OCFP + 涨跌停六因子 + EPA/TRCF/ideal_amplitude + margin_buy_ratio (融资买入占余额比, margin_detail 表, 广发2024) + analyst_consensus (分析师共识度, analyst_forecast 表, 中信建投2022) + EPD/EPDS (估值偏离) + 毛利率TTM差分/财务异常复合/单季度ROE(掐头) (Phase 3 财务三因子)
 - **已修复 4 bug**: epa 注册错误 / ocfp 签名不匹配 / vol_price_corr 除零 / seal_time 格式越界
 - **执行价格**: Sina 实时 open + 除权检测 10% (ADR 017)
 - **launchd**: scheduler ✅ (KeepAlive) / webapp ❌ (须走 restart.sh, ADR 025)

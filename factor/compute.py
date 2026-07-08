@@ -2176,7 +2176,7 @@ def compute_ocfp(fundamentals, date, financials=None):
     需 financials['cash_flow'] 数据 (已在 compute_all_factors 中预加载).
     金融/地产/银行剔除 (季报滞后, 行业中性化必需).
     """
-    import sqlite3, numpy as np
+    import sqlite3, numpy as np, os
 
     if fundamentals is None or fundamentals.empty:
         return pd.Series(np.nan, index=fundamentals.index, name="ocfp")
@@ -2204,7 +2204,7 @@ def compute_ocfp(fundamentals, date, financials=None):
     ocfp_vals = {}
     try:
         import sqlite3 as _sql
-        _db_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
+        _db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "market.db")
         _conn = _sql.connect(_db_path, timeout=30)
         placeholders = ",".join("?" for _ in valid_syms)
         cf_df = pd.read_sql_query(
@@ -2227,8 +2227,10 @@ def compute_ocfp(fundamentals, date, financials=None):
                 mv = mv_map.get(sym)
                 if mv and mv > 0:
                     ocfp_vals[sym] = ttm / mv
-    except Exception:
-        pass
+    except Exception as _e:
+        import sys as _sys
+        _sys.stderr.write(f"[WORKER-PROC] ocfp TTM query failed: {_e}\n")
+        _sys.stderr.flush()
 
     raw = pd.Series(ocfp_vals, name="ocfp")
     if raw.empty or raw.count() < 30:

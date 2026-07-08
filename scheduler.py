@@ -105,6 +105,18 @@ def phase3_daily_sync_and_report(date_str: str):
         logger.error("[SCHEDULER] %s | PHASE=3 | STATUS=FAIL | error=%s",
                       date_str, str(e)[:120])
 
+    # Step C: Phase 5 因子监控 (crowding / IC decay / turnover / capacity)
+    try:
+        from evaluation.phase5_monitor import run_monitor
+        report_path = run_monitor()
+        logger.info(f"[{date_str}] Phase 5 monitor report: {report_path}")
+        logger.info("[SCHEDULER] %s | PHASE=5 | STATUS=OK | path=%s",
+                     date_str, report_path)
+    except Exception as e:
+        logger.error(f"[{date_str}] Phase 5 monitor failed: {e}")
+        logger.error("[SCHEDULER] %s | PHASE=5 | STATUS=FAIL | error=%s",
+                      date_str, str(e)[:120])
+
 
 def run_loop():
     """主循环: 等待每个交易日 08:30 → 09:30 → 15:30 依次执行。"""

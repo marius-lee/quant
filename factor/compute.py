@@ -1400,6 +1400,48 @@ def compute_roe_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
 
 
 # ── 基本面因子函数映射 (元数据从 factor_registry 表读取) ──
+
+def compute_margin_buy_ratio(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
+    """融资买入占余额比: margin_buy / margin_balance (广发证券 2024, IC=-7.95%).
+
+    公式: 融资买入额 / 融资余额。分母是余额而非成交额。
+    数据源: margin_detail 表 (akshare stock_margin_detail_sse/szse)。
+    来源: 广发证券《多因子ALPHA系列之五十二：基于融资融券因子研究》2024.02。
+    """
+    conn = _db_connect()
+    rows = conn.execute(
+        "SELECT symbol, margin_buy, margin_balance FROM margin_detail "
+        "WHERE date = (SELECT MAX(date) FROM margin_detail WHERE date <= ?)",
+        (date,)
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return pd.Series(dtype=float, name="margin_buy_ratio")
+    s = pd.Series({r[0]: r[1] / r[2] if r[2] and r[2] > 0 else np.nan
+                   for r in rows if r[1] is not None and r[2] is not None})
+    return s.dropna().rename("margin_buy_ratio")
+
+
+def compute_analyst_consensus(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
+    """分析师共识度: buy_count / report_count (盈利预测一致预期)。
+
+    公式: 买入评级数 / 总报告数。值高 = 分析师一致看多。
+    数据源: analyst_forecast 表 (akshare stock_analyst_rank_em)。
+    来源: 中信建投《逐鹿Alpha》2022, 海通金工 2023。
+    """
+    conn = _db_connect()
+    rows = conn.execute(
+        "SELECT symbol, buy_count, report_count FROM analyst_forecast "
+        "WHERE sync_date = (SELECT MAX(sync_date) FROM analyst_forecast WHERE sync_date <= ?)",
+        (date,)
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return pd.Series(dtype=float, name="analyst_consensus")
+    s = pd.Series({r[0]: r[1] / r[2] if r[2] and r[2] > 0 else np.nan
+                   for r in rows if r[1] is not None and r[2] is not None})
+    return s.dropna().rename("analyst_consensus")
+
 _FUNDAMENTAL_FN_MAP = {
     "ep_ratio":      ("value_ep",       compute_ep_ratio),
     "bp_ratio":      ("value_bp",       compute_bp_ratio),
@@ -2542,3 +2584,9 @@ if "trcf" not in _PRICE_FN_MAP:
     _PRICE_FN_MAP["trcf"] = (compute_trcf, 120)
 if "ideal_amplitude" not in _PRICE_FN_MAP:
     _PRICE_FN_MAP["ideal_amplitude"] = (compute_ideal_amplitude, 20)
+
+
+if "margin_buy_ratio" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["margin_buy_ratio"] = ("margin", compute_margin_buy_ratio)
+if "analyst_consensus" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["analyst_consensus"] = ("analyst", compute_analyst_consensus)

@@ -46,6 +46,8 @@ echo ""
 echo "============================================"
 echo "Phase 2: 单因子检验 (IC / |t| / ICIR / half-life)"
 echo "============================================"
+# Ensure no stale DB locks from previous phases
+python3 -c "import sqlite3; c=sqlite3.connect('data/market.db'); c.execute('PRAGMA wal_checkpoint'); c.close()" 2>/dev/null || true
 PYTHONPATH=. .venv/bin/python3 -c "
 from evaluation.phase2_single import screen_factors
 screen_factors()

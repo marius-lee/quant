@@ -11,13 +11,14 @@
 #   不再内嵌 Python 字符串 — 所有逻辑在 evaluation/*.py 中
 set -e
 # ── VERSION: git commit hash + timestamp ──
-VERSION=$(git log -1 --format='%h %ci' 2>/dev/null || echo 'unknown')
+GIT_HASH=$(git log -1 --format='%h %ci' 2>/dev/null || echo 'unknown')
+VER_NUM=$(cat VERSION 2>/dev/null || echo '?')
 DIRTY=$(git status --porcelain -- factor/ evaluation/ config/ 2>/dev/null | head -20 | tr '
 ' ' ')
 if [ -n "$DIRTY" ]; then
-    echo "=== VERSION: $VERSION [DIRTY: $DIRTY] ==="
+    echo "=== VERSION: #$VER_NUM ($GIT_HASH) [DIRTY: $DIRTY] ==="
 else
-    echo "=== VERSION: $VERSION [clean] ==="
+    echo "=== VERSION: #$VER_NUM ($GIT_HASH) [clean] ==="
 fi
 
 cd "$(dirname "$0")/.."

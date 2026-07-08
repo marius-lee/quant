@@ -1,6 +1,6 @@
 # HANDOFF — quant 项目当前状态
 
-**最后更新**: 2026-07-08 12:40 CST
+**最后更新**: 2026-07-08 13:10 CST
 
 > 旧版归档: docs/HANDOFF-2026-07-02.md / docs/HANDOFF-2026-07-03.md (已 superseded)
 > 项目根只有一个 HANDOFF.md 作为单一真相源
@@ -11,11 +11,17 @@
 
 | 提交 | 内容 |
 |------|------|
-| (next)  | fix: ProcessPoolExecutor 正确实现 — worker 自加载数据 (ADR 027), 替代 ThreadPoolExecutor |
-| baf5f6e | fix: ThreadPoolExecutor stateless worker 模式 (已 superseded 由 ADR 027) |
-| 47fa2df | fix: ThreadPoolExecutor→ProcessPoolExecutor + preloaded_financials dict bug (已 revert) |
-| abaf73a | fix: Phase 2 decay/lookup/Phase4 gap 三个 bug |
-| b236d4a | feat: 五阶段标准回测评估完整实现 (CPCV + PBO + Phase 5) |
+| a806560 | fix: ocfp 因子 — 函数签名+注册+数据源三重修复 |
+| ba57c10 | fix: seal_time IndexError — first_time 无冒号格式 |
+| 8e64647 | fix: vol_price_corr 除零保护 — std()>0 检查 |
+| 498c88b | fix: epa 因子注册 — _FUNDAMENTAL_FN_MAP→_PRICE_FN_MAP |
+| a6f366a | test: 500 stocks × 120 days — 中等规模验证 |
+| bb3dfce | fix: pair_corrs 闭包变量泄漏 + 重复 store.close() |
+| ed203e1 | fix: ic_series + corr_counts 未初始化 NameError |
+| 1a20eee | fix: ProcessPoolExecutor 正确实现 — worker 自加载 (ADR 027) |
+| c20bfee | debug: 移除 worker logger — 隔离 logging 锁嫌疑 |
+| bd78c68 .. 72bc69e | ThreadPoolExecutor 死锁调试 (7 次提交, 已废弃) |
+| b236d4a | feat: 五阶段标准回测评估 (CPCV + PBO + Phase 5) |
 
 ---
 
@@ -100,15 +106,16 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 
 ## 当前状态
 
-- **config.yaml**: n_symbols=1000, lookback=60 (测试模式，全量跑通后恢复 0/120)
-- **并发**: ThreadPoolExecutor stateless worker, 6 workers, 各自独立 DB 连接
+- **config.yaml**: n_symbols=500, lookback=120 (测试模式, 全量跑通后恢复 0/120)
+- **并发**: ProcessPoolExecutor worker 自加载 (ADR 027), 6 进程 ~9× 加速 vs ThreadPoolExecutor
 - **factor_registry**: 55 因子注册, 31 active / 24 deprecated
-- **因子覆盖**: OIR/STR/ABN_TURN/OCFP + P71涨跌停四因子 + P72数据源三因子
+- **因子覆盖**: OIR/STR/ABN_TURN/OCFP + P71涨跌停六因子 + P72数据源三因子 (epa/trcf/ideal_amplitude)
+- **已修复 4 bug**: epa 注册错误 / ocfp 签名不匹配 / vol_price_corr 除零 / seal_time 格式越界
 - **执行价格**: Sina 实时 open + 除权检测 10% (ADR 017)
-- **launchd**: scheduler ✅ (KeepAlive, 等 15:30 Phase 3) / webapp ❌ (须走 restart.sh, ADR 025)
+- **launchd**: scheduler ✅ (KeepAlive) / webapp ❌ (须走 restart.sh, ADR 025)
 - **数据字典**: [docs/DATA_DICTIONARY.md](docs/DATA_DICTIONARY.md)
-- **ADR 档案**: [docs/adr/](docs/adr/) (026 条)
-- **备份**: factor/stats_cache.py.bak (ProcessPoolExecutor 版本)
+- **ADR 档案**: [docs/adr/](docs/adr/) (027 条)
+- **备份**: factor/stats_cache.py.bak (ThreadPoolExecutor 版本, 已废弃)
 
 ---
 

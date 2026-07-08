@@ -36,39 +36,35 @@ _MAX_WORKERS = _cfg("factor.evaluation.max_workers", 6)  # ThreadPoolExecutor wo
 
 
 # ══════════════════════════════════════════════════════════════
-# ThreadPoolExecutor: factor compute worker (module-level, picklable)
+# ThreadPoolExecutor: factor compute worker (module-level)
 # ══════════════════════════════════════════════════════════════
-# Pattern: each thread opens its own DataStore (independent sqlite3 connection).
-# sqlite3 WAL mode + 6 concurrent readers is the standard Python data-pipeline
-# pattern (ref: sqlite3 docs §5.0, Python concurrent.futures docs §ThreadPoolExecutor).
-# GIL is released during pandas/numpy C-extension calls and sqlite3 I/O.
+# DESIGN: zero DB access in workers. All data pre-loaded by main thread.
+# Worker receives in-memory data only → pure pandas/numpy computation.
+# Thread safety: each worker reads from shared data via .xs() which creates
+# a new DataFrame (no _item_cache writes on the source).
 
 def _compute_factors_for_date(args: tuple) -> tuple:
-    """Compute all factors for one date. Stateless: loads everything from DB.
+    """Compute all factors for one date. Zero DB access — pure computation.
     
-    args: (date, symbols, start_date, end_date, factor_names)
+    args: (date_str, data, preloaded_fundamentals, preloaded_financials, factor_names)
+    data: shared read-only MultiIndex (date, symbol) DataFrame
+    preloaded_fundamentals: {date_str: DataFrame}
+    preloaded_financials: {date_str: DataFrame}
     Returns: (date_str, factor_values_dict, error_string_or_None)
     """
     import time as _time
-    d, symbols, start_date, end_date, factor_names = args
-    date_str = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
+    date_str, data, preloaded_fundamentals, preloaded_financials, factor_names = args
     t0 = _time.monotonic()
     try:
         from utils.logger import get_logger
-        from data.store import DataStore
         _log = get_logger("factor.stats_cache.worker")
-        _log.debug(f"[{date_str}] worker start — loading daily data")
-        store = DataStore()
-        # Load daily OHLCV data for all symbols
-        data = store.get_daily(symbols, start=start_date, end=end_date)
-        # Load fundamentals + financials for this date
-        fundamentals = store.get_fundamentals(symbols, date=date_str)
-        fin = store.get_financials(symbols, date=date_str)
-        preloaded_fin = {date_str: fin} if fin is not None else None
-        store.close()
+        _log.info(f"[{date_str}] computing factors (in-memory)")
 
-        _log.debug(f"[{date_str}] data loaded ({_time.monotonic()-t0:.1f}s), computing factors")
         from factor.compute import compute_all_factors
+        fundamentals = preloaded_fundamentals.get(date_str)
+        fin = preloaded_financials.get(date_str)
+        preloaded_fin = {date_str: fin} if fin is not None else None
+
         fv = compute_all_factors(data, date_str,
                                  fundamentals=fundamentals,
                                  factor_names=factor_names,
@@ -162,18 +158,43 @@ def compute_factor_stats(
     # 只计算最近 lookback 个交易日 (唯一日期, get_level_values(0) 提取 MultiIndex 日期层)
     eval_dates = sorted(data.index.get_level_values(0).unique())[-lookback:]
 
-    # Fundamentals/financials loaded independently in each worker process
-    # (parent closes DB before spawning — avoids WAL lock contention)
+    # ══ Phase A: 主线程一次性完成所有 DB I/O (DDL 已在父进程 DataStore.__init__ 完成) ══
+    logger.info(f"preloading fundamentals + financials for {len(eval_dates)} dates...")
+    preloaded_fundamentals = {}
+    preloaded_financials = {}
+    from factor.compute import _FIN_FACTORS, _FUNDAMENTAL_FN_MAP
+    need_fund = any(n in _FUNDAMENTAL_FN_MAP or n in _FIN_FACTORS for n in factor_names)
+    if need_fund:
+        for i, d in enumerate(eval_dates):
+            ds = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10]
+            try:
+                fund = store.get_fundamentals(symbols, date=ds)
+                if fund is not None and not fund.empty:
+                    preloaded_fundamentals[ds] = fund
+            except Exception:
+                pass
+            try:
+                fin = store.get_financials(symbols, date=ds)
+                if fin is not None and not fin.empty:
+                    preloaded_financials[ds] = fin
+            except Exception:
+                pass
+            if (i + 1) % 20 == 0:
+                logger.info(f"  preloaded: {i+1}/{len(eval_dates)} dates")
+        logger.info(f"preloaded: fundamentals={len(preloaded_fundamentals)}/{len(eval_dates)}, "
+                     f"financials={len(preloaded_financials)}/{len(eval_dates)}")
 
-    logger.info(f"factor compute start: {len(eval_dates)} dates (ThreadPoolExecutor), × {len(factor_names)} factors, {_MAX_WORKERS} workers")
+    store.close()  # ⬅ 所有 DB 操作完成，关闭连接
 
-    store.close()  # parent releases DB; worker threads open their own connections
+    # ══ Phase B: 多线程纯计算 (zero DB access) ══
+    logger.info(f"factor compute start: {len(eval_dates)} dates × {len(factor_names)} factors, "
+                f"{_MAX_WORKERS} threads (in-memory, no DB)")
 
-    # Factor computation: parallel via ThreadPoolExecutor
-    # Standard pattern: each thread opens its own DataStore (independent sqlite3 conn).
-    # GIL released during pandas/numpy ops and sqlite3 I/O — threads work well here.
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
-        futures = {executor.submit(_compute_factors_for_date, (d, symbols, start_date, end_date, factor_names)): d for d in eval_dates}
+        futures = {executor.submit(_compute_factors_for_date,
+                     (d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10],
+                      data, preloaded_fundamentals, preloaded_financials, factor_names)): d
+                   for d in eval_dates}
         logger.info(f"parallel compute: {len(futures)} jobs x {_MAX_WORKERS} threads")
         try:
             from tqdm import tqdm

@@ -27,7 +27,10 @@ def validate_oos(input_json: str = "/tmp/_eval_phase2.json",
     candidates = p2['passed']
     if not candidates:
         print("No candidates from Phase 2. Stopping.")
-        return {"kept": [], "oos_irs": [], "pbo_result": {}}
+        result = {"kept": [], "oos_irs": [], "pbo_result": {}, "n_folds": 0}
+        with open(output_json, 'w') as f:
+            json.dump(result, f, indent=2, default=str)
+        return result
 
     # ── CPCV 参数 ──
     n_groups = cfg("factor.evaluation.cpcv_groups", 5)

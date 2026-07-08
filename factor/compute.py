@@ -2330,6 +2330,8 @@ def compute_seal_time(data: "pd.DataFrame", date: str, window: int = 0) -> "pd.S
             continue
         t = str(ft).strip()
         parts = t.split(":")
+        if len(parts) < 2:
+            continue
         minutes = int(parts[0]) * 60 + int(parts[1])
         if minutes >= 570:  # 不早于 9:30
             result[sym] = 1.0 - (minutes - 570) / 330.0

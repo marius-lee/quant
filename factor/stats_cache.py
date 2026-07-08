@@ -71,8 +71,12 @@ def _pp_compute_chunk(args: tuple) -> list:
       - Daily data loaded once per chunk, fundamentals/financials per-date.
       - True OS-level parallelism: 6 processes × independent GIL = ~6× speedup.
     """
-    import sys, time as _time
+    import sys, time as _time, os
     import traceback as _tb
+    # Suppress worker stderr: macOS spawn reconnects to /dev/tty,
+    # circumventing launchd log redirect. Logger unused (deadlock
+    # per c20bfee). Redirect worker output to /dev/null.
+    sys.stderr = open(os.devnull, 'w')
     symbols_list, date_strs_list, factor_names_list = args
     t_chunk = _time.monotonic()
 

@@ -78,3 +78,36 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+# ── 测试 stats_cache worker (单进程顺序) ──
+def test_stats_cache():
+    """模拟 worker: 小数据直接调 _pp_compute_chunk, 绕过 ProcessPoolExecutor."""
+    from factor.stats_cache import _pp_compute_chunk
+    from data.store import DataStore
+    store = DataStore()
+    rows = store._connect().execute("""
+        SELECT symbol FROM daily WHERE date >= date('now','-30 days')
+        GROUP BY symbol HAVING COUNT(*)>=5 ORDER BY AVG(amount) DESC LIMIT 10
+    """).fetchall()
+    syms = [r[0] for r in rows]
+    store.close()
+    # Get 2 recent dates
+    store2 = DataStore()
+    end = pd.Timestamp.today().strftime("%Y-%m-%d")
+    start = (pd.Timestamp.today() - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+    d = store2.get_daily(syms, start=start, end=end)
+    dates = sorted(d.index.get_level_values(0).unique())[-2:]
+    ds_list = [dt.strftime("%Y-%m-%d") if hasattr(dt,'strftime') else str(dt)[:10] for dt in dates]
+    store2.close()
+    
+    from factor.compute import get_factor_names
+    fn = get_factor_names(status_filter=None)
+    
+    results = _pp_compute_chunk((syms, ds_list, fn))
+    errs = [(d, e) for d, _, e in results if e]
+    return errs
+
+stats_errs = test_stats_cache()
+if stats_errs:
+    for d, e in stats_errs:
+        errors.append(f"STATS  worker FAIL at {d}: {e}")

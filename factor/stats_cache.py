@@ -21,12 +21,17 @@ import time
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 
+import warnings
 import numpy as np
 import pandas as pd
 
 from utils.logger import get_logger
 from config.loader import get as _cfg
 from factor.compute import _require_cfg
+
+# Suppress ConstantInputWarning from scipy/pandas spearmanr on near-constant arrays
+# (std check catches strict zero but not floating-point near-zero; NaN fallback handles all cases)
+warnings.filterwarnings("ignore", message="An input array is constant")
 
 logger = get_logger("factor.stats_cache")
 
@@ -281,7 +286,7 @@ def compute_factor_stats(
             common = fv_series.dropna().index.intersection(fr.dropna().index)
             if len(common) < 30:
                 continue
-            if np.std(fv_series.loc[common]) == 0 or np.std(fr.loc[common]) == 0:
+            if np.std(fv_series.loc[common]) < 1e-10 or np.std(fr.loc[common]) < 1e-10:
                 continue
             rho, _ = _stats.spearmanr(fv_series.loc[common], fr.loc[common])
             if not np.isnan(rho):
@@ -301,7 +306,7 @@ def compute_factor_stats(
                 if len(common) < 30:
                     continue
                 # Skip constant arrays
-                if np.std(fv_series.loc[common]) == 0 or np.std(fr.loc[common]) == 0:
+                if np.std(fv_series.loc[common]) < 1e-10 or np.std(fr.loc[common]) < 1e-10:
                     continue
                 from scipy import stats
                 rho, _ = stats.spearmanr(fv_series.loc[common], fr.loc[common])
@@ -348,7 +353,7 @@ def compute_factor_stats(
             common_sym = si.index.intersection(sj.index)
             if len(common_sym) < 30:
                 continue
-            if np.std(si.loc[common_sym]) == 0 or np.std(sj.loc[common_sym]) == 0:
+            if np.std(si.loc[common_sym]) < 1e-10 or np.std(sj.loc[common_sym]) < 1e-10:
                 continue
             rho = si.loc[common_sym].corr(sj.loc[common_sym], method="spearman")
             if not np.isnan(rho):

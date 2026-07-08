@@ -12,7 +12,13 @@
 set -e
 # ── VERSION: git commit hash + timestamp ──
 VERSION=$(git log -1 --format='%h %ci' 2>/dev/null || echo 'unknown')
-echo "=== VERSION: $VERSION ==="
+DIRTY=$(git status --porcelain -- factor/ evaluation/ config/ 2>/dev/null | head -20 | tr '
+' ' ')
+if [ -n "$DIRTY" ]; then
+    echo "=== VERSION: $VERSION [DIRTY: $DIRTY] ==="
+else
+    echo "=== VERSION: $VERSION [clean] ==="
+fi
 
 cd "$(dirname "$0")/.."
 

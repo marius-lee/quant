@@ -1,160 +1,137 @@
+alpha:
+  combine_mode: sleeve
+  intersection_primary: gap_5d
+  intersection_top_fraction: 0.2
+  method: ic_weighted
+  retrain_freq: 20
+  sleeve:
+    min_factors: 1
+    positions_per_factor: 20
+  top_fraction: 0.3
+  train_window: 500
+attribution:
+  annual_periods: 252
+  risk_free_rate: 0.02
+backtest:
+  benchmark: '000300'
+  default_capital: 100000
+  default_end: '2026-06-30'
+  default_start: '2023-01-01'
+  lot_size: 100
+  min_backtest_days: 250
+  rebalance_interval_days: 5
+cache:
+  redis:
+    db: 0
+    host: localhost
+    port: 6379
+calendar:
+  max_lookup_days: 30
 data:
-  tushare_token: ${TUSHARE_TOKEN}
+  batch_size: 50
+  derived_ratio_max: 100
+  gap_fill_limit: 100
+  lookback_days: 365
+  pe_max: 200
+  stale_days: 250
   start_date: '2020-01-01'
-  stale_days: 250                      # 数据过期阈值 (1年交易日)
-  lookback_days: 365                  # pipeline 历史数据回溯天数 (覆盖1年, ADR 022)
-  batch_size: 50                       # 批量拉取大小 (TickFlow 最优)
-  gap_fill_limit: 100                  # 单次 gap fill 上限
-  pe_max: 200                          # PE 极端值过滤 (>200 视为噪声/亏损股)
-  derived_ratio_max: 100               # 派生比率过滤 (PE/PB 衍生值上限)
+  tushare_token: ${TUSHARE_TOKEN}
+execution:
+  commission: 0.0003
+  min_commission: 5
+  slippage: 0.001
+  stamp_tax: 0.001
 factor:
-  windows:
-    volatility: 126           # Kakushadze & Serur (2018) Ch.3.4: 6-12月=126-252d (原20d偏离标准; ADR 022 Tier 1)
-    downside_volatility: 126  # Sortino & Price (1994): 与波动率一致
-    amihud: 250              # Amihud (2002): 12个月日频, SE(ILLIQ)∝1/√N
-    skewness: 60             # Barberis & Huang (2008): √(6/N)≤0.32, N≥60
-    idiosyncratic_vol: 126    # Ang et al. (2006): 特质波动率窗口对齐 Ch.3.4 低波动标准 126d (ADR 022 Tier 1)
-    max_return: 20           # Bali et al. (2011): 过去1个月 MAX因子
-    intraday_range: 20       # 日内振幅均值窗口
-    lhb_net_buy: 20          # 龙虎榜信号回溯
-    volume_ratio_short: 5    # Gervais et al. (2001): 短窗口
-    volume_ratio_long: 20    # Gervais et al. (2001): 长窗口
-  evaluation:
-    n_symbols: 500  # 0 = 全量 A 股 (最强统计效力, 无主观筛选偏差)
-    lookback: 120            # 券商因子研报惯例, t=|IR|×√n
-    max_workers: 6           # 因子计算并行线程数 (M1=6P-cores, 设 CPU 核心数)
-    # ── Phase 2: 单因子检验阈值 (HLZ 2016 + CGS 2020 + 8家券商共识) ──
-    # ── 回测数据起始日 ──
-    # 来源: 股权分置改革 2005 年 + 创业板 2010 年开板 = A股市场结构成熟.
-    # 华泰/中信/国君等 8 家券商金工一致以 2010 年为起点. pre-2010: 无涨跌停(1996前)、样本<200只.
-    backtest_start_date: '2010-01-01'
-    t_threshold: 2.0          # 单次检验95%置信 + Phase 3 walk-forward OOS 双重过滤
-    min_abs_ic: 0.02          # |RankIC|≥0.02 (券商共识底线)
-    min_icir: 0.5             # ICIR≥0.5 (明汯/灵均标准)
-    min_half_life: 20         # 半衰期≥20天 (月度调仓要求)
-    # ── Phase 3: 过拟合防范 ──
-    cpcv_groups: 5            # CPCV N组 (标准=10, 小数据量=5)
-    cpcv_test_groups: 1       # CPCV 测试组数 k
-    embargo_days: 1           # Purged CV embargo (T+1制度=1日)
-    pbo_max: 0.3              # PBO<0.3 (De Prado 2018)
-    sharpe_decay_max: 0.5     # 夏普衰减<50% (明汯标准)
-    # ── Phase 4: 交易成本 ──
-    net_sharpe_min: 0.3       # 扣费后夏普>0.3 (业界底线)
-    n_days: 120              # 边际贡献评估交易日数 (同 lookback)
+  accruals:
+    max: 1
+    min: -1
+  amihud:
+    min_valid_days: 30
+    min_valid_ratio: 0.5
+    scale: 1000000
+  compute:
+    zscore_min_count: 30
+  debt_ratio:
+    max: 2
+    min: 0
   decay_horizons:
   - 1
   - 5
   - 20
   enable_quality: false
-  stats:
-    snapshot_ttl_sec: 86400            # 因子快照缓存有效期 (24h)
-    ic_min_periods: 20                 # IC 计算最少截面数
-  compute:
-    zscore_min_count: 30               # 截面 z-score 最少股票数 (CLT n>=30)
-  # ── 因子过滤/校验参数 (文献依据详见下方注释, config: factor.*) ──
-  amihud:
-    min_valid_days: 30            # Amihud (2002): 最少有效交易日数
-    min_valid_ratio: 0.5          # Amihud (2002): 最少有效数据占比
-    scale: 1000000               # Amihud (2002): 学术惯例放大系数, 使 illiq 数值可读
-  turnover_rev:
-    fallback_count: 50           # Lee & Swaminathan (2000): turnover 覆盖率不足50只时退化为量比
-  idio_vol:
-    min_common_obs: 10           # Ang et al. (2006): 截面回归最少10个共同时序观测
+  evaluation:
+    backtest_start_date: '2010-01-01'
+    cpcv_groups: 5
+    cpcv_test_groups: 1
+    embargo_days: 1
+    lookback: 120
+    max_workers: 6
+    min_abs_ic: 0.02
+    min_half_life: 20
+    min_icir: 0.5
+    n_days: 120
+    n_symbols: 500
+    net_sharpe_min: 0.3
+    pbo_max: 0.3
+    sharpe_decay_max: 0.5
+    t_threshold: 2.0
   high52w:
-    clip_low: -2                 # George & Hwang (2004): 3σ外视为异常值, 2σ更保守
     clip_high: 2
+    clip_low: -2
+  idio_vol:
+    min_common_obs: 10
   roe_ratio:
-    min: 0                       # CFA 财务分析标准: ROE<0或>100视为数据错误
     max: 100
+    min: 0
   roe_reported:
-    min: -1                      # Sloan (1996): 报告期盈利比例 ±100% 内
     max: 1
-  debt_ratio:
-    min: 0                       # Penman et al. (2007): 资产负债率 0-200%
-    max: 2
-  accruals:
-    min: -1                      # Sloan (1996): 应计/总资产比例 ±100% 内
-    max: 1
-  synth:
-    zscore_clip: 3.0             # Grinold & Kahn (2000) Ch.8: z-score 3σ截断防极端因子值主导合成
+    min: -1
   stats:
-    snapshot_ttl_sec: 86400            # 因子快照缓存有效期 (24h, stats_cache 使用)
-    ic_min_periods: 20                 # IC 计算最少截面数 (stats_cache 使用)
-    lookback_amplification: 1.5  # 50%余量确保足够历史数据用于统计估计
-    min_valid_days: 30           # Grinold & Kahn (1999): 30天最低统计可靠性
-alpha:
-  # 2026-07-03: intersection → ic_weighted (see HANDOFF for analysis)
-  # combine_mode: composite (加权压缩) | sleeve (每因子独立分仓)
-  combine_mode: sleeve                                        # P43: 分仓保留因子独立信号
-  method: ic_weighted
-  train_window: 500                    # IC 训练窗口 (Grinold & Kahn: 60月月频→日频等价500+)
-  retrain_freq: 20
-  top_fraction: 0.3
-  # sleeve 模式配置 (仅 combine_mode=sleeve 时生效)
-  sleeve:
-    positions_per_factor: 20                                  # 每因子选股数 (Grinold & Kahn 最低20只; ADR 022 Tier 1: 15→20 降波动率拖累)
-    min_factors: 1                                            # 最少需要的有效因子数
-  intersection_top_fraction: 0.2
-  intersection_primary: gap_5d
-risk:
-  covariance_method: ledoit_wolf
-  covariance_window: 60
-  max_single_position: 0.05            # 单票仓位上限 (行业标准 5-10%)
-  stop_loss_pct: 0.15
-  max_positions: 20                     # 多因子组合分散度 (Grinold & Kahn: 20-50只)
-  min_price: 2                          # 仙股过滤阈值: A股面值1元, <2元视为退市风险 (沪深交易所退市规则, config risk.min_price)
-  max_sector_exposure: 0.40             # 单行业最大暴露 40% (BARRA USE4 行业风险模型, 行业过度集中风险, config risk.max_sector_exposure)
-  rolling_window: 60                   # 风险暴露滚动窗口 (交易日, config risk.rolling_window)
-  min_daily_amount: 500000
-  exclude_star_st: true
-  exclude_markets:
-  - BJ
-  covariance:
-    window: 60                         # 协方差估计滚动窗口 (交易日)
-    min_periods: 30                    # 协方差估计最少数据量
-  neutralize:
-    min_common_stocks: 30             # Fama & French (1993): OLS 回归最小样本30个
-    min_stocks_per_industry: 3        # BARRA USE4: <3只股票的行业不做截面z-score
+    ic_min_periods: 20
+    lookback_amplification: 1.5
+    min_valid_days: 30
+    snapshot_ttl_sec: 86400
+  synth:
+    zscore_clip: 3.0
+  turnover_rev:
+    fallback_count: 50
+  windows:
+    amihud: 250
+    downside_volatility: 126
+    idiosyncratic_vol: 126
+    intraday_range: 20
+    lhb_net_buy: 20
+    max_return: 20
+    skewness: 60
+    volatility: 126
+    volume_ratio_long: 20
+    volume_ratio_short: 5
 optimizer:
   method: equal_weight
-  rebalance_freq: weekly
   min_holding_days: 5
-execution:
-  commission: 0.0003
-  min_commission: 5
-  stamp_tax: 0.001
-  slippage: 0.001
-backtest:
-  benchmark: '000300'                  # 基准指数
-  lot_size: 100                        # A股每手100股, 交易所规则
-  default_capital: 100000              # 回测默认初始资金 (元, 支持20只组合)
-  default_start: '2023-01-01'          # 回测默认起始日期 (Lo 2002: T>=3年)
-  default_end: '2026-06-30'            # 回测默认结束日期
-  rebalance_interval_days: 5           # 调仓间隔 (交易日)
-  min_backtest_days: 250               # 回测最少交易日数 (Grinold & Kahn 1999)
+  rebalance_freq: weekly
+risk:
+  covariance:
+    min_periods: 30
+    window: 60
+  covariance_method: ledoit_wolf
+  covariance_window: 60
+  exclude_markets:
+  - BJ
+  exclude_star_st: true
+  max_positions: 20
+  max_sector_exposure: 0.4
+  max_single_position: 0.05
+  min_daily_amount: 500000
+  min_price: 2
+  neutralize:
+    min_common_stocks: 30
+    min_stocks_per_industry: 3
+  rolling_window: 60
+  stop_loss_pct: 0.15
+screening:
+  backtest_end: '2026-06-30'
+  backtest_start: '2025-06-30'
+  timeout: 600
 web:
   port: 8521
-
-# API 缓存 & 分布式限流 (ADR 014)
-# Redis 仅做 API 去重 + 限流, 消费者不从 Redis 读数据 (从 SQLite 读)。
-# Redis 不可达时自动降级为 NoopBackend (无缓存、不限流)。
-cache:
-  redis:
-    host: localhost
-    port: 6379
-    db: 0
-screening:
-  # Layer 3 步进回测: 短期筛选 → 仅最终候选走全量回测 (ADR 022 效率优化, ~50% 时间节省)
-  backtest_start: '2025-06-30'          # 步进筛选: 最近1年 (~250d, 满足最低统计要求)
-  backtest_end: '2026-06-30'
-  timeout: 600                          # 单次回测超时 (秒)
-
-calendar:
-  # ── max_lookup_days: 死循环保护上限 (不是业务参数, 不需要按策略调整) ──
-  # A 股最长连续休市≈12 天 (春节+周末), 30 天有 3x 安全余量。
-  # 用于 calendar.py is_trading_day() 的交易日查找循环中防止无限循环。
-  max_lookup_days: 30                  # A股最长休市(春节)<12天, 30天有3x余量
-
-attribution:
-  risk_free_rate: 0.02                # 中国10年期国债收益率均值 (Sharpe 计算无风险利率基准)
-  annual_periods: 252                 # A股年交易日数 (Sharpe 年化基准)

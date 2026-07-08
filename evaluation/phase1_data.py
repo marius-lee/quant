@@ -25,7 +25,7 @@ def prepare_data(output_json: str = "/tmp/_eval_phase1.json") -> dict:
         WHERE list_date <= date('now', '-60 days')
     """).fetchall()
     symbols = [r[0] for r in stocks]
-    logger.info("Phase 1 {len(symbols)} stocks in universe (全A, 上市≥60天)")
+    logger.info(f"Phase 1 {len(symbols)} stocks in universe (全A, 上市≥60天)")
 
     # 有效评估区间
     lookback = cfg("factor.evaluation.lookback", 120)
@@ -37,8 +37,8 @@ def prepare_data(output_json: str = "/tmp/_eval_phase1.json") -> dict:
 
     db_min = conn.execute("SELECT min(date) FROM daily").fetchone()[0]
     db_max = conn.execute("SELECT max(date) FROM daily").fetchone()[0]
-    logger.info("Phase 1 DB 存储范围 {db_min} → {db_max}")
-    logger.info("Phase 1 有效评估区间 {effective_start} → {datetime.today().strftime('%Y-%m-%d')}")
+    logger.info(f"Phase 1 DB 存储范围 {db_min} → {db_max}")
+    logger.info(f"Phase 1 有效评估区间 {effective_start} → {datetime.today().strftime('%Y-%m-%d')}")
     logger.info("Phase 1 pre-2010 数据排除原因 — 股权分置改革前市场结构不成熟 (config backtest_start_date)")
 
     conn.close()

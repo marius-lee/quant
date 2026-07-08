@@ -78,6 +78,7 @@ def _pp_compute_chunk(args: tuple) -> list:
 
     results = []
     for date_str in date_strs_list:
+        dt0 = _time.monotonic()
         try:
             fundamentals = store.get_fundamentals(symbols_list, date=date_str)
             fin = store.get_financials(symbols_list, date=date_str)

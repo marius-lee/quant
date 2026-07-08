@@ -1442,6 +1442,101 @@ def compute_analyst_consensus(fundamentals: "pd.DataFrame", date: str) -> "pd.Se
                    for r in rows if r[1] is not None and r[2] is not None})
     return s.dropna().rename("analyst_consensus")
 
+
+# ── EPD/EPDS 估值偏离因子 (东吴证券 2022, daily_valuation.pe_ttm) ──
+
+# Module-level cache for daily_valuation data (per worker process, avoids re-query).
+_DV_CACHE = {}  # {(lookback_start, date): DataFrame}
+
+
+def _load_daily_valuation_pe(lookback_start: str, date: str) -> "pd.DataFrame":
+    """Load daily_valuation.pe_ttm for [lookback_start, date]. Cached per worker."""
+    cache_key = (lookback_start, date)
+    if cache_key not in _DV_CACHE:
+        conn = _db_connect()
+        df = pd.read_sql(
+            "SELECT symbol, date, pe_ttm FROM daily_valuation "
+            "WHERE date >= ? AND date <= ? AND pe_ttm > 0 AND pe_ttm < 1000 "
+            "ORDER BY date",
+            conn, params=(lookback_start, date),
+        )
+        conn.close()
+        _DV_CACHE[cache_key] = df
+        # Keep at most 3 cache entries to limit memory per worker.
+        if len(_DV_CACHE) > 3:
+            oldest = next(iter(_DV_CACHE))
+            del _DV_CACHE[oldest]
+    return _DV_CACHE[cache_key]
+
+
+def compute_epd(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
+    """EPD 估值偏离: -(PE_t - MA(PE,60d)) / std(PE,60d) (布林带偏离度).
+
+    公式: PE z-score 取负 → 低 PE (估值便宜) = 正向信号。
+    数据源: daily_valuation.pe_ttm (JQData).
+    来源: 东吴证券《估值偏离因子研究》2022, ICIR=3.66.
+    注: 原作 252d window, 当前仅有 ~82d pe_ttm, 暂用 60d (min_periods=20).
+    """
+    lookback_start = (pd.Timestamp(date) - pd.DateOffset(days=365)).strftime("%Y-%m-%d")
+    df = _load_daily_valuation_pe(lookback_start, date)
+
+    if df.empty:
+        return pd.Series(dtype=float, name="epd")
+
+    # Pivot: rows=date, cols=symbol, values=pe_ttm
+    piv = df.pivot_table(index="date", columns="symbol", values="pe_ttm", aggfunc="mean")
+    if piv.empty or piv.shape[1] < 5:
+        return pd.Series(dtype=float, name="epd")
+
+    # 60d rolling stats (close match to 252d when data < 1yr)
+    rolling_mean = piv.rolling(60, min_periods=20).mean()
+    rolling_std = piv.rolling(60, min_periods=20).std()
+
+    # Latest date values
+    latest_pe = piv.iloc[-1]
+    latest_mean = rolling_mean.iloc[-1]
+    latest_std = rolling_std.iloc[-1]
+
+    # EPD = -(PE - mean) / std  (positive = undervalued)
+    epd = -(latest_pe - latest_mean) / latest_std.replace(0, np.nan)
+    return epd.dropna().rename("epd")
+
+
+def compute_epds(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
+    """EPDS 缓慢偏离: EPD × PE 回复稳定性 (IR 权重).
+
+    公式: EPDS = EPD × |MA(PE,60d) / std(PE,60d)|.
+    PE 均值回复越稳定 (高 mean/std), 信号越放大.
+    来源: 东吴证券《估值偏离因子研究》2022, ICIR=4.02.
+    注: 原作 252d window, 当前仅有 ~82d pe_ttm, 暂用 60d (min_periods=20).
+    """
+    lookback_start = (pd.Timestamp(date) - pd.DateOffset(days=365)).strftime("%Y-%m-%d")
+    df = _load_daily_valuation_pe(lookback_start, date)
+
+    if df.empty:
+        return pd.Series(dtype=float, name="epds")
+
+    piv = df.pivot_table(index="date", columns="symbol", values="pe_ttm", aggfunc="mean")
+    if piv.empty or piv.shape[1] < 5:
+        return pd.Series(dtype=float, name="epds")
+
+    rolling_mean = piv.rolling(60, min_periods=20).mean()
+    rolling_std = piv.rolling(60, min_periods=20).std()
+
+    latest_pe = piv.iloc[-1]
+    latest_mean = rolling_mean.iloc[-1]
+    latest_std = rolling_std.iloc[-1]
+
+    # EPD
+    epd = -(latest_pe - latest_mean) / latest_std.replace(0, np.nan)
+
+    # IR weight = |mean / std| — PE 回复稳定性
+    ir_weight = (latest_mean.abs() / latest_std.replace(0, np.nan)).clip(0, 10)
+
+    epds = epd * ir_weight
+    return epds.dropna().rename("epds")
+
+
 _FUNDAMENTAL_FN_MAP = {
     "ep_ratio":      ("value_ep",       compute_ep_ratio),
     "bp_ratio":      ("value_bp",       compute_bp_ratio),
@@ -2590,3 +2685,10 @@ if "margin_buy_ratio" not in _FUNDAMENTAL_FN_MAP:
     _FUNDAMENTAL_FN_MAP["margin_buy_ratio"] = ("margin", compute_margin_buy_ratio)
 if "analyst_consensus" not in _FUNDAMENTAL_FN_MAP:
     _FUNDAMENTAL_FN_MAP["analyst_consensus"] = ("analyst", compute_analyst_consensus)
+
+# ── P73: 注册 EPD/EPDS 估值偏离因子 ──
+if "epd" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["epd"] = ("value", compute_epd)
+if "epds" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["epds"] = ("value", compute_epds)
+

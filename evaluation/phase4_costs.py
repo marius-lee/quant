@@ -11,6 +11,10 @@ def verify_costs(input_json: str = "/tmp/_eval_phase3.json") -> dict:
     -------
     dict with keys: final_factors, net_verdict
     """
+    import os
+    if not os.path.exists(input_json):
+        print(f"Phase 4: {input_json} not found (no Phase 3 output). Skipping.")
+        return {"final_factors": [], "net_verdict": "no_input"}
     with open(input_json) as f:
         p3 = json.load(f)
 

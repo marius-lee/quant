@@ -1,6 +1,6 @@
 # HANDOFF — quant 项目当前状态
 
-**最后更新**: 2026-07-08 01:30 CST
+**最后更新**: 2026-07-08 13:00 CST
 
 > 旧版归档: docs/HANDOFF-2026-07-02.md / docs/HANDOFF-2026-07-03.md (已 superseded)
 > 项目根只有一个 HANDOFF.md 作为单一真相源
@@ -11,16 +11,10 @@
 
 | 提交 | 内容 |
 |------|------|
-| 47fa2df | fix: ThreadPoolExecutor→ProcessPoolExecutor + preloaded_financials dict bug |
-| 4dab489 | fix: 因子计算回归顺序循环，彻底消除ThreadPoolExecutor死锁风险 |
-| 313fd1a | feat: _init_worker 输出线程启动和数据拷贝确认日志 |
-| 32b692b | perf: 恢复ThreadPoolExecutor并行 + per-worker data.copy() 避免MultiIndex行锁 |
-| 4bef2ea | fix: 因子计算从 ThreadPoolExecutor 改为顺序循环 |
-| 51469e2 | fix: 并行心跳从20改为5个 + 启动确认日志 |
-| f0b4b79 | feat: 并行循环加心跳日志 — 每20天/每10因子输出进度 |
-| 60e89b4 | perf: IC 计算 + 相关性矩阵并行化 |
-| 0467da6 | perf: 因子计算并行化 — ThreadPoolExecutor |
-| abaf73a | fix: 修复 Phase 2/3 回测的三个 bug |
+| baf5f6e | fix: ThreadPoolExecutor stateless worker 模式，正式替代 ProcessPoolExecutor |
+| 47fa2df | fix: ThreadPoolExecutor→ProcessPoolExecutor + preloaded_financials dict bug (已 revert) |
+| 0467da6 | perf: 因子计算并行化 — ThreadPoolExecutor (初版，连接共享导致死锁) |
+| abaf73a | fix: Phase 2 decay/lookup/Phase4 gap 三个 bug |
 | b236d4a | feat: 五阶段标准回测评估完整实现 (CPCV + PBO + Phase 5) |
 
 ---
@@ -74,21 +68,23 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 
 ### 并发架构决策 (2026-07-08)
 
-**ThreadPoolExecutor 死锁诊断**:
-- 根因: `DataStore._conn` 是单一共享 sqlite3 连接, `check_same_thread=False` 只绕过检查但
-  6线程并发 `execute()` 时 sqlite3 内部互斥锁死锁
-- 叠加 `pandas.MultiIndex._item_cache` 多线程竞争
-- 初期尝试 `data.copy()` per-worker → 无效, 因为 `store._conn` 仍共享
-- ThreadPoolExecutor+initializer 12 小时内 4 次提交、反复死锁后最终确定为不可行方案
+**并发设计 — ThreadPoolExecutor stateless worker (2026-07-08 最终方案)**:
 
-**最终方案: ProcessPoolExecutor**:
-- 因子计算改用 `concurrent.futures.ProcessPoolExecutor`
-- 每个 worker 是独立 OS 进程: 自带 Python 解释器、pandas、numpy、sqlite3
-- `_pp_worker_init()` 通过 initializer 每个进程只序列化一次 35MB data
-- 6 进程 ≈ +300MB 内存, M1 Max 32GB 无压力
-- IC 计算和相关性矩阵仍用 ThreadPoolExecutor (小数据结构, 无死锁风险)
+模式参考: Python concurrent.futures 官方文档 + sqlite3 WAL 并发读标准模式。
 
-终端现在输出心跳日志: 数据加载 → 因子计算(每20天) → IC计算(每10因子) → 相关性矩阵 → 评估结果。
+- 每个线程 open/close 自己的 DataStore（独立 sqlite3 连接），无共享连接，无死锁
+- Worker 函数 `_compute_factors_for_date(args)` 完全无状态，只传简单参数
+- GIL 在 pandas/numpy C 扩展调用 + sqlite3 I/O 期间自动释放，6 线程有效利用
+- 父进程先 `store.close()` 释放 DB 连接再 spawn 线程
+
+**已废弃的方案**:
+- ThreadPoolExecutor 共享 DataStore._conn → 死锁 (check_same_thread 不解决并发锁)
+- ProcessPoolExecutor initargs pickled DataFrame → macOS spawn 卡死
+- ProcessPoolExecutor per-worker DB initargs → pickle 开销大，extra log line only shows 0%
+
+**bug 修复**:
+- `eval_dates`: 旧代码 `dates[-lookback:]` 对 MultiIndex 取最后 N 个 (date,symbol) 元组而非唯一日期 → 改用 `data.index.get_level_values(0).unique()[-lookback:]`
+- 移除父进程 preload 死代码 (workers 各自从 DB 加载)
 
 ---
 
@@ -108,12 +104,15 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 
 ## 当前状态
 
+- **config.yaml**: n_symbols=1000, lookback=60 (测试模式，全量跑通后恢复 0/120)
+- **并发**: ThreadPoolExecutor stateless worker, 6 workers, 各自独立 DB 连接
 - **factor_registry**: 55 因子注册, 31 active / 24 deprecated
 - **因子覆盖**: OIR/STR/ABN_TURN/OCFP + P71涨跌停四因子 + P72数据源三因子
 - **执行价格**: Sina 实时 open + 除权检测 10% (ADR 017)
-- **launchd**: scheduler ✅ / webapp ❌ (须走 restart.sh, ADR 025)
+- **launchd**: scheduler ✅ (KeepAlive, 等 15:30 Phase 3) / webapp ❌ (须走 restart.sh, ADR 025)
 - **数据字典**: [docs/DATA_DICTIONARY.md](docs/DATA_DICTIONARY.md)
 - **ADR 档案**: [docs/adr/](docs/adr/) (026 条)
+- **备份**: factor/stats_cache.py.bak (ProcessPoolExecutor 版本)
 
 ---
 

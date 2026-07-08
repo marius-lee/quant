@@ -55,12 +55,15 @@ def _compute_factors_chunk(args: tuple) -> list:
     """
     import time as _time
     date_list, data_chunk, preloaded_fundamentals, preloaded_financials, factor_names = args
+    import sys
+    print(f"[WORKER-ENTER] {date_list} | rows={len(data_chunk)}", file=sys.stderr, flush=True)
     t0 = _time.monotonic()
     results = []
     from utils.logger import get_logger
     _log = get_logger("factor.stats_cache.worker")
     from factor.compute import compute_all_factors
     
+    print(f"[WORKER-LOGGER-OK] {date_list}", file=sys.stderr, flush=True)
     _log.info(f"chunk start: {len(date_list)} dates, {len(data_chunk)} rows")
     for i, date_str in enumerate(date_list):
         dt0 = _time.monotonic()

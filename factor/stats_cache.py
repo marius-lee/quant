@@ -56,15 +56,12 @@ def _compute_factors_chunk(args: tuple) -> list:
     import time as _time
     date_list, data_chunk, preloaded_fundamentals, preloaded_financials, factor_names = args
     import sys
-    print(f"[WORKER-ENTER] {date_list} | rows={len(data_chunk)}", file=sys.stderr, flush=True)
     t0 = _time.monotonic()
     results = []
-    from utils.logger import get_logger
-    _log = get_logger("factor.stats_cache.worker")
     from factor.compute import compute_all_factors
+    # ZERO logging in worker — bare print() only, no logging module locks
     
-    print(f"[WORKER-LOGGER-OK] {date_list}", file=sys.stderr, flush=True)
-    _log.info(f"chunk start: {len(date_list)} dates, {len(data_chunk)} rows")
+    print(f"[WORKER] chunk start: {date_list}", file=sys.stderr, flush=True)
     for i, date_str in enumerate(date_list):
         dt0 = _time.monotonic()
         try:
@@ -83,12 +80,12 @@ def _compute_factors_chunk(args: tuple) -> list:
                     result[name] = fv[name]
                     n_filled += 1
             results.append((date_str, result, None))
-            _log.info(f"[{date_str}] done — {n_filled}/{len(factor_names)} factors ({_time.monotonic()-dt0:.1f}s)")
+            print(f"[WORKER] done: {date_str} {n_filled}/{len(factor_names)} factors ({_time.monotonic()-dt0:.1f}s)", file=sys.stderr, flush=True)
         except Exception as e:
             results.append((date_str, {}, str(e)))
-            _log.warning(f"[{date_str}] FAILED ({_time.monotonic()-dt0:.1f}s): {e}")
+            print(f"[WORKER] FAIL: {date_str} {e}", file=sys.stderr, flush=True)
     
-    _log.info(f"chunk done: {len(date_list)} dates ({_time.monotonic()-t0:.1f}s)")
+    print(f"[WORKER] chunk done: {len(date_list)} dates ({_time.monotonic()-t0:.1f}s)", file=sys.stderr, flush=True)
     return results
 
 

@@ -233,6 +233,7 @@ def compute_factor_stats(
     # 5. 计算每个因子的 IC/IR
     ic_means = {}
     ic_irs = {}
+    ic_series = {}
     ic_decay = {}
 
     # Parallel IC computation — each factor independent
@@ -329,6 +330,7 @@ def compute_factor_stats(
              for i in range(n) for j in range(i + 1, n)]
     logger.info(f"correlation matrix: {n}×{n} factors, {len(pairs)} pairwise pairs")
     corr_matrix = np.eye(n)
+    corr_counts = np.zeros((n, n))
     if pairs:
         with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
             futures = {executor.submit(_compute_pair, i, j, ni, nj): (i, j)

@@ -202,12 +202,14 @@ def compute_factor_stats(
     date_chunks = [eval_dates[i:i + chunk_size] for i in range(0, len(eval_dates), chunk_size)]
     logger.info(f"partitioned {len(eval_dates)} dates into {len(date_chunks)} chunks (max {chunk_size}/chunk)")
 
+    logger.info(f"creating {len(date_chunks)} independent data chunks...")
     with ThreadPoolExecutor(max_workers=n_chunks) as executor:
         futures = {}
-        for chunk_dates in date_chunks:
+        for ci, chunk_dates in enumerate(date_chunks):
+            logger.info(f"  chunk {ci+1}/{len(date_chunks)}: {len(chunk_dates)} dates, creating copy...")
             ds_list = [d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10] for d in chunk_dates]
             # Create independent data subset for this chunk (zero shared state)
-            chunk_data = data.loc[chunk_dates]
+            chunk_data = data.loc[chunk_dates].copy()
             futures[executor.submit(_compute_factors_chunk,
                      (ds_list, chunk_data,
                       preloaded_fundamentals, preloaded_financials,

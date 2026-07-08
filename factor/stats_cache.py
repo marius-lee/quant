@@ -41,46 +41,38 @@ _MAX_WORKERS = _cfg("factor.evaluation.max_workers", 6)  # ThreadPoolExecutor wo
 
 # Per-process globals set by _pp_worker_init
 _pp_data = None
-_pp_preloaded_fundamentals = None
-_pp_preloaded_financials = None
-_pp_symbols = None
-_pp_factor_names = None
 
 
-def _pp_worker_init(data, preloaded_fundamentals, preloaded_financials, symbols, factor_names):
+
+def _pp_worker_init(data):
     """ProcessPoolExecutor initializer: load data once per process."""
-    global _pp_data, _pp_preloaded_fundamentals, _pp_preloaded_financials
-    global _pp_symbols, _pp_factor_names
+    global _pp_data
     _pp_data = data
-    _pp_preloaded_fundamentals = preloaded_fundamentals
-    _pp_preloaded_financials = preloaded_financials
-    _pp_symbols = symbols
-    _pp_factor_names = factor_names
 
 
-def _pp_worker_compute(d) -> tuple:
-    """Compute all factors for a single date.  Called by ProcessPoolExecutor.
+def _pp_worker_compute(args) -> tuple:
+    """Compute all factors for a single date.
 
-    Returns (date_str, factor_values_dict, error_string_or_None).
-    """
+    args: (date, symbols, factor_names)
+    Returns: (date_str, factor_values_dict, error_string_or_None).
+    Each worker loads fundamentals/financials from DB with own DataStore."""
+    d, symbols, factor_names = args
     date_str = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
-    fundamentals = _pp_preloaded_fundamentals.get(date_str)
-    if fundamentals is None:
-        from data.store import DataStore
-        _store = DataStore()
-        try:
-            fundamentals = _store.get_fundamentals(_pp_symbols, date=date_str)
-        except Exception:
-            fundamentals = None
-        _store.close()
     try:
+        from data.store import DataStore
+        store = DataStore()
+        fundamentals = store.get_fundamentals(symbols, date=date_str)
+        fin = store.get_financials(symbols, date=date_str)
+        preloaded_fin = {date_str: fin} if fin is not None else None
+        store.close()
+
         from factor.compute import compute_all_factors
         fv = compute_all_factors(_pp_data, date_str,
                                  fundamentals=fundamentals,
-                                 factor_names=_pp_factor_names,
-                                 preloaded_financials=_pp_preloaded_financials)
+                                 factor_names=factor_names,
+                                 preloaded_financials=preloaded_fin)
         result = {}
-        for name in _pp_factor_names:
+        for name in factor_names:
             if name in fv and not fv[name].dropna().empty:
                 result[name] = fv[name]
         return date_str, result, None
@@ -206,8 +198,8 @@ def compute_factor_stats(
     from concurrent.futures import ProcessPoolExecutor
     with ProcessPoolExecutor(max_workers=_MAX_WORKERS,
                              initializer=_pp_worker_init,
- initargs=(data, preloaded_fundamentals, preloaded_financials, symbols, factor_names)) as executor:
-        futures = {executor.submit(_pp_worker_compute, d): d for d in eval_dates}
+ initargs=(data,)) as executor:
+        futures = {executor.submit(_pp_worker_compute, (d, symbols, factor_names)): d for d in eval_dates}
         logger.info(f"parallel compute: {len(futures)} jobs x {_MAX_WORKERS} processes")
         try:
             from tqdm import tqdm

@@ -33,6 +33,7 @@ logger = get_logger("factor.stats_cache")
 _DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
 _SNAPSHOT_TTL_SEC = _cfg("factor.stats.snapshot_ttl_sec", 86400)  # 24h
 _MAX_WORKERS = _cfg("factor.evaluation.max_workers", 6)  # ThreadPoolExecutor workers
+_WORKER_TIMEOUT_SEC = _cfg("factor.evaluation.worker_timeout_sec", 600)  # 10min per chunk
 
 
 # ══════════════════════════════════════════════════════════════
@@ -59,11 +60,28 @@ def _pp_compute_chunk(args: tuple) -> list:
       - True OS-level parallelism: 6 processes × independent GIL = ~6× speedup.
     """
     import sys, time as _time
+    import traceback as _tb
     symbols_list, date_strs_list, factor_names_list = args
     t_chunk = _time.monotonic()
 
-    sys.stderr.write(f"[WORKER-PROC] {date_strs_list[0]}..{date_strs_list[-1]} ({len(date_strs_list)}d) start\n")
-    sys.stderr.flush()
+    try:
+        return _pp_compute_chunk_impl(symbols_list, date_strs_list, factor_names_list,
+                                      t_chunk, sys, _time, _tb)
+    except Exception as e:
+        # Outer guard: imports / DataStore init / get_daily — any stage crash returns errors
+        err_msg = f"{type(e).__name__}: {e}"
+        sys.stderr.write(f"[WORKER-PROC] FATAL: {err_msg}\n")
+        sys.stderr.flush()
+        return [(d, {}, err_msg) for d in date_strs_list]
+
+
+def _pp_compute_chunk_impl(symbols_list: list, date_strs_list: list,
+                           factor_names_list: list, t_chunk: float,
+                           _sys, _time, _tb) -> list:
+    """_pp_compute_chunk inner impl — outer try/except guards all stages."""
+
+    _sys.stderr.write(f"[WORKER-PROC] {date_strs_list[0]}..{date_strs_list[-1]} ({len(date_strs_list)}d) start\n")
+    _sys.stderr.flush()
 
     from data.store import DataStore
     from factor.compute import compute_all_factors
@@ -94,17 +112,17 @@ def _pp_compute_chunk(args: tuple) -> list:
                     result[name] = fv[name]
                     n_filled += 1
             dt_elapsed = _time.monotonic() - dt0
-            sys.stderr.write(f"[WORKER-PROC] {date_str} {n_filled}/{len(factor_names_list)} factors ({dt_elapsed:.1f}s)\n")
-            sys.stderr.flush()
+            _sys.stderr.write(f"[WORKER-PROC] {date_str} {n_filled}/{len(factor_names_list)} factors ({dt_elapsed:.1f}s)\n")
+            _sys.stderr.flush()
             results.append((date_str, result, None))
         except Exception as e:
             results.append((date_str, {}, str(e)))
-            sys.stderr.write(f"[WORKER-PROC] FAIL: {date_str} {e}\n")
-            sys.stderr.flush()
+            _sys.stderr.write(f"[WORKER-PROC] FAIL: {date_str} {e}\n")
+            _sys.stderr.flush()
 
     store.close()
-    sys.stderr.write(f"[WORKER-PROC] {date_strs_list[0]}..{date_strs_list[-1]} done ({_time.monotonic()-t_chunk:.0f}s)\n")
-    sys.stderr.flush()
+    _sys.stderr.write(f"[WORKER-PROC] {date_strs_list[0]}..{date_strs_list[-1]} done ({_time.monotonic()-t_chunk:.0f}s)\n")
+    _sys.stderr.flush()
     return results
 
 
@@ -211,18 +229,24 @@ def compute_factor_stats(
             pbar = tqdm(total=len(futures), desc="Computing factors (parallel)")
         except ImportError:
             pbar = None
-        for future in as_completed(futures):
-            chunk_results = future.result()
-            for date_str, fv_partial, err in chunk_results:
-                if err:
-                    logger.warning(f"Factor compute failed at {date_str}: {err}")
-                else:
-                    for name, series in fv_partial.items():
-                        factor_values_by_date[name][date_str] = series
+        try:
+            for future in as_completed(futures, timeout=_WORKER_TIMEOUT_SEC):
+                chunk_results = future.result()
+                for date_str, fv_partial, err in chunk_results:
+                    if err:
+                        logger.warning(f"Factor compute failed at {date_str}: {err}")
+                    else:
+                        for name, series in fv_partial.items():
+                            factor_values_by_date[name][date_str] = series
+                if pbar:
+                    pbar.update(1)
+        except TimeoutError:
+            logger.error(f"ProcessPoolExecutor timeout after {_WORKER_TIMEOUT_SEC}s — "
+                         f"{len(futures) - (pbar.n if pbar else 0)} chunks did not complete")
+            raise  # Let caller decide: no partial results
+        finally:
             if pbar:
-                pbar.update(1)
-        if pbar:
-            pbar.close()
+                pbar.close()
     logger.info(f"factor compute complete: {len(eval_dates)}/{len(eval_dates)} dates")
 
     # 4. 计算前瞻收益 (用于 IC 评估)
@@ -301,7 +325,7 @@ def compute_factor_stats(
                                    forward_1d, forward_5d, forward_20d): name
                    for name in factor_names}
         ic_completed = 0
-        for future in as_completed(futures):
+        for future in as_completed(futures, timeout=_WORKER_TIMEOUT_SEC):
             name, result = future.result()
             if result is not None:
                 ic_means[name], ic_irs[name], ic_series[name], ic_decay[name] = result
@@ -324,6 +348,8 @@ def compute_factor_stats(
             common_sym = si.index.intersection(sj.index)
             if len(common_sym) < 30:
                 continue
+            if np.std(si.loc[common_sym]) == 0 or np.std(sj.loc[common_sym]) == 0:
+                continue
             rho = si.loc[common_sym].corr(sj.loc[common_sym], method="spearman")
             if not np.isnan(rho):
                 pair_corrs.append(rho)
@@ -339,7 +365,7 @@ def compute_factor_stats(
         with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
             futures = {executor.submit(_compute_pair, i, j, ni, nj): (i, j)
                        for i, j, ni, nj in pairs}
-            for future in as_completed(futures):
+            for future in as_completed(futures, timeout=_WORKER_TIMEOUT_SEC):
                 i, j, avg, n_pairs = future.result()
                 corr_matrix[i][j] = avg
                 corr_matrix[j][i] = avg

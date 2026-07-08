@@ -2165,7 +2165,7 @@ def compute_abn_turnover(data, date, window=20):
     return _cs_zscore(-raw).rename("abn_turnover")
 
 
-def compute_ocfp(data, date, fundamentals=None, financials=None):
+def compute_ocfp(fundamentals, date, financials=None):
     """OCFP 经营现金流/市值: TTM 经营活动现金流净额 / 总市值.
     
     华泰证券(2016): 《单因子测试之估值类因子》.
@@ -2178,29 +2178,25 @@ def compute_ocfp(data, date, fundamentals=None, financials=None):
     """
     import sqlite3, numpy as np
 
-    if fundamentals is None:
-        return pd.Series(np.nan, index=data.index, name="ocfp")
+    if fundamentals is None or fundamentals.empty:
+        return pd.Series(np.nan, index=fundamentals.index, name="ocfp")
 
     syms = fundamentals.index.tolist()
 
-    # 取总市值
-    db = _market_db_path()
-    conn = sqlite3.connect(db)
-    mv_rows = conn.execute(f"""
-        SELECT symbol, total_mv FROM stocks
-        WHERE symbol IN ('{"','".join(syms)}') AND total_mv IS NOT NULL
-    """).fetchall()
-    # 取行业 (剔除金融/地产/银行)
-    ind_rows = conn.execute(f"""
-        SELECT symbol, industry FROM stocks
-        WHERE symbol IN ('{"','".join(syms)}')
-    """).fetchall()
-    conn.close()
-
-    mv_map = {r[0]: r[1] for r in mv_rows}
-    ind_map = {r[0]: r[2] for r in ind_rows if r[2]}
+    # 金融/地产/银行剔除
+    # 从 fundamentals 获取总市值和行业（无需重复查询 DB）
+    mv_series = fundamentals["total_mv"] if "total_mv" in fundamentals.columns else None
+    ind_series = fundamentals["industry"] if "industry" in fundamentals.columns else None
+    
+    if mv_series is None:
+        return pd.Series(np.nan, index=fundamentals.index, name="ocfp")
+    
+    mv_map = mv_series.dropna().to_dict()
+    ind_map = ind_series.dropna().to_dict() if ind_series is not None else {}
 
     # 金融/地产/银行剔除
+    exclude_inds = {'银行', '非银金融', '房地产', '综合金融'}
+    valid_syms = [s for s in syms if s in mv_map and ind_map.get(s, '') not in exclude_inds]
     exclude_inds = {'银行', '非银金融', '房地产', '综合金融'}
     valid_syms = [s for s in syms if s in mv_map and ind_map.get(s, '') not in exclude_inds]
 

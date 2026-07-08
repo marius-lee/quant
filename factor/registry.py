@@ -34,4 +34,4 @@ def _db_connect():
 
 
 # 需要 financials 三表的面板因子 (CSMAR standard: BS+IS+CF)
-_FIN_FACTORS = {"roe_reported", "roa", "debt_ratio", "accruals", "asset_growth", "gp_ta"}
+_FIN_FACTORS = {"roe_reported", "ocfp", "roa", "debt_ratio", "accruals", "asset_growth", "gp_ta"}

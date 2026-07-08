@@ -20,8 +20,8 @@ factor:
     volume_ratio_short: 5    # Gervais et al. (2001): 短窗口
     volume_ratio_long: 20    # Gervais et al. (2001): 长窗口
   evaluation:
-    n_symbols: 100  # 0 = 全量 A 股 (最强统计效力, 无主观筛选偏差)
-    lookback: 30            # 券商因子研报惯例, t=|IR|×√n
+    n_symbols: 500  # 0 = 全量 A 股 (最强统计效力, 无主观筛选偏差)
+    lookback: 120            # 券商因子研报惯例, t=|IR|×√n
     max_workers: 6           # 因子计算并行线程数 (M1=6P-cores, 设 CPU 核心数)
     # ── Phase 2: 单因子检验阈值 (HLZ 2016 + CGS 2020 + 8家券商共识) ──
     # ── 回测数据起始日 ──

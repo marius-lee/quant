@@ -2369,16 +2369,21 @@ def compute_limit_touch_no_seal(data: "pd.DataFrame", date: str, window: int = 0
             if ("high", sym) not in today.index or ("close", sym) not in today.index:
                 continue
             high = float(today[("high", sym)])
-            # pre_close: compute from yesterday's close (data has close column)
-            # We use today's close as fallback; true pre_close = yesterday's close
             close = float(today[("close", sym)])
-            # pre_close approximated from close / (1 + ret) — data doesn't carry pre_close in pivot
-            # Use high < close * 1.10 check instead: 触板 = high >= close * 1.10 * 0.995
-            limit_price = close * 1.10
+            # pre_close = yesterday's close from data
+            # data has date index, find yesterday
+            close_df = data["close"]
+            date_idx = close_df.index.get_loc(date_str)
+            if date_idx == 0:
+                continue
+            pre = float(close_df.iloc[date_idx - 1].get(sym, None) or close_df.iloc[date_idx - 1].loc[sym] if sym in close_df.iloc[date_idx - 1].index else None)
+            if pre is None or pre <= 0:
+                continue
+            limit_price = pre * 1.10
             ret = (close - pre) / pre
             if high >= limit_price * 0.995 and ret < 0.095:
                 result[sym] = -1.0
-        except (KeyError, ValueError, TypeError):
+        except (KeyError, ValueError, TypeError, IndexError):
             continue
 
     return _cs_zscore(result).rename("limit_touch_no_seal")

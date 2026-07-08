@@ -2516,8 +2516,8 @@ if "net_limit_ratio" not in _PRICE_FN_MAP:
     _PRICE_FN_MAP["net_limit_ratio"] = (compute_net_limit_ratio, 1)
 
 # ── P72: 注册数据源适配因子 ──
-if "epa" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["epa"] = ("value", compute_epa)
+if "epa" not in _PRICE_FN_MAP:
+    _PRICE_FN_MAP["epa"] = (compute_epa, 60)
 if "trcf" not in _PRICE_FN_MAP:
     _PRICE_FN_MAP["trcf"] = (compute_trcf, 120)
 if "ideal_amplitude" not in _PRICE_FN_MAP:

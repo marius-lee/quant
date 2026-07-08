@@ -1,6 +1,6 @@
 # HANDOFF — quant 项目当前状态
 
-**最后更新**: 2026-07-08 21:00 CST
+**最后更新**: 2026-07-08 21:30 CST
 
 > 旧版归档: docs/HANDOFF-2026-07-02.md / docs/HANDOFF-2026-07-03.md (已 superseded)
 > 项目根只有一个 HANDOFF.md 作为单一真相源
@@ -11,6 +11,7 @@
 
 | 提交 | 内容 |
 |------|------|
+| 736decd | perf: 主进程不加载全量 OHLCV — worker 返回 close, 内存 ~5GB→~200MB, 消除 swap |
 | 0b62c3a | fix: 移除 ProcessPoolExecutor 600s 超时 — 500股×120天被误杀, 恢复五阶段全流程 |
 | 5ec691d | fix: stats_cache 模块级 sys.path 守卫 — spawn worker 确保能找到项目模块 |
 | 8e64647 | fix: vol_price_corr 除零保护 — std()>0 检查 |
@@ -79,6 +80,8 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 - 主线程只传元数据 (symbols + date_strs + factor_names, <10KB) → ZERO DataFrame pickling
 - 每个进程打开独立 DataStore (WAL 并发读), 加载 daily + fundamentals + financials
 - 6 进程 × 独立 GIL → 真正 OS 级并行 (~9× 加速 vs ThreadPoolExecutor)
+- 主进程不再加载 OHLCV: eval_dates 从 SQL DISTINCT date 获取, close 由 worker 返回后拼接
+  (全量 5493 股时主进程内存从 ~5GB 降至 ~200MB, swap 消除)
 - 主线程 `store.close()` 在 spawn 前调用, 无 WAL 锁继承
 - **as_completed 不加 timeout**: ProcessPoolExecutor 段去掉了 600s 超时 (af2d24e 引入)。
   500 股×120 天单 chunk 需 ~700s, 600s 超时误杀正常计算。worker 内层 try/except 已兜底,
@@ -109,7 +112,7 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 
 ## 当前状态
 
-- **config.yaml**: n_symbols=500, lookback=120 (500 股×120 天验证通过, Phase 2~5 全流程跑通)
+- **config.yaml**: n_symbols=0 (全量 A 股回测, ADR 026 标准配置)
 - **并发**: ProcessPoolExecutor worker 自加载 (ADR 027), 6 进程, 无 as_completed timeout (500×120 单 chunk ~700s, 误杀风险 > 兜底价值)
 - **factor_registry**: 55 因子注册, 31 active / 24 deprecated
 - **因子覆盖**: OIR/STR/ABN_TURN/OCFP + P71涨跌停六因子 + P72数据源三因子 (epa/trcf/ideal_amplitude)

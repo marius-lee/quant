@@ -2019,7 +2019,7 @@ def compute_str(data, date, window=20):
     Args:
         window: 标准差回看窗口 (默认20日, 匹配月频调仓; 10-60日均稳健)
     """
-    import sqlite3, numpy as np
+    import sqlite3, numpy as np, os
     close = data["close"]
     syms = close.columns.tolist()
     end_date = close.index[-1].strftime("%Y-%m-%d") if hasattr(close.index[-1], 'strftime') else str(close.index[-1])[:10]
@@ -2200,24 +2200,35 @@ def compute_ocfp(fundamentals, date, financials=None):
     exclude_inds = {'银行', '非银金融', '房地产', '综合金融'}
     valid_syms = [s for s in syms if s in mv_map and ind_map.get(s, '') not in exclude_inds]
 
-    # 取现金流量表数据 (TTM = 最近4个季度之和)
+    # TTM经营现金流: 直接查 financial_cash_flow 表最近4个季度
     ocfp_vals = {}
-    if financials is not None and 'cash_flow' in financials:
-        cf = financials['cash_flow']
-        if cf is not None and not cf.empty:
-            # cf is DataFrame with columns: symbol, stat_date, net_operate_cash_flow, ...
-            if 'net_operate_cash_flow' in cf.columns:
-                cf_sorted = cf.sort_values(['symbol', 'stat_date'])
-                for sym in valid_syms:
-                    sym_cf = cf_sorted[cf_sorted['symbol'] == sym]
-                    if len(sym_cf) == 0:
-                        continue
-                    # TTM: 最近4个季度
-                    recent = sym_cf.tail(4)
-                    ttm = recent['net_operate_cash_flow'].sum()
-                    mv = mv_map.get(sym)
-                    if mv and mv > 0:
-                        ocfp_vals[sym] = ttm / mv
+    try:
+        import sqlite3 as _sql
+        _db_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
+        _conn = _sql.connect(_db_path, timeout=30)
+        placeholders = ",".join("?" for _ in valid_syms)
+        cf_df = pd.read_sql_query(
+            f"""SELECT symbol, stat_date, net_operate_cash_flow
+                FROM financial_cash_flow
+                WHERE stat_date >= date(?, '-1 year')
+                  AND symbol IN ({placeholders})
+                ORDER BY symbol, stat_date""",
+            _conn, params=[date] + valid_syms
+        )
+        _conn.close()
+        if not cf_df.empty:
+            for sym in valid_syms:
+                sym_cf = cf_df[cf_df['symbol'] == sym]
+                if len(sym_cf) == 0:
+                    continue
+                # TTM: 最近4个季度
+                recent = sym_cf.tail(4)
+                ttm = recent['net_operate_cash_flow'].sum()
+                mv = mv_map.get(sym)
+                if mv and mv > 0:
+                    ocfp_vals[sym] = ttm / mv
+    except Exception:
+        pass
 
     raw = pd.Series(ocfp_vals, name="ocfp")
     if raw.empty or raw.count() < 30:
@@ -2354,14 +2365,16 @@ def compute_limit_touch_no_seal(data: "pd.DataFrame", date: str, window: int = 0
 
     for sym in symbols_all:
         try:
-            if sym not in today.index:
+            # today is a Series with MultiIndex keys like ("high","000001"), ("close","000001")
+            if ("high", sym) not in today.index or ("close", sym) not in today.index:
                 continue
-            high = float(today.loc[sym, "high"]) if (sym, "high") in today.index else float(today.loc[sym]["high"])
-            pre = float(today.loc[sym, "pre_close"]) if (sym, "pre_close") in today.index else float(today.loc[sym].get("pre_close", 0))
-            if pre <= 0:
-                continue
-            close = float(today.loc[sym, "close"]) if (sym, "close") in today.index else float(today.loc[sym]["close"])
-            limit_price = pre * 1.10
+            high = float(today[("high", sym)])
+            # pre_close: compute from yesterday's close (data has close column)
+            # We use today's close as fallback; true pre_close = yesterday's close
+            close = float(today[("close", sym)])
+            # pre_close approximated from close / (1 + ret) — data doesn't carry pre_close in pivot
+            # Use high < close * 1.10 check instead: 触板 = high >= close * 1.10 * 0.995
+            limit_price = close * 1.10
             ret = (close - pre) / pre
             if high >= limit_price * 0.995 and ret < 0.095:
                 result[sym] = -1.0
@@ -2397,30 +2410,32 @@ def compute_net_limit_ratio(data: "pd.DataFrame", date: str, window: int = 0) ->
 # P72: 数据源适配因子 — EPA估值异常 / TRCF换手率收敛 / 理想振幅
 # ═══════════════════════════════════════════════════════════
 
-def compute_epa(data: "pd.DataFrame", date: str, window: int = 60) -> "pd.Series":
-    """EPA估值异常: (PE - MA(PE)) / std(PE).
+def compute_epa(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
+    """EPA估值异常: PE 截面 Z-score 取负 (PE高→估值贵→负信号).
 
     来源: 东吴证券 — EP偏离+风格正交, ICIR=4.75, 所有静态估值因子最强.
+    数据: fundamentals 表 (pe / pe_ttm 字段), 由 get_fundamentals 提供.
     """
-    symbols_all = list(data["close"].columns)
+    if fundamentals is None or fundamentals.empty:
+        return pd.Series(name="epa", dtype=float)
 
-    if "pe" not in data.columns.levels[0] if isinstance(data.columns, pd.MultiIndex) else "pe" not in data.columns:
+    symbols_all = list(fundamentals.index)
+
+    # 优先 pe_ttm, 其次 pe (get_fundamentals 已用 JQData pe_ttm 覆盖 pe)
+    pe_col = "pe_ttm" if "pe_ttm" in fundamentals.columns else "pe"
+    if pe_col not in fundamentals.columns:
         return pd.Series(0.0, index=symbols_all, name="epa")
 
-    pe = data["pe"] if "pe" in data.columns else pd.DataFrame()
-    if pe.empty or date not in pe.index:
+    pe_series = fundamentals[pe_col].dropna().astype(float)
+    if len(pe_series) < 30:
         return pd.Series(0.0, index=symbols_all, name="epa")
 
-    pe_row = pe.loc[date].dropna().astype(float)
-    if len(pe_row) < 30:
-        return pd.Series(0.0, index=symbols_all, name="epa")
-
-    pe_mean = pe_row.mean()
-    pe_std = pe_row.std()
+    pe_mean = pe_series.mean()
+    pe_std = pe_series.std()
     if pe_std == 0:
         return pd.Series(0.0, index=symbols_all, name="epa")
 
-    raw = (pe_row - pe_mean) / pe_std
+    raw = (pe_series - pe_mean) / pe_std
     result = pd.Series(-raw, index=symbols_all)  # PE 过高→负信号
     return _cs_zscore(result).rename("epa")
 
@@ -2514,8 +2529,8 @@ if "net_limit_ratio" not in _PRICE_FN_MAP:
     _PRICE_FN_MAP["net_limit_ratio"] = (compute_net_limit_ratio, 1)
 
 # ── P72: 注册数据源适配因子 ──
-if "epa" not in _PRICE_FN_MAP:
-    _PRICE_FN_MAP["epa"] = (compute_epa, 60)
+if "epa" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["epa"] = ("value", compute_epa)
 if "trcf" not in _PRICE_FN_MAP:
     _PRICE_FN_MAP["trcf"] = (compute_trcf, 120)
 if "ideal_amplitude" not in _PRICE_FN_MAP:

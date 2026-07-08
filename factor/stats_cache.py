@@ -84,7 +84,7 @@ def _pp_compute_chunk(args: tuple) -> list:
         err_msg = f"{type(e).__name__}: {e}"
         sys.stderr.write(f"[WORKER-PROC] FATAL: {err_msg}\n")
         sys.stderr.flush()
-        return [(d, {}, err_msg) for d in date_strs_list]
+        return [(d, {}, pd.Series(dtype=float), err_msg) for d in date_strs_list]
 
 
 def _pp_compute_chunk_impl(symbols_list: list, date_strs_list: list,
@@ -104,7 +104,8 @@ def _pp_compute_chunk_impl(symbols_list: list, date_strs_list: list,
     min_date = date_strs_list[0]
     max_date = date_strs_list[-1]
     data_start = (pd.Timestamp(min_date) - pd.Timedelta(days=365)).strftime("%Y-%m-%d")
-    data = store.get_daily(symbols_list, start=data_start, end=max_date)
+    future_end = (pd.Timestamp(max_date) + pd.Timedelta(days=40)).strftime('%Y-%m-%d')
+    data = store.get_daily(symbols_list, start=data_start, end=future_end)
 
     results = []
     for date_str in date_strs_list:
@@ -126,9 +127,11 @@ def _pp_compute_chunk_impl(symbols_list: list, date_strs_list: list,
             dt_elapsed = _time.monotonic() - dt0
             _sys.stderr.write(f"[WORKER-PROC] {date_str} {n_filled}/{len(factor_names_list)} factors ({dt_elapsed:.1f}s)\n")
             _sys.stderr.flush()
-            results.append((date_str, result, None))
+            # Extract close for forward-return computation in main process
+            close_series = data.xs(date_str, level=0)['close'] if date_str in data.index.get_level_values(0) else pd.Series(dtype=float)
+            results.append((date_str, result, close_series, None))
         except Exception as e:
-            results.append((date_str, {}, str(e)))
+            results.append((date_str, {}, pd.Series(dtype=float), str(e)))
             _sys.stderr.write(f"[WORKER-PROC] FAIL: {date_str} {e}\n")
             _sys.stderr.flush()
 
@@ -190,34 +193,32 @@ def compute_factor_stats(
         logger.warning("No symbols available for factor evaluation")
         return _empty_result()
 
-    # 2. 加载历史日线
-    end_date = datetime.today().strftime("%Y-%m-%d")
-    start_date = (datetime.today() - pd.Timedelta(days=lookback * 1.5)).strftime("%Y-%m-%d")
-    data = store.get_daily(symbols, start=start_date, end=end_date)
-
-    if data.empty:
-        logger.warning("No daily data available for factor evaluation")
-        store.close()
-        return _empty_result()
-
-    logger.info(f"data loaded: {len(symbols)} stocks × {len(data.index.unique())} dates, {start_date}→{end_date}")
-
-    # 3. 逐日计算因子值
-    dates = data.index
+    # 2. 获取评估日期 (轻量 SQL 查询, 不加载 OHLCV)
+    #    全量 daily 数据由 worker 各自加载, 主进程只查 DISTINCT date 列
     if factor_names is None:
         factor_names = get_factor_names()  # 默认: status='active'
-    # else: 使用调用方传入的因子列表 (评估管道传全量)
     factor_values_by_date = {name: {} for name in factor_names}
 
-    # 只计算最近 lookback 个交易日 (唯一日期, get_level_values(0) 提取 MultiIndex 日期层)
-    eval_dates = sorted(data.index.get_level_values(0).unique())[-lookback:]
-
-    # ══ Phase A: 确定评估日期, 关闭主线程 DB 连接 ══
-    eval_date_strs = [d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
-                      for d in eval_dates]
+    conn = store._connect()
+    end_date = datetime.today().strftime("%Y-%m-%d")
+    start_date = (datetime.today() - pd.Timedelta(days=lookback * 1.5)).strftime("%Y-%m-%d")
+    eval_dates_raw = conn.execute(
+        "SELECT DISTINCT date FROM daily WHERE date >= ? AND date <= ? ORDER BY date",
+        (start_date, end_date)
+    ).fetchall()
+    eval_dates = [pd.Timestamp(r[0]) for r in eval_dates_raw][-lookback:]
+    eval_date_strs = [d.strftime("%Y-%m-%d") for d in eval_dates]
     store.close()  # 子进程各自打开独立 DataStore, 主线程不再访问 DB
 
+    if not eval_date_strs:
+        logger.warning("No eval dates available")
+        return _empty_result()
+
+    logger.info(f"eval dates: {len(eval_date_strs)} dates, {eval_date_strs[0]}→{eval_date_strs[-1]}, "
+                f"{len(factor_names)} factors, {_MAX_WORKERS} processes")
+
     # ══ Phase B: ProcessPoolExecutor 并行因子计算 ══
+    close_by_date = {}
     # ADR 027: workers load own data from DB — ZERO DataFrame pickling.
     # True OS-level parallelism: 6 processes, each with independent GIL.
     logger.info(f"factor compute start: {len(eval_date_strs)} dates x {len(factor_names)} factors, "
@@ -244,25 +245,38 @@ def compute_factor_stats(
         try:
             for future in as_completed(futures):
                 chunk_results = future.result()
-                for date_str, fv_partial, err in chunk_results:
+                for date_str, fv_partial, close_series, err in chunk_results:
                     if err:
                         logger.warning(f"Factor compute failed at {date_str}: {err}")
                     else:
                         for name, series in fv_partial.items():
                             factor_values_by_date[name][date_str] = series
+                        if close_series is not None and not close_series.empty:
+                            close_by_date[date_str] = close_series
                 if pbar:
                     pbar.update(1)
         finally:
             if pbar:
                 pbar.close()
-    logger.info(f"factor compute complete: {len(eval_dates)}/{len(eval_dates)} dates")
+    logger.info(f"factor compute complete: {len(eval_date_strs)}/{len(eval_date_strs)} dates")
 
-    # 4. 计算前瞻收益 (用于 IC 评估)
-    close = data["close"]
-    # 确保 close 是 DataFrame
+    # 4. 从 worker 返回的 close 数据构建 forward returns (无需主进程加载 daily)
+    #    close_by_date 由 worker 逐日返回, 拼接为 MultiIndex Series
+    close_parts = []
+    for date_str in sorted(close_by_date.keys()):
+        s = close_by_date[date_str]
+        if s.empty:
+            continue
+        mi = pd.MultiIndex.from_tuples([(date_str, sym) for sym in s.index],
+                                        names=['date', 'symbol'])
+        close_parts.append(pd.Series(s.values, index=mi, name='close'))
+    if not close_parts:
+        logger.warning("No close data from workers — cannot compute forward returns")
+        return _empty_result()
+    close = pd.concat(close_parts)
     if isinstance(close, pd.Series):
-        close = close.unstack()  # MultiIndex to DataFrame
-    forward_1d = close.pct_change().shift(-1)  # t+1 收益
+        close = close.unstack()
+    forward_1d = close.pct_change().shift(-1)
     forward_5d = close.pct_change(5).shift(-5)
     forward_20d = close.pct_change(20).shift(-20)
 

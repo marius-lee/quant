@@ -61,13 +61,13 @@ def sync_single_stock(symbol: str, conn=None) -> int:
             '持股比例': 'hold_ratio', 'HOLD_RATIO': 'hold_ratio',
         }
         # Compute net_buy from change in hold_shares * close (approximate)
+        # Ensure date column was mapped (skip if not found — e.g. 科创板)
+        if "date" not in df.columns:
+            return 0
+        df = df.sort_values("date")
         if 'hold_shares' in df.columns and 'close' in df.columns:
-            df = df.sort_values('date')
             df['hold_change'] = df['hold_shares'].diff()
             df['net_buy'] = df['hold_change'] * df['close']
-        df = df.rename(columns=col_map)
-        df['symbol'] = symbol
-        df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
         
         # Filter to columns we have in table
         cols = ['date', 'symbol', 'net_buy', 'buy_amt', 'sell_amt', 'hold_shares', 'hold_ratio']

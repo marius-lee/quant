@@ -26,8 +26,27 @@ def validate_oos(input_json: str = "/tmp/_eval_phase2.json",
     logger = get_logger("evaluation.phase3")
     t0 = time.monotonic()
     logger.info("Phase 3 start — CPCV + PBO walk-forward OOS")
-    with open(input_json) as f:
-        p2 = json.load(f)
+
+    # ADR 028: read from evaluation_runs DB first, fallback to JSON file
+    p2 = None
+    try:
+        from evaluation.run_store import load_latest
+        p2 = load_latest("phase2")
+    except Exception:
+        pass
+    if p2 is None:
+        logger.info("Phase 3: no DB record, falling back to JSON file")
+        try:
+            with open(input_json) as f:
+                p2 = json.load(f)
+        except FileNotFoundError:
+            logger.warning(f"No Phase 2 input found at {input_json}. Stopping.")
+            result = {"kept": [], "oos_irs": [], "pbo_result": {}, "n_folds": 0}
+            with open(output_json, 'w') as outf:
+                json.dump(result, outf, indent=2, default=str)
+            return result
+    else:
+        logger.info("Phase 3: loaded Phase 2 results from evaluation_runs DB")
 
     candidates = p2['passed']
     if not candidates:

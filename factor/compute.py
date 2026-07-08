@@ -3117,10 +3117,8 @@ if "gross_margin_diff" not in _FUNDAMENTAL_FN_MAP:
     _FUNDAMENTAL_FN_MAP["gross_margin_diff"] = ("profitability", compute_gross_margin_diff)
 if "financial_anomaly" not in _FUNDAMENTAL_FN_MAP:
     _FUNDAMENTAL_FN_MAP["financial_anomaly"] = ("quality", compute_financial_anomaly)
-    _FIN_FACTORS.add("financial_anomaly")
 if "roe_trimmed" not in _FUNDAMENTAL_FN_MAP:
     _FUNDAMENTAL_FN_MAP["roe_trimmed"] = ("profitability", compute_roe_trimmed)
-    _FIN_FACTORS.add("roe_trimmed")
 
 
 # ── P75: 注册 Phase 4 剩余因子 ──

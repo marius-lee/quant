@@ -121,9 +121,15 @@ def _check_ic_decay(active_factors: list) -> str:
     lines = []
     for name in sorted(decay.keys()):
         d = decay[name]
-        ic_1d = d.get("1d", 0)
-        ic_5d = d.get("5d", 0)
-        ic_20d = d.get("20d", 0)
+        # decay format: {display_name: [ic_1d, ic_5d, ic_20d]} or {name: {"1d": v, "5d": v, "20d": v}}
+        if isinstance(d, list) and len(d) >= 3:
+            ic_1d, ic_5d, ic_20d = d[0], d[1], d[2]
+        elif isinstance(d, dict):
+            ic_1d = d.get("1d", 0)
+            ic_5d = d.get("5d", 0)
+            ic_20d = d.get("20d", 0)
+        else:
+            continue
         if ic_1d:
             ratio_20 = abs(ic_20d / ic_1d) if abs(ic_1d) > 1e-6 else 0
             warning = " ⚠️ 衰减加速" if ratio_20 < 0.3 else ""

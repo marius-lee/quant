@@ -123,5 +123,14 @@ def screen_factors(input_json: str = "/tmp/_eval_phase1.json",
     with open(output_json, 'w') as f:
         json.dump(result, f, indent=2, default=str)
 
+    # Also persist to evaluation_runs table for audit trail (ADR 028)
+    try:
+        from evaluation.run_store import save_phase
+        result["n_factors"] = n_active
+        save_phase("phase2", result)
+        logger.info("Phase 2 saved to evaluation_runs table")
+    except Exception as _e:
+        logger.warning(f"Failed to save Phase 2 to DB: {_e}")
+
     logger.info(f"Phase 2 complete ({time.monotonic()-t0:.1f}s). {len(passed)} factors advance to Phase 3.")
     return result

@@ -1,6 +1,6 @@
 # HANDOFF — quant 项目当前状态
 
-**最后更新**: 2026-07-08 13:10 CST
+**最后更新**: 2026-07-08 21:00 CST
 
 > 旧版归档: docs/HANDOFF-2026-07-02.md / docs/HANDOFF-2026-07-03.md (已 superseded)
 > 项目根只有一个 HANDOFF.md 作为单一真相源
@@ -11,8 +11,8 @@
 
 | 提交 | 内容 |
 |------|------|
-| a806560 | fix: ocfp 因子 — 函数签名+注册+数据源三重修复 |
-| ba57c10 | fix: seal_time IndexError — first_time 无冒号格式 |
+| 0b62c3a | fix: 移除 ProcessPoolExecutor 600s 超时 — 500股×120天被误杀, 恢复五阶段全流程 |
+| 5ec691d | fix: stats_cache 模块级 sys.path 守卫 — spawn worker 确保能找到项目模块 |
 | 8e64647 | fix: vol_price_corr 除零保护 — std()>0 检查 |
 | 498c88b | fix: epa 因子注册 — _FUNDAMENTAL_FN_MAP→_PRICE_FN_MAP |
 | a6f366a | test: 500 stocks × 120 days — 中等规模验证 |
@@ -80,6 +80,9 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 - 每个进程打开独立 DataStore (WAL 并发读), 加载 daily + fundamentals + financials
 - 6 进程 × 独立 GIL → 真正 OS 级并行 (~9× 加速 vs ThreadPoolExecutor)
 - 主线程 `store.close()` 在 spawn 前调用, 无 WAL 锁继承
+- **as_completed 不加 timeout**: ProcessPoolExecutor 段去掉了 600s 超时 (af2d24e 引入)。
+  500 股×120 天单 chunk 需 ~700s, 600s 超时误杀正常计算。worker 内层 try/except 已兜底,
+  系统级崩溃极罕见且超时无法恢复。IC/相关性 ThreadPoolExecutor 段保留 timeout。
 
 **已废弃**:
 - ThreadPoolExecutor stateless worker → GIL 串行化, 6 线程 = 1 线程性能
@@ -106,8 +109,8 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 
 ## 当前状态
 
-- **config.yaml**: n_symbols=500, lookback=120 (测试模式, 全量跑通后恢复 0/120)
-- **并发**: ProcessPoolExecutor worker 自加载 (ADR 027), 6 进程 ~9× 加速 vs ThreadPoolExecutor
+- **config.yaml**: n_symbols=500, lookback=120 (500 股×120 天验证通过, Phase 2~5 全流程跑通)
+- **并发**: ProcessPoolExecutor worker 自加载 (ADR 027), 6 进程, 无 as_completed timeout (500×120 单 chunk ~700s, 误杀风险 > 兜底价值)
 - **factor_registry**: 55 因子注册, 31 active / 24 deprecated
 - **因子覆盖**: OIR/STR/ABN_TURN/OCFP + P71涨跌停六因子 + P72数据源三因子 (epa/trcf/ideal_amplitude)
 - **已修复 4 bug**: epa 注册错误 / ocfp 签名不匹配 / vol_price_corr 除零 / seal_time 格式越界
@@ -129,6 +132,13 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 | [docs/research/量化因子回测策略业界标准_2026-07-07.md](docs/research/量化因子回测策略业界标准_2026-07-07.md) | CPCV+PBO+walk-forward 标准流程, 已落地为 evaluation/ 包 |
 
 ---
+
+## 最近评估结果 (2026-07-08)
+
+- **Phase 2**: 31 因子全量评估, zt_streak 唯一通过 (IC=+0.0556, t=8.2, IR=+0.75, HL≈26d), 耗时 2485s
+- **Phase 3**: CPCV N=5, PBO=0.000, OOS_ICIR=+0.808, 通过
+- **Phase 4**: 扣费后验证通过
+- **Phase 5**: 监控报告已生成 docs/reports/monitor_2026-07-08.md
 
 ## 下一步计划
 

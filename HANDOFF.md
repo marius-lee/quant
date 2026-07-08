@@ -1,6 +1,6 @@
 # HANDOFF — quant 项目当前状态
 
-**最后更新**: 2026-07-08 13:00 CST
+**最后更新**: 2026-07-08 12:40 CST
 
 > 旧版归档: docs/HANDOFF-2026-07-02.md / docs/HANDOFF-2026-07-03.md (已 superseded)
 > 项目根只有一个 HANDOFF.md 作为单一真相源
@@ -11,9 +11,9 @@
 
 | 提交 | 内容 |
 |------|------|
-| baf5f6e | fix: ThreadPoolExecutor stateless worker 模式，正式替代 ProcessPoolExecutor |
+| (next)  | fix: ProcessPoolExecutor 正确实现 — worker 自加载数据 (ADR 027), 替代 ThreadPoolExecutor |
+| baf5f6e | fix: ThreadPoolExecutor stateless worker 模式 (已 superseded 由 ADR 027) |
 | 47fa2df | fix: ThreadPoolExecutor→ProcessPoolExecutor + preloaded_financials dict bug (已 revert) |
-| 0467da6 | perf: 因子计算并行化 — ThreadPoolExecutor (初版，连接共享导致死锁) |
 | abaf73a | fix: Phase 2 decay/lookup/Phase4 gap 三个 bug |
 | b236d4a | feat: 五阶段标准回测评估完整实现 (CPCV + PBO + Phase 5) |
 
@@ -39,7 +39,7 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 | `factor/registry.py` | 45 | _cs_zscore, _db_connect, _FIN_FACTORS |
 | `factor/orchestrator.py` | 25 | get_factor_names (延迟导入) |
 | `factor/synth.py` | — | equal_weight, ic_weighted, sleeve_compose |
-| `factor/stats_cache.py` | ~560 | IC/IR/decay/corr: 因子计算用ProcessPoolExecutor(6进程), IC+相关性用ThreadPoolExecutor |
+| `factor/stats_cache.py` | ~530 | IC/IR/decay/corr: 因子计算 ProcessPoolExecutor(6进程自加载DB), IC+相关性 ThreadPoolExecutor |
 | `factor/__init__.py` | 55 | __getattr__ 惰性导入, 打破循环 |
 | `config/constants.py` | 80 | 全局常量 + _require_cfg + _market_db_path |
 
@@ -61,30 +61,26 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 
 | 模块 | 改动 | 效果 |
 |------|------|------|
-| `stats_cache.py` 因子计算 | for d in dates → ProcessPoolExecutor(6) | 独立进程,无死锁 |
+| `stats_cache.py` 因子计算 | ThreadPoolExecutor → ProcessPoolExecutor (worker 自加载, ADR 027) | ~140s → ~16s (9×加速) |
 | `stats_cache.py` IC 评估 | for name in factors → ThreadPoolExecutor(6) | ~30s → ~6s |
 | `stats_cache.py` 相关性矩阵 | for i,j in pairs → ThreadPoolExecutor(6) | ~10s → ~2s |
 | `config.yaml` | `factor.evaluation.max_workers: 6` | 可调整并行度 |
 
-### 并发架构决策 (2026-07-08)
+### 并发架构 (最终方案 ADR 027, 2026-07-08)
 
-**并发设计 — ThreadPoolExecutor stateless worker (2026-07-08 最终方案)**:
+**ProcessPoolExecutor worker 自加载** — ADR 027:
 
-模式参考: Python concurrent.futures 官方文档 + sqlite3 WAL 并发读标准模式。
+- 主线程只传元数据 (symbols + date_strs + factor_names, <10KB) → ZERO DataFrame pickling
+- 每个进程打开独立 DataStore (WAL 并发读), 加载 daily + fundamentals + financials
+- 6 进程 × 独立 GIL → 真正 OS 级并行 (~9× 加速 vs ThreadPoolExecutor)
+- 主线程 `store.close()` 在 spawn 前调用, 无 WAL 锁继承
 
-- 每个线程 open/close 自己的 DataStore（独立 sqlite3 连接），无共享连接，无死锁
-- Worker 函数 `_compute_factors_for_date(args)` 完全无状态，只传简单参数
-- GIL 在 pandas/numpy C 扩展调用 + sqlite3 I/O 期间自动释放，6 线程有效利用
-- 父进程先 `store.close()` 释放 DB 连接再 spawn 线程
+**已废弃**:
+- ThreadPoolExecutor stateless worker → GIL 串行化, 6 线程 = 1 线程性能
+- ProcessPoolExecutor initargs 传 DataFrame (187MB/35MB) → pickle 启动延迟 1-2min
+- ThreadPoolExecutor 共享 DataStore._conn → 死锁
 
-**已废弃的方案**:
-- ThreadPoolExecutor 共享 DataStore._conn → 死锁 (check_same_thread 不解决并发锁)
-- ProcessPoolExecutor initargs pickled DataFrame → macOS spawn 卡死
-- ProcessPoolExecutor per-worker DB initargs → pickle 开销大，extra log line only shows 0%
-
-**bug 修复**:
-- `eval_dates`: 旧代码 `dates[-lookback:]` 对 MultiIndex 取最后 N 个 (date,symbol) 元组而非唯一日期 → 改用 `data.index.get_level_values(0).unique()[-lookback:]`
-- 移除父进程 preload 死代码 (workers 各自从 DB 加载)
+**保留 ThreadPoolExecutor 用于**: IC 计算和相关性矩阵 (轻量级, ≤6s 完成)
 
 ---
 

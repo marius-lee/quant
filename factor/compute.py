@@ -1654,6 +1654,215 @@ def compute_roe_trimmed(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
 
 
 
+
+# ── Phase 3 财务因子 (季报三表) ──
+
+def _get_financial_historical(table: str, date: str, forward_days: int = 90) -> "pd.DataFrame":
+    """Query quarterly financial data up to date (+forward_days for late filings)."""
+    max_stat = (pd.Timestamp(date) + pd.DateOffset(days=forward_days)).strftime("%Y-%m-%d")
+    conn = _db_connect()
+    df = pd.read_sql(
+        f"SELECT * FROM {table} WHERE stat_date <= ? ORDER BY stat_date",
+        conn, params=(max_stat,),
+    )
+    conn.close()
+    return df
+
+
+def _ttm_sum(df: "pd.DataFrame", col: str, n_quarters: int = 4) -> "pd.Series":
+    """Compute TTM sum of column over last n_quarters per symbol."""
+    df = df.dropna(subset=[col])
+    if df.empty:
+        return pd.Series(dtype=float)
+    grouped = df.groupby("symbol")
+    result = {}
+    for sym, grp in grouped:
+        grp_sorted = grp.sort_values("stat_date")
+        if len(grp_sorted) >= n_quarters:
+            result[sym] = grp_sorted[col].tail(n_quarters).sum()
+    return pd.Series(result)
+
+
+def compute_gross_margin_diff(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
+    """毛利率TTM差分: (营收TTM - 营业成本TTM) / 营收TTM - 上期.
+    来源: 源达信息 2026, ICIR=0.79."""
+    df = _get_financial_historical("financial_income", date)
+    if df.empty:
+        return pd.Series(dtype=float, name="gross_margin_diff")
+    rev_col = "total_operating_revenue" if "total_operating_revenue" in df.columns else "operating_revenue"
+    cost_col = "operating_cost"
+    if rev_col not in df.columns or cost_col not in df.columns:
+        return pd.Series(dtype=float, name="gross_margin_diff")
+    rev_ttm = _ttm_sum(df, rev_col, 4)
+    cost_ttm = _ttm_sum(df, cost_col, 4)
+    gm_current = (rev_ttm - cost_ttm) / rev_ttm.replace(0, np.nan)
+    prev_result = {}
+    for sym, grp in df.groupby("symbol"):
+        grp_sorted = grp.sort_values("stat_date")
+        if len(grp_sorted) >= 5:
+            rev_prev = grp_sorted[rev_col].iloc[-5:-1].sum()
+            cost_prev = grp_sorted[cost_col].iloc[-5:-1].sum()
+            if rev_prev > 0:
+                prev_result[sym] = (rev_prev - cost_prev) / rev_prev
+    gm_prev = pd.Series(prev_result)
+    diff = gm_current.sub(gm_prev, fill_value=np.nan)
+    return diff.dropna().rename("gross_margin_diff")
+
+
+def compute_financial_anomaly(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
+    """财务异常复合: 4子因子等权 (申万宏源 2018, IC=6.79%).
+    存货/应收/管理费/毛利异常 (缺预付款/销售费用, 4/6子因子)."""
+    df_inc = _get_financial_historical("financial_income", date)
+    df_bal = _get_financial_historical("financial_balance", date)
+    if df_inc.empty or df_bal.empty:
+        return pd.Series(dtype=float, name="financial_anomaly")
+    rev_col = "total_operating_revenue" if "total_operating_revenue" in df_inc.columns else "operating_revenue"
+
+    def _yoy_growth(df, col):
+        result = {}
+        for sym, grp in df.groupby("symbol"):
+            grp_sorted = grp.sort_values("stat_date")
+            if len(grp_sorted) >= 2 and col in grp_sorted.columns:
+                v_l, v_p = grp_sorted[col].iloc[-1], grp_sorted[col].iloc[-2]
+                if v_p and v_p != 0:
+                    result[sym] = (v_l - v_p) / abs(v_p)
+        return pd.Series(result)
+
+    def _gm_change():
+        result = {}
+        cost_col = "operating_cost"
+        for sym, grp in df_inc.groupby("symbol"):
+            grp_s = grp.sort_values("stat_date")
+            if len(grp_s) >= 2:
+                rl, cl = grp_s[rev_col].iloc[-1], grp_s[cost_col].iloc[-1]
+                rp, cp = grp_s[rev_col].iloc[-2], grp_s[cost_col].iloc[-2]
+                if rl > 0 and rp > 0:
+                    result[sym] = (rl - cl) / rl - (rp - cp) / rp
+        return pd.Series(result)
+
+    rev_growth = _yoy_growth(df_inc, rev_col)
+    inv_growth = _yoy_growth(df_bal, "inventories")
+    ar_growth = _yoy_growth(df_bal, "account_receivable")
+    admin_growth = _yoy_growth(df_inc, "administration_expense")
+    gm_change = _gm_change()
+
+    scores = {}
+    all_syms = set(rev_growth.index) | set(inv_growth.index) | set(ar_growth.index) | set(gm_change.index)
+    for sym in all_syms:
+        z, count = 0.0, 0
+        if sym in inv_growth.index and sym in rev_growth.index:
+            z += -(inv_growth[sym] - rev_growth[sym]); count += 1
+        if sym in ar_growth.index and sym in rev_growth.index:
+            z += -(ar_growth[sym] - rev_growth[sym]); count += 1
+        if sym in admin_growth.index and sym in rev_growth.index:
+            z += -(admin_growth[sym] - rev_growth[sym]); count += 1
+        if sym in gm_change.index:
+            z += -gm_change[sym]; count += 1
+        if count > 0:
+            scores[sym] = z / count * 4
+
+    result = pd.Series(scores).replace([np.inf, -np.inf], np.nan)
+    return _cs_zscore(result).rename("financial_anomaly")
+
+
+def compute_roe_trimmed(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
+    """单季度ROE(掐头): 归母净利/avg(归母权益), 剔除 top10%. 来源: 海通 2024, IC=4-5%."""
+    df_inc = _get_financial_historical("financial_income", date)
+    df_bal = _get_financial_historical("financial_balance", date)
+    if df_inc.empty or df_bal.empty:
+        return pd.Series(dtype=float, name="roe_trimmed")
+    inc_latest = df_inc.sort_values("stat_date").groupby("symbol").last()
+    net_profit = inc_latest["net_profit"] if "net_profit" in inc_latest.columns else pd.Series(dtype=float)
+    eq_col = "equities_parent_company_owners"
+    if eq_col not in df_bal.columns:
+        return pd.Series(dtype=float, name="roe_trimmed")
+    avg_equity = {}
+    for sym, grp in df_bal.sort_values("stat_date").groupby("symbol"):
+        eq_vals = grp[eq_col].dropna()
+        if len(eq_vals) >= 1:
+            avg_equity[sym] = eq_vals.tail(2).mean()
+    avg_eq = pd.Series(avg_equity)
+    roe = net_profit / avg_eq.replace(0, np.nan)
+    roe = roe.replace([np.inf, -np.inf], np.nan).where(lambda x: (x > -1) & (x < 1))
+    if len(roe.dropna()) >= 10:
+        roe = roe.where(roe < roe.quantile(0.90))
+    return _cs_zscore(roe).rename("roe_trimmed")
+
+
+# ── Phase 4 专项数据源因子 ──
+
+def compute_ihn(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
+    """IHN 持仓机构个数: log(1+fund_count). 来源: 光大 2020, ICIR=0.74."""
+    conn = _db_connect()
+    rows = conn.execute(
+        "SELECT symbol, fund_count FROM fund_hold "
+        "WHERE report_date = (SELECT MAX(report_date) FROM fund_hold WHERE report_date <= ?)",
+        (date,)
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return pd.Series(dtype=float, name="ihn")
+    s = pd.Series({r[0]: np.log1p(r[1]) if r[1] is not None and r[1] > 0 else np.nan for r in rows})
+    return s.dropna().rename("ihn")
+
+
+def compute_insider_increase(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
+    """增持比例因子: sum(增持股数,90d) / total_mv. 来源: 源达 2025, IC=4.0%, ICIR=0.54."""
+    conn = _db_connect()
+    lookback_start = (pd.Timestamp(date) - pd.DateOffset(days=90)).strftime("%Y-%m-%d")
+    rows = conn.execute(
+        "SELECT symbol, SUM(change_vol) as total_increase_vol "
+        "FROM holder_trade WHERE ann_date >= ? AND ann_date <= ? "
+        "AND direction = 'in' AND change_vol > 0 GROUP BY symbol",
+        (lookback_start, date)
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return pd.Series(dtype=float, name="insider_increase")
+
+    increase_vol = pd.Series({r[0]: r[1] for r in rows})
+
+    if fundamentals is not None and not fundamentals.empty and "total_mv" in fundamentals.columns:
+        market_cap = fundamentals["total_mv"].fillna(0)
+    else:
+        conn2 = _db_connect()
+        mv_df = pd.read_sql("SELECT symbol, total_mv FROM stocks WHERE total_mv > 0", conn2)
+        conn2.close()
+        market_cap = mv_df.set_index("symbol")["total_mv"] if not mv_df.empty else pd.Series(dtype=float)
+
+    aligned = increase_vol.index.intersection(market_cap.index)
+    if len(aligned) == 0:
+        return pd.Series(dtype=float, name="insider_increase")
+    ratio = increase_vol[aligned] / market_cap[aligned].replace(0, np.nan)
+    ratio = ratio.replace([np.inf, -np.inf], np.nan).dropna()
+    return _cs_zscore(ratio).rename("insider_increase")
+
+
+def compute_earnings_revision(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
+    """盈利修正三组件(简化): net_bull * log(1+report_count). 来源: 华泰 2024, ICIR=2.20."""
+    conn = _db_connect()
+    rows = conn.execute(
+        "SELECT symbol, report_count, buy_count, overweight_count, "
+        "neutral_count, underweight_count FROM analyst_forecast "
+        "WHERE sync_date = (SELECT MAX(sync_date) FROM analyst_forecast WHERE sync_date <= ?)",
+        (date,)
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return pd.Series(dtype=float, name="earnings_revision")
+    records = {}
+    for r in rows:
+        sym, n_report, n_buy, n_ow, n_neutral, n_uw = r
+        if not n_report or n_report == 0:
+            continue
+        net_bull = ((n_buy or 0) + (n_ow or 0) - (n_uw or 0)) / n_report
+        coverage = np.log1p(n_report)
+        records[sym] = net_bull * coverage
+    result = pd.Series(records)
+    return _cs_zscore(result).rename("earnings_revision")
+
+
+
 # ── EPD/EPDS 估值偏离因子 (东吴证券 2022, daily_valuation.pe_ttm) ──
 
 # Module-level cache for daily_valuation data (per worker process, avoids re-query).
@@ -2913,3 +3122,11 @@ if "roe_trimmed" not in _FUNDAMENTAL_FN_MAP:
     _FUNDAMENTAL_FN_MAP["roe_trimmed"] = ("profitability", compute_roe_trimmed)
     _FIN_FACTORS.add("roe_trimmed")
 
+
+# ── P75: 注册 Phase 4 剩余因子 ──
+if "ihn" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["ihn"] = ("institution", compute_ihn)
+if "insider_increase" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["insider_increase"] = ("institution", compute_insider_increase)
+if "earnings_revision" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["earnings_revision"] = ("analyst", compute_earnings_revision)

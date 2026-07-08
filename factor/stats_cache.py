@@ -43,43 +43,50 @@ _MAX_WORKERS = _cfg("factor.evaluation.max_workers", 6)  # ThreadPoolExecutor wo
 # Thread safety: each worker reads from shared data via .xs() which creates
 # a new DataFrame (no _item_cache writes on the source).
 
-def _compute_factors_for_date(args: tuple) -> tuple:
-    """Compute all factors for one date. Copies data to avoid _item_cache contention.
+def _compute_factors_chunk(args: tuple) -> list:
+    """Compute factors for a chunk of dates. Each worker owns its data sub-DataFrame.
     
-    args: (date_str, data, fundamentals, fin, factor_names)
-    data: full MultiIndex-column DataFrame (shared, read-only)
-    Returns: (date_str, factor_values_dict, error_string_or_None)
+    Standard embarrassingly-parallel pattern: main thread partitions data,
+    each worker receives its own independent DataFrame slice — zero shared state.
+    
+    args: (date_list, data_chunk, preloaded_fundamentals, preloaded_financials, factor_names)
+    data_chunk: DataFrame subset (dates in chunk only) — worker's private copy
+    Returns: list of (date_str, factor_values_dict, error_string_or_None)
     """
     import time as _time
-    date_str, data, fundamentals, fin, factor_names = args
+    date_list, data_chunk, preloaded_fundamentals, preloaded_financials, factor_names = args
     t0 = _time.monotonic()
-    try:
-        from utils.logger import get_logger
-        _log = get_logger("factor.stats_cache.worker")
-        # shallow copy gives each thread its own _item_cache — eliminates contention
-        data_copy = data.copy(deep=False)
-        _log.info(f"[{date_str}] computing factors (copy={_time.monotonic()-t0:.2f}s)")
+    results = []
+    from utils.logger import get_logger
+    _log = get_logger("factor.stats_cache.worker")
+    from factor.compute import compute_all_factors
+    
+    _log.info(f"chunk start: {len(date_list)} dates, {len(data_chunk)} rows")
+    for i, date_str in enumerate(date_list):
+        dt0 = _time.monotonic()
+        try:
+            fundamentals = preloaded_fundamentals.get(date_str)
+            fin = preloaded_financials.get(date_str)
+            preloaded_fin = {date_str: fin} if fin is not None else None
 
-        from factor.compute import compute_all_factors
-        preloaded_fin = {date_str: fin} if fin is not None else None
-
-        fv = compute_all_factors(data_copy, date_str,
-                                 fundamentals=fundamentals,
-                                 factor_names=factor_names,
-                                 preloaded_financials=preloaded_fin)
-        result = {}
-        n_filled = 0
-        for name in factor_names:
-            if name in fv and not fv[name].dropna().empty:
-                result[name] = fv[name]
-                n_filled += 1
-        _log.info(f"[{date_str}] done — {n_filled}/{len(factor_names)} factors ({_time.monotonic()-t0:.1f}s)")
-        return date_str, result, None
-    except Exception as e:
-        from utils.logger import get_logger
-        _log = get_logger("factor.stats_cache.worker")
-        _log.warning(f"[{date_str}] FAILED ({_time.monotonic()-t0:.1f}s): {e}")
-        return date_str, {}, str(e)
+            fv = compute_all_factors(data_chunk, date_str,
+                                     fundamentals=fundamentals,
+                                     factor_names=factor_names,
+                                     preloaded_financials=preloaded_fin)
+            result = {}
+            n_filled = 0
+            for name in factor_names:
+                if name in fv and not fv[name].dropna().empty:
+                    result[name] = fv[name]
+                    n_filled += 1
+            results.append((date_str, result, None))
+            _log.info(f"[{date_str}] done — {n_filled}/{len(factor_names)} factors ({_time.monotonic()-dt0:.1f}s)")
+        except Exception as e:
+            results.append((date_str, {}, str(e)))
+            _log.warning(f"[{date_str}] FAILED ({_time.monotonic()-dt0:.1f}s): {e}")
+    
+    _log.info(f"chunk done: {len(date_list)} dates ({_time.monotonic()-t0:.1f}s)")
+    return results
 
 
 
@@ -188,15 +195,23 @@ def compute_factor_stats(
     logger.info(f"factor compute start: {len(eval_dates)} dates × {len(factor_names)} factors, "
                 f"{_MAX_WORKERS} threads (in-memory, no DB)")
 
-    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
+    # ══ Partition data into chunks — each worker owns its independent DataFrame slice ══
+    # Standard embarrassingly-parallel pattern (ref: Python concurrent.futures docs)
+    n_chunks = _MAX_WORKERS
+    chunk_size = max(1, len(eval_dates) // n_chunks)
+    date_chunks = [eval_dates[i:i + chunk_size] for i in range(0, len(eval_dates), chunk_size)]
+    logger.info(f"partitioned {len(eval_dates)} dates into {len(date_chunks)} chunks (max {chunk_size}/chunk)")
+
+    with ThreadPoolExecutor(max_workers=n_chunks) as executor:
         futures = {}
-        for d in eval_dates:
-            ds = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
-            futures[executor.submit(_compute_factors_for_date,
-                     (ds, data,
-                      preloaded_fundamentals.get(ds),
-                      preloaded_financials.get(ds),
-                      factor_names))] = d
+        for chunk_dates in date_chunks:
+            ds_list = [d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10] for d in chunk_dates]
+            # Create independent data subset for this chunk (zero shared state)
+            chunk_data = data.loc[chunk_dates]
+            futures[executor.submit(_compute_factors_chunk,
+                     (ds_list, chunk_data,
+                      preloaded_fundamentals, preloaded_financials,
+                      factor_names))] = ds_list
         logger.info(f"parallel compute: {len(futures)} jobs x {_MAX_WORKERS} threads")
         try:
             from tqdm import tqdm
@@ -205,17 +220,18 @@ def compute_factor_stats(
             pbar = None
         completed = 0
         for future in as_completed(futures):
-            date_str, fv_partial, err = future.result()
-            if err:
-                logger.warning(f"Factor compute failed at {date_str}: {err}")
-            else:
-                for name, series in fv_partial.items():
-                    factor_values_by_date[name][date_str] = series
-            completed += 1
-            if completed % 5 == 0:
-                logger.info(f"factor compute progress: {completed}/{len(futures)} dates done")
-            if pbar:
-                pbar.update(1)
+            chunk_results = future.result()
+            for date_str, fv_partial, err in chunk_results:
+                if err:
+                    logger.warning(f"Factor compute failed at {date_str}: {err}")
+                else:
+                    for name, series in fv_partial.items():
+                        factor_values_by_date[name][date_str] = series
+                completed += 1
+                if pbar:
+                    pbar.update(1)
+            if completed % 10 == 0:
+                logger.info(f"factor compute progress: {completed}/{len(eval_dates)} dates done")
         if pbar:
             pbar.close()
     logger.info(f"factor compute complete: {len(eval_dates)}/{len(eval_dates)} dates")

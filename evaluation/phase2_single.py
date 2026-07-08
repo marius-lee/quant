@@ -71,9 +71,8 @@ def screen_factors(input_json: str = "/tmp/_eval_phase1.json",
             reasons.append(f"ICIR={ir:.2f}<{min_icir}")
 
         # IC half-life: days until IC drops to half
-        # decay = {display_name: [1d_val, 5d_val, 20d_val]}
+        # decay = {name: [1d_val, 5d_val, 20d_val]}
         ic_1d = abs(ic_means.get(name, 0.0))
-        display_name = meta.get(name, {}).get("display", name)
         decay_vals = decay.get(name, [0.0, 0.0, 0.0])
         ic_20d = abs(decay_vals[2]) if len(decay_vals) > 2 else 0.0
         half_life_est = 0
@@ -97,7 +96,6 @@ def screen_factors(input_json: str = "/tmp/_eval_phase1.json",
         ic = ic_means.get(name, 0.0)
         ir = ic_irs.get(name, 0.0)
         t = abs(ir) * np.sqrt(n_days)
-        display_name = meta.get(name, {}).get("display", name)
         decay_vals = decay.get(name, [0.0, 0.0, 0.0])
         ic_20 = abs(decay_vals[2]) if len(decay_vals) > 2 else 0.0
         ratio = ic_20 / max(abs(ic), 0.001) if ic else 0

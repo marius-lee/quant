@@ -78,7 +78,7 @@ def screen_factors(input_json: str = "/tmp/_eval_phase1.json",
         # IC half-life: days until IC drops to half
         # decay = {name: [1d_val, 5d_val, 20d_val]}
         ic_1d = abs(ic_means.get(name, 0.0))
-        decay_vals = decay.get(name, [0.0, 0.0, 0.0])
+        decay_vals = decay.get(meta.get(name, {}).get("display", name), [0.0, 0.0, 0.0])
         ic_20d = abs(decay_vals[2]) if len(decay_vals) > 2 else 0.0
         half_life_est = 0
         if ic_1d > 0.001 and ic_20d > 0:
@@ -101,7 +101,7 @@ def screen_factors(input_json: str = "/tmp/_eval_phase1.json",
         ic = ic_means.get(name, 0.0)
         ir = ic_irs.get(name, 0.0)
         t = abs(ir) * np.sqrt(n_days)
-        decay_vals = decay.get(name, [0.0, 0.0, 0.0])
+        decay_vals = decay.get(meta.get(name, {}).get("display", name), [0.0, 0.0, 0.0])
         ic_20 = abs(decay_vals[2]) if len(decay_vals) > 2 else 0.0
         ratio = ic_20 / max(abs(ic), 0.001) if ic else 0
         hl = int(-20 / np.log(max(ratio, 0.01))) if ratio > 0 else 0
@@ -126,7 +126,7 @@ def screen_factors(input_json: str = "/tmp/_eval_phase1.json",
     # Also persist to evaluation_runs table for audit trail (ADR 028)
     try:
         from evaluation.run_store import save_phase
-        result["n_factors"] = n_active
+        result["n_factors"] = len(active_names)
         save_phase("phase2", result)
         logger.info("Phase 2 saved to evaluation_runs table")
     except Exception as _e:

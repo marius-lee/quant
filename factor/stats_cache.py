@@ -242,7 +242,7 @@ def compute_factor_stats(
         except ImportError:
             pbar = None
         try:
-            for future in as_completed(futures, timeout=_WORKER_TIMEOUT_SEC):
+            for future in as_completed(futures):
                 chunk_results = future.result()
                 for date_str, fv_partial, err in chunk_results:
                     if err:
@@ -252,10 +252,6 @@ def compute_factor_stats(
                             factor_values_by_date[name][date_str] = series
                 if pbar:
                     pbar.update(1)
-        except TimeoutError:
-            logger.error(f"ProcessPoolExecutor timeout after {_WORKER_TIMEOUT_SEC}s — "
-                         f"{len(futures) - (pbar.n if pbar else 0)} chunks did not complete")
-            raise  # Let caller decide: no partial results
         finally:
             if pbar:
                 pbar.close()

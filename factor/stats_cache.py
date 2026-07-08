@@ -49,10 +49,15 @@ def _compute_factors_for_date(args: tuple) -> tuple:
     args: (date, symbols, start_date, end_date, factor_names)
     Returns: (date_str, factor_values_dict, error_string_or_None)
     """
+    import time as _time
     d, symbols, start_date, end_date, factor_names = args
     date_str = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
+    t0 = _time.monotonic()
     try:
+        from utils.logger import get_logger
         from data.store import DataStore
+        _log = get_logger("factor.stats_cache.worker")
+        _log.debug(f"[{date_str}] worker start — loading daily data")
         store = DataStore()
         # Load daily OHLCV data for all symbols
         data = store.get_daily(symbols, start=start_date, end=end_date)
@@ -62,17 +67,24 @@ def _compute_factors_for_date(args: tuple) -> tuple:
         preloaded_fin = {date_str: fin} if fin is not None else None
         store.close()
 
+        _log.debug(f"[{date_str}] data loaded ({_time.monotonic()-t0:.1f}s), computing factors")
         from factor.compute import compute_all_factors
         fv = compute_all_factors(data, date_str,
                                  fundamentals=fundamentals,
                                  factor_names=factor_names,
                                  preloaded_financials=preloaded_fin)
         result = {}
+        n_filled = 0
         for name in factor_names:
             if name in fv and not fv[name].dropna().empty:
                 result[name] = fv[name]
+                n_filled += 1
+        _log.info(f"[{date_str}] done — {n_filled}/{len(factor_names)} factors ({_time.monotonic()-t0:.1f}s)")
         return date_str, result, None
     except Exception as e:
+        from utils.logger import get_logger
+        _log = get_logger("factor.stats_cache.worker")
+        _log.warning(f"[{date_str}] FAILED ({_time.monotonic()-t0:.1f}s): {e}")
         return date_str, {}, str(e)
 
 

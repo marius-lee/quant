@@ -8,6 +8,7 @@
 
 import numpy as np
 import pandas as pd
+from utils.logger import get_logger
 
 
 class PurgedWalkForward:
@@ -35,6 +36,7 @@ class PurgedWalkForward:
         self.embargo_days = embargo_days
 
     def split(self, dates: list) -> list[tuple[list, list]]:
+        logger = get_logger("evaluation.cpcv")
         """Yield (train_dates, test_dates) for each fold, with purging and embargo.
 
         dates must be sorted ascending.
@@ -46,6 +48,7 @@ class PurgedWalkForward:
 
         group_size = n // self.n_groups
         splits = []
+        logger.debug(f"CPCV split: {len(dates)} dates, {self.n_groups} groups, embargo={self.embargo_days}d")
 
         for i in range(self.n_groups):
             # Test set: group i
@@ -70,6 +73,7 @@ class PurgedWalkForward:
 
         # If no splits generated (too few dates), create minimal split
         if not splits:
+            logger.warning(f"CPCV: too few dates ({len(dates)}) for {self.n_groups} groups, falling back to 60/40 split")
             # Use first 60% as train, last 40% as test
             split_point = int(n * 0.6)
             splits = [(list(range(0, split_point - self.embargo_days)),

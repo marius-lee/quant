@@ -115,7 +115,7 @@ def compute_factor_stats(
         # 取日成交额最大的 n_symbols 只股票（保证流动性）
         # 用 lookback 参数化选股窗口: 回看 lookback 个日历日, 至少交易一半天数
         stock_window = int(lookback * 1.5)
-        min_days = max(30, lookback // 2)
+        min_days = max(5, lookback // 2)
         if n_symbols and n_symbols > 0:
             rows = conn.execute(f"""
                 SELECT symbol, AVG(amount) as avg_amt

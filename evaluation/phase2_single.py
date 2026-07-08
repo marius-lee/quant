@@ -74,7 +74,7 @@ def screen_factors(input_json: str = "/tmp/_eval_phase1.json",
         # decay = {display_name: [1d_val, 5d_val, 20d_val]}
         ic_1d = abs(ic_means.get(name, 0.0))
         display_name = meta.get(name, {}).get("display", name)
-        decay_vals = decay.get(display_name, [0.0, 0.0, 0.0])
+        decay_vals = decay.get(name, [0.0, 0.0, 0.0])
         ic_20d = abs(decay_vals[2]) if len(decay_vals) > 2 else 0.0
         half_life_est = 0
         if ic_1d > 0.001 and ic_20d > 0:
@@ -98,7 +98,7 @@ def screen_factors(input_json: str = "/tmp/_eval_phase1.json",
         ir = ic_irs.get(name, 0.0)
         t = abs(ir) * np.sqrt(n_days)
         display_name = meta.get(name, {}).get("display", name)
-        decay_vals = decay.get(display_name, [0.0, 0.0, 0.0])
+        decay_vals = decay.get(name, [0.0, 0.0, 0.0])
         ic_20 = abs(decay_vals[2]) if len(decay_vals) > 2 else 0.0
         ratio = ic_20 / max(abs(ic), 0.001) if ic else 0
         hl = int(-20 / np.log(max(ratio, 0.01))) if ratio > 0 else 0

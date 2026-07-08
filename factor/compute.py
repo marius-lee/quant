@@ -593,7 +593,7 @@ def compute_volume_price_corr(data: "pd.DataFrame", date: str, window: int = 10)
         c = c_slice[sym].dropna()
         v = v_slice[sym].dropna()
         common = c.index.intersection(v.index)
-        if len(common) >= max(3, window // 2):
+        if len(common) >= max(3, window // 2) and c.loc[common].std() > 0 and v.loc[common].std() > 0:
             corrs[sym] = c.loc[common].corr(v.loc[common])
     
     result = pd.Series(corrs)

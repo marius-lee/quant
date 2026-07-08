@@ -10,6 +10,10 @@
 # 设计原则:
 #   不再内嵌 Python 字符串 — 所有逻辑在 evaluation/*.py 中
 set -e
+# ── VERSION: git commit hash + timestamp ──
+VERSION=$(git log -1 --format='%h %ci' 2>/dev/null || echo 'unknown')
+echo "=== VERSION: $VERSION ==="
+
 cd "$(dirname "$0")/.."
 
 RUN_PHASE5=false

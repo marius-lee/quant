@@ -128,7 +128,7 @@ def _pp_compute_chunk_impl(symbols_list: list, date_strs_list: list,
             _sys.stderr.write(f"[WORKER-PROC] {date_str} {n_filled}/{len(factor_names_list)} factors ({dt_elapsed:.1f}s)\n")
             _sys.stderr.flush()
             # Extract close for forward-return computation in main process
-            close_series = data.xs(date_str, level=0)['close'] if date_str in data.index.get_level_values(0) else pd.Series(dtype=float)
+            close_series = data.loc[date_str, "close"] if date_str in data.index else pd.Series(dtype=float)
             results.append((date_str, result, close_series, None))
         except Exception as e:
             results.append((date_str, {}, pd.Series(dtype=float), str(e)))

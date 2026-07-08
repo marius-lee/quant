@@ -324,7 +324,7 @@ def compute_factor_stats(
             if not np.isnan(rho):
                 pair_corrs.append(rho)
         avg = float(np.mean(pair_corrs)) if pair_corrs else 0.0
-        return i, j, avg
+        return i, j, avg, len(pair_corrs)
 
     pairs = [(i, j, factor_names[i], factor_names[j])
              for i in range(n) for j in range(i + 1, n)]
@@ -336,14 +336,14 @@ def compute_factor_stats(
             futures = {executor.submit(_compute_pair, i, j, ni, nj): (i, j)
                        for i, j, ni, nj in pairs}
             for future in as_completed(futures):
-                i, j, avg = future.result()
+                i, j, avg, n_pairs = future.result()
                 corr_matrix[i][j] = avg
                 corr_matrix[j][i] = avg
-                corr_counts[i][j] = len(pair_corrs)
-                corr_counts[j][i] = len(pair_corrs)
+                corr_counts[i][j] = n_pairs
+                corr_counts[j][i] = n_pairs
     logger.info(f"corr matrix: {n}x{n}, avg pairwise periods: {corr_counts.sum()/(n*(n-1)):.1f}" if n > 1 else "corr: single factor")
 
-    store.close()
+
 
     # 7. 生成因子元信息
     display_names = {

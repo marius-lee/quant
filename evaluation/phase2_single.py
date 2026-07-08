@@ -1,10 +1,12 @@
 """Stage 2: 单因子检验 — IC / |t| / ICIR / half-life 四维过滤。"""
 
 import json
+import time
 import numpy as np
 import pandas as pd
 import sqlite3
 from config.loader import get as cfg
+from utils.logger import get_logger
 from factor.stats_cache import compute_factor_stats
 
 
@@ -16,6 +18,9 @@ def screen_factors(input_json: str = "/tmp/_eval_phase1.json",
     -------
     dict with keys: passed, ic_means, ic_irs, decay, failed
     """
+    logger = get_logger("evaluation.phase2")
+    t0 = time.monotonic()
+    logger.info("Phase 2 start — single-factor screening")
     with open(input_json) as f:
         p1 = json.load(f)
 
@@ -26,7 +31,7 @@ def screen_factors(input_json: str = "/tmp/_eval_phase1.json",
     min_half_life = cfg("factor.evaluation.min_half_life", 20)
     n_days = cfg("factor.evaluation.n_days", 120)
 
-    print(f"Phase 2 thresholds: |IC|≥{min_abs_ic}, |t|≥{t_threshold}, "
+    logger.info(f"Phase 2 thresholds: |IC|≥{min_abs_ic}, |t|≥{t_threshold}, "
           f"ICIR≥{min_icir}, half-life≥{min_half_life}d")
 
     # 获取 active 因子
@@ -34,7 +39,7 @@ def screen_factors(input_json: str = "/tmp/_eval_phase1.json",
     active_names = [r[0] for r in conn.execute(
         "SELECT name FROM factor_registry WHERE status='active'").fetchall()]
     conn.close()
-    print(f"Active factors: {len(active_names)}")
+    logger.info(f"Active factors: {len(active_names)}")
 
     # 计算因子统计
     n_symbols = cfg("factor.evaluation.n_symbols", 0)
@@ -89,7 +94,7 @@ def screen_factors(input_json: str = "/tmp/_eval_phase1.json",
             failed[name] = reasons
 
     # ── 输出 ──
-    print(f"\nPhase 2 results: {len(passed)} passed, {len(failed)} failed\n")
+    logger.info(f"Phase 2 results: {len(passed)} passed, {len(failed)} failed\n")
 
     print("=== PASSED ===")
     for name in sorted(passed, key=lambda n: abs(ic_means.get(n, 0.0)), reverse=True):
@@ -100,12 +105,12 @@ def screen_factors(input_json: str = "/tmp/_eval_phase1.json",
         ic_20 = abs(decay_vals[2]) if len(decay_vals) > 2 else 0.0
         ratio = ic_20 / max(abs(ic), 0.001) if ic else 0
         hl = int(-20 / np.log(max(ratio, 0.01))) if ratio > 0 else 0
-        print(f"  ✓ {name:30s} IC={ic:+.4f}  t={t:.1f}  IR={ir:+.2f}  HL≈{hl}d")
+        logger.info(f"  ✓ {name:30s} IC={ic:+.4f}  t={t:.1f}  IR={ir:+.2f}  HL≈{hl}d")
 
     if failed:
-        print("\n=== FAILED ===")
+        logger.info("=== FAILED ===")
         for name, reasons in sorted(failed.items()):
-            print(f"  ✗ {name:30s} {'; '.join(reasons)}")
+            logger.info(f"  ✗ {name:30s} {'; '.join(reasons)}")
 
     result = {
         "passed": passed,
@@ -118,5 +123,5 @@ def screen_factors(input_json: str = "/tmp/_eval_phase1.json",
     with open(output_json, 'w') as f:
         json.dump(result, f, indent=2, default=str)
 
-    print(f"\nPhase 2 complete. {len(passed)} factors advance to Phase 3.")
+    logger.info(f"Phase 2 complete ({time.monotonic()-t0:.1f}s). {len(passed)} factors advance to Phase 3.")
     return result

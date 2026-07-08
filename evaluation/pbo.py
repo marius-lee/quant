@@ -12,6 +12,7 @@ PBO = probability that the best IS (In-Sample) performer is not the best OOS
 
 import numpy as np
 from scipy.special import logit as _logit
+from utils.logger import get_logger
 
 
 def compute_pbo(fold_results: list[dict], factor_names: list[str]) -> dict:
@@ -34,6 +35,8 @@ def compute_pbo(fold_results: list[dict], factor_names: list[str]) -> dict:
         is_oos_corr : float — correlation between IS and OOS ICIR rankings
         per_factor : dict — per-factor PBO subscores
     """
+    logger = get_logger("evaluation.pbo")
+    logger.info(f"PBO: {len(factor_names)} factors, {len(fold_results)} folds")
     n_folds = len(fold_results)
     if n_folds < 2:
         return {"pbo": 0.5, "logit_pbo": 0.0, "passed": True,
@@ -90,6 +93,7 @@ def compute_pbo(fold_results: list[dict], factor_names: list[str]) -> dict:
                           (oos_vals.std() / max(abs(oos_vals.mean()), 0.01)) < 2.0)
         }
 
+    logger.info(f"PBO={pbo:.3f}, logit={logit_pbo:+.3f}, IS-OOS corr={is_oos_corr:+.3f}, passed={logit_pbo < -0.847}")
     return {
         "pbo": float(pbo),
         "logit_pbo": logit_pbo,

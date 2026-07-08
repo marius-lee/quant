@@ -4,9 +4,13 @@ import sqlite3
 import json
 from datetime import datetime
 from config.loader import get as cfg
+from utils.logger import get_logger
 
 
 def prepare_data(output_json: str = "/tmp/_eval_phase1.json") -> dict:
+    logger = get_logger("evaluation.phase1")
+    t0 = __import__("time").monotonic()
+    logger.info("Phase 1 start — data preparation")
     """验证股票池和数据范围, 写入 JSON, 返回结果 dict。
 
     Returns
@@ -21,7 +25,7 @@ def prepare_data(output_json: str = "/tmp/_eval_phase1.json") -> dict:
         WHERE list_date <= date('now', '-60 days')
     """).fetchall()
     symbols = [r[0] for r in stocks]
-    print(f"Phase 1: {len(symbols)} stocks in universe (全A, 上市≥60天)")
+    logger.info("Phase 1 {len(symbols)} stocks in universe (全A, 上市≥60天)")
 
     # 有效评估区间
     lookback = cfg("factor.evaluation.lookback", 120)
@@ -33,14 +37,14 @@ def prepare_data(output_json: str = "/tmp/_eval_phase1.json") -> dict:
 
     db_min = conn.execute("SELECT min(date) FROM daily").fetchone()[0]
     db_max = conn.execute("SELECT max(date) FROM daily").fetchone()[0]
-    print(f"Phase 1: DB 存储范围 {db_min} → {db_max}")
-    print(f"Phase 1: 有效评估区间 {effective_start} → {datetime.today().strftime('%Y-%m-%d')}")
-    print(f"Phase 1: pre-2010 数据排除原因 — 股权分置改革前市场结构不成熟 (config backtest_start_date)")
+    logger.info("Phase 1 DB 存储范围 {db_min} → {db_max}")
+    logger.info("Phase 1 有效评估区间 {effective_start} → {datetime.today().strftime('%Y-%m-%d')}")
+    logger.info("Phase 1 pre-2010 数据排除原因 — 股权分置改革前市场结构不成熟 (config backtest_start_date)")
 
     conn.close()
 
     result = {"symbols": symbols, "effective_start": effective_start, "db_max": db_max, "db_min": db_min}
     with open(output_json, 'w') as f:
         json.dump(result, f, default=str)
-    print("Phase 1 complete")
+    logger.info(f"Phase 1 complete ({__import__('time').monotonic()-t0:.1f}s)")
     return result

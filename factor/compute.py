@@ -1443,6 +1443,217 @@ def compute_analyst_consensus(fundamentals: "pd.DataFrame", date: str) -> "pd.Se
     return s.dropna().rename("analyst_consensus")
 
 
+# ── Phase 3 财务因子 (季报三表) ──
+
+def _get_financial_historical(table: str, date: str, forward_days: int = 90) -> "pd.DataFrame":
+    """Query quarterly financial data up to date (+forward_days for late filings).
+
+    季报公布有延迟 (Q1 在 4月底, Q2 在 8月底, Q3 在 10月底, 年报在次年 4月底),
+    所以用 anunciate_date <= 实际日期 + 90天 来包含已公布但尚未到报告期的季报.
+    """
+    max_stat = (pd.Timestamp(date) + pd.DateOffset(days=forward_days)).strftime("%Y-%m-%d")
+    conn = _db_connect()
+    df = pd.read_sql(
+        f"SELECT * FROM {table} WHERE stat_date <= ? ORDER BY stat_date",
+        conn, params=(max_stat,),
+    )
+    conn.close()
+    return df
+
+
+def _ttm_sum(df: "pd.DataFrame", col: str, n_quarters: int = 4) -> "pd.Series":
+    """Compute TTM sum of column over last n_quarters per symbol."""
+    df = df.dropna(subset=[col])
+    if df.empty:
+        return pd.Series(dtype=float)
+    # Group by symbol, take last n_quarters, sum
+    grouped = df.groupby("symbol")
+    result = {}
+    for sym, grp in grouped:
+        grp_sorted = grp.sort_values("stat_date")
+        if len(grp_sorted) >= n_quarters:
+            result[sym] = grp_sorted[col].tail(n_quarters).sum()
+    return pd.Series(result)
+
+
+def compute_gross_margin_diff(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
+    """毛利率TTM差分: (营收TTM - 营业成本TTM) / 营收TTM - 上期.
+
+    公式: GrossMargin_t - GrossMargin_{t-4Q}, 其中 GM = (revenue - cost) / revenue.
+    数据源: financial_income (total_operating_revenue / operating_revenue, operating_cost).
+    来源: 源达信息《毛利率TTM差分因子》2026, ICIR=0.79.
+    """
+    df = _get_financial_historical("financial_income", date)
+    if df.empty:
+        return pd.Series(dtype=float, name="gross_margin_diff")
+
+    # Use total_operating_revenue if available, else operating_revenue
+    rev_col = "total_operating_revenue" if "total_operating_revenue" in df.columns else "operating_revenue"
+    cost_col = "operating_cost"
+
+    if rev_col not in df.columns or cost_col not in df.columns:
+        return pd.Series(dtype=float, name="gross_margin_diff")
+
+    # Current TTM (last 4 quarters)
+    rev_ttm = _ttm_sum(df, rev_col, 4)
+    cost_ttm = _ttm_sum(df, cost_col, 4)
+
+    gm_current = (rev_ttm - cost_ttm) / rev_ttm.replace(0, np.nan)
+
+    # Previous TTM: exclude the most recent quarter, use quarters 5-2 from end
+    prev_result = {}
+    grouped = df.groupby("symbol")
+    for sym, grp in grouped:
+        grp_sorted = grp.sort_values("stat_date")
+        if len(grp_sorted) >= 5:
+            # Use quarters 2-5 (one quarter lagged)
+            rev_prev = grp_sorted[rev_col].iloc[-5:-1].sum()
+            cost_prev = grp_sorted[cost_col].iloc[-5:-1].sum()
+            if rev_prev > 0:
+                prev_result[sym] = (rev_prev - cost_prev) / rev_prev
+
+    gm_prev = pd.Series(prev_result)
+
+    # Diff
+    diff = gm_current.sub(gm_prev, fill_value=np.nan)
+    return diff.dropna().rename("gross_margin_diff")
+
+
+def compute_financial_anomaly(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
+    """财务异常复合: 4 子因子等权 (申万宏源 2018, IC=6.79%, ICIR~1.5).
+
+    六因子简化版（缺预付款、销售费用）:
+      1. 存货异常: -(inv_growth - rev_growth)
+      2. 应收异常: -(ar_growth - rev_growth)
+      3. 管理费异常: -(admin_growth - rev_growth)
+      4. 毛利异常: -(gm_change)
+    等权 → _cs_zscore → 取负 (异常值高=坏=反向信号).
+
+    数据源: financial_balance (inventories, account_receivable) + financial_income.
+    来源: 申万宏源《财务异常综合评分体系》2018.06.
+    """
+    df_inc = _get_financial_historical("financial_income", date)
+    df_bal = _get_financial_historical("financial_balance", date)
+
+    if df_inc.empty or df_bal.empty:
+        return pd.Series(dtype=float, name="financial_anomaly")
+
+    rev_col = "total_operating_revenue" if "total_operating_revenue" in df_inc.columns else "operating_revenue"
+
+    # For each symbol, get last 2 periods
+    def _yoy_growth(df: "pd.DataFrame", col: str) -> "pd.Series":
+        """YoY growth rate for each symbol (latest vs same quarter prev year)."""
+        result = {}
+        grouped = df.groupby("symbol")
+        for sym, grp in grouped:
+            grp_sorted = grp.sort_values("stat_date")
+            if len(grp_sorted) >= 2 and col in grp_sorted.columns:
+                v_latest = grp_sorted[col].iloc[-1]
+                v_prev = grp_sorted[col].iloc[-2]
+                if v_prev and v_prev != 0:
+                    result[sym] = (v_latest - v_prev) / abs(v_prev)
+        return pd.Series(result)
+
+    def _gm_change() -> "pd.Series":
+        """Gross margin change: gm_t - gm_{t-1}."""
+        result = {}
+        grouped = df_inc.groupby("symbol")
+        cost_col = "operating_cost"
+        for sym, grp in grouped:
+            grp_sorted = grp.sort_values("stat_date")
+            if len(grp_sorted) >= 2:
+                rev_l, cost_l = grp_sorted[rev_col].iloc[-1], grp_sorted[cost_col].iloc[-1]
+                rev_p, cost_p = grp_sorted[rev_col].iloc[-2], grp_sorted[cost_col].iloc[-2]
+                if rev_l > 0 and rev_p > 0:
+                    gm_l = (rev_l - cost_l) / rev_l
+                    gm_p = (rev_p - cost_p) / rev_p
+                    result[sym] = gm_l - gm_p
+        return pd.Series(result)
+
+    rev_growth = _yoy_growth(df_inc, rev_col)
+    inv_growth = _yoy_growth(df_bal, "inventories")
+    ar_growth = _yoy_growth(df_bal, "account_receivable")
+    admin_growth = _yoy_growth(df_inc, "administration_expense")
+    gm_change = _gm_change()
+
+    # Build composite: anomaly = (item_growth - revenue_growth)
+    scores = {}
+    all_syms = set(rev_growth.index) | set(inv_growth.index) | set(ar_growth.index) | set(gm_change.index)
+    for sym in all_syms:
+        z = 0.0
+        count = 0
+        # 1. Inventories anomaly
+        if sym in inv_growth.index and sym in rev_growth.index:
+            z += -(inv_growth[sym] - rev_growth[sym])
+            count += 1
+        # 2. Receivables anomaly
+        if sym in ar_growth.index and sym in rev_growth.index:
+            z += -(ar_growth[sym] - rev_growth[sym])
+            count += 1
+        # 3. Admin expense anomaly
+        if sym in admin_growth.index and sym in rev_growth.index:
+            z += -(admin_growth[sym] - rev_growth[sym])
+            count += 1
+        # 4. Gross margin change
+        if sym in gm_change.index:
+            z += -gm_change[sym]
+            count += 1
+        if count > 0:
+            scores[sym] = z / count * 4  # Normalize to 4-sub-factor scale
+
+    result = pd.Series(scores)
+    result = result.replace([np.inf, -np.inf], np.nan)
+    return _cs_zscore(result).rename("financial_anomaly")
+
+
+def compute_roe_trimmed(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
+    """单季度ROE(掐头): 归母净利 / avg(归母权益) → 剔除最高10%.
+
+    公式: ROE_q = net_profit / ((equity_t + equity_{t-1}) / 2)
+    然后剔除截面 top 10% (去极端值), 保留的做 _cs_zscore.
+
+    数据源: financial_income (net_profit) + financial_balance (equities_parent_company_owners).
+    来源: 海通证券《单季度ROE因子改进》2024, IC=4-5%, ICIR~1.2.
+    """
+    df_inc = _get_financial_historical("financial_income", date)
+    df_bal = _get_financial_historical("financial_balance", date)
+
+    if df_inc.empty or df_bal.empty:
+        return pd.Series(dtype=float, name="roe_trimmed")
+
+    # Latest quarter net_profit per symbol
+    inc_latest = df_inc.sort_values("stat_date").groupby("symbol").last()
+    net_profit = inc_latest["net_profit"] if "net_profit" in inc_latest.columns else pd.Series(dtype=float)
+
+    # Average equity: avg of last 2 periods
+    bal_sorted = df_bal.sort_values("stat_date")
+    equity_col = "equities_parent_company_owners"
+    if equity_col not in bal_sorted.columns:
+        return pd.Series(dtype=float, name="roe_trimmed")
+
+    avg_equity = {}
+    for sym, grp in bal_sorted.groupby("symbol"):
+        eq_vals = grp[equity_col].dropna()
+        if len(eq_vals) >= 1:
+            # Average of last 2 available equity values
+            avg_equity[sym] = eq_vals.tail(2).mean()
+
+    avg_eq_series = pd.Series(avg_equity)
+
+    # ROE = net_profit / avg_equity
+    roe = net_profit / avg_eq_series.replace(0, np.nan)
+    roe = roe.replace([np.inf, -np.inf], np.nan)
+    roe = roe.where((roe > -1) & (roe < 1))
+
+    # Trim top 10% (set to NaN)
+    if len(roe.dropna()) >= 10:
+        top_thresh = roe.quantile(0.90)
+        roe = roe.where(roe < top_thresh)
+
+    return _cs_zscore(roe).rename("roe_trimmed")
+
+
+
 # ── EPD/EPDS 估值偏离因子 (东吴证券 2022, daily_valuation.pe_ttm) ──
 
 # Module-level cache for daily_valuation data (per worker process, avoids re-query).
@@ -2691,4 +2902,14 @@ if "epd" not in _FUNDAMENTAL_FN_MAP:
     _FUNDAMENTAL_FN_MAP["epd"] = ("value", compute_epd)
 if "epds" not in _FUNDAMENTAL_FN_MAP:
     _FUNDAMENTAL_FN_MAP["epds"] = ("value", compute_epds)
+
+# ── P74: 注册 Phase 3 财务因子 ──
+if "gross_margin_diff" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["gross_margin_diff"] = ("profitability", compute_gross_margin_diff)
+if "financial_anomaly" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["financial_anomaly"] = ("quality", compute_financial_anomaly)
+    _FIN_FACTORS.add("financial_anomaly")
+if "roe_trimmed" not in _FUNDAMENTAL_FN_MAP:
+    _FUNDAMENTAL_FN_MAP["roe_trimmed"] = ("profitability", compute_roe_trimmed)
+    _FIN_FACTORS.add("roe_trimmed")
 

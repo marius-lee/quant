@@ -70,7 +70,7 @@ factor:
     min_half_life: 20
     min_icir: 0.5
     n_days: 120
-    n_symbols: 500
+    n_symbols: 0
     net_sharpe_min: 0.3
     pbo_max: 0.3
     sharpe_decay_max: 0.5

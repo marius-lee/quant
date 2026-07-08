@@ -36,34 +36,38 @@ _MAX_WORKERS = _cfg("factor.evaluation.max_workers", 6)  # ThreadPoolExecutor wo
 
 
 # ══════════════════════════════════════════════════════════════
-# ThreadPoolExecutor: factor compute worker (module-level, picklable)
+# ProcessPoolExecutor worker functions (module-level for pickle)
 # ══════════════════════════════════════════════════════════════
-# Pattern: each thread opens its own DataStore (independent sqlite3 connection).
-# sqlite3 WAL mode + 6 concurrent readers is the standard Python data-pipeline
-# pattern (ref: sqlite3 docs §5.0, Python concurrent.futures docs §ThreadPoolExecutor).
-# GIL is released during pandas/numpy C-extension calls and sqlite3 I/O.
 
-def _compute_factors_for_date(args: tuple) -> tuple:
-    """Compute all factors for one date. Stateless: loads everything from DB.
-    
-    args: (date, symbols, start_date, end_date, factor_names)
-    Returns: (date_str, factor_values_dict, error_string_or_None)
-    """
-    d, symbols, start_date, end_date, factor_names = args
+# Per-process globals set by _pp_worker_init
+_pp_data = None
+
+
+
+def _pp_worker_init(data):
+    """ProcessPoolExecutor initializer: load data once per process."""
+    global _pp_data
+    _pp_data = data
+
+
+def _pp_worker_compute(args) -> tuple:
+    """Compute all factors for a single date.
+
+    args: (date, symbols, factor_names)
+    Returns: (date_str, factor_values_dict, error_string_or_None).
+    Each worker loads fundamentals/financials from DB with own DataStore."""
+    d, symbols, factor_names = args
     date_str = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
     try:
         from data.store import DataStore
         store = DataStore()
-        # Load daily OHLCV data for all symbols
-        data = store.get_daily(symbols, start=start_date, end=end_date)
-        # Load fundamentals + financials for this date
         fundamentals = store.get_fundamentals(symbols, date=date_str)
         fin = store.get_financials(symbols, date=date_str)
         preloaded_fin = {date_str: fin} if fin is not None else None
         store.close()
 
         from factor.compute import compute_all_factors
-        fv = compute_all_factors(data, date_str,
+        fv = compute_all_factors(_pp_data, date_str,
                                  fundamentals=fundamentals,
                                  factor_names=factor_names,
                                  preloaded_financials=preloaded_fin)
@@ -147,22 +151,56 @@ def compute_factor_stats(
     # else: 使用调用方传入的因子列表 (评估管道传全量)
     factor_values_by_date = {name: {} for name in factor_names}
 
-    # 只计算最近 lookback 个交易日 (唯一日期, get_level_values(0) 提取 MultiIndex 日期层)
-    eval_dates = sorted(data.index.get_level_values(0).unique())[-lookback:]
+    # 只计算最近 lookback 个交易日
+    eval_dates = dates[-lookback:]
 
-    # Fundamentals/financials loaded independently in each worker process
-    # (parent closes DB before spawning — avoids WAL lock contention)
+    # Pre-load fundamentals + financials for all eval dates (eliminates per-date DB queries)
+    preloaded_financials = {}
+    preloaded_fundamentals = {}
+    from factor.compute import _FIN_FACTORS, _FUNDAMENTAL_FN_MAP
+    need_fund = any(n in _FUNDAMENTAL_FN_MAP or n in _FIN_FACTORS for n in factor_names)
+    if need_fund:
+        logger.info(f"preloading fundamentals for {len(eval_dates)} dates...")
+        preloaded_cnt = 0
+        for d in eval_dates:
+            ds = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10]
+            try:
+                fund = store.get_fundamentals(symbols, date=ds)
+                if fund is not None and not fund.empty:
+                    preloaded_fundamentals[ds] = fund
+            except Exception:
+                continue
+            preloaded_cnt += 1
+            if preloaded_cnt % 20 == 0:
+                logger.info(f"  preload fundamentals: {preloaded_cnt}/{len(eval_dates)} dates")
+        logger.info(f"preloaded fundamentals for {len(preloaded_fundamentals)}/{len(eval_dates)} dates")
+        # Financials preload (subset of dates that have fundamentals)
+        if any(n in _FIN_FACTORS for n in factor_names):
+            logger.info(f"preloading financials for {len(eval_dates)} dates...")
+            preloaded_cnt = 0
+            for d in eval_dates:
+                ds = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10]
+                try:
+                    fin = store.get_financials(symbols, date=ds)
+                    if fin is not None and not fin.empty:
+                        preloaded_financials[ds] = fin
+                except Exception:
+                    continue
+                preloaded_cnt += 1
+                if preloaded_cnt % 20 == 0:
+                    logger.info(f"  preload financials: {preloaded_cnt}/{len(eval_dates)} dates")
+            logger.info(f"preloaded financials for {len(preloaded_financials)}/{len(eval_dates)} dates")
 
-    logger.info(f"factor compute start: {len(eval_dates)} dates (ThreadPoolExecutor), × {len(factor_names)} factors, {_MAX_WORKERS} workers")
+    logger.info(f"factor compute start: {len(eval_dates)} dates (ProcessPoolExecutor), (sequential), × {len(factor_names)} factors, {_MAX_WORKERS} workers")
 
-    store.close()  # parent releases DB; worker threads open their own connections
-
-    # Factor computation: parallel via ThreadPoolExecutor
-    # Standard pattern: each thread opens its own DataStore (independent sqlite3 conn).
-    # GIL released during pandas/numpy ops and sqlite3 I/O — threads work well here.
-    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
-        futures = {executor.submit(_compute_factors_for_date, (d, symbols, start_date, end_date, factor_names)): d for d in eval_dates}
-        logger.info(f"parallel compute: {len(futures)} jobs x {_MAX_WORKERS} threads")
+    # Factor computation: parallel via ProcessPoolExecutor
+    # Each worker is an independent OS process: no shared pandas, sqlite3, or GIL
+    from concurrent.futures import ProcessPoolExecutor
+    with ProcessPoolExecutor(max_workers=_MAX_WORKERS,
+                             initializer=_pp_worker_init,
+ initargs=(data,)) as executor:
+        futures = {executor.submit(_pp_worker_compute, (d, symbols, factor_names)): d for d in eval_dates}
+        logger.info(f"parallel compute: {len(futures)} jobs x {_MAX_WORKERS} processes")
         try:
             from tqdm import tqdm
             pbar = tqdm(total=len(futures), desc="Computing factors (parallel)")

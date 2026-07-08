@@ -437,6 +437,7 @@ def compute_factor_stats(
 
 def _empty_result() -> dict:
     """返回空结果（数据不足时）。"""
+    from factor.compute import get_factor_names
     names = get_factor_names(status_filter=None)  # P45: 加载全量 IC 缓存
     return {
         "factors": names,

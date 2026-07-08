@@ -44,28 +44,26 @@ _MAX_WORKERS = _cfg("factor.evaluation.max_workers", 6)  # ThreadPoolExecutor wo
 # a new DataFrame (no _item_cache writes on the source).
 
 def _compute_factors_for_date(args: tuple) -> tuple:
-    """Compute all factors for one date. Zero DB access — pure computation.
+    """Compute all factors for one date. Independent data slice — zero shared state.
     
-    args: (date_str, data, preloaded_fundamentals, preloaded_financials, factor_names)
-    data: shared read-only MultiIndex (date, symbol) DataFrame
-    preloaded_fundamentals: {date_str: DataFrame}
-    preloaded_financials: {date_str: DataFrame}
+    args: (date_str, data_slice, fundamentals, fin, factor_names)
+    data_slice: DataFrame for this date only (symbol index)
+    fundamentals: DataFrame or None
+    fin: DataFrame or None
     Returns: (date_str, factor_values_dict, error_string_or_None)
     """
     import time as _time
-    date_str, data, preloaded_fundamentals, preloaded_financials, factor_names = args
+    date_str, data_slice, fundamentals, fin, factor_names = args
     t0 = _time.monotonic()
     try:
         from utils.logger import get_logger
         _log = get_logger("factor.stats_cache.worker")
-        _log.info(f"[{date_str}] computing factors (in-memory)")
+        _log.info(f"[{date_str}] computing factors ({len(data_slice)} symbols)")
 
         from factor.compute import compute_all_factors
-        fundamentals = preloaded_fundamentals.get(date_str)
-        fin = preloaded_financials.get(date_str)
         preloaded_fin = {date_str: fin} if fin is not None else None
 
-        fv = compute_all_factors(data, date_str,
+        fv = compute_all_factors(data_slice, date_str,
                                  fundamentals=fundamentals,
                                  factor_names=factor_names,
                                  preloaded_financials=preloaded_fin)
@@ -190,11 +188,26 @@ def compute_factor_stats(
     logger.info(f"factor compute start: {len(eval_dates)} dates × {len(factor_names)} factors, "
                 f"{_MAX_WORKERS} threads (in-memory, no DB)")
 
+    # ══ Pre-slice data per date (main thread, serial) — eliminates pandas _item_cache race ══
+    logger.info(f"pre-slicing data for {len(eval_dates)} dates...")
+    date_slices = {}
+    for d in eval_dates:
+        ds = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
+        try:
+            date_slices[ds] = data.xs(ds, level=0)
+        except KeyError:
+            date_slices[ds] = pd.DataFrame()
+    logger.info(f"pre-sliced: {sum(1 for v in date_slices.values() if not v.empty)}/{len(eval_dates)} dates")
+
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
-        futures = {executor.submit(_compute_factors_for_date,
-                     (d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10],
-                      data, preloaded_fundamentals, preloaded_financials, factor_names)): d
-                   for d in eval_dates}
+        futures = {}
+        for d in eval_dates:
+            ds = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
+            futures[executor.submit(_compute_factors_for_date,
+                     (ds, date_slices.get(ds, pd.DataFrame()),
+                      preloaded_fundamentals.get(ds),
+                      preloaded_financials.get(ds),
+                      factor_names))] = d
         logger.info(f"parallel compute: {len(futures)} jobs x {_MAX_WORKERS} threads")
         try:
             from tqdm import tqdm

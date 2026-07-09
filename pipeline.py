@@ -197,6 +197,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
                     "shares": int(lots) * LOT_SIZE,
                     "price": round(float(prices[sym]), 2),
                     "side": "buy",
+                    "industry": str(industries.get(sym, "")) if (industries is not None and not (isinstance(industries.get(sym, ""), float) and industries.get(sym, "") != industries.get(sym, ""))) else "",
                 })
         # ── rank by score descending, annotate reason ──
         target_positions.sort(key=lambda x: x.get("score", 0), reverse=True)

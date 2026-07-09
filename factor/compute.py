@@ -1415,12 +1415,19 @@ def compute_analyst_consensus(fundamentals: "pd.DataFrame", date: str) -> "pd.Se
 
 # ── Phase 3 财务因子 (季报三表) ──
 
+_ALLOWED_FINANCIAL_TABLES = {"financial_income", "financial_balance", "financial_cashflow"}
+
+
 def _get_financial_historical(table: str, date: str, forward_days: int = 90) -> "pd.DataFrame":
     """Query quarterly financial data up to date (+forward_days for late filings).
 
     季报公布有延迟 (Q1 在 4月底, Q2 在 8月底, Q3 在 10月底, 年报在次年 4月底),
     所以用 anunciate_date <= 实际日期 + 90天 来包含已公布但尚未到报告期的季报.
+
+    安全: 表名白名单校验，防止 SQL 注入。
     """
+    if table not in _ALLOWED_FINANCIAL_TABLES:
+        raise ValueError(f"Table not allowed: {table}")
     max_stat = (pd.Timestamp(date) + pd.DateOffset(days=forward_days)).strftime("%Y-%m-%d")
     conn = _db_connect()
     df = pd.read_sql(
@@ -2418,10 +2425,12 @@ def compute_str(data, date, window=20):
     # 市值中性化 (从 stocks 表取 total_mv)
     try:
         conn2 = market_conn("ro")
-        mv_rows = conn2.execute(f"""
-            SELECT symbol, total_mv FROM stocks
-            WHERE symbol IN ('{"','".join(raw.index.tolist())}') AND total_mv IS NOT NULL
-        """).fetchall()
+        _syms2 = raw.index.tolist()
+        _ph2 = ",".join(["?"] * len(_syms2))
+        rows = conn2.execute(
+            f"SELECT symbol, total_mv FROM stocks WHERE symbol IN ({_ph2}) AND total_mv IS NOT NULL",
+            _syms2
+        ).fetchall()
         conn2.close()
         mv_map = {r[0]: r[1] for r in mv_rows}
         log_mv = pd.Series({s: np.log(mv_map[s]) for s in raw.index if s in mv_map})
@@ -2564,9 +2573,8 @@ def compute_ocfp(fundamentals, date, financials=None):
     # TTM经营现金流: 直接查 financial_cash_flow 表最近4个季度
     ocfp_vals = {}
     try:
-        import sqlite3 as _sql
-        _db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "market.db")
-        _conn = _sql.connect(_db_path, timeout=30)
+        from data.store import market_conn
+        _conn = market_conn("ro")
         placeholders = ",".join("?" for _ in valid_syms)
         cf_df = pd.read_sql_query(
             f"""SELECT symbol, stat_date, net_operate_cash_flow

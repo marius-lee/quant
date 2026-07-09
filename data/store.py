@@ -4,6 +4,7 @@
 """
 import os
 import sqlite3
+import threading
 import time
 from datetime import datetime
 from utils.date import to_str, to_compact, today_str, DEFAULT_START_DATE
@@ -62,6 +63,8 @@ class DataStore:
         self.db_path = db_path
         self.token = tushare_token if tushare_token is not None else os.environ.get("TUSHARE_TOKEN", "")
         self._conn = None
+        self._local = threading.local()  # thread-local connections for WAL concurrent reads
+        self._lock = threading.Lock()     # guard shared _conn creation (P71)
         conn = self._connect()
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS stocks (
@@ -132,20 +135,41 @@ class DataStore:
         conn.commit()
 
     def _connect(self):
-        """获取共享连接。check_same_thread=False 允许 Flask 多线程复用。"""
-        if self._conn is None:
-            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA synchronous=NORMAL")
-            self._conn.execute("PRAGMA busy_timeout=30000")
-            self._conn.execute("PRAGMA cache_size=-64000")  # SQLite WAL 模式 64MB 页面缓存, 非业务参数
-        return self._conn
+        """获取线程局部连接。每线程独立 sqlite3 连接，支持 WAL 并发读。
+        
+        保持 _conn 向后兼容（单线程调用者），同时为多线程场景提供 _local.conn。
+        线程安全：_lock 保护 shared _conn 的创建，避免多线程竞态条件（P71）。
+        """
+        with self._lock:
+            if self._conn is None:
+                self._conn = self._make_conn()
+        if not hasattr(self._local, 'conn') or self._local.conn is None:
+            self._local.conn = self._make_conn()
+        return self._local.conn
+
+    def _make_conn(self):
+        """创建新的 sqlite3 连接（WAL + 性能调优）。"""
+        c = sqlite3.connect(self.db_path)
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA synchronous=NORMAL")
+        c.execute("PRAGMA busy_timeout=30000")
+        c.execute("PRAGMA cache_size=-64000")
+        return c
 
     def close(self):
-        """关闭数据库连接。任务结束时调用。"""
+        """关闭所有线程局部连接 + 主连接。"""
         if self._conn is not None:
-            self._conn.close()
+            try:
+                self._conn.close()
+            except Exception:
+                pass
             self._conn = None
+        if hasattr(self._local, 'conn') and self._local.conn is not None:
+            try:
+                self._local.conn.close()
+            except Exception:
+                pass
+            self._local.conn = None
 
     # ============================================================
     # 股票列表
@@ -425,7 +449,7 @@ class DataStore:
     def _fetch_tencent_daily(self, symbols: list, start_date: str) -> list:
         """腾讯财经逐只日线: vol=股→/100→手, amt用close×vol估算(元→/1000→千元)"""
         import urllib.request, json as _json
-        max_days = 2000
+        max_days = _cfg("data.fetch.max_lookback_days", 2000)
         rows = []
         for sym in symbols:
             try:
@@ -483,7 +507,7 @@ class DataStore:
                         float(row.get("成交量", 0) or 0),          # 手 ✅
                         float(row.get("成交额", 0) or 0) / 1000,   # 元→千元
                         float(row.get("换手率", 0) or 0)))
-                time.sleep(1.5)
+                import time; time.sleep(_cfg("data.rate_limit.akshare_per_stock_sec", 1.5))
             except Exception:
                 continue
         if rows:
@@ -712,7 +736,7 @@ class DataStore:
                             (round(t, 4), sym, d)
                         )
                         filled += 1
-                import time; time.sleep(1.5)
+                import time; time.sleep(_cfg("data.rate_limit.akshare_per_stock_sec", 1.5))
             except Exception:
                 continue
         conn.commit()
@@ -761,7 +785,7 @@ class DataStore:
                     if idx < 3:
                         logger.info(f"stock {sym} industry query failed: {e}")
                     continue
-                time.sleep(0.8)  # akshare rate limit
+                time.sleep(_cfg("data.rate_limit.akshare_industry_sec", 0.8))  # akshare rate limit
             conn.commit()
             classified = conn.execute(
                 "SELECT COUNT(*) FROM stocks WHERE industry IS NOT NULL"
@@ -925,7 +949,7 @@ class DataStore:
             logger.info(f"daily [{source}] {done}/{len(symbols)} ({pct:.0f}%) {total_new}新行{sample_str}")
 
             if source == "tushare" and pro is not None:
-                time.sleep(0.4)
+                time.sleep(_cfg("data.rate_limit.tushare_batch_sec", 0.4))
 
         conn.commit()
 

@@ -106,54 +106,67 @@ class ExecutionEngine:
         date: 交易日期 (YYYY-MM-DD)
         strategy: 策略标识
 
-        返回: 执行的订单数
+        返回: 执行的订单数。
+        所有订单在同一事务中执行 — 部分失败时整体回滚。
         """
-        repo = TradeRepo(self.db_path)
-        executed = 0
-        for o in orders:
-            if isinstance(o, (list, tuple)):
-                symbol, side, shares, price = o[0], o[1], o[2], o[3]
-            else:
-                symbol, side, shares, price = o.symbol, o.side, o.shares, o.price
-
-            # ── 除权除息检测 (A股涨跌停 ±10% 硬规则) ──
-            if side == "buy" and self._check_ex_dividend(symbol, price, date):
-                continue
-
-            # 计算交易成本 (佣金, 滑点)
-            if side == "buy":
-                cost = self.cost_model.buy_cost(price, shares) - price * shares
-                pnl = 0.0
-                pnl_pct = 0.0
-            else:
-                # T+1 检查
-                if repo.check_t1(strategy, symbol, date):
-                    from utils.logger import get_logger
-                    get_logger("execution.engine").warning(
-                        f"T+1 blocked: {symbol} bought today, cannot sell until next trading day"
-                    )
-                    continue
-                # 计算 PnL (含佣金)
-                proceeds = self.cost_model.sell_proceeds(price, shares)
-                cost = price * shares - proceeds  # 佣金部分
-                orig = repo.get_last_buy_price(strategy, symbol)
-                pnl = 0.0
-                pnl_pct = 0.0
-                if orig:
-                    pnl = proceeds - orig[0] * shares
-                    pnl_pct = (proceeds / (orig[0] * shares) - 1) if orig[0] * shares > 0 else 0.0
-
-            repo.record_trade(
-                strategy, date, symbol, side, price, shares,
-                pnl=round(pnl, 2), pnl_pct=round(pnl_pct, 2),
-                board_count=getattr(o, 'board_count', 0),
-                cost=round(cost, 2)
-            )
-            executed += 1
-
+        import traceback
         from utils.logger import get_logger
-        get_logger("execution.engine").info(f"executed {executed} orders via TradeRepo")
-        return executed
+        logger = get_logger("execution.engine")
+        repo = TradeRepo(self.db_path)
+        conn = repo._conn()
+        executed = 0
+        try:
+            conn.execute("BEGIN")
+            for o in orders:
+                if isinstance(o, (list, tuple)):
+                    symbol, side, shares, price = o[0], o[1], o[2], o[3]
+                else:
+                    symbol, side, shares, price = o.symbol, o.side, o.shares, o.price
+
+                # ── 除权除息检测 (A股涨跌停 ±10% 硬规则) ──
+                if side == "buy" and self._check_ex_dividend(symbol, price, date):
+                    continue
+
+                # 计算交易成本 (佣金, 滑点)
+                if side == "buy":
+                    cost = self.cost_model.buy_cost(price, shares) - price * shares
+                    pnl = 0.0
+                    pnl_pct = 0.0
+                else:
+                    # T+1 检查
+                    if repo.check_t1(strategy, symbol, date):
+                        logger.warning(
+                            f"T+1 blocked: {symbol} bought today, cannot sell until next trading day"
+                        )
+                        continue
+                    # 计算 PnL (含佣金)
+                    proceeds = self.cost_model.sell_proceeds(price, shares)
+                    cost = price * shares - proceeds  # 佣金部分
+                    orig = repo.get_last_buy_price(strategy, symbol)
+                    pnl = 0.0
+                    pnl_pct = 0.0
+                    if orig:
+                        pnl = proceeds - orig[0] * shares
+                        pnl_pct = (proceeds / (orig[0] * shares) - 1) if orig[0] * shares > 0 else 0.0
+
+                repo.record_trade(
+                    strategy, date, symbol, side, price, shares,
+                    pnl=round(pnl, 2), pnl_pct=round(pnl_pct, 2),
+                    board_count=getattr(o, 'board_count', 0),
+                    cost=round(cost, 2),
+                    conn=conn
+                )
+                executed += 1
+
+            conn.commit()
+            logger.info(f"executed {executed} orders via TradeRepo")
+            return executed
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"execute() failed, rolled back {executed} orders: {e}\n{traceback.format_exc()}")
+            raise
+        finally:
+            conn.close()
 
     def get_positions(self, strategy: str = "quant") -> list[dict]:
         """获取当前持仓列表 — 委托 TradeRepo。"""

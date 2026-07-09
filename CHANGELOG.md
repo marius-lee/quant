@@ -1,3 +1,39 @@
+## [P71] — 2026-07-09
+
+### 代码安全与稳定性修复
+
+**execution/engine.py — execute() 事务回滚与语法修复 ([31mCritical[0m)**
+
+execute() 方法存在三个严重问题：
+1. IndentationError — for 循环体未正确缩进 (第 116 行)，文件不可 import
+2. 无 commit/rollback — 批量订单 BEGIN 后从不 COMMIT 也不 ROLLBACK
+3. 无 close — 连接泄漏
+
+修复：补全 for 循环体缩进，try/except/finally 模式保障 COMMIT/ROLLBACK/CLOSE。
+
+**factor/compute.py — compute_str() SQL 注入 ([33mHigh[0m)**
+
+第 2430 行：`WHERE symbol IN ('{"','".join(raw.index.tolist())}')` 直接拼接 symbol 值。
+修复：替换为参数化查询 `WHERE symbol IN ({_ph2})` + bind params。
+
+**factor/compute.py — compute_ocfp() 绕过连接层 ([33mHigh[0m)**
+
+第 2575 行：`import sqlite3 as _sql; _sql.connect(_db_path)` 直接绕过 `market_conn("ro")`。
+修复：替换为 `from data.store import market_conn; _conn = market_conn("ro")`。
+
+**data/store.py — DataStore 线程安全 ([32mMedium[0m)**
+
+DataStore._connect() 增加 `threading.Lock` 保护 shared _conn 创建，避免多线程竞态。
+新增 _make_conn() 工厂方法，_connect 返回 thread-local 连接。
+
+**config/**init**.py — 包 docstring ([32mLow[0m)**
+
+之前为空文件，添加包级 docstring。
+
+**全量 pyc 清理** — 删除所有 stale .pyc，解决 stats_cache 旧版本 devnull 残留。
+
+---
+
 ## [P69] — 2026-07-09
 
 ### 架构清理: 因子注册表集中化 + 消除重复定义 + 连接层统一 + pipeline 抽取

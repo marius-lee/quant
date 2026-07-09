@@ -48,6 +48,7 @@ _SNAPSHOT_TTL_SEC = _cfg("factor.stats.snapshot_ttl_sec", 86400)  # 24h
 _MAX_WORKERS = min(_cfg("factor.evaluation.max_workers", 6), 2)  # M1 8GB: cap at 2 workers — 4 workers × 200MB ≈ 800MB + main → OOM kill → orphans
 _WORKER_TIMEOUT_SEC = _cfg("factor.evaluation.worker_timeout_sec", 120)  # 2min timeout — shorter fuse to avoid lock held indefinitely
 _COMPUTE_LOCK = threading.Lock()  # in-process reentrancy guard
+_my_pids_set = {os.getpid()}  # PIDs to never kill
 _COMPUTE_FILE_LOCK = os.path.join(os.path.dirname(os.path.dirname(__file__)),
                                    "data", ".factor_compute.lock")  # cross-process guard
 _ORPHAN_PID_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)),
@@ -58,7 +59,7 @@ def _cleanup_process_pool():
     读取 .compute_pids 文件 → kill 所有列出的 PID → 删除文件。
     在 web/app.py SIGTERM 处理中调用, 也在模块加载时自动执行。
     """
-    import signal as _sig
+    import signal as _sig, signal
     if not os.path.exists(_ORPHAN_PID_FILE):
         return
     try:
@@ -585,37 +586,51 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None) 
         except Exception as e:
             logger.warning(f"Factor snapshot read failed: {e}")
 
-    # 跨进程文件锁: 确保整个系统一次只运行一个 compute_factor_stats
-    import fcntl
-    _lock_fd = None
-    try:
-        _lock_fd = open(_COMPUTE_FILE_LOCK, 'w')
+    # ══ PID-file 跨进程锁 (替代 fcntl — macOS APFS 上 fcntl 不可靠) ══
+    # 写入 PID → 读回 → 匹配即获取锁 → 不匹配则检查 PID 存活 → 死锁可窃取
+    import subprocess as _lock_sp
+    got_lock = False
+    _lock_msg = ""
+    _my_pid = str(os.getpid())
+    for _attempt in range(3):  # 最多重试3次
         try:
-            fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except (IOError, OSError):
-            logger.warning("factor stats computation already in progress (another process), returning stale/empty cache")
-            _lock_fd.close()
+            # 写 PID 到锁文件 (原子性不强, 但结合读回验证足够)
+            with open(_COMPUTE_FILE_LOCK, 'w') as _lf:
+                _lf.write(_my_pid)
+            # 读回验证
+            with open(_COMPUTE_FILE_LOCK, 'r') as _lf:
+                _stored = _lf.read().strip()
+            if _stored == _my_pid:
+                got_lock = True
+                _lock_msg = "PID-lock acquired"
+                break
+            # PID 不匹配 → 检查存活性
             try:
-                conn = _sql.connect(_DB_PATH)
-                row = conn.execute("SELECT data FROM factor_snapshot WHERE id=1").fetchone()
-                conn.close()
-                if row:
-                    return json.loads(row[0])
+                _stored_pid = int(_stored) if _stored.isdigit() else 0
+                if _stored_pid:
+                    os.kill(_stored_pid, 0)  # 信号0不杀, 仅检查进程存在
+                    _lock_msg = f"PID {_stored_pid} alive — waiting {_attempt+1}/3"
+                    time.sleep(0.5 * (_attempt + 1))
+                else:
+                    # 存活的 PID 是乱码 → 抢锁
+                    got_lock = True
+                    _lock_msg = "PID-lock stolen (invalid PID)"
+                    break
+            except ProcessLookupError:
+                # 进程已死 → 抢锁
+                got_lock = True
+                _lock_msg = f"PID-lock stolen (PID {_stored_pid} dead)"
+                break
             except Exception:
-                pass
-            return _empty_result()
-    except Exception as e:
-        logger.warning(f"file lock setup failed, falling back to in-process lock: {e}")
-        if _lock_fd:
-            _lock_fd.close()
-            _lock_fd = None
-
-    # 进程内重入保护：防止 warmup 和 API 请求同时触发
-    if not _COMPUTE_LOCK.acquire(blocking=False):
-        logger.warning("factor stats computation already in progress by another thread, returning stale/empty cache")
-        if _lock_fd:
-            fcntl.flock(_lock_fd, fcntl.LOCK_UN)
-            _lock_fd.close()
+                got_lock = True
+                _lock_msg = "PID-lock stolen (error checking PID)"
+                break
+        except Exception as e:
+            _lock_msg = f"PID-lock file error: {e}"
+            time.sleep(0.3)
+    
+    if not got_lock:
+        logger.warning(f"factor stats: {_lock_msg}, returning stale/empty cache")
         try:
             conn = _sql.connect(_DB_PATH)
             row = conn.execute("SELECT data FROM factor_snapshot WHERE id=1").fetchone()
@@ -625,6 +640,46 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None) 
         except Exception:
             pass
         return _empty_result()
+    logger.info(f"factor stats: {_lock_msg}")
+
+    # 进程内重入保护 + 锁前清剿孤儿
+    if not _COMPUTE_LOCK.acquire(blocking=False):
+        logger.warning("factor stats: in-process lock held by another thread, returning stale cache")
+        try:
+            os.remove(_COMPUTE_FILE_LOCK)
+        except Exception:
+            pass
+        try:
+            conn = _sql.connect(_DB_PATH)
+            row = conn.execute("SELECT data FROM factor_snapshot WHERE id=1").fetchone()
+            conn.close()
+            if row:
+                return json.loads(row[0])
+        except Exception:
+            pass
+        return _empty_result()
+    
+    # ══ 计算前强杀所有旧 worker (双重保障) ══
+    _killed = 0
+    try:
+        _pg = _lock_sp.run(
+            ["pgrep", "-f", "multiprocessing.spawn.*spawn_main"],
+            capture_output=True, text=True, timeout=5
+        )
+        if _pg.returncode == 0 and _pg.stdout.strip():
+            for _orphan_pid in _pg.stdout.strip().split("\n"):
+                try:
+                    _p = int(_orphan_pid.strip())
+                    if _p != _my_pid and _p not in _my_pids_set:
+                        os.kill(_p, signal.SIGKILL)
+                        _killed += 1
+                except (ProcessLookupError, ValueError):
+                    pass
+    except Exception:
+        pass
+    if _killed:
+        logger.warning(f"factor stats: pre-killed {_killed} orphan workers before spawning")
+    
     try:
         logger.info("computing factor stats (this may take ~30s)...")
         lookback_val = _require_cfg("factor.evaluation.lookback")
@@ -640,19 +695,17 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None) 
             conn.commit()
             conn.close()
             logger.info("factor snapshot saved to factor_snapshot table")
-
         except Exception as e:
             logger.warning(f"Factor snapshot write failed: {e}")
 
         return stats
     finally:
         _COMPUTE_LOCK.release()
-        if _lock_fd:
-            try:
-                fcntl.flock(_lock_fd, fcntl.LOCK_UN)
-            except Exception:
-                pass
-            _lock_fd.close()
+        # 释放 PID 锁
+        try:
+            os.remove(_COMPUTE_FILE_LOCK)
+        except Exception:
+            pass
 
 
 

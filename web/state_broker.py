@@ -140,7 +140,8 @@ class RedisStateBroker(StateBroker):
 
             state["positions"] = positions
         except Exception:
-            pass
+            import logging
+            logging.getLogger("web.state_broker").exception("_init_state failed")
         return state
 
     def _read_state(self) -> dict:
@@ -170,6 +171,8 @@ class RedisStateBroker(StateBroker):
         if not cached:
             state = self._init_state()
         else:
+            # ── 清理 Redis 旧缓存污染 ──
+            cached.pop("positions", None)
             state = self._init_state()
             state.update(cached)
 

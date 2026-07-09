@@ -26,13 +26,13 @@ class AlphaModel:
     def __init__(self, combine_mode=None, method=None, top_fraction=None,
                  positions_per_factor=None, min_factors=None, intersection_primary=None,
                  intersection_top_fraction=None):
-        self.combine_mode = combine_mode or _cfg("alpha.combine_mode", "sleeve")
-        self._method = method or _cfg("alpha.method", "ic_weighted")
-        self.top_fraction = top_fraction or _cfg("alpha.top_fraction", 0.30)
-        self.positions_per_factor = positions_per_factor or _cfg("alpha.sleeve.positions_per_factor", 8)
-        self.min_factors = min_factors or _cfg("alpha.sleeve.min_factors", 1)
-        self.intersection_primary = intersection_primary or _cfg("alpha.intersection_primary", "gap_5d")
-        self.intersection_top_fraction = intersection_top_fraction or _cfg("alpha.intersection_top_fraction", 0.20)
+        self.combine_mode = combine_mode or _require_cfg("alpha.combine_mode")
+        self._method = method or _require_cfg("alpha.method")
+        self.top_fraction = top_fraction or _require_cfg("alpha.top_fraction")
+        self.positions_per_factor = positions_per_factor or _require_cfg("alpha.sleeve.positions_per_factor")
+        self.min_factors = min_factors or _require_cfg("alpha.sleeve.min_factors")
+        self.intersection_primary = intersection_primary or _require_cfg("alpha.intersection_primary")
+        self.intersection_top_fraction = intersection_top_fraction or _require_cfg("alpha.intersection_top_fraction")
 
     def combine(self, factor_values, ic_map=None):
         """将多个因子合成为单一 alpha score.

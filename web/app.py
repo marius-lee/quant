@@ -136,7 +136,11 @@ def api_factors():
                 FROM factor_registry
             """).fetchone()
             c.close()
-            stats["n_registered"] = (r[0] or 0) - sum((r[1] or 0, r[2] or 0, r[3] or 0, r[4] or 0, r[5] or 0))
+            total = r[0] or 0
+            # n_registered = rows with status='registered' (not covered by the 5 statuses above)
+            rr = c.execute("SELECT COUNT(*) FROM factor_registry WHERE status='registered'").fetchone()
+            stats["n_registered"] = rr[0] if rr else (total - sum(r[1:6] or [0]*5))
+            stats["n_total"] = total
             stats["n_active"] = r[1] or 0
             stats["n_candidate"] = r[2] or 0
             stats["n_rejected"] = r[3] or 0

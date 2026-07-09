@@ -1,3 +1,30 @@
+## [3.6.0] — 2026-07-09
+
+### P68: ProcessPoolExecutor 孤儿进程内存泄漏 — 根因修复
+
+**问题**: web app 每次启动 / restart.sh 重启时, stats_cache.py=compute_factor_stats() 的 ProcessPoolExecutor(max_workers=6) spawn 6 个子进程。父进程被杀后子进程变孤儿 (PPID=1), 累积到 152 进程 / 9 GB RSS。SIGTERM 信号处理仅打日志, 不清理子进程。
+
+**修复 (3 层防护)**:
+
+1. `factor/stats_cache.py` (line 277): `executor.shutdown(wait=False)` -> `wait=True`, 确保正常返回时 worker 被 join
+2. `factor/stats_cache.py` (line 53-75): 新增 `_ORPHAN_PID_FILE` + `_cleanup_process_pool()` — 写入 worker PID 到 `data/.compute_pids` 文件, 模块加载时自动清理上次残留, web app SIGTERM 时通过 `_clean_exit()` 读取文件杀所有 PID
+3. `web/app.py` (line 21-43): 新增 `_clean_exit(reason)` 替代原 lambda — SIGTERM/SIGINT 时先读 `.compute_pids` 杀子进程, 再 `_sys.exit(0)`
+
+### 双调度器清理
+
+- **删除**: `scheduler.py` (根目录 standalone, 与 `quant/scheduler.py` daemon 线程重复调度)
+- **删除**: `com.quant.scheduler.plist` / `com.quant.webapp.plist` (launchctl 定时服务)
+- **删除**: `restart.sh` (每次调用产出一批孤儿进程的入口)
+
+### 文件变更
+
+- `factor/stats_cache.py`: +28 lines (PID 追踪 + cleanup)
+- `web/app.py`: +16/-3 lines (信号处理改进)
+- `CHANGELOG.md`: +22 lines (本文档)
+- `HANDOFF.md`: updated
+
+---
+
 ## [P67] — 2026-07-07
 
 ### 数源切换: Tushare → akshare (holder_trade + pledge_stat)

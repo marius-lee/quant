@@ -142,6 +142,9 @@ def api_factors():
             stats["n_rejected"] = r[3] or 0
             stats["n_retired"] = r[4] or 0
             stats["n_monitoring"] = r[5] or 0
+            # 已评估: ic_mean IS NOT NULL (不受缓存快照影响)
+            er = c.execute("SELECT COUNT(*) FROM factor_registry WHERE ic_mean IS NOT NULL").fetchone()
+            stats["n_evaluated"] = er[0] if er else 0
         except Exception:
             stats["n_registered"] = len(stats.get("factor_keys", []))
             stats["n_active"] = len(stats.get("factor_keys", []))

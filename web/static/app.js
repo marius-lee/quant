@@ -284,8 +284,7 @@ function renderFactorKPIs(fd) {
   const absICs = ics.map(Math.abs);
   const meanAbsIC = absICs.length ? absICs.reduce((a,b)=>a+b)/absICs.length : 0;
   const meanIR = fd.ic_ir?.length ? fd.ic_ir.reduce((a,b)=>a+Math.abs(b))/fd.ic_ir.length : 0;
-  const nt = (fd.n_registered||0)+(fd.n_active||0)+(fd.n_candidate||0)+(fd.n_rejected||0)+(fd.n_retired||0)+(fd.n_monitoring||0);
-  setText('kpi-ntotal', nt || 64);
+  setText('kpi-ntotal', fd.n_total ?? ((fd.n_registered||0)+(fd.n_active||0)+(fd.n_candidate||0)+(fd.n_rejected||0)+(fd.n_retired||0)));
   setText('kpi-nactive', fd.n_active ?? 0);
   setText('kpi-ncandidate', fd.n_candidate ?? 0);
   setText('kpi-nrejected', fd.n_rejected ?? 0);

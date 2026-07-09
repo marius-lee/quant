@@ -171,7 +171,7 @@ class RedisStateBroker(StateBroker):
             state = self._init_state()
         else:
             state = self._init_state()
-            cached.update(state)
+            state.update(cached)
             state = cached
 
         # ── 实时报价 overlay (盘中) ──

@@ -611,8 +611,6 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None) 
             _lock_fd = None
 
     # 进程内重入保护：防止 warmup 和 API 请求同时触发
-    # 每次计算前强制清理孤儿进程
-    _cleanup_process_pool()
     if not _COMPUTE_LOCK.acquire(blocking=False):
         logger.warning("factor stats computation already in progress by another thread, returning stale/empty cache")
         if _lock_fd:

@@ -203,7 +203,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         }
         logger.info(f"[5/5] optimizer: {portfolio.method}, {portfolio.positions} pos, invested=Y{portfolio.invested:,.0f}")
         post_state({"status": "signals_generated", "progress": "5/5",
-                      "positions": portfolio.positions, "invested": portfolio.invested, "trace_id": tid})
+                      "positions": portfolio.positions, "invested": portfolio.invested, "trace_id": tid, "signals": target_positions})
     except Exception as e:
         _m.inc("pipeline.errors")
         results["steps"]["optimizer"] = {"error": str(e), "status": "failed"}
@@ -333,7 +333,7 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
             "status": "ok",
         }
         logger.info(f"execute: {len(orders)} orders ({results['steps']['execution']['buys']} buys, {results['steps']['execution']['sells']} sells)")
-        post_state({"status": "trades_executed", "progress": "6/7", "orders": len(orders), "trace_id": tid})
+        post_state({"status": "trades_executed", "progress": "6/7", "orders": len(orders), "trace_id": tid, "signals": target_positions})
         _m.inc("pipeline.trades", len(orders))
     except Exception as e:
         _m.inc("pipeline.errors")

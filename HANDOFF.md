@@ -1,6 +1,6 @@
 # HANDOFF — 盈迹 (quant) 项目当前状态
 
-**最后更新**: 2026-07-10 07:10 CST
+**最后更新**: 2026-07-10 07:30 CST
 
 > 旧版归档: docs/HANDOFF-2026-07-02.md / docs/HANDOFF-2026-07-03.md (已 superseded)
 > 项目根只有一个 HANDOFF.md 作为单一真相源
@@ -11,6 +11,7 @@
 
 | 提交 | 内容 |
 |------|------|
+| `ca9f9a5` | refactor: P78 ProcessPoolExecutor→ThreadPoolExecutor — 根除多进程内存泄漏 (stats_cache.py -239行) |
 | `878fba1` | fix: P77#10 根除多进程内存泄漏 — 显式terminate/kill替代pgrep (stats_cache.py + web/app.py) |
 | `5c38dc3` | docs: HANDOFF 更新止盈止损 |
 | `eb7bee5` | feat: 止盈止损统一管理 — 移至 monitor.py 盘中风控 (P75#4) |

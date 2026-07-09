@@ -15,7 +15,6 @@ from data.store import DataStore
 from config.loader import get as cfg
 
 from factor.compute import compute_all_factors
-from factor.synth import ic_weighted, equal_weight, intersection_alpha, sleeve_compose
 from risk.neutralize import neutralize
 
 from factor.stats_cache import load_ic_map_from_cache
@@ -29,69 +28,9 @@ from monitor.report import generate_report, push_to_web
 from config.loader import get as _ecfg
 from utils.logger import get_logger
 
-# ── HTTP state push (方案B: pipeline → Flask) ──
+# ── HTTP state push (P69: 抽取到 web/state_pusher.py) ──
 import uuid as _uuid
-
-import requests as _requests, threading as _threading
-
-
-# ── JSON sanitizer: convert numpy types to native Python types ──
-def _sanitize_for_json(obj):
-    """Recursively convert numpy types to Python native types for JSON serialization.
-    Python 3.14 simplejson cannot serialize numpy.int64/float64/etc.
-    """
-    import numpy as _np
-    if isinstance(obj, (_np.integer,)):
-        return int(obj)
-    if isinstance(obj, (_np.floating,)):
-        return float(obj)
-    if isinstance(obj, _np.ndarray):
-        return obj.tolist()
-    if isinstance(obj, dict):
-        return {k: _sanitize_for_json(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_sanitize_for_json(x) for x in obj]
-    return obj
-def _state_url() -> str:
-    from config.loader import get as _cfg
-    port = int(_cfg("web.port", 8521))
-    return f"http://127.0.0.1:{port}/api/state"
-
-def _post_state(data: dict, timeout: float = 5.0, max_retries: int = 3, async_mode: bool = True):
-    """POST 状态到 Flask，指数退避重试。
-
-    async_mode=True (默认): fire-and-forget 线程, 不阻塞 pipeline 步骤.
-    async_mode=False: 同步模式, 用于测试/调试.
-    失败静默 — 不影响 pipeline 执行.
-    """
-    if async_mode:
-        _threading.Thread(target=_post_state_sync, args=(data, timeout, max_retries), daemon=True).start()
-        return
-    _post_state_sync(data, timeout, max_retries)
-
-def _post_state_sync(data: dict, timeout: float, max_retries: int):
-    """POST state to Flask. Sanitizes numpy types. Retries only on transient errors."""
-    url = _state_url()
-    data = _sanitize_for_json(data)
-    for attempt in range(max_retries):
-        try:
-            r = _requests.post(url, json=data, timeout=timeout)
-            if r.ok:
-                return
-            # 4xx client errors are permanent — do not retry
-            if 400 <= r.status_code < 500:
-                get_logger("pipeline").warning(f"_post_state client error {r.status_code}, not retrying")
-                return
-            get_logger("pipeline").warning(f"_post_state HTTP {r.status_code} (attempt {attempt+1})")
-        except _requests.ConnectionError:
-            # Server not running — not a transient error
-            return
-        except _requests.Timeout:
-            get_logger("pipeline").warning(f"_post_state timeout (attempt {attempt+1})")
-        except _requests.RequestException as e:
-            get_logger("pipeline").warning(f"_post_state failed: {e} (attempt {attempt+1})")
-        if attempt < max_retries - 1:
-            import time as _time; _time.sleep(2 ** attempt)
+from web.state_pusher import post_state
 
 logger = get_logger("pipeline")
 
@@ -116,7 +55,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
 
     t0 = time.time()
     results = {"date": date_str, "steps": {}}
-    _post_state({"status": "signals_started", "progress": "0/5", "date": date_str, "trace_id": tid})
+    post_state({"status": "signals_started", "progress": "0/5", "date": date_str, "trace_id": tid})
     logger.info(f"generate_signals started trace_id={tid} date={date_str}")
 
     # ── Step 0: Init ──
@@ -138,7 +77,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
             n_new = store.update_daily(start="2020-01-01")
             results["steps"]["data"] = {"new_rows": n_new, "status": "ok"}
             logger.info(f"[1/5] data: {n_new} new daily rows")
-            _post_state({"status": "data_synced", "progress": "1/5", "new_rows": n_new, "trace_id": tid})
+            post_state({"status": "data_synced", "progress": "1/5", "new_rows": n_new, "trace_id": tid})
             _m.inc("data.sync.rows", n_new)
         except Exception as e:
             _m.inc("pipeline.errors")
@@ -160,7 +99,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         pe_cnt = int(fundamentals["pe"].notna().sum()) if "pe" in fundamentals.columns else 0
         pb_cnt = int(fundamentals["pb"].notna().sum()) if "pb" in fundamentals.columns else 0
         logger.info(f"[2/5] load: {len(symbols)} symbols, {data.shape[0]} days, PE/PB={pe_cnt}/{pb_cnt}")
-        _post_state({"status": "data_loaded", "progress": "2/5", "symbols": len(symbols), "trace_id": tid})
+        post_state({"status": "data_loaded", "progress": "2/5", "symbols": len(symbols), "trace_id": tid})
     except Exception as e:
         _m.inc("pipeline.errors")
         results["steps"]["load"] = {"error": str(e), "status": "failed"}
@@ -188,53 +127,14 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
                                             benchmark_ret=benchmark_ret)
         n_valid = sum(1 for v in factor_values.values() if isinstance(v, pd.Series) and v.notna().sum() > 0)
 
-        combine_mode = cfg("alpha.combine_mode", "sleeve")
-        if combine_mode == "sleeve":
-            method = 'sleeve'
-            alpha_raw = sleeve_compose(
-                factor_values,
-                positions_per_factor=cfg("alpha.sleeve.positions_per_factor", 8),
-                min_factors=cfg("alpha.sleeve.min_factors", 1),
-            )
-            logger.info("[3/5] sleeve: %d factors -> %d stocks", len(factor_values), alpha_raw.notna().sum())
-        else:
-            method = cfg("alpha.method", "ic_weighted")
-            if method == "intersection":
-                alpha_raw = intersection_alpha(
-                    factor_values,
-                    top_fraction=cfg("alpha.intersection_top_fraction", 0.20),
-                    primary_factor=cfg("alpha.intersection_primary", "gap_5d"),
-                )
-            elif method == "ic_weighted":
-                ic_map = load_ic_map_from_cache(factor_values)
-                if not ic_map:
-                    logger.info("IC cache unavailable, falling back to equal_weight")
-                    alpha_raw = equal_weight(factor_values)
-                else:
-                    alpha_raw = ic_weighted(factor_values, ic_map)
-            else:
-                alpha_raw = equal_weight(factor_values)
-
-        # Soft cutoff
-        if method == "intersection":
-            alpha = alpha_raw.copy()
-        elif alpha_raw.notna().sum() > 10:
-            top_frac = cfg("alpha.top_fraction", 0.30)
-            if top_frac < 1.0:
-                threshold = alpha_raw.quantile(1.0 - top_frac)
-                below = alpha_raw < threshold
-                if below.any():
-                    alpha = alpha_raw.copy()
-                    alpha[below] = alpha[below] * (alpha[below] / threshold) ** 2
-                else:
-                    alpha = alpha_raw.copy()
-            else:
-                alpha = alpha_raw.copy()
-        else:
-            alpha = alpha_raw.copy()
+        from alpha.model import AlphaModel
+        am = AlphaModel()
+        ic_map = load_ic_map_from_cache(factor_values)
+        alpha_raw = am.combine(factor_values, ic_map=ic_map)
+        alpha = am.rank(alpha_raw)
 
         results["steps"]["factor"] = {"factors": len(factor_values), "valid_stocks": alpha.dropna().count(), "status": "ok"}
-        _post_state({"status": "factors_computed", "progress": "3/5", "n_factors": len(factor_values), "trace_id": tid})
+        post_state({"status": "factors_computed", "progress": "3/5", "n_factors": len(factor_values), "trace_id": tid})
         _m.gauge("factor.n_active", len(factor_values))
     except Exception as e:
         _m.inc("pipeline.errors")
@@ -268,7 +168,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         filtered = apply_all_filters(candidates.reindex(prices.index))
         results["steps"]["risk"] = {"candidates": len(filtered), "status": "ok"}
         logger.info(f"[4/5] risk: {len(filtered)} candidates after filters")
-        _post_state({"status": "risk_filtered", "progress": "4/5", "candidates": len(filtered), "trace_id": tid})
+        post_state({"status": "risk_filtered", "progress": "4/5", "candidates": len(filtered), "trace_id": tid})
     except Exception as e:
         _m.inc("pipeline.errors")
         results["steps"]["risk"] = {"error": str(e), "status": "failed"}
@@ -299,7 +199,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
             "invested": round(portfolio.invested, 2), "status": "ok",
         }
         logger.info(f"[5/5] optimizer: {portfolio.method}, {portfolio.positions} pos, invested=Y{portfolio.invested:,.0f}")
-        _post_state({"status": "signals_generated", "progress": "5/5",
+        post_state({"status": "signals_generated", "progress": "5/5",
                       "positions": portfolio.positions, "invested": portfolio.invested, "trace_id": tid})
     except Exception as e:
         _m.inc("pipeline.errors")
@@ -430,7 +330,7 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
             "status": "ok",
         }
         logger.info(f"execute: {len(orders)} orders ({results['steps']['execution']['buys']} buys, {results['steps']['execution']['sells']} sells)")
-        _post_state({"status": "trades_executed", "progress": "6/7", "orders": len(orders), "trace_id": tid})
+        post_state({"status": "trades_executed", "progress": "6/7", "orders": len(orders), "trace_id": tid})
         _m.inc("pipeline.trades", len(orders))
     except Exception as e:
         _m.inc("pipeline.errors")

@@ -37,10 +37,16 @@ def start_scheduler():
             now = datetime.now()
             current_day = now.strftime("%Y-%m-%d")
 
-            # 跨天重置
+            # 跨天重置: 首次进入新的一天, 已过期的阶段不补跑
             if current_day != today:
                 today = current_day
-                ran_phases = {today: {}}
+                hhmm_init = time(now.hour, now.minute)
+                phases_today = {}
+                # 首次启动时已过期的阶段 → 标记跳过 (pipeline 会由 scheduler.py 独立运行)
+                for phase, phase_time in PHASE_TIMES.items():
+                    if phase != 3 and hhmm_init >= phase_time:
+                        phases_today[phase] = True  # 跳过已过期的 Phase 1/2
+                ran_phases = {today: phases_today}
 
             # 非交易日跳过
             if not is_trading_day():
@@ -60,7 +66,7 @@ def start_scheduler():
                 _run_phase2(today)
                 phases_today[2] = True
 
-            # Phase 3: 15:30 盘后归因 (跳过 15:45 后, 可能已过归因窗口)
+            # Phase 3: 15:30 盘后归因 (日常归因轻量, 15:45 后跳过)
             if hhmm >= PHASE_TIMES[3] and not phases_today.get(3):
                 if hhmm <= time(15, 45):
                     _run_phase3(today)

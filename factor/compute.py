@@ -1039,7 +1039,7 @@ def compute_margin_balance_chg(data: "pd.DataFrame", date: str, window: int = 5)
     return _cs_zscore(result).rename("margin_balance_chg")
 
 
-def compute_margin_buy_ratio(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.Series":
+def compute_margin_buy_ratio_price(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.Series":
     """融资买入占比: AVG(margin_buy / margin_balance) over window 天。
 
     数据源: margin_detail 表
@@ -1184,36 +1184,6 @@ def compute_analyst_buy(data: "pd.DataFrame", date: str, window: int = 0) -> "pd
     return _cs_zscore(result).rename("analyst_buy")
 
 
-_PRICE_FN_MAP = {
-    "reversal_5d":           (compute_reversal,            5),
-    "turnover_rev_5d":       (compute_turnover_reversal,   5),
-    "max_ret_20d":           (compute_max_return,         20),
-    "gap_5d":                (compute_overnight_gap,       5),
-    "range_20d":             (compute_intraday_range,     20),
-    "momentum_63d":          (compute_momentum,           63),
-    "residual_momentum_126d": (compute_residual_momentum,  126),  # Ch.3.7 Kakushadze & Serur 2018
-    "momentum_126d":         (compute_momentum,          126),
-    "momentum_252d":         (compute_momentum,          252),
-    "volatility_126d":       (compute_volatility,        _VOLATILITY_WINDOW),
-    "skewness_60d":          (compute_skewness,          _SKEWNESS_WINDOW),
-    "idio_vol_126d":         (compute_idiosyncratic_vol, _IDIO_VOL_WINDOW),
-    "amihud_250d":           (compute_amihud,            _AMIHUD_WINDOW),
-    "rsi_rev_14d":           (compute_rsi_reversal,       14),
-    "money_flow_5d":         (compute_money_flow,          5),
-    "ma_alignment_20d":      (compute_ma_alignment,       20),
-    "vol_price_corr_10d":    (compute_volume_price_corr,  10),
-    "turnover_anomaly":      (compute_turnover_anomaly,    5),
-    "limit_up_prox_5d":      (compute_limit_up_proximity,  5),
-    "zt_streak":             (compute_limit_up_streak,     0),
-    "dt_streak":             (compute_dt_streak,          0),
-    "lhb_net_buy_20d":       (compute_lhb_net_buy,        20),
-    "lhb_post_quality":      (compute_lhb_post_quality,   90),
-    "margin_balance_chg":     (compute_margin_balance_chg, 5),
-    "margin_buy_ratio":       (compute_margin_buy_ratio,   5),
-    "fund_change":             (compute_fund_change,        0),
-    "analyst_buy":             (compute_analyst_buy,        0),
-}
-
 def _market_db_path():
     return _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "market.db")
 
@@ -1273,7 +1243,7 @@ def load_active_fundamental_factors(status_filter='active'):
 
 def update_factor_evaluation(name: str, ic_mean: float, ic_ir: float):
     """回测后更新因子 IC 到数据库."""
-    conn = sqlite3.connect(_market_db_path(), timeout=30)
+    conn = market_conn("rw")
     conn.execute(
         "UPDATE factor_registry SET ic_mean=?, ic_ir=?, last_evaluated=datetime('now','localtime'), updated_at=datetime('now','localtime') WHERE name=?",
         (round(ic_mean, 6), round(ic_ir, 4), name)
@@ -1683,112 +1653,6 @@ def _ttm_sum(df: "pd.DataFrame", col: str, n_quarters: int = 4) -> "pd.Series":
     return pd.Series(result)
 
 
-def compute_gross_margin_diff(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
-    """毛利率TTM差分: (营收TTM - 营业成本TTM) / 营收TTM - 上期.
-    来源: 源达信息 2026, ICIR=0.79."""
-    df = _get_financial_historical("financial_income", date)
-    if df.empty:
-        return pd.Series(dtype=float, name="gross_margin_diff")
-    rev_col = "total_operating_revenue" if "total_operating_revenue" in df.columns else "operating_revenue"
-    cost_col = "operating_cost"
-    if rev_col not in df.columns or cost_col not in df.columns:
-        return pd.Series(dtype=float, name="gross_margin_diff")
-    rev_ttm = _ttm_sum(df, rev_col, 4)
-    cost_ttm = _ttm_sum(df, cost_col, 4)
-    gm_current = (rev_ttm - cost_ttm) / rev_ttm.replace(0, np.nan)
-    prev_result = {}
-    for sym, grp in df.groupby("symbol"):
-        grp_sorted = grp.sort_values("stat_date")
-        if len(grp_sorted) >= 5:
-            rev_prev = grp_sorted[rev_col].iloc[-5:-1].sum()
-            cost_prev = grp_sorted[cost_col].iloc[-5:-1].sum()
-            if rev_prev > 0:
-                prev_result[sym] = (rev_prev - cost_prev) / rev_prev
-    gm_prev = pd.Series(prev_result)
-    diff = gm_current.sub(gm_prev, fill_value=np.nan)
-    return diff.dropna().rename("gross_margin_diff")
-
-
-def compute_financial_anomaly(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
-    """财务异常复合: 4子因子等权 (申万宏源 2018, IC=6.79%).
-    存货/应收/管理费/毛利异常 (缺预付款/销售费用, 4/6子因子)."""
-    df_inc = _get_financial_historical("financial_income", date)
-    df_bal = _get_financial_historical("financial_balance", date)
-    if df_inc.empty or df_bal.empty:
-        return pd.Series(dtype=float, name="financial_anomaly")
-    rev_col = "total_operating_revenue" if "total_operating_revenue" in df_inc.columns else "operating_revenue"
-
-    def _yoy_growth(df, col):
-        result = {}
-        for sym, grp in df.groupby("symbol"):
-            grp_sorted = grp.sort_values("stat_date")
-            if len(grp_sorted) >= 2 and col in grp_sorted.columns:
-                v_l, v_p = grp_sorted[col].iloc[-1], grp_sorted[col].iloc[-2]
-                if v_p and v_p != 0:
-                    result[sym] = (v_l - v_p) / abs(v_p)
-        return pd.Series(result)
-
-    def _gm_change():
-        result = {}
-        cost_col = "operating_cost"
-        for sym, grp in df_inc.groupby("symbol"):
-            grp_s = grp.sort_values("stat_date")
-            if len(grp_s) >= 2:
-                rl, cl = grp_s[rev_col].iloc[-1], grp_s[cost_col].iloc[-1]
-                rp, cp = grp_s[rev_col].iloc[-2], grp_s[cost_col].iloc[-2]
-                if rl > 0 and rp > 0:
-                    result[sym] = (rl - cl) / rl - (rp - cp) / rp
-        return pd.Series(result)
-
-    rev_growth = _yoy_growth(df_inc, rev_col)
-    inv_growth = _yoy_growth(df_bal, "inventories")
-    ar_growth = _yoy_growth(df_bal, "account_receivable")
-    admin_growth = _yoy_growth(df_inc, "administration_expense")
-    gm_change = _gm_change()
-
-    scores = {}
-    all_syms = set(rev_growth.index) | set(inv_growth.index) | set(ar_growth.index) | set(gm_change.index)
-    for sym in all_syms:
-        z, count = 0.0, 0
-        if sym in inv_growth.index and sym in rev_growth.index:
-            z += -(inv_growth[sym] - rev_growth[sym]); count += 1
-        if sym in ar_growth.index and sym in rev_growth.index:
-            z += -(ar_growth[sym] - rev_growth[sym]); count += 1
-        if sym in admin_growth.index and sym in rev_growth.index:
-            z += -(admin_growth[sym] - rev_growth[sym]); count += 1
-        if sym in gm_change.index:
-            z += -gm_change[sym]; count += 1
-        if count > 0:
-            scores[sym] = z / count * 4
-
-    result = pd.Series(scores).replace([np.inf, -np.inf], np.nan)
-    return _cs_zscore(result).rename("financial_anomaly")
-
-
-def compute_roe_trimmed(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
-    """单季度ROE(掐头): 归母净利/avg(归母权益), 剔除 top10%. 来源: 海通 2024, IC=4-5%."""
-    df_inc = _get_financial_historical("financial_income", date)
-    df_bal = _get_financial_historical("financial_balance", date)
-    if df_inc.empty or df_bal.empty:
-        return pd.Series(dtype=float, name="roe_trimmed")
-    inc_latest = df_inc.sort_values("stat_date").groupby("symbol").last()
-    net_profit = inc_latest["net_profit"] if "net_profit" in inc_latest.columns else pd.Series(dtype=float)
-    eq_col = "equities_parent_company_owners"
-    if eq_col not in df_bal.columns:
-        return pd.Series(dtype=float, name="roe_trimmed")
-    avg_equity = {}
-    for sym, grp in df_bal.sort_values("stat_date").groupby("symbol"):
-        eq_vals = grp[eq_col].dropna()
-        if len(eq_vals) >= 1:
-            avg_equity[sym] = eq_vals.tail(2).mean()
-    avg_eq = pd.Series(avg_equity)
-    roe = net_profit / avg_eq.replace(0, np.nan)
-    roe = roe.replace([np.inf, -np.inf], np.nan).where(lambda x: (x > -1) & (x < 1))
-    if len(roe.dropna()) >= 10:
-        roe = roe.where(roe < roe.quantile(0.90))
-    return _cs_zscore(roe).rename("roe_trimmed")
-
-
 # ── Phase 4 专项数据源因子 ──
 
 def compute_ihn(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
@@ -1957,14 +1821,6 @@ def compute_epds(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
     return epds.dropna().rename("epds")
 
 
-_FUNDAMENTAL_FN_MAP = {
-    "ep_ratio":      ("value_ep",       compute_ep_ratio),
-    "bp_ratio":      ("value_bp",       compute_bp_ratio),
-    "roe_ratio":     ("profitability",  compute_roe_ratio),
-    "high52w_dist":  ("high52w",        compute_high52w_dist),
-    "size":          ("size_large_cap", compute_size),  # A股大盘溢价
-}
-
 
 def compute_roe_reported(fundamentals, date, financials=None):
     """报告期 ROE = net_profit / total_owner_equities
@@ -2072,7 +1928,7 @@ def compute_asset_growth(fundamentals, date, financials=None):
     # 当前季度: fin 已有最新 total_assets
     # 需要去年同期: 查询 financial_balance
     db = _market_db_path()
-    conn = sqlite3.connect(db)
+    conn = market_conn("ro")
 
     # 获取每个 symbol 的最新 stat_date
     sym_list = "','".join(fundamentals.index.tolist())
@@ -2169,7 +2025,7 @@ def compute_ztd(data, date, window=250):
 
     close = data["close"]
     db = _market_db_path()
-    conn = sqlite3.connect(db)
+    conn = market_conn("ro")
 
     # 取过去 window 个日历日在 daily 表中的数据
     sym_list = "','".join(close.columns.tolist())
@@ -2225,7 +2081,7 @@ def compute_northbound_flow(data, date, window=20):
 
     close = data["close"]
     db = _market_db_path()
-    conn = sqlite3.connect(db)
+    conn = market_conn("ro")
 
     sym_list = "','".join(close.columns.tolist())
 
@@ -2271,28 +2127,11 @@ def compute_northbound_flow(data, date, window=20):
 
 
 
-# 注册到 _FUNDAMENTAL_FN_MAP
-if "roe_reported" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["roe_reported"] = ("profitability", compute_roe_reported)
-if "roa" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["roa"] = ("profitability", compute_roa)
-if "debt_ratio" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["debt_ratio"] = ("leverage", compute_debt_ratio)
-if "accruals" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["accruals"] = ("quality", compute_accruals)
-if "asset_growth" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["asset_growth"] = ("fundamental", compute_asset_growth)
-if "gp_ta" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["gp_ta"] = ("profitability", compute_gp_ta)
 
 
 # 需要三表(资产负债表+利润表+现金流量表)合并数据的因子名
 # 模板 2a: 这些因子接收 financials=DataFrame 参数, 不内部访问 DataStore
 # 函数定义在文件上方, 此处位于 compute_all_factors 之后, 确保函数已定义
-if "ztd" not in _PRICE_FN_MAP:
-    _PRICE_FN_MAP["ztd"] = (compute_ztd, 250)
-if "northbound_20d" not in _PRICE_FN_MAP:
-    _PRICE_FN_MAP["northbound_20d"] = (compute_northbound_flow, 20)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2314,7 +2153,7 @@ def compute_sue(fundamentals, date, financials=None):
     import sqlite3, pandas as pd, numpy as np
 
     db = _market_db_path()
-    conn = sqlite3.connect(db)
+    conn = market_conn("ro")
 
     sym_list = "','".join(fundamentals.index.tolist())
 
@@ -2374,10 +2213,6 @@ def compute_sue(fundamentals, date, financials=None):
     return _cs_zscore(sue_series).rename("sue")
 
 
-# ── 注册 SUE ──
-if "sue" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["sue"] = ("profitability", compute_sue)
-    _FIN_FACTORS.add("sue")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2398,7 +2233,7 @@ def compute_holder_reduction(fundamentals, date, financials=None):
     import sqlite3, pandas as pd
 
     db = _market_db_path()
-    conn = sqlite3.connect(db)
+    conn = market_conn("ro")
 
     sym_list = "','".join(fundamentals.index.tolist())
     end_date = pd.Timestamp(date)
@@ -2438,7 +2273,7 @@ def compute_pledge_ratio(fundamentals, date, financials=None):
     import sqlite3, pandas as pd
 
     db = _market_db_path()
-    conn = sqlite3.connect(db)
+    conn = market_conn("ro")
 
     sym_list = "','".join(fundamentals.index.tolist())
 
@@ -2480,7 +2315,7 @@ def compute_dividend_yield(fundamentals, date, financials=None):
     import sqlite3, pandas as pd
 
     db = _market_db_path()
-    conn = sqlite3.connect(db)
+    conn = market_conn("ro")
 
     sym_list = "','".join(fundamentals.index.tolist())
 
@@ -2519,16 +2354,6 @@ def compute_dividend_yield(fundamentals, date, financials=None):
     return _cs_zscore(result).rename("dividend_yield")
 
 
-# ── 注册 3 个新因子 ──
-if "holder_reduction" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["holder_reduction"] = ("institution", compute_holder_reduction)
-    _FIN_FACTORS.add("holder_reduction")
-if "pledge_ratio" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["pledge_ratio"] = ("risk", compute_pledge_ratio)
-    _FIN_FACTORS.add("pledge_ratio")
-if "dividend_yield" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["dividend_yield"] = ("value", compute_dividend_yield)
-    _FIN_FACTORS.add("dividend_yield")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2583,7 +2408,7 @@ def compute_str(data, date, window=20):
 
     # 从 daily 表读取换手率 (get_daily 不含 turnover 字段)
     db = _market_db_path()
-    conn = sqlite3.connect(db)
+    conn = market_conn("ro")
     sym_list = "','".join(syms)
     rows = conn.execute(f"""
         SELECT date, symbol, turnover FROM daily
@@ -2613,7 +2438,7 @@ def compute_str(data, date, window=20):
 
     # 市值中性化 (从 stocks 表取 total_mv)
     try:
-        conn2 = sqlite3.connect(db)
+        conn2 = market_conn("ro")
         mv_rows = conn2.execute(f"""
             SELECT symbol, total_mv FROM stocks
             WHERE symbol IN ('{"','".join(raw.index.tolist())}') AND total_mv IS NOT NULL
@@ -2652,7 +2477,7 @@ def compute_abn_turnover(data, date, window=20):
     end_date = close.index[-1].strftime("%Y-%m-%d") if hasattr(close.index[-1], 'strftime') else str(close.index[-1])[:10]
 
     db = _market_db_path()
-    conn = sqlite3.connect(db)
+    conn = market_conn("ro")
     sym_list = "','".join(syms)
 
     # 取换手率
@@ -3069,62 +2894,81 @@ def compute_ideal_amplitude(data: "pd.DataFrame", date: str, window: int = 20) -
     return _cs_zscore(result).rename("ideal_amplitude")
 
 
-# ── P70: 注册四新因子 ──
-if "day_night" not in _PRICE_FN_MAP:
-    _PRICE_FN_MAP["day_night"] = (compute_day_night, 20)
-if "str" not in _PRICE_FN_MAP:
-    _PRICE_FN_MAP["str"] = (compute_str, 20)
-if "abn_turnover" not in _PRICE_FN_MAP:
-    _PRICE_FN_MAP["abn_turnover"] = (compute_abn_turnover, 20)
+# ══════════════════════════════════════════════════════════════
+# P69: Factor maps moved to end of file
+# (entries reference functions defined above, forward-reference safe)
+# ══════════════════════════════════════════════════════════════
 
-if "ocfp" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["ocfp"] = ("value", compute_ocfp)
-    _FIN_FACTORS.add("ocfp")
+_PRICE_FN_MAP = {
+    "reversal_5d":           (compute_reversal,            5),
+    "turnover_rev_5d":       (compute_turnover_reversal,   5),
+    "max_ret_20d":           (compute_max_return,         20),
+    "gap_5d":                (compute_overnight_gap,       5),
+    "range_20d":             (compute_intraday_range,     20),
+    "momentum_63d":          (compute_momentum,           63),
+    "residual_momentum_126d": (compute_residual_momentum,  126),  # Ch.3.7 Kakushadze & Serur 2018
+    "momentum_126d":         (compute_momentum,          126),
+    "momentum_252d":         (compute_momentum,          252),
+    "volatility_126d":       (compute_volatility,        _VOLATILITY_WINDOW),
+    "skewness_60d":          (compute_skewness,          _SKEWNESS_WINDOW),
+    "idio_vol_126d":         (compute_idiosyncratic_vol, _IDIO_VOL_WINDOW),
+    "amihud_250d":           (compute_amihud,            _AMIHUD_WINDOW),
+    "rsi_rev_14d":           (compute_rsi_reversal,       14),
+    "money_flow_5d":         (compute_money_flow,          5),
+    "ma_alignment_20d":      (compute_ma_alignment,       20),
+    "vol_price_corr_10d":    (compute_volume_price_corr,  10),
+    "turnover_anomaly":      (compute_turnover_anomaly,    5),
+    "limit_up_prox_5d":      (compute_limit_up_proximity,  5),
+    "zt_streak":             (compute_limit_up_streak,     0),
+    "dt_streak":             (compute_dt_streak,          0),
+    "lhb_net_buy_20d":       (compute_lhb_net_buy,        20),
+    "lhb_post_quality":      (compute_lhb_post_quality,   90),
+    "margin_balance_chg":     (compute_margin_balance_chg, 5),
+    "margin_buy_ratio":       (compute_margin_buy_ratio_price,   5),
+    "fund_change":             (compute_fund_change,        0),
+    "analyst_buy":             (compute_analyst_buy,        0),
+    # P69: 集中化 — 从动态注册迁移到静态 map
+    "ztd":                    (compute_ztd,               250),
+    "northbound_20d":         (compute_northbound_flow,    20),
+    "day_night":              (compute_day_night,          20),
+    "str":                    (compute_str,                20),
+    "abn_turnover":           (compute_abn_turnover,       20),
+    "seal_turnover_ratio":    (compute_seal_turnover_ratio, 1),
+    "seal_time":              (compute_seal_time,           1),
+    "limit_touch_no_seal":    (compute_limit_touch_no_seal, 1),
+    "net_limit_ratio":        (compute_net_limit_ratio,     1),
+    "trcf":                   (compute_trcf,              120),
+    "ideal_amplitude":        (compute_ideal_amplitude,     20),
+}
 
+_FUNDAMENTAL_FN_MAP = {
+    "ep_ratio":      ("value_ep",       compute_ep_ratio),
+    "bp_ratio":      ("value_bp",       compute_bp_ratio),
+    "roe_ratio":     ("profitability",  compute_roe_ratio),
+    "high52w_dist":  ("high52w",        compute_high52w_dist),
+    "size":          ("size_large_cap", compute_size),  # A股大盘溢价
+    # P69: 集中化 — 从动态注册迁移到静态 map
+    "roe_reported":        ("profitability",  compute_roe_reported),
+    "roa":                 ("profitability",  compute_roa),
+    "debt_ratio":          ("leverage",       compute_debt_ratio),
+    "accruals":            ("quality",        compute_accruals),
+    "asset_growth":        ("fundamental",    compute_asset_growth),
+    "gp_ta":               ("profitability",  compute_gp_ta),
+    "sue":                 ("fundamental",    compute_sue),
+    "holder_reduction":    ("institution",    compute_holder_reduction),
+    "pledge_ratio":        ("risk",           compute_pledge_ratio),
+    "dividend_yield":      ("value",          compute_dividend_yield),
+    "ocfp":                ("value",          compute_ocfp),
+    "epa":                 ("value",          compute_epa),
+    "margin_buy_ratio":    ("margin",         compute_margin_buy_ratio),
+    "analyst_consensus":   ("analyst",        compute_analyst_consensus),
+    "epd":                 ("value",          compute_epd),
+    "epds":                ("value",          compute_epds),
+    "gross_margin_diff":   ("profitability",  compute_gross_margin_diff),
+    "financial_anomaly":   ("quality",        compute_financial_anomaly),
+    "roe_trimmed":         ("profitability",  compute_roe_trimmed),
+    "ihn":                 ("institution",    compute_ihn),
+    "insider_increase":    ("institution",    compute_insider_increase),
+    "earnings_revision":   ("analyst",        compute_earnings_revision),
+}
 
-# ── P71: 注册涨跌停制度特有效因子 ──
-if "seal_turnover_ratio" not in _PRICE_FN_MAP:
-    _PRICE_FN_MAP["seal_turnover_ratio"] = (compute_seal_turnover_ratio, 1)
-if "seal_time" not in _PRICE_FN_MAP:
-    _PRICE_FN_MAP["seal_time"] = (compute_seal_time, 1)
-if "limit_touch_no_seal" not in _PRICE_FN_MAP:
-    _PRICE_FN_MAP["limit_touch_no_seal"] = (compute_limit_touch_no_seal, 1)
-if "net_limit_ratio" not in _PRICE_FN_MAP:
-    _PRICE_FN_MAP["net_limit_ratio"] = (compute_net_limit_ratio, 1)
-
-# ── P72: 注册数据源适配因子 ──
-if "epa" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["epa"] = ("value", compute_epa)
-if "trcf" not in _PRICE_FN_MAP:
-    _PRICE_FN_MAP["trcf"] = (compute_trcf, 120)
-if "ideal_amplitude" not in _PRICE_FN_MAP:
-    _PRICE_FN_MAP["ideal_amplitude"] = (compute_ideal_amplitude, 20)
-
-
-if "margin_buy_ratio" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["margin_buy_ratio"] = ("margin", compute_margin_buy_ratio)
-if "analyst_consensus" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["analyst_consensus"] = ("analyst", compute_analyst_consensus)
-
-# ── P73: 注册 EPD/EPDS 估值偏离因子 ──
-if "epd" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["epd"] = ("value", compute_epd)
-if "epds" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["epds"] = ("value", compute_epds)
-
-# ── P74: 注册 Phase 3 财务因子 ──
-if "gross_margin_diff" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["gross_margin_diff"] = ("profitability", compute_gross_margin_diff)
-if "financial_anomaly" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["financial_anomaly"] = ("quality", compute_financial_anomaly)
-if "roe_trimmed" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["roe_trimmed"] = ("profitability", compute_roe_trimmed)
-
-
-# ── P75: 注册 Phase 4 剩余因子 ──
-if "ihn" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["ihn"] = ("institution", compute_ihn)
-if "insider_increase" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["insider_increase"] = ("institution", compute_insider_increase)
-if "earnings_revision" not in _FUNDAMENTAL_FN_MAP:
-    _FUNDAMENTAL_FN_MAP["earnings_revision"] = ("analyst", compute_earnings_revision)

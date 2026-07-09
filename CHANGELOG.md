@@ -1,3 +1,42 @@
+## [P69] — 2026-07-09
+
+### 架构清理: 因子注册表集中化 + 消除重复定义 + 连接层统一 + pipeline 抽取
+
+**#1 因子注册表集中化**: factor/compute.py 中 33 个分散的动态注册块
+(`if "xxx" not in _PRICE_FN_MAP` / `if "xxx" not in _FUNDAMENTAL_FN_MAP`)
+全部迁移到静态 map 定义中，两 map 移至文件末尾确保前向引用安全。
+_PRECE_FN_MAP: 27→38 entries, _FUNDAMENTAL_FN_MAP: 5→27 entries.
+
+**#2 消除重复定义**: compute_margin_buy_ratio / compute_gross_margin_diff /
+compute_financial_anomaly / compute_roe_trimmed 各定义两次（第一个版本被
+第二个完全覆盖，约 200 行死代码）。保留完整版本，删除简化版本。
+margin_buy_ratio 价格版重命名为 compute_margin_buy_ratio_price 避免冲突。
+
+**#3 连接层统一**: factor/compute.py (11处) + web/app.py (3处) +
+execution/engine.py (1处) 的 `sqlite3.connect(db)` 替换为 `market_conn('ro')`。
+`update_factor_evaluation` 使用 `market_conn('rw')`。
+TRADE_DB 连接保留原样（不同数据库）。
+
+**#4 pipeline.py 抽取**: _post_state / _post_state_sync / _sanitize_for_json /
+_state_url 从 pipeline.py 提取到 web/state_pusher.py。
+
+### 文件变更
+- `factor/compute.py`: -209/+58 行 (maps 集中化 + 去重)
+- `factor/registry.py`: +1 行 (dividend_yield 加入 _FIN_FACTORS)
+- `factor/synth.py`: → re-export from alpha.synth
+- `alpha/__init__.py`: 空壳 → 实际导出 AlphaModel + synth functions
+- `alpha/model.py`: +~80 行 (新建，pipeline.py Step 3 抽取)
+- `alpha/synth.py`: 新建
+- `data/store.py`: +market_conn()
+- `web/app.py`: -3/+4 行 (market_conn 替换)
+- `execution/engine.py`: -1/+2 行 (market_conn 替换)
+- `web/state_pusher.py`: +67 行 (新建，HTTP 推送)
+- `pipeline.py`: -60/+4 行 (抽取后简化为 5 行 Alpha 编排)
+- `CHANGELOG.md`: 本文档
+- `HANDOFF.md`: updated
+
+---
+
 ## [3.6.0] — 2026-07-09
 
 ### P68: ProcessPoolExecutor 孤儿进程内存泄漏 — 根因修复

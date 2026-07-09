@@ -7,7 +7,36 @@
 
 ---
 
-## 最近提交 (2026-07-08)
+## 最近提交 (2026-07-09)
+
+| 提交 | 内容 |
+|------|------|
+| — | refactor: 因子注册表集中化 + 消除重复定义 + 连接层统一 + pipeline 抽取 (P69) |
+
+### P69: 架构清理 — 因子注册表集中化 + 消除重复定义 + 连接层统一 + pipeline 抽取
+
+**#1 因子注册表集中化**: 33 个分散的动态注册块迁移到静态 _PRICE_FN_MAP (27→38)
++ _FUNDAMENTAL_FN_MAP (5→27)。两 map 移至文件末尾，解决 Python 前向引用问题。
+
+**#2 消除重复定义**: compute_margin_buy_ratio / compute_gross_margin_diff /
+compute_financial_anomaly / compute_roe_trimmed 各定义两次，保留完整版
+删除简化版 (~200 行死代码)。margin_buy_ratio 价格版重命名为
+compute_margin_buy_ratio_price 避免与基本面版冲突。
+
+**#3 连接层统一**: 15 处 `sqlite3.connect(db)` → `market_conn('ro')` /
+`market_conn('rw')` (factor/compute.py 12 + web/app.py 3 + execution/engine.py 1)。
+TRADE_DB 连接保留原样。
+
+**#4 pipeline.py 抽取**: HTTP 推送函数 (_post_state 等 ~60 行) 提取到
+web/state_pusher.py，pipeline.py Step 3 Alpha 缩减为 5 行 AlphaModel 调用。
+
+**#5 文件结构**: alpha/ 包从空壳变为实际模块 (model.py + synth.py + __init__.py)。
+
+---
+
+## 以前提交 (2026-07-08)
+
+
 
 | — | fix: ProcessPoolExecutor 孤儿进程泄漏 — 3层防护 + 双调度器清理 (P68) |
 | — | fix: web/app.py SIGTERM handler 增加子进程清理 |
@@ -47,7 +76,7 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 
 | 文件 | 行数 | 职责 |
 |------|------|------|
-| `factor/compute.py` | ~2550 | 全部因子函数 + maps + compute_all_factors |
+| `factor/compute.py` | ~2980 | 全部因子函数 + maps(P69集中化:38+27) + compute_all_factors |
 | `factor/registry.py` | 45 | _cs_zscore, _db_connect, _FIN_FACTORS |
 | `factor/orchestrator.py` | 25 | get_factor_names (延迟导入) |
 | `factor/synth.py` | — | equal_weight, ic_weighted, sleeve_compose |
@@ -150,6 +179,9 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 - **Phase 5**: 监控报告已生成 docs/reports/monitor_2026-07-08.md
 
 ## 最近修复 (2026-07-09)
+
+**P69 架构清理** (2026-07-09):
+- 因子注册表全部集中到静态 maps
 
 ### P68: ProcessPoolExecutor 孤儿进程内存泄漏 — 根因修复
 

@@ -5,6 +5,7 @@
 """
 
 import json, os, sqlite3
+from data.store import market_conn  # P69: 统一连接层
 from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 # ── 进程退出埋点 ──
@@ -359,7 +360,7 @@ def api_risk():
     market_db = os.path.join(os.path.dirname(__file__), "..", "data", "market.db")
     result = []
     try:
-        mc = sqlite3.connect(market_db)
+        mc = market_conn("ro")
         for sym in symbols:
             rows = mc.execute(
                 "SELECT close FROM daily WHERE symbol=? ORDER BY date DESC LIMIT ?",
@@ -462,7 +463,7 @@ def api_performance():
     # ── fallback to latest close (盘后/休市) ──
     if valuation_method == "book_cost" and position_cost > 0:
         try:
-            mc = sqlite3.connect(market_db)
+            mc = market_conn("ro")
             close_mv = 0.0
             for sym, shares in shares_map.items():
                 cr = mc.execute(
@@ -544,7 +545,7 @@ def api_health():
     # DB 连通性
     try:
         db = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "market.db")
-        conn = sqlite3.connect(db)
+        conn = market_conn("ro")
         conn.execute("SELECT 1").fetchone()
         conn.close()
         status["checks"]["market_db"] = "ok"

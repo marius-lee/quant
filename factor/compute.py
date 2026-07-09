@@ -1290,11 +1290,17 @@ def compute_all_factors(data: pd.DataFrame, date: str,
     total_pf = len(price_factors)
     done_pf = 0
     _plog = None
+    import time as _time
+    _t0 = _time.time()
     for name, (cat, win, fn) in price_factors.items():
         try:
+            if _plog is None:
+                from utils.logger import get_logger
+                _plog = get_logger("factor.compute")
             if 'idio_vol' in name and benchmark_ret is not None:
                 results[name] = fn(data, date, win, benchmark_ret=benchmark_ret)
             else:
+                _plog.info(f"  computing {name}...")
                 results[name] = fn(data, date, win)
         except Exception as e:
             from utils.logger import get_logger
@@ -1306,7 +1312,8 @@ def compute_all_factors(data: pd.DataFrame, date: str,
             if _plog is None:
                 from utils.logger import get_logger
                 _plog = get_logger("factor.compute")
-            _plog.info(f"  price factors: {done_pf}/{total_pf}")
+            _plog.info(f"  price factors: {done_pf}/{total_pf} ({done_pf*100//total_pf}%, {_time.time()-_t0:.0f}s)")
+    if _plog: _plog.info(f"  price factors done: {total_pf} in {_time.time()-_t0:.0f}s")
     if fundamentals is not None and not fundamentals.empty:
         financials = None
         if fundamentals is not None and any(n in fund_factors for n in _FIN_FACTORS):
@@ -1318,8 +1325,13 @@ def compute_all_factors(data: pd.DataFrame, date: str,
                 store = DataStore()
                 financials = store.get_financials(fundamentals.index.tolist(), date=date)
                 store.close()
+        total_ff = len(fund_factors)
+        done_ff = 0
+        import time as _time2
+        _t1 = _time2.time()
         for name, (cat, fn) in fund_factors.items():
             try:
+                _plog.info(f"  computing {name}...")
                 if name in _FIN_FACTORS and financials is not None:
                     results[name] = fn(fundamentals, date, financials=financials)
                 else:
@@ -1328,6 +1340,10 @@ def compute_all_factors(data: pd.DataFrame, date: str,
                 from utils.logger import get_logger
                 get_logger("factor.compute").warning(f"fundamental factor {name} failed: {e}")
                 results[name] = pd.Series(dtype=float)
+            done_ff += 1
+            if done_ff % 5 == 0 or done_ff == total_ff:
+                _plog.info(f"  fundamental factors: {done_ff}/{total_ff} ({done_ff*100//total_ff}%, {_time2.time()-_t1:.0f}s)")
+        _plog.info(f"  fundamental factors done: {total_ff} in {_time2.time()-_t1:.0f}s")
     return results
 
 # 7. 基本面因子 — Fama & French (1992, 1993, 2015)

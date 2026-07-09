@@ -72,7 +72,6 @@ class ExecutionEngine:
             True: 检测到除权跳变, 应跳过买入
             False: 正常, 可执行
         """
-        import sqlite3
         try:
             mc = market_conn("ro")
             row = mc.execute(

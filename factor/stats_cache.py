@@ -76,6 +76,14 @@ def _cleanup_process_pool():
     except Exception as _e:
         logger.warning(f"Orphan PID cleanup failed: {_e}")
 
+    # Clean up stale file lock (fcntl lock released on process exit, file remains)
+    try:
+        if os.path.exists(_COMPUTE_FILE_LOCK):
+            os.remove(_COMPUTE_FILE_LOCK)
+            logger.info("Cleaned up stale lock file")
+    except OSError:
+        pass
+
 
 # ══════════════════════════════════════════════════════════════
 # ProcessPoolExecutor worker (module-level, pickle-safe per macOS spawn)
@@ -93,7 +101,9 @@ def _pp_compute_chunk(args: tuple) -> list:
     Each worker opens its own DataStore → independent sqlite3 conn in WAL mode.
     """
     import sys, traceback as _tb
-    sys.stderr = open(os.devnull, 'w')  # suppress spawn reconnection noise
+    import warnings
+    warnings.filterwarnings("ignore", category=ResourceWarning)  # suppress sqlite3 conn cleanup noise on spawn
+    logging.captureWarnings(True)  # route warnings to logger, not stderr
     symbols_list, date_strs_list, factor_names_list = args
 
     try:

@@ -1,6 +1,7 @@
 """HTTP State Pusher — pipeline → Flask 状态同步 (P69: 从 pipeline.py 抽取).
 
 方案B: pipeline 盘后计算完成后 POST 状态到 Flask，Flask 提供 /api/state 读取。
+连续 5 次失败时触发 error 级别日志告警。
 """
 
 import threading
@@ -9,6 +10,27 @@ import numpy as np
 
 from config.loader import get as _cfg
 from utils.logger import get_logger
+
+# ── Failure tracking: alert when consecutive failures exceed threshold ──
+_FAIL_COUNT = 0
+_FAIL_THRESHOLD = 5
+_FAIL_LOCK = threading.Lock()
+
+
+def _on_fail():
+    global _FAIL_COUNT
+    with _FAIL_LOCK:
+        _FAIL_COUNT += 1
+        if _FAIL_COUNT >= _FAIL_THRESHOLD:
+            get_logger("state_pusher").error(
+                f"post_state failed {_FAIL_COUNT} consecutive times — web may be down"
+            )
+
+
+def _on_success():
+    global _FAIL_COUNT
+    with _FAIL_LOCK:
+        _FAIL_COUNT = 0
 
 
 def sanitize_for_json(obj):
@@ -37,6 +59,7 @@ def post_state(data: dict, timeout: float = 5.0, max_retries: int = 3, async_mod
     async_mode=True (默认): fire-and-forget 线程, 不阻塞 pipeline 步骤.
     async_mode=False: 同步模式, 用于测试/调试.
     失败静默 — 不影响 pipeline 执行.
+    连续 5 次失败触发 error 日志.
     """
     if async_mode:
         threading.Thread(target=_post_state_sync, args=(data, timeout, max_retries), daemon=True).start()
@@ -53,16 +76,25 @@ def _post_state_sync(data: dict, timeout: float, max_retries: int):
         try:
             r = requests.post(url, json=data, timeout=timeout)
             if r.ok:
+                _on_success()
                 return
             if 400 <= r.status_code < 500:
                 get_logger("state_pusher").warning(f"post_state client error {r.status_code}, not retrying")
+                _on_fail()
                 return
             get_logger("state_pusher").warning(f"post_state HTTP {r.status_code} (attempt {attempt+1})")
+            if attempt == max_retries - 1:
+                _on_fail()
         except requests.ConnectionError:
+            _on_fail()
             return
         except requests.Timeout:
             get_logger("state_pusher").warning(f"post_state timeout (attempt {attempt+1})")
+            if attempt == max_retries - 1:
+                _on_fail()
         except requests.RequestException as e:
             get_logger("state_pusher").warning(f"post_state failed: {e} (attempt {attempt+1})")
+            if attempt == max_retries - 1:
+                _on_fail()
         if attempt < max_retries - 1:
             _time.sleep(2 ** attempt)

@@ -126,23 +126,7 @@ class TradeRepo:
         return [{"symbol": r[0], "price": round(r[2],4) if r[2] else 0, "shares": max(0, r[1] - sell_map.get(r[0], 0)), "board_count": r[3] or 0, "buy_time": r[4]} for r in buys if r[1] > sell_map.get(r[0], 0)]
 
 
-    # ── 交易记录 ──
-    def record_trade(self, trade: dict, strategy: str = "chen"):
-        """记录一笔交易。trade 字典包含: date, symbol, side, price, shares, [board_count, pnl, pnl_pct]"""
-        date_str = trade.get("date", "")
-        symbol = trade.get("symbol", "")
-        side = trade.get("side", "")
-        price = float(trade.get("price", 0))
-        shares = int(trade.get("shares", 0))
-        board_count = int(trade.get("board_count", 0))
-        pnl = trade.get("pnl")
-        pnl_pct = trade.get("pnl_pct")
-        logger.info(f"[trade] {date_str} {side} {symbol} {shares}@{price}")
-        c = self._conn()
-        c.execute("INSERT INTO sim_trades (date,symbol,side,price,shares,board_count,pnl,pnl_pct,strategy) VALUES (?,?,?,?,?,?,?,?,?)",
-                  (date_str, symbol, side, price, shares, board_count, pnl, pnl_pct, strategy))
-        c.commit(); c.close()
-
+    # ── 交易查询 ──
     def get_trades(self, strategy: str = "", limit: int = 20) -> list[dict]:
         c = self._conn()
         if strategy:

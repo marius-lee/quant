@@ -1047,6 +1047,7 @@ def compute_margin_buy_ratio_price(data: "pd.DataFrame", date: str, window: int 
     逻辑: 融资买入占余额比高 → 杠杆资金活跃 → 正向预期收益
     实证: 融资买入占比与短期动量正相关 IC≈0.02-0.04
 
+    命名: margin_buy_ratio_5d — 与单日版 margin_buy_ratio 区分, 避免重复注册。
     添加: 2026-07-03 — Phase 8 P2.
     """
     import sqlite3
@@ -1061,7 +1062,7 @@ def compute_margin_buy_ratio_price(data: "pd.DataFrame", date: str, window: int 
             dates.append(str(d)[:10])
     if len(dates) < window:
         conn.close()
-        return pd.Series(0.0, index=symbols, name="margin_buy_ratio")
+        return pd.Series(0.0, index=symbols, name="margin_buy_ratio_5d")
     lookback_dates = dates[-window:]
 
     placeholders = ','.join(['?'] * len(lookback_dates))
@@ -1076,9 +1077,7 @@ def compute_margin_buy_ratio_price(data: "pd.DataFrame", date: str, window: int 
     scores = {r[0]: r[1] for r in rows if r[1] is not None}
     result = pd.Series(scores, dtype=float)
     result = result.reindex(symbols).fillna(0.0)
-    return _cs_zscore(result).rename("margin_buy_ratio")
-
-
+    return _cs_zscore(result).rename("margin_buy_ratio_5d")
 def compute_main_flow_ratio(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.Series":
     """主力资金流向: AVG(main_net_ratio) over window 天。
 
@@ -2945,7 +2944,7 @@ _PRICE_FN_MAP = {
     "lhb_net_buy_20d":       (compute_lhb_net_buy,        20),
     "lhb_post_quality":      (compute_lhb_post_quality,   90),
     "margin_balance_chg":     (compute_margin_balance_chg, 5),
-    "margin_buy_ratio":       (compute_margin_buy_ratio_price,   5),
+    "margin_buy_ratio_5d":    (compute_margin_buy_ratio_price,   5),
     "fund_change":             (compute_fund_change,        0),
     "analyst_buy":             (compute_analyst_buy,        0),
     # P69: 集中化 — 从动态注册迁移到静态 map

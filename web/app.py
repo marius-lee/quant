@@ -135,11 +135,10 @@ def api_factors():
                        SUM(CASE WHEN status='monitoring' THEN 1 ELSE 0 END)
                 FROM factor_registry
             """).fetchone()
-            c.close()
             total = r[0] or 0
-            # n_registered = rows with status='registered' (not covered by the 5 statuses above)
-            rr = c.execute("SELECT COUNT(*) FROM factor_registry WHERE status='registered'").fetchone()
-            stats["n_registered"] = rr[0] if rr else (total - sum(r[1:6] or [0]*5))
+            # registered = total - (active+candidate+rejected+retired+monitoring)
+            known_sum = sum(r[i] or 0 for i in range(1, 6))
+            stats["n_registered"] = total - known_sum
             stats["n_total"] = total
             stats["n_active"] = r[1] or 0
             stats["n_candidate"] = r[2] or 0
@@ -149,9 +148,16 @@ def api_factors():
             # 已评估: ic_mean IS NOT NULL (不受缓存快照影响)
             er = c.execute("SELECT COUNT(*) FROM factor_registry WHERE ic_mean IS NOT NULL").fetchone()
             stats["n_evaluated"] = er[0] if er else 0
+            c.close()
         except Exception:
-            stats["n_registered"] = len(stats.get("factor_keys", []))
-            stats["n_active"] = len(stats.get("factor_keys", []))
+            stats["n_total"] = 0
+            stats["n_registered"] = 0
+            stats["n_active"] = 0
+            stats["n_candidate"] = 0
+            stats["n_rejected"] = 0
+            stats["n_retired"] = 0
+            stats["n_monitoring"] = 0
+            stats["n_evaluated"] = 0
         return _api_response(data=stats)
     except Exception as e:
         from utils.logger import get_logger

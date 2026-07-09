@@ -121,6 +121,7 @@ def compute_reversal(data: pd.DataFrame, date: str, window: int = 5) -> pd.Serie
 # ═══════════════════════════════════════════════════════════
 from config.loader import get as _cfg
 from utils.logger import get_logger as _get_logger
+from data.store import market_conn as _market_conn
 
 _log = _get_logger("factor.compute")
 
@@ -1243,7 +1244,7 @@ def load_active_fundamental_factors(status_filter='active'):
 
 def update_factor_evaluation(name: str, ic_mean: float, ic_ir: float):
     """回测后更新因子 IC 到数据库."""
-    conn = market_conn("rw")
+    conn = _market_conn("rw")
     conn.execute(
         "UPDATE factor_registry SET ic_mean=?, ic_ir=?, last_evaluated=datetime('now','localtime'), updated_at=datetime('now','localtime') WHERE name=?",
         (round(ic_mean, 6), round(ic_ir, 4), name)
@@ -1286,6 +1287,9 @@ def compute_all_factors(data: pd.DataFrame, date: str,
         price_factors = load_active_price_factors()
         fund_factors = load_active_fundamental_factors()
 
+    total_pf = len(price_factors)
+    done_pf = 0
+    _plog = None
     for name, (cat, win, fn) in price_factors.items():
         try:
             if 'idio_vol' in name and benchmark_ret is not None:
@@ -1294,8 +1298,15 @@ def compute_all_factors(data: pd.DataFrame, date: str,
                 results[name] = fn(data, date, win)
         except Exception as e:
             from utils.logger import get_logger
-            get_logger("factor.compute").warning(f"price factor {name} failed: {e}")
+            if _plog is None: _plog = get_logger("factor.compute")
+            _plog.warning(f"price factor {name} failed: {e}")
             results[name] = pd.Series(dtype=float)
+        done_pf += 1
+        if done_pf % 5 == 0 or done_pf == total_pf:
+            if _plog is None:
+                from utils.logger import get_logger
+                _plog = get_logger("factor.compute")
+            _plog.info(f"  price factors: {done_pf}/{total_pf}")
     if fundamentals is not None and not fundamentals.empty:
         financials = None
         if fundamentals is not None and any(n in fund_factors for n in _FIN_FACTORS):
@@ -1894,6 +1905,7 @@ def compute_asset_growth(fundamentals, date, financials=None):
     若去年同期数据缺失, 返回 NaN.
     """
     import sqlite3, os
+    from data.store import market_conn
     fin = financials
     if fin is None:
         from data.store import DataStore
@@ -1907,7 +1919,7 @@ def compute_asset_growth(fundamentals, date, financials=None):
     # 当前季度: fin 已有最新 total_assets
     # 需要去年同期: 查询 financial_balance
     db = _market_db_path()
-    conn = market_conn("ro")
+    conn = _market_conn("ro")
 
     # 获取每个 symbol 的最新 stat_date
     _syms = fundamentals.index.tolist()
@@ -2005,7 +2017,7 @@ def compute_ztd(data, date, window=250):
 
     close = data["close"]
     db = _market_db_path()
-    conn = market_conn("ro")
+    conn = _market_conn("ro")
 
     # 取过去 window 个日历日在 daily 表中的数据
     _syms = close.columns.tolist()
@@ -2062,7 +2074,7 @@ def compute_northbound_flow(data, date, window=20):
 
     close = data["close"]
     db = _market_db_path()
-    conn = market_conn("ro")
+    conn = _market_conn("ro")
 
     _syms = close.columns.tolist()
     _ph = ",".join(["?"] * len(_syms))
@@ -2135,7 +2147,7 @@ def compute_sue(fundamentals, date, financials=None):
     import sqlite3, pandas as pd, numpy as np
 
     db = _market_db_path()
-    conn = market_conn("ro")
+    conn = _market_conn("ro")
 
     _syms = fundamentals.index.tolist()
     _ph = ",".join(["?"] * len(_syms))
@@ -2214,9 +2226,10 @@ def compute_holder_reduction(fundamentals, date, financials=None):
     若表为空则返回 NaN.
     """
     import sqlite3, pandas as pd
+    from data.store import market_conn
 
     db = _market_db_path()
-    conn = market_conn("ro")
+    conn = _market_conn("ro")
 
     _syms = fundamentals.index.tolist()
     _ph = ",".join(["?"] * len(_syms))
@@ -2255,9 +2268,10 @@ def compute_pledge_ratio(fundamentals, date, financials=None):
     数据源: pledge_stat (需先运行 data/pledge.py sync).
     """
     import sqlite3, pandas as pd
+    from data.store import market_conn
 
     db = _market_db_path()
-    conn = market_conn("ro")
+    conn = _market_conn("ro")
 
     _syms = fundamentals.index.tolist()
     _ph = ",".join(["?"] * len(_syms))
@@ -2298,9 +2312,10 @@ def compute_dividend_yield(fundamentals, date, financials=None):
     数据源: dividend (需先运行 data/dividend.py sync) + stocks.total_mv/close.
     """
     import sqlite3, pandas as pd
+    from data.store import market_conn
 
     db = _market_db_path()
-    conn = market_conn("ro")
+    conn = _market_conn("ro")
 
     _syms = fundamentals.index.tolist()
     _ph = ",".join(["?"] * len(_syms))
@@ -2394,7 +2409,7 @@ def compute_str(data, date, window=20):
 
     # 从 daily 表读取换手率 (get_daily 不含 turnover 字段)
     db = _market_db_path()
-    conn = market_conn("ro")
+    conn = _market_conn("ro")
     _ph = ",".join(["?"] * len(syms))
     rows = conn.execute(f"""
         SELECT date, symbol, turnover FROM daily
@@ -2424,7 +2439,7 @@ def compute_str(data, date, window=20):
 
     # 市值中性化 (从 stocks 表取 total_mv)
     try:
-        conn2 = market_conn("ro")
+        conn2 = _market_conn("ro")
         _syms2 = raw.index.tolist()
         _ph2 = ",".join(["?"] * len(_syms2))
         rows = conn2.execute(
@@ -2465,7 +2480,7 @@ def compute_abn_turnover(data, date, window=20):
     end_date = close.index[-1].strftime("%Y-%m-%d") if hasattr(close.index[-1], 'strftime') else str(close.index[-1])[:10]
 
     db = _market_db_path()
-    conn = market_conn("ro")
+    conn = _market_conn("ro")
     _ph = ",".join(["?"] * len(syms))
 
     # 取换手率
@@ -2573,8 +2588,7 @@ def compute_ocfp(fundamentals, date, financials=None):
     # TTM经营现金流: 直接查 financial_cash_flow 表最近4个季度
     ocfp_vals = {}
     try:
-        from data.store import market_conn
-        _conn = market_conn("ro")
+        _conn = _market_conn("ro")
         placeholders = ",".join("?" for _ in valid_syms)
         cf_df = pd.read_sql_query(
             f"""SELECT symbol, stat_date, net_operate_cash_flow

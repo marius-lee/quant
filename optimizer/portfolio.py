@@ -173,7 +173,7 @@ class PortfolioConstructor:
         p = prices.loc[common]
 
         n_top = min(self.max_positions, len(p))
-        avg_price = float(p.iloc[:n_top].mean())
+        avg_price = float(p.loc[a.index[:n_top]].mean())
         tier = self._tier(capital, avg_price)
         logger.info(
             f"[portfolio] capital=¥{capital:,.0f} avg_price=¥{avg_price:.2f} "
@@ -209,7 +209,7 @@ class PortfolioConstructor:
         lots = pd.Series(0, index=alpha.index, dtype=int)
         cash = capital
         symbol_order = list(alpha.index[:n_stocks])
-        max_lots_per = max(1, int(capital / (n_stocks * prices.iloc[:n_stocks].mean() * LOT_SIZE)) + 1)
+        max_lots_per = max(1, int(capital / (n_stocks * prices.loc[alpha.index[:n_stocks]].mean() * LOT_SIZE)) + 1)
         for _ in range(max_lots_per):
             for sym in symbol_order:
                 cost = prices[sym] * LOT_SIZE
@@ -217,6 +217,14 @@ class PortfolioConstructor:
                     lots[sym] += 1
                     cash -= cost
         total_value = (lots * prices * LOT_SIZE).sum()
+        if lots.sum() == 0:
+            raise ValueError(
+                f"greedy produced 0 lots: "
+                f"n_stocks={n_stocks} capital={capital:,.0f} "
+                f"max_lots_per={max_lots_per} "
+                f"top3_prices={prices.loc[alpha.index[:min(3,n_stocks)]].tolist()} "
+                f"cheapest_lot={prices.loc[alpha.index[:n_stocks]].min() * LOT_SIZE:,.0f}"
+            )
         return TargetPortfolio(lots[lots > 0], round(cash, 2), "equal_weight", total_value)
 
     def _score_weighted_rounding(

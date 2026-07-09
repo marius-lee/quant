@@ -1,6 +1,6 @@
 # HANDOFF — quant 项目当前状态
 
-**最后更新**: 2026-07-09 17:00 CST
+**最后更新**: 2026-07-09 19:40 CST
 
 > 旧版归档: docs/HANDOFF-2026-07-02.md / docs/HANDOFF-2026-07-03.md (已 superseded)
 > 项目根只有一个 HANDOFF.md 作为单一真相源
@@ -11,7 +11,29 @@
 
 | 提交 | 内容 |
 |------|------|
+| — | fix: data/store.py + factor/compute.py + optimizer/portfolio.py + UI「盈迹」(P72) |
 | — | refactor: 因子注册表集中化 + 消除重复定义 + 连接层统一 + pipeline 抽取 (P69) |
+
+### P72: Pipeline 信号生成修复 + UI 重新设计
+
+**#1 data/store.py _cfg→cfg**: 模块导入 `cfg` 但 5 处使用 `_cfg`, Step 1 每次报 NameError。统一为 `cfg`。
+
+**#2 factor/compute.py market_conn 模块级导入**: P69 重构时替换 `sqlite3.connect()` 为 `market_conn()`
+但删除了模块级 import (仅 2 个函数有局部导入)。导致 4 个因子函数 NameError
+(compute_str / compute_asset_growth / compute_holder_reduction / compute_pledge_ratio)。
+修复: 模块级 `from data.store import market_conn as _market_conn`, 因子有效数 29→37。
+
+**#3 optimizer/portfolio.py prices.iloc 对齐错误**: `p = prices.loc[common]` 按 common index
+(字母序) 排序, 但 `p.iloc[:n_top]` 和 `prices.iloc[:n_stocks]` 取的是字母序前 N 只
+而非 Alpha 前 N 只的均价。修复: 3 处 `.iloc[:n]` → `.loc[alpha.index[:n]]`。
+
+**#4 greedy 0 手快速失败**: 不再静默返回空持仓, 改为 `raise ValueError(...)`。
+
+**#5 UI 重新设计**: 双主题「交易室」/「研报页」, 品牌「盈迹」, 纯白文字。
+
+**验证**: 500 symbols × 37 valid factors → 1 position (000615 @ ¥3.37)。
+
+---
 
 ### P69: 架构清理 — 因子注册表集中化 + 消除重复定义 + 连接层统一 + pipeline 抽取
 

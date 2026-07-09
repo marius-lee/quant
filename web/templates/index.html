@@ -1,37 +1,61 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
 <meta charset="UTF-8">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>quant — A股量化选股系统</title>
+<title>盈迹 — A股量化选股系统</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
-<nav>
-  <div class="inner">
-    <a href="/" class="logo">quant</a>
-    <div class="tabs">
-      <button class="tab active" data-tab="overview">概览</button>
-      <button class="tab" data-tab="factors">因子</button>
-      <button class="tab" data-tab="portfolio">持仓</button>
-      <button class="tab" data-tab="performance">绩效</button>
-    </div>
-    <span id="nav-status" style="margin-left:auto;font-size:.78rem;color:var(--text-muted)"></span>
+<!-- ════════════ Sidebar ════════════ -->
+<nav class="sidebar">
+  <div class="sidebar-logo">盈迹</div>
+  <div class="sidebar-tabs">
+    <button class="sidebar-tab active" data-tab="overview" aria-label="概览">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+    </button>
+    <button class="sidebar-tab" data-tab="factors" aria-label="因子">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+    </button>
+    <button class="sidebar-tab" data-tab="portfolio" aria-label="持仓">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+    </button>
+    <button class="sidebar-tab" data-tab="performance" aria-label="绩效">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+    </button>
+  </div>
+  <div class="sidebar-bottom">
+    <button class="theme-toggle" id="theme-toggle" aria-label="切换主题">
+      <svg id="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      <svg id="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
   </div>
 </nav>
 
+<div class="main-wrap">
+  <!-- Status bar -->
+  <div class="status-bar" id="status-bar">
+    <span class="dot on" id="status-dot"></span>
+    <span id="status-text">就绪</span>
+    <span class="spacer"></span>
+    <span id="status-time"></span>
+  </div>
+
 <main>
 
-<!-- ════════════════ TAB: 概览 ════════════════ -->
+<!-- ════════════ TAB: 概览 ════════════ -->
 <section class="tab-content active" id="tab-overview">
+
+  <!-- Factor scan line (signature: 交易室) -->
+  <div class="factor-scan" id="factor-scan" title="因子信号强度扫描 — 按 |IC| 加权"></div>
 
   <div class="kpi-strip" id="kpi-overview">
     <div class="kpi"><div class="label">总资产</div><div class="value" id="kpi-total">—</div></div>
     <div class="kpi"><div class="label">累计 PnL</div><div class="value" id="kpi-pnl">—</div><div class="sub" id="kpi-pnl-pct"></div></div>
     <div class="kpi"><div class="label">胜率</div><div class="value" id="kpi-wr">—</div></div>
-    <div class="kpi"><div class="label">交易次数（买/卖）</div><div class="value" id="kpi-count">—</div></div>
+    <div class="kpi"><div class="label">交易次数  买/卖</div><div class="value" id="kpi-count">—</div></div>
     <div class="kpi"><div class="label">可用资金</div><div class="value" id="kpi-cash">—</div></div>
     <div class="kpi"><div class="label">持仓市值</div><div class="value" id="kpi-posval">—</div></div>
   </div>
@@ -48,17 +72,22 @@
       </div>
     </div>
   </div>
-
 </section>
 
-<!-- ════════════════ TAB: 因子 ════════════════ -->
+<!-- ════════════ TAB: 因子 ════════════ -->
 <section class="tab-content" id="tab-factors">
 
   <div class="kpi-strip" id="kpi-factors">
     <div class="kpi"><div class="label">有效因子</div><div class="value" id="kpi-nfactors">—</div></div>
     <div class="kpi"><div class="label">均值 |IC|</div><div class="value" id="kpi-ic-mean">—</div></div>
     <div class="kpi"><div class="label">均值 IC_IR</div><div class="value" id="kpi-ic-ir">—</div></div>
-    
+  </div>
+
+  <!-- Factor heatmap (signature: 研报页) -->
+  <div class="section">
+    <div class="section-header"><h2>因子 IC 热力图</h2><span class="meta" id="meta-heatmap">64 因子</span></div>
+    <div class="heatmap-legend"><span>弱</span><div class="heatmap-legend-bar"></div><span>强</span></div>
+    <div class="heatmap-grid chart-box" id="heatmap-grid"></div>
   </div>
 
   <div class="grid-2">
@@ -66,16 +95,15 @@
     <div class="chart-box" id="chart-ic-decay"></div>
   </div>
   <div class="chart-box section" id="chart-correlation" style="min-height:400px"></div>
-
 </section>
 
-<!-- ════════════════ TAB: 持仓 ════════════════ -->
+<!-- ════════════ TAB: 持仓 ════════════ -->
 <section class="tab-content" id="tab-portfolio">
 
   <div class="section">
     <div class="section-header">
       <h2>当前持仓</h2>
-      <span class="meta" id="meta-positions">—</span><span class="meta" id="quote-status" style="margin-left:8px;font-size:.7rem">○ 盘后</span>
+      <span class="meta" id="meta-positions">—</span>
     </div>
     <div id="table-positions"></div>
   </div>
@@ -84,10 +112,9 @@
     <div class="chart-box" id="chart-exposure-sector"></div>
     <div class="chart-box" id="chart-exposure-risk"></div>
   </div>
-
 </section>
 
-<!-- ════════════════ TAB: 绩效 ════════════════ -->
+<!-- ════════════ TAB: 绩效 ════════════ -->
 <section class="tab-content" id="tab-performance">
 
   <div class="section">
@@ -104,10 +131,10 @@
       </div>
     </div>
   </div>
-
 </section>
 
 </main>
+</div>
 
 <script defer src="/static/plotly.min.js"></script>
 <script src="/static/app.js"></script>

@@ -1,6 +1,6 @@
 # HANDOFF — quant 项目当前状态
 
-**最后更新**: 2026-07-09 21:45 CST
+**最后更新**: 2026-07-09 23:30 CST
 
 > 旧版归档: docs/HANDOFF-2026-07-02.md / docs/HANDOFF-2026-07-03.md (已 superseded)
 > 项目根只有一个 HANDOFF.md 作为单一真相源
@@ -13,6 +13,8 @@
 |------|------|
 | `8a91932` | fix: compute_str/compute_abn_turnover 加回最小样本门槛 (P73) |
 | `54eae57` | perf: compute_str + compute_abn_turnover 逐循环→groupby 4021s→88.6s (P73) |
+| `1096651` | refactor: 调度器拆分为三个独立模块 (signals/execute/attribution) |
+| `a0fca84` | feat: 前端调度状态tab页 + status.py状态注册表 |
 | — | fix: data/store.py + factor/compute.py + optimizer/portfolio.py + UI「盈迹」(P72) |
 | — | refactor: 因子注册表集中化 + 消除重复定义 + 连接层统一 + pipeline 抽取 (P69) |
 | — | fix: execute()事务回滚 + compute_str() SQL注入 + DataStore线程安全 + config包init (P71) |
@@ -281,3 +283,21 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 - 永不 fallback 执行价格
 - 因子 status 变更记入 notes 字段 (追加式)
 - 修改后文档同步更新, 根 HANDOFF.md 是唯一真相源
+
+### P74: 调度器拆分 + 前端调度Tab页 (`1096651` / `a0fca84`)
+
+**调度器拆分** (`quant/scheduler/`):
+- `signals.py` — 盘前信号 (08:30, has_multiprocess=True)
+- `execute.py` — 开盘执行 (09:30, has_multiprocess=True)
+- `attribution.py` — 盘后归因 (15:30)
+- `_base.py` — 通用 `_timed_loop()` + 状态上报
+- `status.py` — 线程安全 register/update/all_tasks
+- `__init__.py` — `start_all()` 三独立 daemon 线程
+
+**前端调度Tab**:
+- `/api/scheduler` → `{"data": {"tasks": [...]}}`
+- 7列表格: 任务/时间/状态/多进程/上次执行/耗时/错误
+- 5色状态: running(橙)/error(红)/waiting(灰)/sleep(深灰)/idle(绿)
+- 5s 轮询, tab切换启停
+
+**关键决策**: 任务拆分后如果某任务的多线程导致内存泄漏, 可单独停掉该任务, 其他任务不受影响。

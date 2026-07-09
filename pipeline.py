@@ -210,7 +210,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         }
         logger.info(f"[5/5] optimizer: {portfolio.method}, {portfolio.positions} pos, invested=Y{portfolio.invested:,.0f}")
         post_state({"status": "signals_generated", "progress": "5/5",
-                      "positions": portfolio.positions, "invested": portfolio.invested, "trace_id": tid, "signals": target_positions}, async_mode=False)
+                      "n_positions": portfolio.positions, "invested": portfolio.invested, "trace_id": tid, "signals": target_positions}, async_mode=False)
     except Exception as e:
         _m.inc("pipeline.errors")
         results["steps"]["optimizer"] = {"error": str(e), "status": "failed"}

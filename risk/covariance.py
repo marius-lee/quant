@@ -145,6 +145,19 @@ def covariance_matrix(
     # 只保留有足够数据的股票
     recent = recent.dropna(axis=1, thresh=min_periods)
 
+    import time as _time
+    from utils.logger import get_logger
+    _clog = get_logger("risk.covariance")
+    n_syms = recent.shape[1]
+    if n_syms > 100:
+        _clog.info(f"covariance: computing {n_syms}×{n_syms} matrix over {len(recent)} periods...")
+    _t0 = _time.time()
+
     if method == "ledoit_wolf":
-        return ledoit_wolf_cov(recent)
-    return sample_cov(recent)
+        result = ledoit_wolf_cov(recent)
+    else:
+        result = sample_cov(recent)
+
+    if n_syms > 100:
+        _clog.info(f"covariance: done in {_time.time()-_t0:.1f}s")
+    return result

@@ -284,7 +284,7 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 - 因子 status 变更记入 notes 字段 (追加式)
 - 修改后文档同步更新, 根 HANDOFF.md 是唯一真相源
 
-### P75: 架构对标业界标准 — 四段式调度 + 盘中风控 + IC 衰减监控 (`WIP`)
+### P75: 架构对标业界标准 — 四段式调度 + 盘中风控 + IC 衰减监控 (`f236fd8`)
 
 **改动方案（4 项）**:
 1. execute.py 不再重算 generate_signals — 改为读 Redis 中 08:30 产出
@@ -297,6 +297,9 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 - 盘中执行: execute (09:30) — 读 Redis targets → 下单执行
 - 盘中风控: monitor (09:35-14:55) — 回撤/单股/熔断检查
 - 盘后归因: attribution (15:30) — PnL 归因 + IC 衰减检测
+
+**数据库新增**: None（IC 快照写入 Redis JSON，不新增 DB 表）
+**测试**: 67 passed
 ### P74: 调度器拆分 + 前端调度Tab页 (`1096651` / `a0fca84`)
 
 **调度器拆分** (`quant/scheduler/`):

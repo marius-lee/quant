@@ -300,6 +300,12 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 
 **数据库新增**: None（IC 快照写入 Redis JSON，不新增 DB 表）
 **测试**: 67 passed
+
+**#4 止盈止损 (eb7bee5)**: monitor.py 统一管理
+- 止盈: 浮盈 ≥ 20% → 卖出 50% 锁利, 同日不重复
+- 止损: 浮亏 ≤ -15% → 全部卖出
+- 熔断: 总资产 < 95%初始 → Redis circuit_breaker → execute 拒绝执行
+- 旧止损从 /api/quotes 移除
 ### P74: 调度器拆分 + 前端调度Tab页 (`1096651` / `a0fca84`)
 
 **调度器拆分** (`quant/scheduler/`):

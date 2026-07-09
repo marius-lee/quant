@@ -22,10 +22,13 @@
     <button class="sidebar-tab" data-tab="portfolio" aria-label="持仓">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
     </button>
-    <button class="sidebar-tab" data-tab="performance" aria-label="绩效">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-    </button>
-  </div>
+  <button class="sidebar-tab" data-tab="performance" aria-label="绩效">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+  </button>
+  <button class="sidebar-tab" data-tab="scheduler" aria-label="调度">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+  </button>
+</div>
   <div class="sidebar-bottom">
     <button class="theme-toggle" id="theme-toggle" aria-label="切换主题">
       <svg id="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
@@ -130,6 +133,17 @@
         <div id="stats-performance" class="kpi-strip" style="grid-template-columns:1fr 1fr;margin-bottom:0"></div>
       </div>
     </div>
+  </div>
+</section>
+
+<!-- ════════════ TAB: 调度 ════════════ -->
+<section class="tab-content" id="tab-scheduler">
+  <div class="section">
+    <div class="section-header">
+      <h2>调度任务</h2>
+      <span class="meta" id="meta-scheduler">—</span>
+    </div>
+    <div id="table-scheduler"></div>
   </div>
 </section>
 

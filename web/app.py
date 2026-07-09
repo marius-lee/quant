@@ -567,6 +567,13 @@ def api_health():
     return _api_response(data=status)
 
 @app.route("/api/metrics")
+@app.route("/api/scheduler")
+def api_scheduler():
+    """调度器状态 — 返回所有任务状态列表."""
+    from quant.scheduler.status import all_tasks
+    return _api_response(data={"tasks": all_tasks()})
+
+
 def api_metrics():
     """模板9 T1: 指标快照 (Prometheus 本地等价)."""
     from monitor.metrics import metrics as _mm

@@ -31,4 +31,4 @@ def _run(today: str):
 
 
 def _loop():
-    _timed_loop("execute", time(9, 30), _run)
+    _timed_loop("execute", time(9, 30), _run, has_multiprocess=True)

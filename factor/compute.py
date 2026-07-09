@@ -1625,34 +1625,6 @@ def compute_roe_trimmed(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
 
 
 
-# ── Phase 3 财务因子 (季报三表) ──
-
-def _get_financial_historical(table: str, date: str, forward_days: int = 90) -> "pd.DataFrame":
-    """Query quarterly financial data up to date (+forward_days for late filings)."""
-    max_stat = (pd.Timestamp(date) + pd.DateOffset(days=forward_days)).strftime("%Y-%m-%d")
-    conn = _db_connect()
-    df = pd.read_sql(
-        f"SELECT * FROM {table} WHERE stat_date <= ? ORDER BY stat_date",
-        conn, params=(max_stat,),
-    )
-    conn.close()
-    return df
-
-
-def _ttm_sum(df: "pd.DataFrame", col: str, n_quarters: int = 4) -> "pd.Series":
-    """Compute TTM sum of column over last n_quarters per symbol."""
-    df = df.dropna(subset=[col])
-    if df.empty:
-        return pd.Series(dtype=float)
-    grouped = df.groupby("symbol")
-    result = {}
-    for sym, grp in grouped:
-        grp_sorted = grp.sort_values("stat_date")
-        if len(grp_sorted) >= n_quarters:
-            result[sym] = grp_sorted[col].tail(n_quarters).sum()
-    return pd.Series(result)
-
-
 # ── Phase 4 专项数据源因子 ──
 
 def compute_ihn(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
@@ -1931,13 +1903,14 @@ def compute_asset_growth(fundamentals, date, financials=None):
     conn = market_conn("ro")
 
     # 获取每个 symbol 的最新 stat_date
-    sym_list = "','".join(fundamentals.index.tolist())
+    _syms = fundamentals.index.tolist()
+    _ph = ",".join(["?"] * len(_syms))
     rows = conn.execute(f"""
         SELECT symbol, stat_date, total_assets
         FROM financial_balance
-        WHERE symbol IN ('{sym_list}')
+        WHERE symbol IN ({_ph})
         ORDER BY stat_date DESC
-    """).fetchall()
+    """, _syms).fetchall()
     conn.close()
 
     # 按 symbol 分组, 取最新和去年同期
@@ -2028,7 +2001,8 @@ def compute_ztd(data, date, window=250):
     conn = market_conn("ro")
 
     # 取过去 window 个日历日在 daily 表中的数据
-    sym_list = "','".join(close.columns.tolist())
+    _syms = close.columns.tolist()
+    _ph = ",".join(["?"] * len(_syms))
 
     # 计算截止日期: date 往前推 window 个日历日
     end_date = pd.Timestamp(date)
@@ -2037,10 +2011,10 @@ def compute_ztd(data, date, window=250):
     rows = conn.execute(f"""
         SELECT date, symbol, volume
         FROM daily
-        WHERE date BETWEEN '{start_date.strftime("%Y-%m-%d")}' AND '{date}'
-          AND symbol IN ('{sym_list}')
+        WHERE date BETWEEN ? AND ?
+          AND symbol IN ({_ph})
         ORDER BY date
-    """).fetchall()
+    """, [start_date.strftime("%Y-%m-%d"), date] + _syms).fetchall()
     conn.close()
 
     if not rows:
@@ -2083,21 +2057,22 @@ def compute_northbound_flow(data, date, window=20):
     db = _market_db_path()
     conn = market_conn("ro")
 
-    sym_list = "','".join(close.columns.tolist())
+    _syms = close.columns.tolist()
+    _ph = ",".join(["?"] * len(_syms))
 
     # 查询北向资金
     nb_rows = conn.execute(f"""
         SELECT date, symbol, net_buy
         FROM northbound_flow
-        WHERE date <= '{date}' AND symbol IN ('{sym_list}')
+        WHERE date <= ? AND symbol IN ({_ph})
         ORDER BY date DESC
-    """).fetchall()
+    """, [date] + _syms).fetchall()
 
     # 查询市值 (用于归一化)
     mv_rows = conn.execute(f"""
         SELECT symbol, total_mv FROM stocks
-        WHERE symbol IN ('{sym_list}') AND total_mv IS NOT NULL
-    """).fetchall()
+        WHERE symbol IN ({_ph}) AND total_mv IS NOT NULL
+    """, _syms).fetchall()
     conn.close()
 
     mv_map = {r[0]: r[1] for r in mv_rows}
@@ -2155,20 +2130,21 @@ def compute_sue(fundamentals, date, financials=None):
     db = _market_db_path()
     conn = market_conn("ro")
 
-    sym_list = "','".join(fundamentals.index.tolist())
+    _syms = fundamentals.index.tolist()
+    _ph = ",".join(["?"] * len(_syms))
 
     # 读取季度净利润 + 总股本
     rows = conn.execute(f"""
         SELECT fi.symbol, fi.stat_date, fi.net_profit, s.total_shares
         FROM financial_income fi
         JOIN stocks s ON fi.symbol = s.symbol
-        WHERE fi.stat_date <= '{date}'
-          AND fi.symbol IN ('{sym_list}')
+        WHERE fi.stat_date <= ?
+          AND fi.symbol IN ({_ph})
           AND s.total_shares IS NOT NULL
           AND s.total_shares > 0
           AND fi.net_profit IS NOT NULL
         ORDER BY fi.symbol, fi.stat_date DESC
-    """).fetchall()
+    """, [date] + _syms).fetchall()
     conn.close()
 
     if not rows:
@@ -2235,17 +2211,18 @@ def compute_holder_reduction(fundamentals, date, financials=None):
     db = _market_db_path()
     conn = market_conn("ro")
 
-    sym_list = "','".join(fundamentals.index.tolist())
+    _syms = fundamentals.index.tolist()
+    _ph = ",".join(["?"] * len(_syms))
     end_date = pd.Timestamp(date)
     start_date = end_date - pd.DateOffset(days=60)
 
     rows = conn.execute(f"""
         SELECT symbol, SUM(CASE WHEN direction='out' THEN change_vol ELSE 0 END) as total_out_vol
         FROM holder_trade
-        WHERE ann_date BETWEEN '{start_date.strftime("%Y-%m-%d")}' AND '{date}'
-          AND symbol IN ('{sym_list}')
+        WHERE ann_date BETWEEN ? AND ?
+          AND symbol IN ({_ph})
         GROUP BY symbol
-    """).fetchall()
+    """, [start_date.strftime("%Y-%m-%d"), date] + _syms).fetchall()
     conn.close()
 
     vals = {r[0]: r[1] for r in rows if r[1] is not None}
@@ -2275,17 +2252,18 @@ def compute_pledge_ratio(fundamentals, date, financials=None):
     db = _market_db_path()
     conn = market_conn("ro")
 
-    sym_list = "','".join(fundamentals.index.tolist())
+    _syms = fundamentals.index.tolist()
+    _ph = ",".join(["?"] * len(_syms))
 
     rows = conn.execute(f"""
         SELECT symbol, pledge_shares, total_shares
         FROM pledge_stat
-        WHERE symbol IN ('{sym_list}')
-          AND end_date <= '{date}'
+        WHERE symbol IN ({_ph})
+          AND end_date <= ?
           AND total_shares IS NOT NULL AND total_shares > 0
         GROUP BY symbol
         HAVING end_date = MAX(end_date)
-    """).fetchall()
+    """, _syms + [date]).fetchall()
     conn.close()
 
     vals = {}
@@ -2317,7 +2295,8 @@ def compute_dividend_yield(fundamentals, date, financials=None):
     db = _market_db_path()
     conn = market_conn("ro")
 
-    sym_list = "','".join(fundamentals.index.tolist())
+    _syms = fundamentals.index.tolist()
+    _ph = ",".join(["?"] * len(_syms))
 
     # 取最近12个月分红
     end_date = pd.Timestamp(date)
@@ -2326,16 +2305,16 @@ def compute_dividend_yield(fundamentals, date, financials=None):
     div_rows = conn.execute(f"""
         SELECT symbol, SUM(cash_div) as total_div
         FROM dividend
-        WHERE record_date BETWEEN '{start_date.strftime("%Y-%m-%d")}' AND '{date}'
-          AND symbol IN ('{sym_list}')
+        WHERE record_date BETWEEN ? AND ?
+          AND symbol IN ({_ph})
           AND cash_div IS NOT NULL
         GROUP BY symbol
-    """).fetchall()
+    """, [start_date.strftime("%Y-%m-%d"), date] + _syms).fetchall()
 
     # 取股价 (从 stocks.high_52w 或 close_latest)
     price_rows = conn.execute(f"""
-        SELECT symbol, pe, total_mv FROM stocks WHERE symbol IN ('{sym_list}')
-    """).fetchall()
+        SELECT symbol, pe, total_mv FROM stocks WHERE symbol IN ({_ph})
+    """, _syms).fetchall()
     conn.close()
 
     div_map = {r[0]: r[1] for r in div_rows if r[1] and r[1] > 0}
@@ -2409,12 +2388,12 @@ def compute_str(data, date, window=20):
     # 从 daily 表读取换手率 (get_daily 不含 turnover 字段)
     db = _market_db_path()
     conn = market_conn("ro")
-    sym_list = "','".join(syms)
+    _ph = ",".join(["?"] * len(syms))
     rows = conn.execute(f"""
         SELECT date, symbol, turnover FROM daily
-        WHERE date <= '{end_date}' AND symbol IN ('{sym_list}')
+        WHERE date <= ? AND symbol IN ({_ph})
         ORDER BY date
-    """).fetchall()
+    """, [end_date] + syms).fetchall()
     conn.close()
 
     if not rows:
@@ -2478,20 +2457,20 @@ def compute_abn_turnover(data, date, window=20):
 
     db = _market_db_path()
     conn = market_conn("ro")
-    sym_list = "','".join(syms)
+    _ph = ",".join(["?"] * len(syms))
 
     # 取换手率
     rows = conn.execute(f"""
         SELECT date, symbol, turnover FROM daily
-        WHERE date <= '{end_date}' AND symbol IN ('{sym_list}')
+        WHERE date <= ? AND symbol IN ({_ph})
         ORDER BY date
-    """).fetchall()
+    """, [end_date] + syms).fetchall()
 
     # 取市值 + 行业
     meta_rows = conn.execute(f"""
         SELECT symbol, total_mv, industry FROM stocks
-        WHERE symbol IN ('{sym_list}')
-    """).fetchall()
+        WHERE symbol IN ({_ph})
+    """, syms).fetchall()
     conn.close()
 
     mv_map = {r[0]: r[1] for r in meta_rows if r[1]}

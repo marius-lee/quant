@@ -1,6 +1,6 @@
 # HANDOFF — 盈迹 (quant) 项目当前状态
 
-**最后更新**: 2026-07-10 02:30 CST
+**最后更新**: 2026-07-10 06:15 CST
 
 > 旧版归档: docs/HANDOFF-2026-07-02.md / docs/HANDOFF-2026-07-03.md (已 superseded)
 > 项目根只有一个 HANDOFF.md 作为单一真相源
@@ -217,3 +217,15 @@ ProcessPoolExecutor worker 自加载:
 **自动流转**: eval_stepwise.sh + attribution.py IC 衰减→active→monitoring
 
 **UI**: 因子页 KPI 栏 6 列 (总注册/active/candidate/rejected/retired/有效计算)
+---
+
+### P77: 因子页面数字消失 — 2 个根因修复 (`66960cb`)
+
+**#1 c.close() bug**: `web/app.py api_factors()` 中 `c.close()` 在后续 `c.execute()` 前调用 → `ProgrammingError` → 异常处理器只设 `n_registered`/`n_active`，其他字段(总计/候选/淘汰/退役/已评估)丢失 → JS 显示为横线。
+
+**修复**: `c.close()` 移到所有查询后; 异常处理器改为设 0 而非污染数据。
+
+**#2 margin_buy_ratio 重复**: `_PRICE_FN_MAP` 和 `_FUNDAMENTAL_FN_MAP` 同时注册 `margin_buy_ratio` → get_factor_names 只返回 1 个 → 静态注册 65 但 DB 只有 64。
+
+**修复**: 价格版重命名为 `margin_buy_ratio_5d` (5日均值); factor_registry 64→65 行; 因子数自洽 (38价格+27基本面=65)。
+

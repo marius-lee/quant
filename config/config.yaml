@@ -135,6 +135,7 @@ risk:
     min_stocks_per_industry: 3
   rolling_window: 60
   stop_loss_pct: 0.15
+  stop_profit_pct: 0.20
 screening:
   backtest_end: '2026-06-30'
   backtest_start: '2025-06-30'

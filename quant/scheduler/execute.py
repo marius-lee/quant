@@ -17,6 +17,14 @@ def _run(today: str):
     # 不重算 — 直接读 08:30 产出 (Grinold & Kahn: 盘前 batch → 盘中执行)
     from web.state_broker import broker
     state = broker.get()
+
+    # ── 熔断检查 ──
+    if state.get("circuit_breaker"):
+        reason = state.get("cb_reason", "未知")
+        _log.error(f"[{today}] 熔断生效, 跳过执行: {reason}")
+        _m.inc("scheduler.execute.circuit_breaker")
+        return
+
     targets = state.get("signals", [])
     signals_time = state.get("when", {}).get("signals_generated", "未知")
     _log.info(f"[{today}] read {len(targets)} targets from 08:30 signals (generated {signals_time})")

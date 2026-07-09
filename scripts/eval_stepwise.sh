@@ -203,17 +203,16 @@ print(f'IR={{ir:.4f}}')
     print(f"  Wealth=¥{w:.2f}  Sharpe={s:.4f}  IR={ir:.4f}  (prev_IR={prev_ir:.4f})  → {action}  ({elapsed:.0f}s)")
 
     if action == "DROP":
-        # 回退
-        conn.execute("UPDATE factor_registry SET status='deprecated'")
+        conn.execute("UPDATE factor_registry SET status='rejected'")
         for n in kept:
-            conn.execute("UPDATE factor_registry SET status='active', status_reason='passed stepwise backtest' WHERE name=?", (n,))
+            conn.execute("UPDATE factor_registry SET status='candidate', status_reason='passed stepwise backtest' WHERE name=?", (n,))
         conn.commit()
 
 # 最终结果
-conn.execute("UPDATE factor_registry SET status='deprecated'")
+conn.execute("UPDATE factor_registry SET status='rejected'")
 for name in kept:
     conn.execute(
-        "UPDATE factor_registry SET status='active', status_reason='passed stepwise backtest', updated_at=datetime('now','localtime') WHERE name=?",
+        "UPDATE factor_registry SET status='active', status_reason='passed stepwise backtest (Phase 2+3+4)', updated_at=datetime('now','localtime') WHERE name=?",
         (name,)
     )
 conn.commit()

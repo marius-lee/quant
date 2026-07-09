@@ -45,6 +45,20 @@ def _run(today: str):
             if degraded:
                 _log.warning(f"[{today}] IC degradation detected: {'; '.join(degraded)}")
                 _m.inc("scheduler.attribution.ic_degraded", len(degraded))
+                # Auto-degrade: IC 衰减 >30% → monitoring
+                for entry in degraded:
+                    fname = entry.split(":")[0]
+                    try:
+                        import sqlite3
+                        dc = sqlite3.connect("data/market.db")
+                        dc.execute(
+                            "UPDATE factor_registry SET status='monitoring', status_reason=? WHERE name=? AND status='active'",
+                            (f"IC degraded: {entry}", fname)
+                        )
+                        dc.commit()
+                        dc.close()
+                    except Exception:
+                        pass
             broker.update({"metrics": {"factor_ic_snapshot": json.dumps(today_weights)}})
     except Exception as e:
         _log.warning(f"[{today}] IC snapshot failed (non-fatal): {e}")

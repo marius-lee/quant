@@ -643,7 +643,7 @@ def _load_ic_from_db(filter_names=None) -> dict:
         db = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
         conn = _sql.connect(db, timeout=30)
         rows = conn.execute(
-            "SELECT name, ic_mean FROM factor_registry WHERE status='active'"
+            "SELECT name, ic_mean FROM factor_registry WHERE status IN ('active','monitoring')"
         ).fetchall()
         conn.close()
         if not rows:

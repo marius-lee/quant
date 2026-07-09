@@ -126,10 +126,22 @@ def api_factors():
             import sqlite3, os
             db = os.path.join(os.path.dirname(__file__), "..", "data", "market.db")
             c = sqlite3.connect(db)
-            r = c.execute("SELECT COUNT(*), SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) FROM factor_registry").fetchone()
+            r = c.execute("""
+                SELECT COUNT(*),
+                       SUM(CASE WHEN status='active' THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN status='candidate' THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN status='retired' THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN status='monitoring' THEN 1 ELSE 0 END)
+                FROM factor_registry
+            """).fetchone()
             c.close()
-            stats["n_registered"] = r[0] or 0
+            stats["n_registered"] = (r[0] or 0) - sum((r[1] or 0, r[2] or 0, r[3] or 0, r[4] or 0, r[5] or 0))
             stats["n_active"] = r[1] or 0
+            stats["n_candidate"] = r[2] or 0
+            stats["n_rejected"] = r[3] or 0
+            stats["n_retired"] = r[4] or 0
+            stats["n_monitoring"] = r[5] or 0
         except Exception:
             stats["n_registered"] = len(stats.get("factor_keys", []))
             stats["n_active"] = len(stats.get("factor_keys", []))

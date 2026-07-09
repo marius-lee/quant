@@ -1,6 +1,6 @@
 # HANDOFF — 盈迹 (quant) 项目当前状态
 
-**最后更新**: 2026-07-10 01:00 CST
+**最后更新**: 2026-07-10 02:30 CST
 
 > 旧版归档: docs/HANDOFF-2026-07-02.md / docs/HANDOFF-2026-07-03.md (已 superseded)
 > 项目根只有一个 HANDOFF.md 作为单一真相源
@@ -193,3 +193,27 @@ ProcessPoolExecutor worker 自加载:
 - 修改后文档同步更新, 根 HANDOFF.md 是唯一真相源
 - 沙箱受限的命令发给用户在终端执行
 - 不删历史 DB 数据 (日线从 2020 至今)
+
+
+### P76: 因子5状态生命周期 — 对标 WorldQuant/AQR (`d813c44`)
+
+**背景**: factor_registry 原只有 2 状态 (active/deprecated), 回测结果与 status 不同步。
+64 注册因子中 41 标 active 但仅 zt_streak 通过完整 Phase 2+3+4。
+
+**新 5 状态模型** (业界标准):
+
+| status | 含义 | 实盘 | 触发 |
+|--------|------|:--:|------|
+| registered | 已注册未评估 | - | 新因子入库 |
+| candidate | 通过初筛 | - | Phase 2: |t|≥2.0 |
+| active | 实盘生产 | ✓ | Phase 3+4 全通过 |
+| monitoring | 生产中告警 | ✓ | IC 衰减>30% |
+| retired | 已退役 | - | 持续衰减 |
+| rejected | 回测淘汰 | - | Phase 2 未通过 |
+
+**迁移**: 旧 active 按 |IC|≥0.02 AND |IC_IR|≥0.5 映射:
+64 → active(1:zt_streak) / candidate(2) / rejected(36) / retired(23)
+
+**自动流转**: eval_stepwise.sh + attribution.py IC 衰减→active→monitoring
+
+**UI**: 因子页 KPI 栏 6 列 (总注册/active/candidate/rejected/retired/有效计算)

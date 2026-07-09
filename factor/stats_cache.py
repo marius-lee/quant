@@ -142,7 +142,11 @@ def _pp_compute_chunk_impl(symbols_list: list, date_strs_list: list,
             for name in factor_names_list:
                 if name in fv and not fv[name].dropna().empty:
                     result[name] = fv[name]
-            close_series = data.loc[date_str, "close"] if date_str in data.index else pd.Series(dtype=float)
+            # data is MultiIndex (date, symbol); check level 0 for date membership
+            try:
+                close_series = data["close"].loc[date_str]
+            except KeyError:
+                close_series = pd.Series(dtype=float)
             results.append((date_str, result, close_series, None))
         except Exception as e:
             results.append((date_str, {}, pd.Series(dtype=float), str(e)))

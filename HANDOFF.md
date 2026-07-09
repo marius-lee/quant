@@ -1,6 +1,6 @@
 # HANDOFF — quant 项目当前状态
 
-**最后更新**: 2026-07-08 21:30 CST
+**最后更新**: 2026-07-09 15:00 CST
 
 > 旧版归档: docs/HANDOFF-2026-07-02.md / docs/HANDOFF-2026-07-03.md (已 superseded)
 > 项目根只有一个 HANDOFF.md 作为单一真相源
@@ -8,6 +8,11 @@
 ---
 
 ## 最近提交 (2026-07-08)
+
+| — | fix: ProcessPoolExecutor 孤儿进程泄漏 — 3层防护 + 双调度器清理 (P68) |
+| — | fix: web/app.py SIGTERM handler 增加子进程清理 |
+| — | fix: stats_cache.py 新增 PID 追踪 + _cleanup_process_pool() |
+| — | chore: 删除 scheduler.py / restart.sh / launchd plists |
 
 | 提交 | 内容 |
 |------|------|
@@ -119,6 +124,7 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 - **已修复 4 bug**: epa 注册错误 / ocfp 签名不匹配 / vol_price_corr 除零 / seal_time 格式越界
 - **执行价格**: Sina 实时 open + 除权检测 10% (ADR 017)
 - **launchd**: scheduler ✅ (KeepAlive) / webapp ❌ (须走 restart.sh, ADR 025)
+- **SIGTERM 安全**: _clean_exit() 先清 ProcessPoolExecutor 子进程再退出, .compute_pids 追踪 worker PID (P68)
 - **数据字典**: [docs/DATA_DICTIONARY.md](docs/DATA_DICTIONARY.md)
 - **ADR 档案**: [docs/adr/](docs/adr/) (027 条)
 - **备份**: factor/stats_cache.py.bak (ThreadPoolExecutor 版本, 已废弃)
@@ -142,6 +148,16 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 - **Phase 3**: CPCV N=5, PBO=0.000, OOS_ICIR=+0.808, 通过
 - **Phase 4**: 扣费后验证通过
 - **Phase 5**: 监控报告已生成 docs/reports/monitor_2026-07-08.md
+
+## 最近修复 (2026-07-09)
+
+### P68: ProcessPoolExecutor 孤儿进程内存泄漏 — 根因修复
+
+详情见 CHANGELOG.md §3.6.0.
+
+**3 层防护**: (1) executor.shutdown(wait=True); (2) PID 文件 .compute_pids 追踪, 模块加载/崩溃时自动清理; (3) web/app.py SIGTERM handler → _clean_exit() 读文件杀所有 worker PID.
+
+**清理**: 删除 scheduler.py (根目录 standalone) / restart.sh / 三个 launchd plist, 双调度器问题已消除.
 
 ## 下一步计划
 

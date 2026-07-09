@@ -25,6 +25,7 @@ if _PROJ_ROOT not in _sys.path:
 import json
 import os
 import time
+import threading
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 
@@ -44,67 +45,73 @@ logger = get_logger("factor.stats_cache")
 
 _DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
 _SNAPSHOT_TTL_SEC = _cfg("factor.stats.snapshot_ttl_sec", 86400)  # 24h
-_MAX_WORKERS = _cfg("factor.evaluation.max_workers", 6)  # ThreadPoolExecutor workers
-_WORKER_TIMEOUT_SEC = _cfg("factor.evaluation.worker_timeout_sec", 600)  # 10min per chunk
+_MAX_WORKERS = min(_cfg("factor.evaluation.max_workers", 6), 4)  # M1 8GB: cap at 4 workers
+_WORKER_TIMEOUT_SEC = _cfg("factor.evaluation.worker_timeout_sec", 180)  # 3min timeout
+_COMPUTE_LOCK = threading.Lock()  # in-process reentrancy guard
+_COMPUTE_FILE_LOCK = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                                   "data", ".factor_compute.lock")  # cross-process guard
+_ORPHAN_PID_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                                 "data", ".compute_pids")
+
+def _cleanup_process_pool():
+    """清理上次残留的 ProcessPoolExecutor 孤儿进程。
+    读取 .compute_pids 文件 → kill 所有列出的 PID → 删除文件。
+    在 web/app.py SIGTERM 处理中调用, 也在模块加载时自动执行。
+    """
+    import signal as _sig
+    if not os.path.exists(_ORPHAN_PID_FILE):
+        return
+    try:
+        with open(_ORPHAN_PID_FILE) as _f:
+            _pids = [int(_l.strip()) for _l in _f if _l.strip()]
+        os.remove(_ORPHAN_PID_FILE)
+        for _pid in _pids:
+            try:
+                os.kill(_pid, _sig.SIGTERM)
+                logger.warning(f"Cleaned up orphan worker PID {_pid}")
+            except ProcessLookupError:
+                pass
+        if _pids:
+            logger.info(f"Orphan cleanup: killed {len(_pids)} worker(s)")
+    except Exception as _e:
+        logger.warning(f"Orphan PID cleanup failed: {_e}")
 
 
 # ══════════════════════════════════════════════════════════════
-# ProcessPoolExecutor worker (module-level, pickle-safe)
+# ProcessPoolExecutor worker (module-level, pickle-safe per macOS spawn)
+# File-lock guarantees at most ONE compute_factor_stats runs system-wide,
+# preventing the exponential process cascade seen with concurrent invocations.
 # ══════════════════════════════════════════════════════════════
-# ADR 027: each worker loads its own data from DB — ZERO DataFrame pickling.
-# macOS spawn mode: fresh Python interpreter per process, only small metadata
-# (symbols list, date strings, factor names) is serialized (<10KB total).
-# Each process has independent GIL → true OS-level parallelism.
 
 def _pp_compute_chunk(args: tuple) -> list:
-    """ProcessPoolExecutor worker: load data from DB, compute factors for a chunk of dates.
+    """ProcessPoolExecutor worker: load own data from DB, compute factors for a chunk.
 
-    args: (symbols_list, date_strs_list, factor_names_list) — ZERO large objects.
-      - symbols_list: list of stock symbols (~5KB)
-      - date_strs_list: list of "YYYY-MM-DD" strings for this chunk
-      - factor_names_list: list of factor names (~500B)
-    Returns: list of (date_str, factor_values_dict, error_string_or_None)
+    args: (symbols_list, date_strs_list, factor_names_list)
+    Returns: list of (date_str, factor_values_dict, close_series, error_or_None)
 
-    Design (ADR 027):
-      - macOS spawn: each process is a fresh Python interpreter → NO DataFrame pickling.
-      - Each process opens its own DataStore (independent sqlite3 conn in WAL mode).
-      - Daily data loaded once per chunk, fundamentals/financials per-date.
-      - True OS-level parallelism: 6 processes × independent GIL = ~6× speedup.
+    macOS spawn mode: fresh Python interpreter per worker (~100MB RSS each).
+    Each worker opens its own DataStore → independent sqlite3 conn in WAL mode.
     """
-    import sys, time as _time, os
-    import traceback as _tb
-    # Suppress worker stderr: macOS spawn reconnects to /dev/tty,
-    # circumventing launchd log redirect. Logger unused (deadlock
-    # per c20bfee). Redirect worker output to /dev/null.
-    sys.stderr = open(os.devnull, 'w')
+    import sys, traceback as _tb
+    sys.stderr = open(os.devnull, 'w')  # suppress spawn reconnection noise
     symbols_list, date_strs_list, factor_names_list = args
-    t_chunk = _time.monotonic()
 
     try:
-        return _pp_compute_chunk_impl(symbols_list, date_strs_list, factor_names_list,
-                                      t_chunk, sys, _time, _tb)
+        return _pp_compute_chunk_impl(symbols_list, date_strs_list, factor_names_list)
     except Exception as e:
-        # Outer guard: imports / DataStore init / get_daily — any stage crash returns errors
         err_msg = f"{type(e).__name__}: {e}"
-        sys.stderr.write(f"[WORKER-PROC] FATAL: {err_msg}\n")
-        sys.stderr.flush()
         return [(d, {}, pd.Series(dtype=float), err_msg) for d in date_strs_list]
 
 
 def _pp_compute_chunk_impl(symbols_list: list, date_strs_list: list,
-                           factor_names_list: list, t_chunk: float,
-                           _sys, _time, _tb) -> list:
+                           factor_names_list: list) -> list:
     """_pp_compute_chunk inner impl — outer try/except guards all stages."""
-
-    _sys.stderr.write(f"[WORKER-PROC] {date_strs_list[0]}..{date_strs_list[-1]} ({len(date_strs_list)}d) start\n")
-    _sys.stderr.flush()
 
     from data.store import DataStore
     from factor.compute import compute_all_factors
     import pandas as pd
 
     store = DataStore()
-    # Load daily OHLCV data once for the chunk's full date range (+365d for factor windows)
     min_date = date_strs_list[0]
     max_date = date_strs_list[-1]
     data_start = (pd.Timestamp(min_date) - pd.Timedelta(days=365)).strftime("%Y-%m-%d")
@@ -113,7 +120,6 @@ def _pp_compute_chunk_impl(symbols_list: list, date_strs_list: list,
 
     results = []
     for date_str in date_strs_list:
-        dt0 = _time.monotonic()
         try:
             fundamentals = store.get_fundamentals(symbols_list, date=date_str)
             fin = store.get_financials(symbols_list, date=date_str)
@@ -123,25 +129,15 @@ def _pp_compute_chunk_impl(symbols_list: list, date_strs_list: list,
                                      factor_names=factor_names_list,
                                      preloaded_financials=preloaded_fin)
             result = {}
-            n_filled = 0
             for name in factor_names_list:
                 if name in fv and not fv[name].dropna().empty:
                     result[name] = fv[name]
-                    n_filled += 1
-            dt_elapsed = _time.monotonic() - dt0
-            _sys.stderr.write(f"[WORKER-PROC] {date_str} {n_filled}/{len(factor_names_list)} factors ({dt_elapsed:.1f}s)\n")
-            _sys.stderr.flush()
-            # Extract close for forward-return computation in main process
             close_series = data.loc[date_str, "close"] if date_str in data.index else pd.Series(dtype=float)
             results.append((date_str, result, close_series, None))
         except Exception as e:
             results.append((date_str, {}, pd.Series(dtype=float), str(e)))
-            _sys.stderr.write(f"[WORKER-PROC] FAIL: {date_str} {e}\n")
-            _sys.stderr.flush()
 
     store.close()
-    _sys.stderr.write(f"[WORKER-PROC] {date_strs_list[0]}..{date_strs_list[-1]} done ({_time.monotonic()-t_chunk:.0f}s)\n")
-    _sys.stderr.flush()
     return results
 
 
@@ -222,9 +218,9 @@ def compute_factor_stats(
                 f"{len(factor_names)} factors, {_MAX_WORKERS} processes")
 
     # ══ Phase B: ProcessPoolExecutor 并行因子计算 ══
+    # 跨进程文件锁: 确保整个系统最多一个 compute_factor_stats 实例运行,
+    # 防止并发调用导致 6→36→216 指数级进程繁殖 (macOS spawn ~100MB/进程)
     close_by_date = {}
-    # ADR 027: workers load own data from DB — ZERO DataFrame pickling.
-    # True OS-level parallelism: 6 processes, each with independent GIL.
     logger.info(f"factor compute start: {len(eval_date_strs)} dates x {len(factor_names)} factors, "
                 f"{_MAX_WORKERS} processes (workers load own data from DB)")
 
@@ -233,21 +229,28 @@ def compute_factor_stats(
     date_chunks = [eval_date_strs[i:i + chunk_size] for i in range(0, len(eval_date_strs), chunk_size)]
     logger.info(f"partitioned {len(eval_date_strs)} dates into {len(date_chunks)} chunks (max {chunk_size}/chunk)")
 
-    with ProcessPoolExecutor(max_workers=n_chunks) as executor:
-        futures = {}
+    executor = ProcessPoolExecutor(max_workers=n_chunks)
+    # 写入 worker PID → .compute_pids, 供 _cleanup_process_pool 清理孤儿进程
+    try:
+        with open(_ORPHAN_PID_FILE, 'w') as _pf:
+            for _proc in executor._processes.values():
+                _pf.write(f"{_proc.pid}\n")
+    except Exception:
+        pass
+    futures = {}
+    try:
         for ci, chunk_dates in enumerate(date_chunks):
             logger.info(f"  chunk {ci+1}/{len(date_chunks)}: {len(chunk_dates)} dates")
-            # args: (symbols, date_strs, factor_names) — ZERO large objects (<10KB total)
             futures[executor.submit(_pp_compute_chunk,
                      (symbols, chunk_dates, factor_names))] = chunk_dates
-        logger.info(f"parallel compute: {len(futures)} chunks x {_MAX_WORKERS} processes")
+        logger.info(f"parallel compute: {len(futures)} chunks x {n_chunks} processes")
         try:
             from tqdm import tqdm
             pbar = tqdm(total=len(futures), desc="Computing factors (parallel)")
         except ImportError:
             pbar = None
         try:
-            for future in as_completed(futures):
+            for future in as_completed(futures, timeout=_WORKER_TIMEOUT_SEC):
                 chunk_results = future.result()
                 for date_str, fv_partial, close_series, err in chunk_results:
                     if err:
@@ -259,9 +262,25 @@ def compute_factor_stats(
                             close_by_date[date_str] = close_series
                 if pbar:
                     pbar.update(1)
+        except TimeoutError:
+            n_pending = sum(1 for f in futures if not f.done())
+            logger.error(
+                f"ProcessPoolExecutor timed out after {_WORKER_TIMEOUT_SEC}s — "
+                f"{n_pending} chunk(s) incomplete, canceling"
+            )
+            for f in futures:
+                f.cancel()
         finally:
             if pbar:
                 pbar.close()
+    finally:
+        executor.shutdown(wait=True)
+        # 正常退出 → 清理 PID 文件 (避免下次启动误杀正常进程)
+        try:
+            if os.path.exists(_ORPHAN_PID_FILE):
+                os.remove(_ORPHAN_PID_FILE)
+        except Exception:
+            pass
     logger.info(f"factor compute complete: {len(eval_date_strs)}/{len(eval_date_strs)} dates")
 
     # 4. 从 worker 返回的 close 数据构建 forward returns (无需主进程加载 daily)
@@ -533,27 +552,74 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None) 
         except Exception as e:
             logger.warning(f"Factor snapshot read failed: {e}")
 
-    # 重新计算
-    logger.info("computing factor stats (this may take ~30s)...")
-    lookback_val = _require_cfg("factor.evaluation.lookback")
-    stats = compute_factor_stats(n_symbols=n_symbols, lookback=lookback_val)
-
-    # 存入 factor_snapshot 表 + 同步更新 factor_registry
+    # 跨进程文件锁: 确保整个系统一次只运行一个 compute_factor_stats
+    import fcntl
+    _lock_fd = None
     try:
-        conn = _sql.connect(_DB_PATH)
-        conn.execute(
-            "INSERT OR REPLACE INTO factor_snapshot (id, data, created_at, n_symbols, lookback) VALUES (1,?,datetime('now','localtime'),?,?)",
-            (json.dumps(stats, ensure_ascii=False), n_symbols, lookback_val)
-        )
-        conn.commit()
-        conn.close()
-        logger.info("factor snapshot saved to factor_snapshot table")
-
-
+        _lock_fd = open(_COMPUTE_FILE_LOCK, 'w')
+        try:
+            fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (IOError, OSError):
+            logger.warning("factor stats computation already in progress (another process), returning stale/empty cache")
+            _lock_fd.close()
+            try:
+                conn = _sql.connect(_DB_PATH)
+                row = conn.execute("SELECT data FROM factor_snapshot WHERE id=1").fetchone()
+                conn.close()
+                if row:
+                    return json.loads(row[0])
+            except Exception:
+                pass
+            return _empty_result()
     except Exception as e:
-        logger.warning(f"Factor snapshot write failed: {e}")
+        logger.warning(f"file lock setup failed, falling back to in-process lock: {e}")
+        if _lock_fd:
+            _lock_fd.close()
+            _lock_fd = None
 
-    return stats
+    # 进程内重入保护：防止 warmup 和 API 请求同时触发
+    if not _COMPUTE_LOCK.acquire(blocking=False):
+        logger.warning("factor stats computation already in progress by another thread, returning stale/empty cache")
+        if _lock_fd:
+            fcntl.flock(_lock_fd, fcntl.LOCK_UN)
+            _lock_fd.close()
+        try:
+            conn = _sql.connect(_DB_PATH)
+            row = conn.execute("SELECT data FROM factor_snapshot WHERE id=1").fetchone()
+            conn.close()
+            if row:
+                return json.loads(row[0])
+        except Exception:
+            pass
+        return _empty_result()
+    try:
+        logger.info("computing factor stats (this may take ~30s)...")
+        lookback_val = _require_cfg("factor.evaluation.lookback")
+        stats = compute_factor_stats(n_symbols=n_symbols, lookback=lookback_val)
+
+        # 存入 factor_snapshot 表 + 同步更新 factor_registry
+        try:
+            conn = _sql.connect(_DB_PATH)
+            conn.execute(
+                "INSERT OR REPLACE INTO factor_snapshot (id, data, created_at, n_symbols, lookback) VALUES (1,?,datetime('now','localtime'),?,?)",
+                (json.dumps(stats, ensure_ascii=False), n_symbols, lookback_val)
+            )
+            conn.commit()
+            conn.close()
+            logger.info("factor snapshot saved to factor_snapshot table")
+
+        except Exception as e:
+            logger.warning(f"Factor snapshot write failed: {e}")
+
+        return stats
+    finally:
+        _COMPUTE_LOCK.release()
+        if _lock_fd:
+            try:
+                fcntl.flock(_lock_fd, fcntl.LOCK_UN)
+            except Exception:
+                pass
+            _lock_fd.close()
 
 
 
@@ -608,3 +674,7 @@ def force_refresh_cache(n_symbols: int = None) -> dict:
     stats = get_cached_factor_stats(force_refresh=True, n_symbols=n_symbols)
     logger.info(f"Factor refresh complete: {len(stats.get('factors', []))} factors")
     return stats
+
+
+# 模块加载时自动清理上次崩溃残留的孤儿进程
+_cleanup_process_pool()

@@ -8,7 +8,7 @@ import json, os, sqlite3
 from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 # ── 进程退出埋点 ──
-import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr
+import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 def _log_exit(reason: str = ""):
     try:
         from utils.logger import get_logger
@@ -17,9 +17,30 @@ def _log_exit(reason: str = ""):
             f"thread={_thr.current_thread().name}")
     except Exception:
         print(f"[EXIT] {reason} pid={os.getpid()}", flush=True)
+
+def _clean_exit(reason: str):
+    """退出前清理 ProcessPoolExecutor 子进程, 防止孤儿泄漏。"""
+    _log_exit(reason)
+    _pid_file = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)),
+                               "data", ".compute_pids")
+    if _os.path.exists(_pid_file):
+        try:
+            with open(_pid_file) as _f:
+                for _line in _f:
+                    _pid = _line.strip()
+                    if _pid:
+                        try:
+                            _os.kill(int(_pid), _signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+            _os.remove(_pid_file)
+        except Exception:
+            pass
+    _sys.exit(0)
+
 _atexit.register(_log_exit, "atexit")
-_signal.signal(_signal.SIGTERM, lambda s, f: (_log_exit("SIGTERM"), _sys.exit(0)))
-_signal.signal(_signal.SIGINT,  lambda s, f: (_log_exit("SIGINT"), _sys.exit(0)))
+_signal.signal(_signal.SIGTERM, lambda s, f: _clean_exit("SIGTERM"))
+_signal.signal(_signal.SIGINT,  lambda s, f: _clean_exit("SIGINT"))
 
 from utils.logger import get_logger
 
@@ -42,7 +63,8 @@ def _warm_factor_cache():
     try:
         from factor.stats_cache import get_cached_factor_stats
         logger.info("warming factor cache (background)...")
-        get_cached_factor_stats(force_refresh=True)
+        # 不强制重算: 若 24h 缓存有效则直接返回, 否则自动计算
+        get_cached_factor_stats(force_refresh=False)
         logger.info("factor cache warmup complete")
     except Exception as e:
         logger.warning(f"factor cache warmup skipped: {e}")

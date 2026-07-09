@@ -1,6 +1,6 @@
 # HANDOFF — quant 项目当前状态
 
-**最后更新**: 2026-07-09 19:40 CST
+**最后更新**: 2026-07-09 21:45 CST
 
 > 旧版归档: docs/HANDOFF-2026-07-02.md / docs/HANDOFF-2026-07-03.md (已 superseded)
 > 项目根只有一个 HANDOFF.md 作为单一真相源
@@ -11,8 +11,11 @@
 
 | 提交 | 内容 |
 |------|------|
+| `8a91932` | fix: compute_str/compute_abn_turnover 加回最小样本门槛 (P73) |
+| `54eae57` | perf: compute_str + compute_abn_turnover 逐循环→groupby 4021s→88.6s (P73) |
 | — | fix: data/store.py + factor/compute.py + optimizer/portfolio.py + UI「盈迹」(P72) |
 | — | refactor: 因子注册表集中化 + 消除重复定义 + 连接层统一 + pipeline 抽取 (P69) |
+| — | fix: execute()事务回滚 + compute_str() SQL注入 + DataStore线程安全 + config包init (P71) |
 
 ### P72: Pipeline 信号生成修复 + UI 重新设计
 
@@ -34,6 +37,34 @@
 **验证**: 500 symbols × 37 valid factors → 1 position (000615 @ ¥3.37)。
 
 ---
+
+### P73: Pipeline 因子计算性能优化 — 4021s → 88.6s
+
+**问题**: 第一次完整 5208 股 pipeline 运行耗时 4021.7s (67 分钟)，瓶颈在因子计算阶段
+price factors 每 5 个耗时 ~30 分钟。
+
+**根因**: `compute_str()` 和 `compute_abn_turnover()` 使用 pandas iterrows 逐行循环
+计算滚动标准差/均值，O(n²) 复杂度。5208 股 × 243 天 = 126 万行，每次循环 ~1ms。
+
+**修复**:
+- `compute_str()`: iterrows 循环 → `groupby('symbol')['turnover'].std()` 单次向量化
+- `compute_abn_turnover()`: iterrows 循环 → `groupby('symbol')['turnover'].mean()` 单次向量化
+- 加回 `max(window//2, 10)` 最小样本门槛，确保 groupby 版与旧循环版数学等价
+
+**验证**: 两次 pipeline 运行输出完全一致:
+  - 4 个相同仓位: 002598 / 002759 / 002727 / 002132
+  - 价格+股数完全相同: ¥6.82/100, ¥23.43/100, ¥10.45/100, ¥5.63/100
+  - 有效股数: 560
+  - 67/67 测试全绿
+
+**各阶段耗时(88.6s)**:
+| 阶段 | 耗时 | 说明 |
+|------|------|------|
+| data | ~19s | 21 只 stale 日线补拉 |
+| load | ~6s | 5208 symbols, 243 天 |
+| factor | ~66s | 41 因子: price 18(53s) + fundamental 24(12s) |
+| risk | ~0.1s | 协方差矩阵 + 中性化 + 过滤 |
+| optimizer | <0.1s | equal_weight 4 pos |
 
 ### P69: 架构清理 — 因子注册表集中化 + 消除重复定义 + 连接层统一 + pipeline 抽取
 
@@ -82,13 +113,6 @@ shared _conn 无锁保护，多线程并发可能创建多个连接并泄漏。
 
 ---
 
-## 最近提交 (2026-07-09, 续)
-
-
-| — | fix: ProcessPoolExecutor 孤儿进程泄漏 — 3层防护 + 双调度器清理 (P68) |
-| — | fix: web/app.py SIGTERM handler 增加子进程清理 |
-| — | fix: stats_cache.py 新增 PID 追踪 + _cleanup_process_pool() |
-| — | chore: 删除 scheduler.py / restart.sh / launchd plists |
 
 | 提交 | 内容 |
 |------|------|
@@ -150,6 +174,8 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 | 模块 | 改动 | 效果 |
 |------|------|------|
 | `stats_cache.py` 因子计算 | ThreadPoolExecutor → ProcessPoolExecutor (worker 自加载, ADR 027) | ~140s → ~16s (9×加速) |
+| `factor/compute.py` compute_abn_turnover | iterrows 循环 → groupby.mean() 向量化 | ~15min → ~2s |
+| `factor/compute.py` compute_str | iterrows 循环 → groupby.std() 向量化 | ~30min → ~3s |
 | `stats_cache.py` IC 评估 | for name in factors → ThreadPoolExecutor(6) | ~30s → ~6s |
 | `stats_cache.py` 相关性矩阵 | for i,j in pairs → ThreadPoolExecutor(6) | ~10s → ~2s |
 | `config.yaml` | `factor.evaluation.max_workers: 6` | 可调整并行度 |
@@ -226,6 +252,9 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 - **Phase 5**: 监控报告已生成 docs/reports/monitor_2026-07-08.md
 
 ## 最近修复 (2026-07-09)
+
+**P73 因子计算性能优化** (2026-07-09):
+- compute_str + compute_abn_turnover 逐循环向量化, pipeline 4021s → 88.6s (45×加速)
 
 **P69 架构清理** (2026-07-09):
 - 因子注册表全部集中到静态 maps

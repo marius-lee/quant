@@ -190,12 +190,18 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         target_positions = []
         for sym, lots in portfolio.lots.items():
             if lots > 0 and sym in prices:
+                score = round(float(alpha_neut.get(sym, 0)), 4)
                 target_positions.append({
                     "symbol": sym,
+                    "score": score if not (isinstance(score, float) and score != score) else 0.0,
                     "shares": int(lots) * LOT_SIZE,
                     "price": round(float(prices[sym]), 2),
                     "side": "buy",
                 })
+        # ── rank by score descending, annotate reason ──
+        target_positions.sort(key=lambda x: x.get("score", 0), reverse=True)
+        for i, tp in enumerate(target_positions):
+            tp["reason"] = f"#{i+1}"
         results["target_positions"] = target_positions
         results["steps"]["optimizer"] = {
             "method": portfolio.method, "positions": portfolio.positions,

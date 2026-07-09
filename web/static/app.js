@@ -519,13 +519,18 @@ function renderScheduler(tasks) {
   if (el) {
     const running = tasks.filter(t => t.status === 'running').length;
     const errors = tasks.filter(t => t.status && t.status.startsWith('error')).length;
-    let meta = tasks.length + ' 任务';
-    if (running) meta += ' · ' + running + ' 运行中';
-    if (errors) meta += ' · ' + errors + ' 异常';
-    el.textContent = meta;
+    const alerts = tasks.filter(t => t.status && t.status.startsWith('⚠')).length;
+    let parts = [tasks.length + ' 任务'];
+    if (running) parts.push(running + ' 运行中');
+    if (errors) parts.push(errors + ' 异常');
+    if (alerts) parts.push(alerts + ' ⚠');
+    el.textContent = parts.join(' · ');
   }
 
-  renderTable('table-scheduler', tasks, [
+  const tableEl = document.getElementById('table-scheduler');
+  if (!tableEl) return;
+  const groups = ['盘前', '盘中', '盘后'];
+  const cols = [
     { key: 'name', label: '任务' },
     { key: 'schedule', label: '时间' },
     { key: 'status', label: '状态' },
@@ -533,27 +538,47 @@ function renderScheduler(tasks) {
     { key: 'last_run', label: '上次执行' },
     { key: 'last_duration', label: '耗时' },
     { key: 'last_error', label: '错误' },
-  ], {
-    clsMap: {
-      status: v => {
-        if (!v) return '';
-        if (v.startsWith('running')) return 'status-running';
-        if (v.startsWith('error')) return 'status-error';
-        if (v.startsWith('waiting')) return 'status-waiting';
-        if (v.startsWith('sleep') || v.startsWith('skipped')) return 'status-sleep';
-        return 'status-idle';
-      }
-    },
-    fmtMap: {
-      name: v => {
-        const names = { signals: '信号生成', execute: '交易执行', attribution: '盘后归因' };
-        return names[v] || v;
-      },
-      has_multiprocess: v => v ? '⚠ 是' : '—',
-      last_run: v => v ? v.replace('T', ' ').slice(0, 19) : '—',
-      last_duration: v => v != null ? v.toFixed(1) + 's' : '—',
+  ];
+  const nameMap = { signals: '信号生成', execute: '交易执行', monitor: '盘中风控', attribution: '盘后归因' };
+  const fmtMap = {
+    name: v => nameMap[v] || v,
+    has_multiprocess: v => v ? '⚠ 是' : '—',
+    last_run: v => v ? v.replace('T', ' ').slice(0, 19) : '—',
+    last_duration: v => v != null ? v.toFixed(1) + 's' : '—',
+  };
+  const clsMap = {
+    status: v => {
+      if (!v) return '';
+      if (v.startsWith('running')) return 'status-running';
+      if (v.startsWith('error')) return 'status-error';
+      if (v.startsWith('waiting')) return 'status-waiting';
+      if (v.startsWith('⚠')) return 'status-error';
+      if (v.startsWith('sleep') || v.startsWith('skipped')) return 'status-sleep';
+      return 'status-idle';
     }
+  };
+
+  let h = '';
+  groups.forEach(g => {
+    const gt = tasks.filter(t => t.group === g);
+    if (!gt.length) return;
+    h += `<div class="scheduler-group-label">${g}</div>`;
+    h += '<table><thead><tr>';
+    cols.forEach(c => { h += `<th>${c.label}</th>`; });
+    h += '</tr></thead><tbody>';
+    gt.forEach(row => {
+      h += '<tr>';
+      cols.forEach(c => {
+        const v = row[c.key];
+        const val = fmtMap[c.key] ? fmtMap[c.key](v) : (v ?? '—');
+        const cls = clsMap[c.key] ? clsMap[c.key](v) : '';
+        h += `<td class="${cls}">${val}</td>`;
+      });
+      h += '</tr>';
+    });
+    h += '</tbody></table>';
   });
+  tableEl.innerHTML = h || '<div class="empty">暂无调度任务</div>';
 }
 
 // ── SSE ──

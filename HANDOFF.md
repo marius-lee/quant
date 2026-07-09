@@ -284,6 +284,19 @@ layer 8: evaluation/ — 五阶段回测评估 (新增)
 - 因子 status 变更记入 notes 字段 (追加式)
 - 修改后文档同步更新, 根 HANDOFF.md 是唯一真相源
 
+### P75: 架构对标业界标准 — 四段式调度 + 盘中风控 + IC 衰减监控 (`WIP`)
+
+**改动方案（4 项）**:
+1. execute.py 不再重算 generate_signals — 改为读 Redis 中 08:30 产出
+2. 新增 monitor.py 盘中实时风控 daemon (09:35-14:55)
+3. attribution 加 IC 衰减快照 — 每日对比 factor_registry 权重变化
+4. UI 调度页按角色分组展示 (盘前 / 盘中 / 盘后)
+
+**对标 Grinold & Kahn 标准流程**:
+- 盘前 batch: signals (08:30) — 因子计算 + alpha 合成 + 组合优化 → 写入 Redis
+- 盘中执行: execute (09:30) — 读 Redis targets → 下单执行
+- 盘中风控: monitor (09:35-14:55) — 回撤/单股/熔断检查
+- 盘后归因: attribution (15:30) — PnL 归因 + IC 衰减检测
 ### P74: 调度器拆分 + 前端调度Tab页 (`1096651` / `a0fca84`)
 
 **调度器拆分** (`quant/scheduler/`):

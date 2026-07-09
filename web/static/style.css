@@ -310,3 +310,16 @@ td.down { color: var(--down); }
 .status-waiting { color: var(--text2); }
 .status-sleep  { color: var(--text3); }
 .status-idle   { color: var(--down); }
+
+.scheduler-group-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 12px 0 4px 0;
+  border-bottom: 1px solid var(--border);
+  margin-top: 4px;
+}
+
+.scheduler-group-label:first-child { margin-top: 0; }

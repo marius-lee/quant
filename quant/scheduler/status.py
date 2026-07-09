@@ -9,8 +9,10 @@ _tasks: dict[str, dict] = {}
 def register(name: str, schedule: str, has_multiprocess: bool = False):
     """注册一个调度任务。"""
     with _lock:
+        _group = {"signals": "盘前", "execute": "盘中", "monitor": "盘中", "attribution": "盘后"}.get(name, "其他")
         _tasks[name] = {
             "name": name,
+            "group": _group,
             "schedule": schedule,
             "has_multiprocess": has_multiprocess,
             "status": "idle",

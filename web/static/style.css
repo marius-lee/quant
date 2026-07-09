@@ -303,3 +303,10 @@ td.down { color: var(--down); }
   .main-wrap { margin-left: 40px; }
   :root { --sidebar-w: 40px; }
 }
+
+/* ── Scheduler status ── */
+.status-running { color: var(--accent); font-weight: 600; }
+.status-error  { color: var(--up); font-weight: 600; }
+.status-waiting { color: var(--text2); }
+.status-sleep  { color: var(--text3); }
+.status-idle   { color: var(--down); }

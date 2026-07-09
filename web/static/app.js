@@ -69,9 +69,11 @@ $$('.sidebar-tab').forEach(btn => {
 
 function loadTab(tab) {
   if (_portfolioTimer) { clearInterval(_portfolioTimer); _portfolioTimer = null; }
+  if (_schedulerTimer) { clearInterval(_schedulerTimer); _schedulerTimer = null; }
   if (tab === 'factors') loadFactors();
   if (tab === 'portfolio') { loadPortfolio(); _portfolioTimer = setInterval(loadPortfolio, POLL_MS); }
   if (tab === 'performance') loadPerformance();
+  if (tab === 'scheduler') { loadScheduler(); _schedulerTimer = setInterval(loadScheduler, POLL_MS); }
   if (tab === 'overview') renderPNLChart();
 }
 
@@ -497,6 +499,61 @@ function renderAttribution(perf) {
     xaxis: { tickfont: pf }, yaxis: { title: { text: 'PnL (¥)', font: pf }, tickfont: pf },
     margin: { t: 40, b: 40, l: 60, r: 10 },
   }, PLOTLY_CONFIG);
+}
+
+// ═══════════════════════════════════════════
+// SCHEDULER
+// ═══════════════════════════════════════════
+let _schedulerTimer = null;
+
+async function loadScheduler() {
+  try {
+    const data = await fetchJSON(API + '/scheduler');
+    const tasks = data?.tasks || [];
+    renderScheduler(tasks);
+  } catch (e) { console.warn('scheduler error:', e.message); }
+}
+
+function renderScheduler(tasks) {
+  const el = document.getElementById('meta-scheduler');
+  if (el) {
+    const running = tasks.filter(t => t.status === 'running').length;
+    const errors = tasks.filter(t => t.status && t.status.startsWith('error')).length;
+    let meta = tasks.length + ' 任务';
+    if (running) meta += ' · ' + running + ' 运行中';
+    if (errors) meta += ' · ' + errors + ' 异常';
+    el.textContent = meta;
+  }
+
+  renderTable('table-scheduler', tasks, [
+    { key: 'name', label: '任务' },
+    { key: 'schedule', label: '时间' },
+    { key: 'status', label: '状态' },
+    { key: 'has_multiprocess', label: '多进程' },
+    { key: 'last_run', label: '上次执行' },
+    { key: 'last_duration', label: '耗时' },
+    { key: 'last_error', label: '错误' },
+  ], {
+    clsMap: {
+      status: v => {
+        if (!v) return '';
+        if (v.startsWith('running')) return 'status-running';
+        if (v.startsWith('error')) return 'status-error';
+        if (v.startsWith('waiting')) return 'status-waiting';
+        if (v.startsWith('sleep') || v.startsWith('skipped')) return 'status-sleep';
+        return 'status-idle';
+      }
+    },
+    fmtMap: {
+      name: v => {
+        const names = { signals: '信号生成', execute: '交易执行', attribution: '盘后归因' };
+        return names[v] || v;
+      },
+      has_multiprocess: v => v ? '⚠ 是' : '—',
+      last_run: v => v ? v.replace('T', ' ').slice(0, 19) : '—',
+      last_duration: v => v != null ? v.toFixed(1) + 's' : '—',
+    }
+  });
 }
 
 // ── SSE ──

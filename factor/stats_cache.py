@@ -27,7 +27,7 @@ import os
 import time
 import threading
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 
 import warnings
 import numpy as np
@@ -36,6 +36,7 @@ import pandas as pd
 from utils.logger import get_logger
 from config.loader import get as _cfg
 from factor.compute import _require_cfg
+from signal import SIGTERM, SIGKILL  # P77#10: 显式进程终止信号
 
 # Suppress ConstantInputWarning from scipy/pandas spearmanr on near-constant arrays
 # (std check catches strict zero but not floating-point near-zero; NaN fallback handles all cases)
@@ -45,39 +46,61 @@ logger = get_logger("factor.stats_cache")
 
 _DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
 _SNAPSHOT_TTL_SEC = _cfg("factor.stats.snapshot_ttl_sec", 86400)  # 24h
-_MAX_WORKERS = min(_cfg("factor.evaluation.max_workers", 6), 2)  # M1 8GB: cap at 2 workers — 4 workers × 200MB ≈ 800MB + main → OOM kill → orphans
-_WORKER_TIMEOUT_SEC = _cfg("factor.evaluation.worker_timeout_sec", 120)  # 2min timeout — shorter fuse to avoid lock held indefinitely
+_MAX_WORKERS = min(_cfg("factor.evaluation.max_workers", 6), 1)  # P77#10: M1 cap=1, 单worker杜绝并发泄漏
+_WORKER_TIMEOUT_SEC = _cfg("factor.evaluation.worker_timeout_sec", 180)  # P77#10: 3min, 适配全量5208股因子计算
 _COMPUTE_LOCK = threading.Lock()  # in-process reentrancy guard
-_my_pids_set = {os.getpid()}  # PIDs to never kill
+_my_pid = os.getpid()  # P77#10: own PID for cleanup protection
 _COMPUTE_FILE_LOCK = os.path.join(os.path.dirname(os.path.dirname(__file__)),
                                    "data", ".factor_compute.lock")  # cross-process guard
 _ORPHAN_PID_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)),
                                  "data", ".compute_pids")
 
 def _cleanup_process_pool():
-    """清理上次残留的 ProcessPoolExecutor 孤儿进程。
-    读取 .compute_pids 文件 → kill 所有列出的 PID → 删除文件。
-    在 web/app.py SIGTERM 处理中调用, 也在模块加载时自动执行。
+    """清理上次残留的 ProcessPoolExecutor 孤儿进程 — P77#10: 重写为显式 SIGKILL.
+    1. 读 .compute_pids → SIGKILL 所有列出的 PID → 删除文件
+    2. pgrep spawn_main → SIGKILL 漏网者 (自己除外)
+    3. 清理 stale lock file
     """
-    import signal as _sig, signal
-    if not os.path.exists(_ORPHAN_PID_FILE):
-        return
-    try:
-        with open(_ORPHAN_PID_FILE) as _f:
-            _pids = [int(_l.strip()) for _l in _f if _l.strip()]
-        os.remove(_ORPHAN_PID_FILE)
-        for _pid in _pids:
-            try:
-                os.kill(_pid, _sig.SIGTERM)
-                logger.warning(f"Cleaned up orphan worker PID {_pid}")
-            except ProcessLookupError:
-                pass
-        if _pids:
-            logger.info(f"Orphan cleanup: killed {len(_pids)} worker(s)")
-    except Exception as _e:
-        logger.warning(f"Orphan PID cleanup failed: {_e}")
+    _killed = 0
+    # 阶段1: PID 文件清理
+    if os.path.exists(_ORPHAN_PID_FILE):
+        try:
+            with open(_ORPHAN_PID_FILE) as _f:
+                _pids = [int(_l.strip()) for _l in _f if _l.strip()]
+            os.remove(_ORPHAN_PID_FILE)
+            for _pid in _pids:
+                try:
+                    os.kill(_pid, SIGKILL)
+                    _killed += 1
+                except ProcessLookupError:
+                    pass
+            if _killed:
+                logger.warning(f"Orphan cleanup: killed {_killed} worker(s) from PID file")
+        except Exception as _e:
+            logger.warning(f"Orphan PID cleanup failed: {_e}")
 
-    # Clean up stale file lock (fcntl lock released on process exit, file remains)
+    # 阶段2: pgrep 兜底 — 强杀所有残留 multiprocessing.spawn 子进程 (自己除外)
+    try:
+        import subprocess as _sp
+        _pg = _sp.run(
+            ["pgrep", "-f", "multiprocessing.spawn.*spawn_main"],
+            capture_output=True, text=True, timeout=5
+        )
+        if _pg.returncode == 0 and _pg.stdout.strip():
+            for _line in _pg.stdout.strip().split("\n"):
+                try:
+                    _p = int(_line.strip())
+                    if _p != _my_pid:
+                        os.kill(_p, SIGKILL)
+                        _killed += 1
+                except (ProcessLookupError, ValueError):
+                    pass
+    except Exception:
+        pass
+    if _killed:
+        logger.info(f"Orphan cleanup: total {_killed} processes killed")
+
+    # 阶段3: 清理残留锁文件
     try:
         if os.path.exists(_COMPUTE_FILE_LOCK):
             os.remove(_COMPUTE_FILE_LOCK)
@@ -670,8 +693,8 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None) 
             for _orphan_pid in _pg.stdout.strip().split("\n"):
                 try:
                     _p = int(_orphan_pid.strip())
-                    if _p != _my_pid and _p not in _my_pids_set:
-                        os.kill(_p, signal.SIGKILL)
+                    if _p != _my_pid:
+                        os.kill(_p, SIGKILL)
                         _killed += 1
                 except (ProcessLookupError, ValueError):
                     pass

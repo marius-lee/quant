@@ -22,21 +22,11 @@ def _log_exit(reason: str = ""):
 def _clean_exit(reason: str):
     """退出前清理 ProcessPoolExecutor 子进程, 防止孤儿泄漏。"""
     _log_exit(reason)
-    _pid_file = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)),
-                               "data", ".compute_pids")
-    if _os.path.exists(_pid_file):
-        try:
-            with open(_pid_file) as _f:
-                for _line in _f:
-                    _pid = _line.strip()
-                    if _pid:
-                        try:
-                            _os.kill(int(_pid), _signal.SIGTERM)
-                        except ProcessLookupError:
-                            pass
-            _os.remove(_pid_file)
-        except Exception:
-            pass
+    try:
+        from factor.stats_cache import _cleanup_process_pool
+        _cleanup_process_pool()
+    except Exception:
+        pass
     _sys.exit(0)
 
 _atexit.register(_log_exit, "atexit")

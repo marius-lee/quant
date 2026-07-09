@@ -122,6 +122,9 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         except Exception:
             pass
 
+        from utils.logger import get_logger
+        _flog = get_logger("factor.compute")
+        _flog.info(f"step 3 starting: computing factors for {len(symbols)} symbols on {actual_date}...")
         factor_values = compute_all_factors(data, actual_date,
                                             fundamentals=fundamentals,
                                             benchmark_ret=benchmark_ret)

@@ -449,7 +449,7 @@ class DataStore:
     def _fetch_tencent_daily(self, symbols: list, start_date: str) -> list:
         """腾讯财经逐只日线: vol=股→/100→手, amt用close×vol估算(元→/1000→千元)"""
         import urllib.request, json as _json
-        max_days = _cfg("data.fetch.max_lookback_days", 2000)
+        max_days = cfg("data.fetch.max_lookback_days", 2000)
         rows = []
         for sym in symbols:
             try:
@@ -507,7 +507,7 @@ class DataStore:
                         float(row.get("成交量", 0) or 0),          # 手 ✅
                         float(row.get("成交额", 0) or 0) / 1000,   # 元→千元
                         float(row.get("换手率", 0) or 0)))
-                import time; time.sleep(_cfg("data.rate_limit.akshare_per_stock_sec", 1.5))
+                import time; time.sleep(cfg("data.rate_limit.akshare_per_stock_sec", 1.5))
             except Exception:
                 continue
         if rows:
@@ -736,7 +736,7 @@ class DataStore:
                             (round(t, 4), sym, d)
                         )
                         filled += 1
-                import time; time.sleep(_cfg("data.rate_limit.akshare_per_stock_sec", 1.5))
+                import time; time.sleep(cfg("data.rate_limit.akshare_per_stock_sec", 1.5))
             except Exception:
                 continue
         conn.commit()
@@ -785,7 +785,7 @@ class DataStore:
                     if idx < 3:
                         logger.info(f"stock {sym} industry query failed: {e}")
                     continue
-                time.sleep(_cfg("data.rate_limit.akshare_industry_sec", 0.8))  # akshare rate limit
+                time.sleep(cfg("data.rate_limit.akshare_industry_sec", 0.8))  # akshare rate limit
             conn.commit()
             classified = conn.execute(
                 "SELECT COUNT(*) FROM stocks WHERE industry IS NOT NULL"
@@ -949,7 +949,7 @@ class DataStore:
             logger.info(f"daily [{source}] {done}/{len(symbols)} ({pct:.0f}%) {total_new}新行{sample_str}")
 
             if source == "tushare" and pro is not None:
-                time.sleep(_cfg("data.rate_limit.tushare_batch_sec", 0.4))
+                time.sleep(cfg("data.rate_limit.tushare_batch_sec", 0.4))
 
         conn.commit()
 

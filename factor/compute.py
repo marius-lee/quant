@@ -2440,16 +2440,13 @@ def compute_str(data, date, window=20):
     df = pd.DataFrame(rows, columns=['date', 'symbol', 'turnover'])
     df['date'] = pd.to_datetime(df['date'])
 
-    # 每只股票计算最近 window 日换手率标准差
-    str_vals = {}
-    for sym in syms:
-        sym_df = df[df['symbol'] == sym].sort_values('date')
-        if len(sym_df) < max(window // 2, 10):
-            continue
-        recent = sym_df['turnover'].tail(window)
-        str_vals[sym] = recent.std()
-
-    raw = pd.Series(str_vals, name="str")
+    # 用 groupby 替代逐只循环 — O(n) vs O(n²)
+    df = df.sort_values(['symbol', 'date'])
+    df['_rn'] = df.groupby('symbol').cumcount(ascending=False)  # 倒序行号
+    recent = df[df['_rn'] < window]
+    raw = recent.groupby('symbol')['turnover'].std()
+    raw = raw.dropna()
+    raw.name = 'str'
     if raw.empty or raw.count() < 30:
         return _cs_zscore(-raw).rename("str")
 
@@ -2522,17 +2519,14 @@ def compute_abn_turnover(data, date, window=20):
     df = pd.DataFrame(rows, columns=['date', 'symbol', 'turnover'])
     df['date'] = pd.to_datetime(df['date'])
 
-    # 每只股票计算最近 window 日均换手率, 取对数
-    avg_turn = {}
-    for sym in syms:
-        sym_df = df[df['symbol'] == sym].sort_values('date')
-        if len(sym_df) < max(window // 2, 10):
-            continue
-        avg = sym_df['turnover'].tail(window).mean()
-        if avg > 0:
-            avg_turn[sym] = np.log(avg)
-
-    turn_series = pd.Series(avg_turn, name="ln_turnover")
+    # 用 groupby 替代逐只循环 — O(n) vs O(n²)
+    df = df.sort_values(['symbol', 'date'])
+    df['_rn'] = df.groupby('symbol').cumcount(ascending=False)
+    recent = df[df['_rn'] < window]
+    avg_turn = recent.groupby('symbol')['turnover'].mean()
+    avg_turn = avg_turn[avg_turn > 0]
+    turn_series = np.log(avg_turn)
+    turn_series.name = 'ln_turnover'
     if turn_series.empty or turn_series.count() < 30:
         return _cs_zscore(-turn_series).rename("abn_turnover")
 

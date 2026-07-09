@@ -20,13 +20,8 @@ def _log_exit(reason: str = ""):
         print(f"[EXIT] {reason} pid={os.getpid()}", flush=True)
 
 def _clean_exit(reason: str):
-    """退出前清理 ProcessPoolExecutor 子进程, 防止孤儿泄漏。"""
+    """P78: ThreadPoolExecutor 线程随 with 语句自动回收, 无需手动清理."""
     _log_exit(reason)
-    try:
-        from factor.stats_cache import _cleanup_process_pool
-        _cleanup_process_pool()
-    except Exception:
-        pass
     _sys.exit(0)
 
 _atexit.register(_log_exit, "atexit")

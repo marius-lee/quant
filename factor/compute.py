@@ -2445,6 +2445,9 @@ def compute_str(data, date, window=20):
     df['_rn'] = df.groupby('symbol').cumcount(ascending=False)  # 倒序行号
     recent = df[df['_rn'] < window]
     raw = recent.groupby('symbol')['turnover'].std()
+    counts = df.groupby('symbol').size()
+    min_records = max(window // 2, 10)
+    raw = raw[counts >= min_records]
     raw = raw.dropna()
     raw.name = 'str'
     if raw.empty or raw.count() < 30:
@@ -2524,7 +2527,9 @@ def compute_abn_turnover(data, date, window=20):
     df['_rn'] = df.groupby('symbol').cumcount(ascending=False)
     recent = df[df['_rn'] < window]
     avg_turn = recent.groupby('symbol')['turnover'].mean()
-    avg_turn = avg_turn[avg_turn > 0]
+    counts = df.groupby('symbol').size()
+    min_records = max(window // 2, 10)
+    avg_turn = avg_turn[(avg_turn > 0) & (counts >= min_records)]
     turn_series = np.log(avg_turn)
     turn_series.name = 'ln_turnover'
     if turn_series.empty or turn_series.count() < 30:

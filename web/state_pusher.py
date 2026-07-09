@@ -49,7 +49,7 @@ def sanitize_for_json(obj):
 
 
 def state_url() -> str:
-    port = int(_cfg("web.port", 8521))
+    port = _require_cfg("web.port")
     return f"http://127.0.0.1:{port}/api/state"
 
 

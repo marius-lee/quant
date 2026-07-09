@@ -44,9 +44,9 @@ warnings.filterwarnings("ignore", message="An input array is constant")
 logger = get_logger("factor.stats_cache")
 
 _DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
-_SNAPSHOT_TTL_SEC = _cfg("factor.stats.snapshot_ttl_sec", 86400)  # 24h
-_MAX_WORKERS = min(_cfg("factor.evaluation.max_workers", 6), 1)  # P77#10: M1 cap=1, 单worker杜绝并发泄漏
-_WORKER_TIMEOUT_SEC = _cfg("factor.evaluation.worker_timeout_sec", 180)  # P77#10: 3min, 适配全量5208股因子计算
+_SNAPSHOT_TTL_SEC = _require_cfg("factor.stats.snapshot_ttl_sec")
+_MAX_WORKERS = _require_cfg("factor.evaluation.max_workers")
+_WORKER_TIMEOUT_SEC = _require_cfg("factor.evaluation.worker_timeout_sec")
 _COMPUTE_LOCK = threading.Lock()  # in-process reentrancy guard
 _my_pid = os.getpid()  # P77#10: own PID for cleanup protection
 _COMPUTE_FILE_LOCK = os.path.join(os.path.dirname(os.path.dirname(__file__)),

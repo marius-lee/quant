@@ -45,8 +45,8 @@ logger = get_logger("factor.stats_cache")
 
 _DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
 _SNAPSHOT_TTL_SEC = _cfg("factor.stats.snapshot_ttl_sec", 86400)  # 24h
-_MAX_WORKERS = min(_cfg("factor.evaluation.max_workers", 6), 4)  # M1 8GB: cap at 4 workers
-_WORKER_TIMEOUT_SEC = _cfg("factor.evaluation.worker_timeout_sec", 180)  # 3min timeout
+_MAX_WORKERS = min(_cfg("factor.evaluation.max_workers", 6), 2)  # M1 8GB: cap at 2 workers — 4 workers × 200MB ≈ 800MB + main → OOM kill → orphans
+_WORKER_TIMEOUT_SEC = _cfg("factor.evaluation.worker_timeout_sec", 120)  # 2min timeout — shorter fuse to avoid lock held indefinitely
 _COMPUTE_LOCK = threading.Lock()  # in-process reentrancy guard
 _COMPUTE_FILE_LOCK = os.path.join(os.path.dirname(os.path.dirname(__file__)),
                                    "data", ".factor_compute.lock")  # cross-process guard
@@ -284,11 +284,30 @@ def compute_factor_stats(
             if pbar:
                 pbar.close()
     finally:
-        executor.shutdown(wait=True)
+        # shutdown(wait=False, cancel_futures=True): don't hang if workers are stuck — SIGTERM and move on
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            executor.shutdown(wait=False)
         # 正常退出 → 清理 PID 文件 (避免下次启动误杀正常进程)
         try:
             if os.path.exists(_ORPHAN_PID_FILE):
                 os.remove(_ORPHAN_PID_FILE)
+        except Exception:
+            pass
+        # Nuke any remaining multiprocessing orphans (pgrep)
+        import time as _t, subprocess as _sp, signal as _sg
+        _t.sleep(0.5)
+        try:
+            _pg = _sp.run(["pgrep", "-f", "multiprocessing.spawn.*spawn_main"],
+                          capture_output=True, text=True, timeout=5)
+            if _pg.returncode == 0 and _pg.stdout.strip():
+                for _p in _pg.stdout.strip().split("\n"):
+                    try:
+                        os.kill(int(_p.strip()), _sg.SIGKILL)
+                        logger.warning(f"Force-killed straggler {_p.strip()}")
+                    except (ProcessLookupError, ValueError):
+                        pass
         except Exception:
             pass
     logger.info(f"factor compute complete: {len(eval_date_strs)}/{len(eval_date_strs)} dates")
@@ -588,6 +607,8 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None) 
             _lock_fd = None
 
     # 进程内重入保护：防止 warmup 和 API 请求同时触发
+    # 每次计算前强制清理孤儿进程
+    _cleanup_process_pool()
     if not _COMPUTE_LOCK.acquire(blocking=False):
         logger.warning("factor stats computation already in progress by another thread, returning stale/empty cache")
         if _lock_fd:

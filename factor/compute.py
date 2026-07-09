@@ -1193,15 +1193,18 @@ def _market_db_path():
 def load_active_price_factors(status_filter='active'):
     """从 factor_registry 表加载价格因子 → {name: (cat, window, fn)}.
     
-    status_filter: 'active' (生产), None (全部因子, 评估用).
+    status_filter: 'active'→active+monitoring (生产), None (全部, 评估用).
     """
     conn = _db_connect()
     name_list = list(_PRICE_FN_MAP.keys())
     placeholders = ",".join("?" * len(name_list))
     if status_filter:
+        # 'active' maps to active+monitoring (both are in production)
+        statuses = ('active', 'monitoring') if status_filter == 'active' else (status_filter,)
+        ph = ",".join("?" * len(statuses))
         rows = conn.execute(
-            f"SELECT name FROM factor_registry WHERE status=? AND name IN ({placeholders})",
-            [status_filter] + name_list
+            f"SELECT name FROM factor_registry WHERE status IN ({ph}) AND name IN ({placeholders})",
+            list(statuses) + name_list
         ).fetchall()
     else:
         rows = conn.execute(
@@ -1219,15 +1222,17 @@ def load_active_price_factors(status_filter='active'):
 def load_active_fundamental_factors(status_filter='active'):
     """从 factor_registry 表加载基本面因子.
     
-    status_filter: 'active' (生产), None (全部因子, 评估用).
+    status_filter: 'active'→active+monitoring (生产), None (全部, 评估用).
     """
     conn = _db_connect()
     fn_names = list(_FUNDAMENTAL_FN_MAP.keys())
     placeholders = ",".join("?" * len(fn_names))
     if status_filter:
+        statuses = ('active', 'monitoring') if status_filter == 'active' else (status_filter,)
+        ph = ",".join("?" * len(statuses))
         rows = conn.execute(
-            f"SELECT name FROM factor_registry WHERE status=? AND name IN ({placeholders})",
-            [status_filter] + fn_names
+            f"SELECT name FROM factor_registry WHERE status IN ({ph}) AND name IN ({placeholders})",
+            list(statuses) + fn_names
         ).fetchall()
     else:
         rows = conn.execute(
@@ -2987,4 +2992,3 @@ _FUNDAMENTAL_FN_MAP = {
     "insider_increase":    ("institution",    compute_insider_increase),
     "earnings_revision":   ("analyst",        compute_earnings_revision),
 }
-

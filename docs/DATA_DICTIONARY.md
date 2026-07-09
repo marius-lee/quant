@@ -25,7 +25,7 @@
 | `academic_source` | TEXT | 学术文献出处，如 "Fama-French (1992)" |
 | `formula` | TEXT | 因子计算公式简述，如 "-σ(Turnover, 20d), 市值中性化" |
 | `paper_ic_mean` | REAL | 原始论文声明的 IC 均值，用于与实测 ic_mean 对比 |
-| `status` | TEXT | `active`=启用中，`deprecated`=已失效。只有 active 的因子参与 pipeline |
+| `status` | TEXT | 因子生命周期: `registered`→`backtesting`→`candidate`→`active`→`monitoring`→`retired` / `rejected`。active+monitoring 参与实盘 pipeline |
 | `status_reason` | TEXT | 当前状态的简要原因，如 "stepwise evaluation" / "passed stepwise backtest" |
 | `notes` | TEXT | 状态变更历史记录（追加式），格式: `YYYY-MM-DD HH:MM \| 操作 \| 原因` |
 | `ic_mean` | REAL | 最近 120 个交易日截面 IC 均值（`compute_factor_stats()` 写入） |

@@ -36,6 +36,12 @@ data:
   stale_days: 250
   start_date: '2020-01-01'
   tushare_token: ${TUSHARE_TOKEN}
+  rate_limit:
+    akshare_per_stock_sec: 1.5
+    akshare_industry_sec: 0.8
+    tushare_batch_sec: 0.4
+  fetch:
+    max_lookback_days: 2000
 execution:
   commission: 0.0003
   min_commission: 5

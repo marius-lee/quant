@@ -173,9 +173,14 @@ class TradeRepo:
     def record_trade(self, strategy: str, date: str, symbol: str,
                      side: str, price: float, shares: int,
                      pnl: float = 0.0, pnl_pct: float = 0.0,
-                     board_count: int = 0, cost: float = 0.0) -> None:
-        """写入一笔交易并原子更新现金余额 (单连接事务)。"""
-        c = self._conn()
+                     board_count: int = 0, cost: float = 0.0,
+                     conn: "sqlite3.Connection" = None) -> None:
+        """写入一笔交易并原子更新现金余额 (单连接事务)。
+
+        若 conn 提供，使用外部连接（调用者管理事务），内部不 commit/close。
+        """
+        own_conn = conn is None
+        c = conn if conn is not None else self._conn()
         # 读取当前现金
         cash_row = c.execute(
             "SELECT cash_balance FROM strategy_config WHERE strategy=?",
@@ -196,8 +201,9 @@ class TradeRepo:
             "UPDATE strategy_config SET cash_balance = ?, updated_at = datetime('now') WHERE strategy = ?",
             (round(cash, 2), strategy)
         )
-        c.commit()
-        c.close()
+        if own_conn:
+            c.commit()
+            c.close()
 
 
     # ── 统计 ──

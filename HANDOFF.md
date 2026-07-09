@@ -1,6 +1,6 @@
 # HANDOFF — quant 项目当前状态
 
-**最后更新**: 2026-07-09 15:00 CST
+**最后更新**: 2026-07-09 17:00 CST
 
 > 旧版归档: docs/HANDOFF-2026-07-02.md / docs/HANDOFF-2026-07-03.md (已 superseded)
 > 项目根只有一个 HANDOFF.md 作为单一真相源
@@ -32,10 +32,35 @@ web/state_pusher.py，pipeline.py Step 3 Alpha 缩减为 5 行 AlphaModel 调用
 
 **#5 文件结构**: alpha/ 包从空壳变为实际模块 (model.py + synth.py + __init__.py)。
 
+
+| — | fix: execute()事务回滚 + compute_str() SQL注入 + DataStore线程安全 + config包init (P71) |
+
+### P71: 代码安全与稳定性修复
+
+**execution/engine.py — execute() 事务回滚 + IndentationError 修复**: 
+execute() 的 for 循环体缺少缩进 (SyntaxError)，且批量订单 BEGIN 后从不 COMMIT/ROLLBACK/CLOSE。
+修复：try/except/finally 模式，异常时 rollback，finally 中 close。
+
+**factor/compute.py — compute_str() SQL 注入修复**: 
+第 2430 行 symbol 直接拼入 SQL 字符串。替换为参数化查询 + bind params。
+
+**factor/compute.py — compute_ocfp() 连接层绕过修复**: 
+第 2575 行 raw sqlite3.connect 绕过 market_conn()，缺少 WAL 模式。
+替换为 `market_conn("ro")`。
+
+**data/store.py — DataStore._connect() 线程安全**: 
+shared _conn 无锁保护，多线程并发可能创建多个连接并泄漏。
+新增 `threading.Lock` + `_make_conn()` 工厂方法。
+
+**config/__init__.py**: 添加包级 docstring (之前为空文件)。
+
+**全量 pyc 清理**: 删除所有 stale .pyc，解决 stats_cache 旧版本 devnull 残留。
+
+**已验证**: 6 文件 131+ 70- 行改动，24/30 测试通过 (6 个 synth 失败为预现有 API 签名不匹配)。
+
 ---
 
-## 以前提交 (2026-07-08)
-
+## 最近提交 (2026-07-09, 续)
 
 
 | — | fix: ProcessPoolExecutor 孤儿进程泄漏 — 3层防护 + 双调度器清理 (P68) |

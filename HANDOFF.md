@@ -1,6 +1,6 @@
 # HANDOFF — 盈迹 (quant) 项目当前状态
 
-**最后更新**: 2026-07-10 06:15 CST
+**最后更新**: 2026-07-10 07:10 CST
 
 > 旧版归档: docs/HANDOFF-2026-07-02.md / docs/HANDOFF-2026-07-03.md (已 superseded)
 > 项目根只有一个 HANDOFF.md 作为单一真相源
@@ -11,6 +11,7 @@
 
 | 提交 | 内容 |
 |------|------|
+| `878fba1` | fix: P77#10 根除多进程内存泄漏 — 显式terminate/kill替代pgrep (stats_cache.py + web/app.py) |
 | `5c38dc3` | docs: HANDOFF 更新止盈止损 |
 | `eb7bee5` | feat: 止盈止损统一管理 — 移至 monitor.py 盘中风控 (P75#4) |
 | `b219a39` | docs: HANDOFF P75 标记完成 |
@@ -194,6 +195,23 @@ ProcessPoolExecutor worker 自加载:
 - 沙箱受限的命令发给用户在终端执行
 - 不删历史 DB 数据 (日线从 2020 至今)
 
+
+### P77#10: 多进程内存泄漏根除 (`878fba1`)
+
+**根因**: ProcessPoolExecutor.shutdown(wait=False, cancel_futures=True) 对卡在阻塞 I/O
+(sqlite3 查询 5000+ 股) 中的 worker 进程完全无力 — 它只发信号, 不杀进程。
+pgrep 兜底不可靠, 导致 worker 指数级累积 → OOM。
+
+**修复 (3 层防护)**:
+1. **compute_factor_stats finally 块重写**: shutdown 前显式 proc.terminate() → sleep(2) 
+   → proc.kill() 每个 worker (行业标准做法)
+2. **_MAX_WORKERS=1**: M1 8GB 单 worker 杜绝并发泄漏, 内存 ~100MB fixed
+3. **_cleanup_process_pool 增强**: SIGTERM→SIGKILL + pgrep 兜底阶段2 (漏网者)
+
+**其他**:
+- signal SIGTERM/SIGKILL 模块级引入, 消除局部 import
+- web/app.py _clean_exit 删除 16 行重复 PID 清理, 导入 _cleanup_process_pool
+- _worker_timeout: 120→180s, 适配全量 5208 股因子计算
 
 ### P76: 因子5状态生命周期 — 对标 WorldQuant/AQR (`d813c44`)
 

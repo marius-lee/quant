@@ -9,6 +9,7 @@ from datetime import date as date_type
 from typing import Optional
 from dataclasses import dataclass
 from execution.cost import CostModel
+from data.store import market_conn  # P69: 统一连接层
 from data.trade_repo import TradeRepo
 
 
@@ -73,7 +74,7 @@ class ExecutionEngine:
         """
         import sqlite3
         try:
-            mc = sqlite3.connect(MARKET_DB)
+            mc = market_conn("ro")
             row = mc.execute(
                 "SELECT close FROM daily WHERE symbol=? AND date < ? ORDER BY date DESC LIMIT 1",
                 (symbol, date)

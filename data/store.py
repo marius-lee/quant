@@ -1246,3 +1246,16 @@ if __name__ == "__main__":
     stats = store.get_stock_count()
     for k, v in stats.items():
         print(f"  {k}: {v}")
+
+
+def market_conn(mode='ro'):
+    """统一数据库连接 — 自动 WAL + busy_timeout=30s.
+    mode: 'ro' = read-only (附加 read_uncommitted), 'rw' = read-write.
+    """
+    _db = os.path.join(os.path.dirname(__file__), "market.db")
+    _c = sqlite3.connect(_db)
+    _c.execute("PRAGMA journal_mode=WAL")
+    _c.execute("PRAGMA busy_timeout=30000")
+    if mode == 'ro':
+        _c.execute("PRAGMA read_uncommitted=1")
+    return _c

@@ -1,6 +1,6 @@
 """交易执行调度器 — 每日 09:30."""
 import time as _time, uuid as _uuid
-from datetime import time
+from datetime import time, datetime
 from monitor.metrics import metrics as _m
 from utils.logger import get_logger
 from quant.scheduler._base import _timed_loop
@@ -14,11 +14,16 @@ def _run(today: str):
     t0 = _time.time()
 
     from pipeline import execute_signals, generate_signals
-    signals = generate_signals(date_str=today)
-    targets = signals.get("target_positions", [])
+    # 不重算 — 直接读 08:30 产出 (Grinold & Kahn: 盘前 batch → 盘中执行)
+    from web.state_broker import broker
+    state = broker.get()
+    targets = state.get("signals", [])
+    signals_time = state.get("when", {}).get("signals_generated", "未知")
+    _log.info(f"[{today}] read {len(targets)} targets from 08:30 signals (generated {signals_time})")
 
     if not targets:
-        _log.info(f"[{today}] no targets, skip")
+        _log.error(f"[{today}] 08:30 未产出信号，拒绝执行 (no fallback)")
+        _m.inc("scheduler.execute.no_targets")
         return
 
     result = execute_signals(targets, date_str=today)

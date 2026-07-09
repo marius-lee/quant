@@ -1,7 +1,8 @@
-"""独立调度器 — 三个任务各自运行，互不依赖。
+"""独立调度器 — 四个任务各自运行，互不依赖。
 
 signals:     每日 08:30 盘前信号生成
 execute:     每日 09:30 开盘执行
+monitor:     每日 09:35-14:55 盘中风控
 attribution: 每日 15:30 盘后归因
 """
 import threading
@@ -30,13 +31,20 @@ def start_attribution():
     t.start()
     _log.info("attribution scheduler launched (15:30)")
 
+def start_monitor():
+    from quant.scheduler.monitor import _run_continuous as _run_monitor, _loop as _monitor_loop
+    t = threading.Thread(target=_monitor_loop, daemon=True, name="sch-monitor")
+    t.start()
+    _log.info("monitor scheduler launched (09:35-14:55)")
+
 
 def start_all():
-    """启动三个独立调度器."""
+    """启动四个独立调度器."""
     start_signals()
     start_execute()
+    start_monitor()
     start_attribution()
-    _log.info("all 3 schedulers launched")
+    _log.info("all 4 schedulers launched")
 
 
 # 兼容旧 API

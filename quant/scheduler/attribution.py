@@ -24,6 +24,31 @@ def _run(today: str):
     else:
         _log.info(f"[{today}] no positions, skip attribution")
 
+    # ── IC 衰减快照 ──
+    try:
+        from web.state_broker import broker
+        import sqlite3, json
+        conn = sqlite3.connect("data/market.db")
+        rows = conn.execute(
+            "SELECT name, ic_weight FROM factor_registry WHERE active=1 AND ic_weight IS NOT NULL"
+        ).fetchall()
+        conn.close()
+        if rows:
+            today_weights = {r[0]: round(r[1], 6) for r in rows}
+            prev_raw = (broker.get().get("metrics") or {}).get("factor_ic_snapshot")
+            prev_weights = json.loads(prev_raw) if prev_raw else {}
+            degraded = []
+            for name, w in today_weights.items():
+                pw = prev_weights.get(name)
+                if pw and pw != 0 and abs((w - pw) / pw) > 0.3:
+                    degraded.append(f"{name}: {pw:+.4f}→{w:+.4f}")
+            if degraded:
+                _log.warning(f"[{today}] IC degradation detected: {'; '.join(degraded)}")
+                _m.inc("scheduler.attribution.ic_degraded", len(degraded))
+            broker.update({"metrics": {"factor_ic_snapshot": json.dumps(today_weights)}})
+    except Exception as e:
+        _log.warning(f"[{today}] IC snapshot failed (non-fatal): {e}")
+
     elapsed = _time.time() - t0
     _log.info(f"[SCHEDULER] {today} | TASK=attribution | STATUS=OK | elapsed={elapsed:.1f}s")
     _m.inc("scheduler.attribution.ok")

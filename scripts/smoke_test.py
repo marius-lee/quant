@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""烟雾测试: 调用所有因子函数 + ProcessPoolExecutor 真实多进程路径。
+"""烟雾测试: 调用所有因子函数 + ThreadPoolExecutor 多线程路径 (P78).
 
 用法:
   cd /Users/mariusto/project/quant
@@ -12,13 +12,13 @@ import sys, os, time, traceback, pandas as pd, numpy as np
 
 
 def _test_process_pool() -> list:
-    """[SMOKE-2] ProcessPoolExecutor 真实多进程测试 — 10 股 × 3 天 × 2 chunks。
+    """[SMOKE-2] ThreadPoolExecutor 多线程测试 — 10 股 × 3 天 × 2 chunks (P78).
 
     macOS spawn 模式要求此函数 top-level 定义，子进程 pickle 可达。
-    不绕过 ProcessPoolExecutor：真正 spawn 子进程，worker 各自加载 DB、计算因子。
+    每个 worker 线程 data.copy() 隔离, 零共享状态 (P78).
     返回: 错误信息列表，空列表 = 通过。
     """
-    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     from data.store import DataStore
     store = DataStore()
@@ -54,7 +54,7 @@ def _test_process_pool() -> list:
     print(f"[SMOKE-2] {len(chunks)} chunks, launching ProcessPoolExecutor(max_workers={len(chunks)})...")
 
     errors = []
-    with ProcessPoolExecutor(max_workers=len(chunks)) as executor:
+    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
         futures = {executor.submit(_pp_compute_chunk, (syms, chunk, factor_names)): chunk
                    for chunk in chunks}
         for future in as_completed(futures):
@@ -152,7 +152,7 @@ def main():
             print(f"  ❌ {e}")
         return 1
     else:
-        print(f"[SMOKE-2] PASS — ProcessPoolExecutor OK")
+        print(f"[SMOKE-2] PASS — ThreadPoolExecutor OK")
 
     print(f"\n{'='*60}")
     print(f"ALL PASS ✓")

@@ -71,7 +71,7 @@ factor:
     cpcv_test_groups: 1
     embargo_days: 1
     lookback: 120
-    max_workers: 6
+    max_workers: 4  # P78: M1 4P-core, ThreadPoolExecutor 最优线程数
     min_abs_ic: 0.02
     min_half_life: 20
     min_icir: 0.5

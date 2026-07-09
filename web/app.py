@@ -274,13 +274,12 @@ def api_update_state():
 
 @app.route("/api/quotes")
 def api_quotes():
-    """实时行情 — 批量拉取新浪财经报价 + 止损扫描。
+    """实时行情 — 批量拉取新浪财经报价。
 
     ?symbols=000001,600036,430047 — 逗号分隔的股票代码列表
-    返回: {quotes: {symbol: {price, change_pct, ...}}, status: "open"|"closed",
-           stop_loss_triggers: [{symbol, price, drop_pct}]}
+    返回: {quotes: {symbol: {price, change_pct, ...}}, status: "open"|"closed"}
     仅在交易日 9:30-15:00 拉取, 否则返回空。
-    盘中自动扫描 quant 策略持仓: 任一持仓从成本价跌超阈值即模拟卖出。
+    止盈止损已移到 monitor.py 盘中风控统一管理。
     """
     from flask import request
     from execution.quote import fetch_quotes, is_trading_time
@@ -294,51 +293,8 @@ def api_quotes():
         return _api_response(data={"quotes": {}, "status": "closed"})
     quotes = fetch_quotes(symbols)
 
-    # ── 止损扫描 (quant 策略) ──
-    stop_loss_triggers = []
-    from config.loader import get as cfg
-    sl_pct = cfg("risk.stop_loss_pct")
-    try:
-        import sqlite3
-        tc = sqlite3.connect(TRADE_DB)
-        positions = tc.execute("""
-            SELECT symbol, SUM(shares) as net_shares,
-                   SUM(price * shares) / SUM(shares) as cost_basis
-            FROM sim_trades
-            WHERE side='buy' AND strategy='quant'
-            GROUP BY symbol
-        """).fetchall()
-        sells = tc.execute(
-            "SELECT symbol, SUM(shares) FROM sim_trades WHERE side='sell' AND strategy='quant' GROUP BY symbol"
-        ).fetchall()
-        sell_map = {r[0]: r[1] for r in sells}
-        today = __import__('datetime').date.today().isoformat()
-        for sym, shares, cost_basis in positions:
-            net = max(0, shares - sell_map.get(sym, 0))
-            if net <= 0 or sym not in quotes:
-                continue
-            current_px = quotes[sym]["price"]
-            drop = (current_px - cost_basis) / cost_basis if cost_basis > 0 else 0
-            if drop <= -sl_pct:
-                from execution.engine import ExecutionEngine, Order
-                engine = ExecutionEngine()
-                engine.execute(
-                    [Order(symbol=sym, side="sell", shares=net, price=current_px, cost=0)],
-                    today, strategy="quant"
-                )
-                stop_loss_triggers.append({
-                    "symbol": sym, "price": round(current_px, 2),
-                    "drop_pct": round(drop * 100, 1), "shares": net,
-                })
-                logger.warning("[SL] stop-loss via /api/quotes: %s drop=%.1f%% sold %d shares",
-                               sym, drop * 100, net)
-        tc.close()
-    except Exception as e:
-        logger.warning("[SL] stop-loss scan failed: %s", e)
-
     return _api_response(data={
         "quotes": quotes, "status": "open",
-        "stop_loss_triggers": stop_loss_triggers,
     })
 
 

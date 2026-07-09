@@ -121,6 +121,18 @@ def api_factors():
     force = request.args.get("refresh", "false").lower() == "true"
     try:
         stats = get_cached_factor_stats(force_refresh=force)
+        # 补充 factor_registry 总/有效计数
+        try:
+            import sqlite3, os
+            db = os.path.join(os.path.dirname(__file__), "..", "data", "market.db")
+            c = sqlite3.connect(db)
+            r = c.execute("SELECT COUNT(*), SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) FROM factor_registry").fetchone()
+            c.close()
+            stats["n_registered"] = r[0] or 0
+            stats["n_active"] = r[1] or 0
+        except Exception:
+            stats["n_registered"] = len(stats.get("factor_keys", []))
+            stats["n_active"] = len(stats.get("factor_keys", []))
         return _api_response(data=stats)
     except Exception as e:
         from utils.logger import get_logger

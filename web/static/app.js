@@ -284,6 +284,7 @@ function renderFactorKPIs(fd) {
   const absICs = ics.map(Math.abs);
   const meanAbsIC = absICs.length ? absICs.reduce((a,b)=>a+b)/absICs.length : 0;
   const meanIR = fd.ic_ir?.length ? fd.ic_ir.reduce((a,b)=>a+Math.abs(b))/fd.ic_ir.length : 0;
+  setText('kpi-nregistered', fd.n_registered ?? ics.length);
   setText('kpi-nfactors', ics.length);
   setText('kpi-ic-mean', fmtNum(meanAbsIC, 4));
   setText('kpi-ic-ir', fmtNum(meanIR, 2));

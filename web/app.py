@@ -65,7 +65,7 @@ def _warm_factor_cache():
         from factor.stats_cache import get_cached_factor_stats
         logger.info("warming factor cache (background)...")
         # 不强制重算: 若 24h 缓存有效则直接返回, 否则自动计算
-        get_cached_factor_stats(force_refresh=False)
+        get_cached_factor_stats(force_refresh=True)
         logger.info("factor cache warmup complete")
     except Exception as e:
         logger.warning(f"factor cache warmup skipped: {e}")

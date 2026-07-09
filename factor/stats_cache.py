@@ -101,7 +101,7 @@ def _pp_compute_chunk(args: tuple) -> list:
     Each worker opens its own DataStore → independent sqlite3 conn in WAL mode.
     """
     import sys, traceback as _tb
-    import warnings
+    import warnings, logging
     warnings.filterwarnings("ignore", category=ResourceWarning)  # suppress sqlite3 conn cleanup noise on spawn
     logging.captureWarnings(True)  # route warnings to logger, not stderr
     symbols_list, date_strs_list, factor_names_list = args

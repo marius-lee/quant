@@ -1,6 +1,6 @@
 # HANDOFF — 盈迹 (quant) 项目当前状态
 
-**最后更新**: 2026-07-10 12:50 CST
+**最后更新**: 2026-07-10 13:30 CST
 
 > 旧版归档: docs/HANDOFF-2026-07-02.md / docs/HANDOFF-2026-07-03.md (已 superseded)
 > 项目根只有一个 HANDOFF.md 作为单一真相源
@@ -11,6 +11,7 @@
 
 | 提交 | 内容 |
 |------|------|
+| `b89da13` | refactor: 回测/实盘因子状态语义分离 — 6态双链路 |
 | `4fdf075` | feat: 系统状态重构 + 配置类型校验 + _require_cfg 类型修复 (P81) |
 | *(本次)* | fix: P78 真正的 ProcessPoolExecutor→ThreadPoolExecutor 迁移 — stats_cache.py 重写 (-353行), smoke_test 适配, web/app.py cfg→_require_cfg |
 | `acab523` | fix: 全局硬编码清零 — 21处API延迟/SQLite超时/Redis/SSE全部迁入config.yaml |

@@ -39,7 +39,7 @@ def _run():
     # 日频任务状态: 每个交易日重置
     done = {"signals": False, "execute": False, "attribution": False}
     _monitor_thread = None
-    _monitor_stop = threading.Event()
+    _monitor_stop = _thr.Event()
 
     def _monitor_daemon(current_day):
         """子线程: 盘中风控守护 (09:35-14:55 循环)."""

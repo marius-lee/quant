@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 import urllib.request
 from datetime import datetime
+from config.constants import _require_cfg
 from utils.logger import get_logger
 
 logger = get_logger("execution.quote")
@@ -84,7 +85,7 @@ def fetch_quotes(symbols: list[str]) -> dict[str, dict]:
         partial = {}
         try:
             req = urllib.request.Request(url, headers=_HEADERS)
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=_require_cfg("data.http_timeout.sina")) as resp:
                 text = resp.read().decode("gbk")
         except Exception as e:
             logger.warning(f"quote fetch failed: {e}")
@@ -112,8 +113,7 @@ def is_trading_time() -> bool:
         from execution.calendar import is_market_open
         return is_market_open()
     except Exception:
-        from utils.logger import get_logger
-        get_logger("execution.quote").warning("failed to check trading hours from calendar, using wall-clock fallback")
+        logger.warning("failed to check trading hours from calendar, using wall-clock fallback")
         now = datetime.now()
         t = now.time()
         import datetime as _dt

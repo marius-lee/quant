@@ -141,5 +141,24 @@ screening:
   backtest_end: '2026-06-30'
   backtest_start: '2025-06-30'
   timeout: 600
+data:
+  http_timeout:
+    sina: 10       # 新浪行情 HTTP 超时 (秒)
+    tushare: 10    # Tushare API HTTP 超时 (秒)
+    tencent: 15    # 腾讯行情 API HTTP 超时 (秒)
+    sse: 20        # 上交所 SSE API HTTP 超时 (秒)
+  api_delay:
+    fund_hold: 2   # 基金持仓 API 限频间隔 (秒)
+    margin: 4      # 融资融券 SSE API 限频间隔 (秒)
+    margin_page: 5 # 融资融券翻页间隔 (秒)
+monitor:
+  alert:
+    drawdown_critical: 0.20   # 累计回撤 ≥20% → critical 告警
+    drawdown_warning: 0.10    # 累计回撤 ≥10% → warning 告警
+quant:
+  scheduler:
+    poll_interval: 30         # 调度器轮询间隔 (秒), 业界标准 ≤60s
+sync:
+  daily_interval: 3           # 日线同步 API 间隔 (秒)
 web:
   port: 8521

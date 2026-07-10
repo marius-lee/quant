@@ -17,6 +17,7 @@ logger = get_logger("data.store")
 from data.cache import get_backend, DataCache, RateLimiter
 from config.loader import load as _load_config
 from config.loader import get as cfg
+from config.constants import _require_cfg
 
 # ── Module-level cache (lazy init) ──
 _backend = None
@@ -431,7 +432,7 @@ class DataStore:
                     "User-Agent": "Mozilla/5.0",
                     "Referer": "https://finance.sina.com.cn",
                 })
-                data = _json.loads(urllib.request.urlopen(req, timeout=10).read().decode("utf-8"))
+                data = _json.loads(urllib.request.urlopen(req, timeout=_require_cfg("data.http_timeout.tushare")).read().decode("utf-8"))
             except Exception:
                 continue
             for bar in data:
@@ -457,7 +458,7 @@ class DataStore:
                 url = (f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
                        f"?param={market}{sym},day,,,{max_days},qfq")
                 req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                resp = urllib.request.urlopen(req, timeout=15)
+                resp = urllib.request.urlopen(req, timeout=_require_cfg("data.http_timeout.tencent"))
                 data = _json.loads(resp.read().decode("utf-8"))
                 kline = data.get("data", {}).get(f"{market}{sym}", {}).get("qfqday")
                 if not kline:

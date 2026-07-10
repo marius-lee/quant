@@ -9,6 +9,7 @@ import os, sqlite3, time
 from datetime import datetime
 
 import pandas as pd
+from config.constants import _require_cfg
 from utils.logger import get_logger
 
 logger = get_logger("data.fund_hold")
@@ -95,7 +96,7 @@ def sync_recent(conn=None):
     for q in quarters:
         n = sync_quarter(q, conn=conn)
         total += n
-        time.sleep(2)
+        time.sleep(_require_cfg("data.api_delay.fund_hold"))
     return total
 
 

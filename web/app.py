@@ -5,6 +5,7 @@
 """
 
 import json, os, sqlite3
+from config.constants import _require_cfg
 from data.store import market_conn  # P69: 统一连接层
 from datetime import date, datetime
 from flask import Flask, jsonify, render_template
@@ -394,7 +395,6 @@ def api_performance():
     """累计绩效统计. ?strategy=quant&quotes=true (quotes=true 用市价估值)"""
     from flask import request
     from config.loader import get as cfg
-    from config.constants import _require_cfg
     strategy = request.args.get("strategy", "quant")
     tc = sqlite3.connect(TRADE_DB)
     sells = tc.execute("SELECT pnl FROM sim_trades WHERE side='sell' AND strategy=?", (strategy,)).fetchall()
@@ -500,7 +500,6 @@ def api_stream():
     """模板 6 + 方案B: SSE 实时推送状态变更 (替代轮询)."""
     import json, queue
     from flask import Response
-    from config.constants import _require_cfg
     q = broker.subscribe()
     def generate():
         try:

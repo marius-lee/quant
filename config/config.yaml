@@ -153,8 +153,13 @@ risk:
     min_common_stocks: 30
     min_stocks_per_industry: 3
   rolling_window: 60
-  stop_loss_pct: 0.15
-  stop_profit_pct: 0.20
+  # ── ATR 动态止损止盈 (替代固定百分比) ──
+  atr_period: 20
+  atr_mult_stop_loss: 2.0          # 止损: 现价≤成本-2×ATR → 全卖
+  atr_mult_take_profit_1: 2.0      # 止盈1: 现价≥成本+2×ATR → 卖50%
+  atr_mult_take_profit_2: 3.0      # 止盈2: 现价≥成本+3×ATR → 卖剩余50%
+  atr_mult_trailing: 1.5           # 移动锁利: 盈利超2ATR后回撤1.5ATR → 全卖
+  max_hold_days: 20                # 时间止损: 持仓>20天+浮亏 → 全卖
 screening:
   backtest_end: '2026-06-30'
   backtest_start: '2025-06-30'

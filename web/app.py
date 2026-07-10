@@ -500,6 +500,7 @@ def api_stream():
     """模板 6 + 方案B: SSE 实时推送状态变更 (替代轮询)."""
     import json, queue
     from flask import Response
+    from config.constants import _require_cfg
     q = broker.subscribe()
     def generate():
         try:

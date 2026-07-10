@@ -9,6 +9,7 @@ import requests
 import numpy as np
 
 from config.loader import get as _cfg
+from config.constants import _require_cfg
 from utils.logger import get_logger
 
 # ── Failure tracking: alert when consecutive failures exceed threshold ──

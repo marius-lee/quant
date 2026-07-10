@@ -333,3 +333,38 @@ web/app.py:562 cfg fallback → _require_cfg("web.port")
 
 IDE 检查: 无红线
 ```
+
+---
+
+## 2026-07-10 下午: 五项遗留任务全部完成
+
+### 1. ATR动态止损止盈 (`1420562`)
+- 新建 `execution/stop_loss.py`: RiskManager 基于 ATR(20) 动态计算阈值, 替代固定百分比
+  - 止盈: TP1(+2ATR)卖50%, TP2(+3ATR)卖剩余50%, 移动锁利(-1.5ATR回撤)
+  - 止损: hard_sl(-2ATR), trail_sl(-2ATR from peak), time_stop(>20天)
+- `quant/scheduler/monitor.py`: 集成 RiskManager.check(), 替换硬编码 sl_pct/tp_pct
+- `config/config.yaml`: 旧 stop_loss_pct/stop_profit_pct 替换为 atr_mult_*/atr_period/max_hold_days
+
+### 2. Brinson归因 (`439f098`)
+- `quant/scheduler/attribution.py`: 从 market.db 拉取持仓日线和行业, 构建 Brinson 四输入 (Rp/Rb/Wp/Wb), 调用完整的 monitor/attribution.brinson_attribution()
+- `monitor/attribution.py`: 已有完整的 Brinson 分解函数 (配置+选股+交互)
+
+### 3. 回测因子筛选修复 (`469cb07`)
+- `factor/compute.py`: get_factor_names(status_filter=None) 默认全量, 替代旧 active-only
+- `factor/stats_cache.py`: compute_factor_stats 显式传 status_filter=None
+- 根因: 默认只查 active → 1 因子; 现在回测/周度评估查全部 65 因子
+
+### 4. 因子状态流转验证
+- factor_registry: 65 因子 (1 active + 2 candidate + 3 registered + 36 rejected + 23 retired)
+- 状态流转: registered→candidate→active→monitoring→retired, 回测 rejected→re-eval
+- 每周六自动评估全部 65 因子, IC 衰减检测 → monitoring→retired
+
+### 5. pytdx崩溃保护 (`9079f5b`)
+- `data/store.py`: pytdx socket预探测(5s超时), 排到数据源末尾, connect失败补disconnect
+- `quant/scheduler/orchestrator.py`: signals 15:30/execute 14:57 后启动自动跳过
+- `web/state_broker.py`: _init_state()移除硬编码休市, broker.get()动态注入get_trading_period()
+
+### 配置变更
+- Redis 依赖移除 (requirements.txt, data/cache.py)
+- config.yaml: 旧 risk.stop_loss_pct/stop_profit_pct → ATR 参数
+- 热力图: 16px格子, justify-content:space-between, 去min-height空白, legend-bar全宽flex:1

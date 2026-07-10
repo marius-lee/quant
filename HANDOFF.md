@@ -277,3 +277,19 @@ web/app.py:562 cfg fallback → _require_cfg("web.port")
 **#2 margin_buy_ratio 重复**: `_PRICE_FN_MAP` 和 `_FUNDAMENTAL_FN_MAP` 同时注册 `margin_buy_ratio` → get_factor_names 只返回 1 个 → 静态注册 65 但 DB 只有 64。
 
 **修复**: 价格版重命名为 `margin_buy_ratio_5d` (5日均值); factor_registry 64→65 行; 因子数自洽 (38价格+27基本面=65)。
+
+## 协作规则 (2026-07-10)
+
+**修改后汇报**: 每次代码修改完成后，必须明确列出：
+1. 改动了哪些文件（路径 + 行数变化）
+2. 每个文件做了什么改动（一句话说明）
+3. 在 IDE (VS Code) 中检查是否有 Pylance 红线
+
+格式示例：
+```
+改动文件:
+- config/constants.py (+41行): 新增 STATUS_LABELS 映射表
+- orchestrator.py (-16行): 删除 broker 状态写入, 恢复纯调度逻辑
+
+IDE 检查: 无红线
+```

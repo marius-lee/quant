@@ -15,19 +15,11 @@ weekly 因子评估保持独立线程 (周六 06:00，不依赖交易日)。
 """
 import time as _time, threading as _thr
 from datetime import datetime, time
-from config.constants import _require_cfg, _status_label
+from config.constants import _require_cfg
 from monitor.metrics import metrics as _m
 from utils.logger import get_logger
 
 _log = get_logger("quant.scheduler.orchestrator")
-
-# 任务 → broker 状态码映射
-_TASK_STATUS = {
-    "signals":     "signals_generated",
-    "execute":     "trades_executed",
-    "attribution": "attribution_done",
-}
-
 
 def _run():
     """编排器主循环 — 单线程，按时间顺序串行执行日频任务。"""
@@ -69,8 +61,7 @@ def _run():
         update("monitor", status="idle")
 
     def _run_task(name, fn, task_today):
-        """执行单个任务 → 更新 scheduler 状态 + broker 状态。"""
-        from web.state_broker import broker
+        """执行单个任务 → 更新 scheduler 状态。"""
         update(name, status="running")
         t0 = _time.time()
         try:
@@ -78,17 +69,12 @@ def _run():
             elapsed = _time.time() - t0
             update(name, status="idle", last_run=datetime.now().isoformat(),
                    last_duration=elapsed, last_error=None)
-            # 写入用户可见状态
-            status_code = _TASK_STATUS.get(name)
-            if status_code:
-                broker.update({"status": _status_label(status_code)})
             _log.info(f"[SCHEDULER] {task_today} | TASK={name} | STATUS=OK | elapsed={elapsed:.1f}s")
             _m.inc(f"scheduler.{name}.ok")
         except Exception as e:
             elapsed = _time.time() - t0
             update(name, status="error", last_run=datetime.now().isoformat(),
                    last_duration=elapsed, last_error=str(e))
-            broker.update({"status": _status_label("error")})
             _log.error(f"[{task_today}] {name} FAILED: {e}")
 
     while True:

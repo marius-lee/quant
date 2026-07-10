@@ -6,6 +6,7 @@
 因子: 过去60日大股东减持金额/流通市值 = holder_reduction. 减持→负面信号→负溢价.
 """
 import os, sqlite3, time
+from config.constants import _require_cfg
 
 import pandas as pd
 import akshare as ak

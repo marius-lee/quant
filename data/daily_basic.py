@@ -4,6 +4,7 @@
 # 此模块保留供参考，若 baostock 恢复可复用。
 """Sync daily PE_TTM/PB from baostock to market.db. (DEPRECATED — see above)"""
 import os, time, sqlite3, logging
+from config.constants import _require_cfg
 import pandas as pd
 import baostock as bs
 

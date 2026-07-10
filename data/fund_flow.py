@@ -6,6 +6,7 @@ API 限流敏感: 请求间隔需 >= 1.5s, 否则远端断连接
 """
 
 import os, sqlite3, time
+from config.constants import _require_cfg
 from datetime import datetime
 
 import pandas as pd

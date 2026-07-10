@@ -8,6 +8,7 @@ instead of ad-hoc /tmp JSON files. Keeps full history for audit and debugging.
 import json
 import sqlite3
 import os
+from config.constants import _require_cfg
 from datetime import datetime
 
 _DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")

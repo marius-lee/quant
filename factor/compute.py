@@ -1181,19 +1181,18 @@ def _market_db_path():
 
 
 
-def load_active_price_factors(status_filter='active'):
+def load_active_price_factors(status_filter='using'):
     """从 factor_registry 表加载价格因子 → {name: (cat, window, fn)}.
     
-    status_filter: 'active'→active+monitoring (生产), None (全部, 评估用).
+    status_filter: 'using'→active+monitoring (生产中), None (全部, 评估用).
     """
     conn = _db_connect()
     name_list = list(_PRICE_FN_MAP.keys())
     placeholders = ",".join("?" * len(name_list))
     if status_filter:
-        # 'active' maps to active+monitoring (both are in production)
         if isinstance(status_filter, (list, tuple)):
             statuses = tuple(status_filter)
-        elif status_filter == 'active':
+        elif status_filter == 'using':
             statuses = ('active', 'monitoring')
         else:
             statuses = (status_filter,)
@@ -1215,10 +1214,10 @@ def load_active_price_factors(status_filter='active'):
             result[name] = ("dynamic", win, fn)
     return result
 
-def load_active_fundamental_factors(status_filter='active'):
+def load_active_fundamental_factors(status_filter='using'):
     """从 factor_registry 表加载基本面因子.
     
-    status_filter: 'active'→active+monitoring (生产), None (全部, 评估用).
+    status_filter: 'using'→active+monitoring (生产中), None (全部, 评估用).
     """
     conn = _db_connect()
     fn_names = list(_FUNDAMENTAL_FN_MAP.keys())
@@ -1226,7 +1225,7 @@ def load_active_fundamental_factors(status_filter='active'):
     if status_filter:
         if isinstance(status_filter, (list, tuple)):
             statuses = tuple(status_filter)
-        elif status_filter == 'active':
+        elif status_filter == 'using':
             statuses = ('active', 'monitoring')
         else:
             statuses = (status_filter,)
@@ -1290,8 +1289,8 @@ def compute_all_factors(data: pd.DataFrame, date: str,
         fund_factors = {n: _FUNDAMENTAL_FN_MAP[n]
                        for n in factor_names if n in _FUNDAMENTAL_FN_MAP}
     else:
-        price_factors = load_active_price_factors()
-        fund_factors = load_active_fundamental_factors()
+        price_factors = load_active_price_factors(status_filter='using')
+        fund_factors = load_active_fundamental_factors(status_filter='using')
 
     total_pf = len(price_factors)
     done_pf = 0

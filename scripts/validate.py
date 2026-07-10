@@ -84,8 +84,8 @@ def check_factors():
     ).fetchall())
 
     # Active factors in code
-    price_factors = set(load_active_price_factors().keys())
-    fund_factors = set(load_active_fundamental_factors().keys())
+    price_factors = set(load_active_price_factors(status_filter='using').keys())
+    fund_factors = set(load_active_fundamental_factors(status_filter='using').keys())
     code_active = price_factors | fund_factors
 
     # 检查: DB active 但 code 中没有 → factor_registry 过时

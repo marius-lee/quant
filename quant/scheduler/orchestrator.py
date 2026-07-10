@@ -6,6 +6,8 @@
 monitor 是连续循环 (09:35-14:55)，由编排器作为子线程启动和停止。
 weekly 因子评估保持独立线程 (周六 06:00，不依赖交易日)。
 
+状态映射: config.constants.STATUS_LABELS — 内部码→中文展示文本 (单一真相源)。
+
 启动行为:
 - 08:00 前启动: 等待到 08:30 开始
 - 盘中介入 (如 10:16): 立即按顺序补跑已过期的任务 (signals → execute → monitor → ...)
@@ -13,11 +15,18 @@ weekly 因子评估保持独立线程 (周六 06:00，不依赖交易日)。
 """
 import time as _time, threading as _thr
 from datetime import datetime, time
-from config.constants import _require_cfg
+from config.constants import _require_cfg, _status_label
 from monitor.metrics import metrics as _m
 from utils.logger import get_logger
 
 _log = get_logger("quant.scheduler.orchestrator")
+
+# 任务 → broker 状态码映射
+_TASK_STATUS = {
+    "signals":     "signals_generated",
+    "execute":     "trades_executed",
+    "attribution": "attribution_done",
+}
 
 
 def _run():
@@ -36,7 +45,6 @@ def _run():
 
     POLL = _require_cfg("quant.scheduler.poll_interval")
     today = None
-    # 日频任务状态: 每个交易日重置
     done = {"signals": False, "execute": False, "attribution": False}
     _monitor_thread = None
     _monitor_stop = _thr.Event()
@@ -61,7 +69,8 @@ def _run():
         update("monitor", status="idle")
 
     def _run_task(name, fn, task_today):
-        """执行单个任务，记录时间和状态。"""
+        """执行单个任务 → 更新 scheduler 状态 + broker 状态。"""
+        from web.state_broker import broker
         update(name, status="running")
         t0 = _time.time()
         try:
@@ -69,12 +78,17 @@ def _run():
             elapsed = _time.time() - t0
             update(name, status="idle", last_run=datetime.now().isoformat(),
                    last_duration=elapsed, last_error=None)
+            # 写入用户可见状态
+            status_code = _TASK_STATUS.get(name)
+            if status_code:
+                broker.update({"status": _status_label(status_code)})
             _log.info(f"[SCHEDULER] {task_today} | TASK={name} | STATUS=OK | elapsed={elapsed:.1f}s")
             _m.inc(f"scheduler.{name}.ok")
         except Exception as e:
             elapsed = _time.time() - t0
             update(name, status="error", last_run=datetime.now().isoformat(),
                    last_duration=elapsed, last_error=str(e))
+            broker.update({"status": _status_label("error")})
             _log.error(f"[{task_today}] {name} FAILED: {e}")
 
     while True:
@@ -84,7 +98,6 @@ def _run():
 
         # ── 新的一天: 重置 ──
         if current_day != today:
-            # 停止昨天的 monitor
             if _monitor_thread and _monitor_thread.is_alive():
                 _monitor_stop.set()
                 _monitor_thread.join(timeout=5)
@@ -130,7 +143,7 @@ def _run():
         # ═══════════════════════════════════════════
         # 3. 09:35-14:55 — 盘中风控 (子线程守护)
         # ═══════════════════════════════════════════
-        if done["signals"]:  # 不依赖 execute，信号完成后就可以监控
+        if done["signals"]:
             if _monitor_thread is None and time(9, 35) <= hhmm <= time(14, 55):
                 _monitor_stop.clear()
                 _monitor_thread = _thr.Thread(
@@ -154,7 +167,6 @@ def _run():
                 from quant.scheduler.attribution import _run as _attr_run
                 _run_task("attribution", _attr_run, today)
                 done["attribution"] = True
-                # 归因后停止 monitor
                 if _monitor_thread and _monitor_thread.is_alive():
                     _monitor_stop.set()
                     _monitor_thread.join(timeout=5)

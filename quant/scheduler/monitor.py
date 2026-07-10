@@ -78,41 +78,38 @@ def _run_continuous(today: str):
                         quotes = fetch_quotes(syms) or {}
                     except Exception as e:
                         _log.warning(f"[{today}] quote fetch failed: {e}")
-                    sl_pct = cfg("risk.stop_loss_pct", 0.15)
-                    tp_pct = cfg("risk.stop_profit_pct", 0.20)
 
-                    for p in positions:
-                        sym = p["symbol"]
-                        cost = p.get("price", 0)
-                        shares = p.get("shares", 0)
-                        if cost <= 0 or shares <= 0:
-                            continue
+                    # ATR 动态止盈止损三重体系
+                    from execution.stop_loss import RiskManager as _RM
+                    rm = _RM()
+                    signals = rm.check(positions, quotes, today)
+                    for sig in signals:
+                        sym = sig["symbol"]
+                        cur = sig["price"]
+                        sell_shares = sig["shares"]
+                        reason = sig["reason"]
+                        pnl_pct = 0.0
+                        for p2 in positions:
+                            if p2["symbol"] == sym:
+                                cost = p2.get("price", 0)
+                                if cost > 0:
+                                    pnl_pct = (cur / cost - 1)
+                                break
 
-                        q = quotes.get(sym, {})
-                        cur = q.get("price", 0) if q else 0
-                        if cur <= 0:
-                            continue
-
-                        pnl_pct = (cur / cost - 1) if cost > 0 else 0
-
-                        # 止盈：涨超阈值 → 卖出一半锁利
-                        tp_key = f"{sym}:profit"
-                        if pnl_pct >= tp_pct and tp_key not in triggered_stop:
-                            sell_shares = max(1, shares // 2)
-                            _execute_sell(today, sym, sell_shares, cur, "止盈",
-                                          round(pnl_pct * 100, 1))
-                            triggered_stop.add(tp_key)
-                            alerts.append(f"{sym} 止盈 {pnl_pct*100:.0f}% > {tp_pct*100:.0f}%")
-                            _m.inc("scheduler.monitor.stop_profit")
-
-                        # 止损：跌超阈值 → 全部卖出
-                        sl_key = f"{sym}:loss"
-                        if pnl_pct <= -sl_pct and sl_key not in triggered_stop:
-                            _execute_sell(today, sym, shares, cur, "止损",
-                                          round(pnl_pct * 100, 1))
-                            triggered_stop.add(sl_key)
-                            alerts.append(f"{sym} 止损 {pnl_pct*100:.0f}% < {-sl_pct*100:.0f}%")
-                            _m.inc("scheduler.monitor.stop_loss")
+                        if "TP" in reason.upper():
+                            tp_key = f"{sym}:profit"
+                            if tp_key not in triggered_stop:
+                                _execute_sell(today, sym, sell_shares, cur, "止盈", round(pnl_pct * 100, 1))
+                                triggered_stop.add(tp_key)
+                                alerts.append(f"{sym} 止盈 {pnl_pct*100:.0f}% ({reason})")
+                                _m.inc("scheduler.monitor.stop_profit")
+                        else:
+                            sl_key = f"{sym}:loss"
+                            if sl_key not in triggered_stop:
+                                _execute_sell(today, sym, sell_shares, cur, "止损", round(pnl_pct * 100, 1))
+                                triggered_stop.add(sl_key)
+                                alerts.append(f"{sym} 止损 {pnl_pct*100:.0f}% ({reason})")
+                                _m.inc("scheduler.monitor.stop_loss")
 
             status = "ok" if not alerts else "⚠ " + "; ".join(alerts)
             if alerts:

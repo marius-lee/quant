@@ -1,6 +1,6 @@
 # HANDOFF — 盈迹 (quant) 项目当前状态
 
-**最后更新**: 2026-07-10 09:45 CST
+**最后更新**: 2026-07-10 10:00 CST
 
 > 旧版归档: docs/HANDOFF-2026-07-02.md / docs/HANDOFF-2026-07-03.md (已 superseded)
 > 项目根只有一个 HANDOFF.md 作为单一真相源
@@ -178,6 +178,7 @@ web/app.py:562 cfg fallback → _require_cfg("web.port")
 - **State Broker**: 模块级 dict + SSE 队列, 进程内存
 - **并发**: 纯 ThreadPoolExecutor, 零 ProcessPoolExecutor, 零孤儿进程风险
 - **测试**: 67 passed
+- **因子评估触发**: 仅2处 — 用户手动刷新因子页面 + 24h缓存过期自动重算。服务器启动不触发重算
 - **HANDOFF**: 项目根唯一真相源
 
 ---

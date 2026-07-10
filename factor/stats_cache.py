@@ -94,7 +94,9 @@ def compute_factor_stats(
 
     # 2. 获取评估日期
     if factor_names is None:
-        factor_names = get_factor_names(status_filter=None)
+        # 回测池 = registered(待评估) + candidate(待验证) + retired(待复评)
+        # 排除: active(已投产), monitoring(生产中), rejected(不适合A股)
+        factor_names = get_factor_names(status_filter=('registered', 'candidate', 'retired'))
     factor_values_by_date = {name: {} for name in factor_names}
 
     conn = store._connect()
@@ -421,7 +423,9 @@ def _empty_result(factor_names: list = None) -> dict:
     """返回空结果（数据不足时）。使用传入 factor_names，None 时回退到全量因子。"""
     if factor_names is None:
         from factor.compute import get_factor_names
-        factor_names = get_factor_names(status_filter=None)
+        # 回测池 = registered(待评估) + candidate(待验证) + retired(待复评)
+        # 排除: active(已投产), monitoring(生产中), rejected(不适合A股)
+        factor_names = get_factor_names(status_filter=('registered', 'candidate', 'retired'))
     names = factor_names
     return {
         "factors": names,

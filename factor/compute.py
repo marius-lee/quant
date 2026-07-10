@@ -1191,7 +1191,12 @@ def load_active_price_factors(status_filter='active'):
     placeholders = ",".join("?" * len(name_list))
     if status_filter:
         # 'active' maps to active+monitoring (both are in production)
-        statuses = ('active', 'monitoring') if status_filter == 'active' else (status_filter,)
+        if isinstance(status_filter, (list, tuple)):
+            statuses = tuple(status_filter)
+        elif status_filter == 'active':
+            statuses = ('active', 'monitoring')
+        else:
+            statuses = (status_filter,)
         ph = ",".join("?" * len(statuses))
         rows = conn.execute(
             f"SELECT name FROM factor_registry WHERE status IN ({ph}) AND name IN ({placeholders})",
@@ -1219,7 +1224,12 @@ def load_active_fundamental_factors(status_filter='active'):
     fn_names = list(_FUNDAMENTAL_FN_MAP.keys())
     placeholders = ",".join("?" * len(fn_names))
     if status_filter:
-        statuses = ('active', 'monitoring') if status_filter == 'active' else (status_filter,)
+        if isinstance(status_filter, (list, tuple)):
+            statuses = tuple(status_filter)
+        elif status_filter == 'active':
+            statuses = ('active', 'monitoring')
+        else:
+            statuses = (status_filter,)
         ph = ",".join("?" * len(statuses))
         rows = conn.execute(
             f"SELECT name FROM factor_registry WHERE status IN ({ph}) AND name IN ({placeholders})",

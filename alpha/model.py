@@ -7,6 +7,7 @@
 """
 
 import pandas as pd
+from config.constants import _require_cfg
 from config.loader import get as _cfg
 from utils.logger import get_logger
 

@@ -119,18 +119,10 @@ def compute_reversal(data: pd.DataFrame, date: str, window: int = 5) -> pd.Serie
 # 因子窗口参数 — 由 config.yaml factor.windows 驱动, 代码常量为 fallback
 # 所有窗口均有文献或业界依据, 详见 config/config.yaml 注释
 # ═══════════════════════════════════════════════════════════
-from config.loader import get as _cfg
 from utils.logger import get_logger as _get_logger
 from data.store import market_conn as _market_conn
 
 _log = _get_logger("factor.compute")
-
-def _require_cfg(key):
-    """Return config value for key. Raise if missing — no silent defaults."""
-    val = _cfg(key)
-    if val is None:
-        raise KeyError(f"config.yaml missing required key: {key}")
-    return val
 
 def compute_volatility(data: pd.DataFrame, date: str, window: int = _VOLATILITY_WINDOW) -> pd.Series:
     """已实现波动率: std(log_returns[-window:]) × sqrt(252) 年化。

@@ -94,7 +94,7 @@ def compute_factor_stats(
 
     # 2. 获取评估日期
     if factor_names is None:
-        factor_names = get_factor_names()
+        factor_names = get_factor_names(status_filter=None)
     factor_values_by_date = {name: {} for name in factor_names}
 
     conn = store._connect()

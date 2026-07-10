@@ -1251,7 +1251,7 @@ def update_factor_evaluation(name: str, ic_mean: float, ic_ir: float):
 # ═══════════════════════════════════════════════════════════
 
 
-def get_factor_names(status_filter='active') -> list:
+def get_factor_names(status_filter=None) -> list:
     """返回因子名列表 (从 factor_registry 表读取)。
 
     status_filter: 'active' (生产), None (全部, 评估用).

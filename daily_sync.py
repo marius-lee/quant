@@ -16,6 +16,7 @@
 
 import sys, os, time
 from datetime import datetime, timedelta
+from config.constants import _require_cfg
 from utils.logger import get_logger
 
 logger = get_logger("daily_sync")
@@ -42,7 +43,7 @@ def step2_margin(date_str: str):
     import sqlite3
     conn = sqlite3.connect(os.path.join(os.path.dirname(__file__), "data", "market.db"), timeout=30)
     n_sse = _sync_sse_raw(date_str.replace("-", ""), conn)
-    time.sleep(3)
+    time.sleep(_require_cfg("sync.daily_interval"))
     n_szse = _sync_szse_wrapper(date_str.replace("-", ""), conn)
     conn.close()
     logger.info(f"[2] margin: SSE={n_sse}, SZSE={n_szse}")

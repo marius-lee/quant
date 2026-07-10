@@ -1,6 +1,7 @@
 """调度器基类 — 提供定时循环逻辑 + 状态上报。"""
 import time as _time
 from datetime import datetime, time
+from config.constants import _require_cfg
 from utils.logger import get_logger
 
 
@@ -35,7 +36,7 @@ def _timed_loop(name: str, target_time: time, run_fn, skip_deadline: time = None
 
         if not is_trading_day():
             update(name, status="sleep (非交易日)")
-            _time.sleep(30)
+            _time.sleep(_require_cfg("quant.scheduler.poll_interval"))
             continue
 
         hhmm = time(now.hour, now.minute)
@@ -63,4 +64,4 @@ def _timed_loop(name: str, target_time: time, run_fn, skip_deadline: time = None
                 wait_min = (target_time.hour * 60 + target_time.minute) - (hhmm.hour * 60 + hhmm.minute)
                 update(name, status=f"waiting ({wait_min}min)")
 
-        _time.sleep(30)
+        _time.sleep(_require_cfg("quant.scheduler.poll_interval"))

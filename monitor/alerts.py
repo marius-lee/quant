@@ -18,18 +18,21 @@ def check_alerts(state: dict, metrics_snap: dict) -> list[dict]:
     """
     alerts = []
 
-    # ── Rule 1: 回撤告警 (累计收益 < -20%) ──
+    # ── Rule 1: 回撤告警 (阈值来自 config.yaml monitor.alert) ──
+    from config.loader import get as _cfg
+    critical_pct = _cfg("monitor.alert.drawdown_critical")
+    warning_pct = _cfg("monitor.alert.drawdown_warning")
     capital = float(state.get("capital", 0) or 0)
     total_pnl = float(state.get("total_pnl", 0) or 0)
     if capital > 0:
         pnl_pct = total_pnl / capital
-        if pnl_pct < -0.20:
+        if pnl_pct < -critical_pct:
             alerts.append({
                 "rule": "drawdown",
                 "level": "critical",
                 "msg": f"累计亏损 {pnl_pct*100:.1f}% (¥{total_pnl:,.0f})"
             })
-        elif pnl_pct < -0.10:
+        elif pnl_pct < -warning_pct:
             alerts.append({
                 "rule": "drawdown",
                 "level": "warning",

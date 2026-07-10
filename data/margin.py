@@ -10,6 +10,7 @@ import pandas as pd
 from datetime import datetime
 
 import requests
+from config.constants import _require_cfg
 from utils.logger import get_logger
 
 logger = get_logger("data.margin")
@@ -69,7 +70,7 @@ def _sync_sse_raw(date_str: str, conn) -> int:
             "pageHelp.pageSize": "5000", "pageHelp.pageNo": "1",
             "pageHelp.beginPage": "1", "pageHelp.endPage": "21"
         }
-        r = requests.get(url, params=params, headers=SSE_HEADERS, timeout=20)
+        r = requests.get(url, params=params, headers=SSE_HEADERS, timeout=_require_cfg("data.http_timeout.sse"))
         data = r.json()
         rows = data.get("result", [])
         if not rows:
@@ -196,7 +197,7 @@ def sync_range(start_date: str, end_date: str, conn=None):
     
     for i, date_str in enumerate(to_sync):
         n_sse = _sync_sse_raw(date_str, conn)
-        time.sleep(4)
+        time.sleep(_require_cfg("data.api_delay.margin"))
         n_szse = _sync_szse_wrapper(date_str, conn)
         n = n_sse + n_szse
         total += n
@@ -205,7 +206,7 @@ def sync_range(start_date: str, end_date: str, conn=None):
         if (i + 1) % 3 == 0:
             print(f"  [{i+1}/{len(to_sync)}] {date_str}: SSE={n_sse} SZSE={n_szse}, total={total}")
         if i < len(trading_days) - 1:
-            time.sleep(5)
+            time.sleep(_require_cfg("data.api_delay.margin_page"))
 
     logger.info(f"margin SSE done: {total} rows, {ok_dates}/{len(trading_days)} dates")
     print(f"Done: {total} rows, {ok_dates}/{len(trading_days)} dates with data ({skipped} already synced)")

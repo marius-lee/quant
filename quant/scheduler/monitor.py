@@ -6,6 +6,7 @@ Grinold & Kahn 标准: 盘中独立风控 daemon, 与执行引擎解耦。
 import time as _time
 import os
 from datetime import datetime, time
+from config.constants import _require_cfg
 from utils.logger import get_logger
 from monitor.metrics import metrics as _m
 
@@ -42,7 +43,7 @@ def _run_continuous(today: str):
 
         if hhmm < time(9, 35) or not is_market_open():
             update("monitor", status="waiting (未开盘)")
-            _time.sleep(30)
+            _time.sleep(_require_cfg("quant.scheduler.poll_interval"))
             continue
 
         # ── 盘中检查 ──
@@ -172,7 +173,7 @@ def _outer_loop():
                 except Exception as e:
                     _log.error(f"[{today}] monitor outer exception: {e}")
 
-        _time.sleep(30)
+        _time.sleep(_require_cfg("quant.scheduler.poll_interval"))
 
 
 def _loop():

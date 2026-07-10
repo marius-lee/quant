@@ -6,6 +6,7 @@
 
 import json, os, sqlite3
 from config.constants import _require_cfg
+from config.loader import get as cfg
 from data.store import market_conn  # P69: 统一连接层
 from datetime import date, datetime
 from flask import Flask, jsonify, render_template

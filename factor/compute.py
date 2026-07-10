@@ -1194,6 +1194,8 @@ def load_active_price_factors(status_filter='using'):
             statuses = tuple(status_filter)
         elif status_filter == 'using':
             statuses = ('active', 'monitoring')
+        elif status_filter == 'backtesting':
+            statuses = ('registered', 'candidate', 'retired')
         else:
             statuses = (status_filter,)
         ph = ",".join("?" * len(statuses))
@@ -1227,6 +1229,8 @@ def load_active_fundamental_factors(status_filter='using'):
             statuses = tuple(status_filter)
         elif status_filter == 'using':
             statuses = ('active', 'monitoring')
+        elif status_filter == 'backtesting':
+            statuses = ('registered', 'candidate', 'retired')
         else:
             statuses = (status_filter,)
         ph = ",".join("?" * len(statuses))

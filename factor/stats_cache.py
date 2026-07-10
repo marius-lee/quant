@@ -97,7 +97,7 @@ def compute_factor_stats(
         # 回测池 = registered(待评估) + candidate(待验证) + retired(待复评)
         # 排除: active(已投产), monitoring(生产中), rejected(不适合A股)
         if status_filter is None:
-            status_filter = ('registered', 'candidate', 'retired')
+            status_filter = 'backtesting'
         factor_names = get_factor_names(status_filter=status_filter)
     factor_values_by_date = {name: {} for name in factor_names}
 
@@ -428,7 +428,7 @@ def _empty_result(factor_names: list = None) -> dict:
         # 回测池 = registered(待评估) + candidate(待验证) + retired(待复评)
         # 排除: active(已投产), monitoring(生产中), rejected(不适合A股)
         if status_filter is None:
-            status_filter = ('registered', 'candidate', 'retired')
+            status_filter = 'backtesting'
         factor_names = get_factor_names(status_filter=status_filter)
     names = factor_names
     return {

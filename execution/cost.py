@@ -3,6 +3,7 @@
 """
 
 from utils.logger import get_logger
+from config.loader import get as cfg
 logger = get_logger("execution.cost")
 
 from dataclasses import dataclass
@@ -25,7 +26,6 @@ class CostModel:
 
     @classmethod
     def from_config(cls) -> "CostModel":
-        from config.loader import get as cfg
         return cls(
             commission_rate=cfg("execution.commission", 0.0003),
             min_commission=cfg("execution.min_commission", 5.0),

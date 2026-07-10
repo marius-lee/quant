@@ -7,6 +7,7 @@ import time as _time
 import os
 from datetime import datetime, time
 from config.constants import _require_cfg
+from config.loader import get as cfg
 from utils.logger import get_logger
 from monitor.metrics import metrics as _m
 
@@ -77,8 +78,6 @@ def _run_continuous(today: str):
                         quotes = fetch_quotes(syms) or {}
                     except Exception as e:
                         _log.warning(f"[{today}] quote fetch failed: {e}")
-
-                    from config.loader import get as cfg
                     sl_pct = cfg("risk.stop_loss_pct", 0.15)
                     tp_pct = cfg("risk.stop_profit_pct", 0.20)
 

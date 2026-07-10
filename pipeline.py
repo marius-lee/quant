@@ -299,8 +299,7 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
     total_capital = round(cash + position_value, 2)
 
     # ── Stop-Loss check ──
-    from config.loader import get as _cfg
-    sl_pct = _cfg("risk.stop_loss_pct")
+    sl_pct = _ecfg("risk.stop_loss_pct")
     for p in current_positions:
         cost_basis = p.get("price", 0)
         current_px = prices.get(p["symbol"], None)

@@ -1,0 +1,36 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python3",
+  "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.autoImportCompletions": true,
+  "python.analysis.diagnosticMode": "workspace",
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}"
+  ],
+  "python.analysis.exclude": [
+    "**/.venv",
+    "**/.venv-tushare",
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.git"
+  ],
+  "[python]": {
+    "editor.formatOnSave": false,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "never"
+    }
+  },
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true,
+    "**/.pytest_cache": true
+  },
+  "search.exclude": {
+    "**/.venv": true,
+    "**/.venv-tushare": true,
+    "**/__pycache__": true,
+    "**/*.pyc": true,
+    "data/*.db": true,
+    "data/*.db-shm": true,
+    "data/*.db-wal": true
+  }
+}

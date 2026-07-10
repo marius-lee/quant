@@ -9,7 +9,6 @@ scikit-learn>=1.5
 tickflow>=0.1          # 主力日线源 (批量, 快)
 akshare>=1.14          # 免费备用日线源
 tushare>=1.4           # 备用 (+ 指数基准)
-redis[hiredis]>=5.0    # API 缓存 & 分布式限流
 
 # ML (factor synth / covariance)
 lightgbm>=4.3

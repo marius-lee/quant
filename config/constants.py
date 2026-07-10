@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import sqlite3
 import os as _os
-from typing import Optional
+from typing import Any, Optional
 from config.loader import get as _cfg
 
 
@@ -12,7 +12,7 @@ from config.loader import get as _cfg
 # 内部工具
 # ═══════════════════════════════════════════════════════════
 
-def _require_cfg(key):
+def _require_cfg(key: str) -> Any:
     """Return config value for key. Raise if missing — no silent defaults."""
     val = _cfg(key)
     if val is None:
@@ -64,43 +64,4 @@ __all__ = [
     "_require_cfg", "_market_db_path",
 ]
 
-# ═══════════════════════════════════════════════════════════
-# Pipeline 状态映射 — 内部码 → 前端展示文本
-# 单一真相源: 代码和前端共享此映射
-# ═══════════════════════════════════════════════════════════
 
-STATUS_LABELS = {
-    # Step 1-5: generate_signals
-    "data_updated":      "数据已更新",
-    "data_loaded":       "行情已加载",
-    "factors_computed":  "因子计算完成",
-    "risk_filtered":     "风险过滤完成",
-    "signals_generated": "盘前信号已生成",
-
-    # Step 6: execute_signals
-    "trades_executed":   "交易执行完成",
-
-    # monitor (09:35-14:55)
-    "monitor_active":    "盘中风控运行中",
-
-    # attribution (15:30)
-    "attribution_done":  "盘后归因完成",
-
-    # idle states
-    "idle_after_hours":  "盘后待命",
-    "idle_pre_market":   "盘前等待",
-    "idle_holiday":      "休市",
-    "idle_weekend":      "周末",
-
-    # error
-    "error":             "系统异常",
-}
-
-def _status_label(code: str) -> str:
-    """返回状态码对应的前端展示文本。未匹配返回原码。"""
-    return STATUS_LABELS.get(code, code)
-
-
-__all__ = [
-    # ... existing exports
-]

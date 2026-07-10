@@ -113,9 +113,7 @@ class RedisStateBroker(StateBroker):
                 "initial_capital": base,
             }
 
-            # ── 交易日状态 ──
-            from execution.calendar import get_trading_period
-            state["status"] = get_trading_period()
+            # ── 交易日状态由 web 层实时注入，不进 broker/Redis ──
 
             # ── 股票名称 lookup ──
             import sqlite3 as _sql
@@ -173,6 +171,7 @@ class RedisStateBroker(StateBroker):
         else:
             # ── 清理 Redis 旧缓存污染 ──
             cached.pop("positions", None)
+            cached.pop("status", None)  # 系统状态由 web 层实时注入，不进 Redis
             state = self._init_state()
             state.update(cached)
 

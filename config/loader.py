@@ -60,6 +60,76 @@ def load(path: str = None) -> dict:
     return _config
 
 
+def validate() -> None:
+    """启动时校验所有关键配置项的类型。不合规立即 raise TypeError。"""
+    cfg = load()
+    _check(cfg, 'web.port', int)
+    _check(cfg, 'web.sse.queue_timeout', (int, float))
+    _check(cfg, 'quant.scheduler.poll_interval', (int, float))
+    _check(cfg, 'factor.evaluation.max_workers', int)
+    _check(cfg, 'factor.evaluation.worker_timeout_sec', (int, float))
+    _check(cfg, 'data.sqlite.timeout', (int, float))
+    _check(cfg, 'data.sqlite.busy_timeout', int)
+    _check(cfg, 'data.http_timeout.sina', (int, float))
+    _check(cfg, 'data.http_timeout.tushare', (int, float))
+    _check(cfg, 'data.http_timeout.tencent', (int, float))
+    _check(cfg, 'data.http_timeout.sse', (int, float))
+    _check(cfg, 'data.batch_size', int)
+    _check(cfg, 'data.lookback_days', int)
+    _check(cfg, 'data.stale_days', int)
+    _check(cfg, 'data.fetch.max_lookback_days', int)
+    _check(cfg, 'sync.daily_interval', (int, float))
+    _check(cfg, 'execution.commission', (int, float))
+    _check(cfg, 'execution.slippage', (int, float))
+    _check(cfg, 'execution.stamp_tax', (int, float))
+    _check(cfg, 'execution.min_commission', (int, float))
+    _check(cfg, 'execution.quote.max_batch_workers', int)
+    _check(cfg, 'risk.covariance.window', int)
+    _check(cfg, 'risk.covariance.min_periods', int)
+    _check(cfg, 'risk.max_positions', int)
+    _check(cfg, 'risk.max_single_position', (int, float))
+    _check(cfg, 'risk.max_sector_exposure', (int, float))
+    _check(cfg, 'risk.min_price', (int, float))
+    _check(cfg, 'risk.min_daily_amount', int)
+    _check(cfg, 'risk.stop_loss_pct', (int, float))
+    _check(cfg, 'risk.stop_profit_pct', (int, float))
+    _check(cfg, 'monitor.alert.drawdown_critical', (int, float))
+    _check(cfg, 'monitor.alert.drawdown_warning', (int, float))
+    _check(cfg, 'cache.redis.socket_connect_timeout', (int, float))
+    _check(cfg, 'cache.retry_delay', (int, float))
+    _check(cfg, 'optimizer.min_holding_days', int)
+    _check(cfg, 'factor.compute.zscore_min_count', int)
+    _check(cfg, 'factor.stats.ic_min_periods', int)
+    _check(cfg, 'factor.stats.min_valid_days', int)
+    _check(cfg, 'factor.evaluation.min_abs_ic', (int, float))
+    _check(cfg, 'factor.evaluation.t_threshold', (int, float))
+    _check(cfg, 'factor.evaluation.min_icir', (int, float))
+
+
+def _check(cfg: dict, key: str, expected: type | tuple[type, ...]) -> None:
+    parts = key.split('.')
+    val = cfg
+    for p in parts:
+        if isinstance(val, dict):
+            val = val.get(p)
+        else:
+            val = None
+            break
+    if val is None:
+        raise KeyError(f'config.yaml missing required key: {key}')
+    if not isinstance(val, expected):
+        exp_names = (
+            ' | '.join(t.__name__ for t in expected)
+            if isinstance(expected, tuple)
+            else expected.__name__
+        )
+        raise TypeError(
+            f'config.yaml [{key}] type error: expected {exp_names}, '
+            f'got {type(val).__name__} (value={val!r})'
+        )
+
+
+
 def reload() -> dict:
     """强制重读配置文件，清除缓存。策略切换等场景使用。"""
     global _config, _config_mtime

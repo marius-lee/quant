@@ -559,6 +559,6 @@ def api_metrics():
     return _api_response(data=_mm.snapshot())
 
 if __name__ == "__main__":
-    port = int(cfg("web.port", 8521))
+    port = int(_require_cfg("web.port"))
     logger.info(f"Web 服务启动于端口 {port}")
     app.run(host="0.0.0.0", port=port, debug=False)

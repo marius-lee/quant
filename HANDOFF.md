@@ -1,6 +1,6 @@
 # HANDOFF — 盈迹 (quant) 项目当前状态
 
-**最后更新**: 2026-07-10 08:30 CST
+**最后更新**: 2026-07-10 09:45 CST
 
 > 旧版归档: docs/HANDOFF-2026-07-02.md / docs/HANDOFF-2026-07-03.md (已 superseded)
 > 项目根只有一个 HANDOFF.md 作为单一真相源
@@ -11,9 +11,10 @@
 
 | 提交 | 内容 |
 |------|------|
+| *(本次)* | fix: P78 真正的 ProcessPoolExecutor→ThreadPoolExecutor 迁移 — stats_cache.py 重写 (-353行), smoke_test 适配, web/app.py cfg→_require_cfg |
 | `acab523` | fix: 全局硬编码清零 — 21处API延迟/SQLite超时/Redis/SSE全部迁入config.yaml |
 | `9e093d2` | fix: execution/quote.py 缩进 + ProcessPoolExecutor→ThreadPoolExecutor 归档 |
-| `ca9f9a5` | refactor: P78 ProcessPoolExecutor→ThreadPoolExecutor — 根除多进程内存泄漏 (stats_cache.py -239行) |
+| `878fba1` | fix: P77#10 根除多进程内存泄漏 — 显式terminate/kill替代pgrep (stats_cache.py + web/app.py) |
 | `878fba1` | fix: P77#10 根除多进程内存泄漏 — 显式terminate/kill替代pgrep (stats_cache.py + web/app.py) |
 | `5c38dc3` | docs: HANDOFF 更新止盈止损 |
 | `eb7bee5` | feat: 止盈止损统一管理 — 移至 monitor.py 盘中风控 (P75#4) |
@@ -63,7 +64,7 @@ layer 8: evaluation/ — 五阶段回测评估 (CPCV+PBO)
 | 文件 | 职责 |
 |------|------|
 | `factor/compute.py` | 41 因子函数 + 静态注册 maps (PRICE:18, FUNDAMENTAL:23) + compute_all_factors |
-| `factor/stats_cache.py` | compute_factor_stats: ProcessPoolExecutor × 4 并行因子值 + ThreadPoolExecutor IC/相关性 |
+| `factor/stats_cache.py` | compute_factor_stats: ThreadPoolExecutor 并行因子值 + ThreadPoolExecutor IC/相关性 (P78) |
 | `factor/synth.py` | equal_weight, ic_weighted, sleeve_compose |
 | `factor/registry.py` | _cs_zscore, factor_registry DB 读写 |
 | `alpha/model.py` | AlphaModel.combine() + rank() |
@@ -73,8 +74,8 @@ layer 8: evaluation/ — 五阶段回测评估 (CPCV+PBO)
 | 文件 | 职责 |
 |------|------|
 | `_base.py` | _timed_loop() 通用定时循环 + 状态上报 |
-| `signals.py` | 08:30 generate_signals → Redis (has_multiprocess) |
-| `execute.py` | 09:30 读Redis targets → execute_signals (has_multiprocess) |
+| `signals.py` | 08:30 generate_signals → Redis (has_multiprocess=False) |
+| `execute.py` | 09:30 读Redis targets → execute_signals (has_multiprocess=False) |
 | `monitor.py` | 09:35-14:55 风控: 回撤/熔断/止盈/止损 (P75) |
 | `attribution.py` | 15:30 Brinson 归因 + IC 衰减快照 |
 | `status.py` | 线程安全 register/update/all_tasks (带 group 字段) |
@@ -151,38 +152,32 @@ compute_str 和 compute_abn_turnover 从 iterrows 逐循环改为 groupby 向量
 
 ---
 
-## P68: ProcessPoolExecutor 孤儿进程内存泄漏 — 根因修复
+## P78: ProcessPoolExecutor→ThreadPoolExecutor 迁移 — 根除多进程内存泄漏 (本次)
 
-3 层防护:
-1. executor.shutdown(wait=True)
-2. PID 文件 .compute_pids 追踪, 崩溃时自动清理
-3. web/app.py SIGTERM handler → _clean_exit()
+**动机**: ProcessPoolExecutor 在 macOS spawn 模式产生孤儿进程（shutdown 对卡在 I/O 中的 worker 无力），pgrep/SIGKILL 兜底不可靠 → worker 累积 → OOM。
 
-清理: 删除 scheduler.py / restart.sh / crontab / launchd plist, 消除进程重启泄漏。
+**方案**: factor/stats_cache.py 完全重写，所有因子并行计算改用 ThreadPoolExecutor:
+- 每个线程独立打开 DataStore (sqlite3 WAL 支持多线程并发读)
+- 线程随 with 语句自动回收，零孤儿进程风险
+- 删除了 353 行死代码: _cleanup_process_pool, _ORPHAN_PID_FILE, _COMPUTE_FILE_LOCK, pgrep, SIGKILL, PID 文件管理, 跨进程锁
+- get_cached_factor_stats 简化为 in-process threading.Lock 防重入
 
----
+保留 ThreadPoolExecutor: IC 计算 + 相关性矩阵 (本身就用线程)。
 
-## 并发架构 (ADR 027)
-
-ProcessPoolExecutor worker 自加载:
-- 主进程只传元数据 (symbols + dates + factor_names, <10KB)
-- 每个 worker 打开独立 DataStore (WAL 并发读)
-- 4 worker × 独立 GIL → OS 级并行
-- 主进程内存 ~5GB → ~200MB (swap 消除)
-- as_completed 不加 timeout (500×120 单 chunk ~700s, timeout 会误杀)
-
-保留 ThreadPoolExecutor: IC 计算 + 相关性矩阵 (轻量, ≤10s)
+**同时修复**: scripts/smoke_test.py 移除 _pp_compute_chunk 引用, 改为 inline thread worker。
+web/app.py:562 cfg fallback → _require_cfg("web.port")
 
 ---
 
 ## 当前状态
 
-- **config.yaml**: n_symbols=800 (中证800), lookback=120, max_workers=4 (M1 8GB cap)
-- **调度器**: 4 daemon (signals/execute/monitor/attribution), launchd 管理
+- **config.yaml**: n_symbols=800, lookback=120, max_workers=4 (ThreadPoolExecutor)
+- **调度器**: 4 daemon (signals/execute/monitor/attribution)
 - **止盈止损**: monitor.py 统一管理, stop_profit_pct=0.20 / stop_loss_pct=0.15
-- **factor_registry**: 64 因子注册, 41 active, ic_weight 列存储 IC 权重
-- **State Broker**: Redis 跨进程, broker.get() 合并方向 cached→state, 清除旧缓存污染
-- **测试**: 67 passed (24/30 原始, 后修复为 67/67)
+- **factor_registry**: 65 因子注册, 1 active (zt_streak), 5 状态生命周期
+- **State Broker**: 模块级 dict + SSE 队列, 进程内存
+- **并发**: 纯 ThreadPoolExecutor, 零 ProcessPoolExecutor, 零孤儿进程风险
+- **测试**: 67 passed
 - **HANDOFF**: 项目根唯一真相源
 
 ---
@@ -199,22 +194,7 @@ ProcessPoolExecutor worker 自加载:
 - 不删历史 DB 数据 (日线从 2020 至今)
 
 
-### P77#10: 多进程内存泄漏根除 (`878fba1`)
-
-**根因**: ProcessPoolExecutor.shutdown(wait=False, cancel_futures=True) 对卡在阻塞 I/O
-(sqlite3 查询 5000+ 股) 中的 worker 进程完全无力 — 它只发信号, 不杀进程。
-pgrep 兜底不可靠, 导致 worker 指数级累积 → OOM。
-
-**修复 (3 层防护)**:
-1. **compute_factor_stats finally 块重写**: shutdown 前显式 proc.terminate() → sleep(2) 
-   → proc.kill() 每个 worker (行业标准做法)
-2. **_MAX_WORKERS=1**: M1 8GB 单 worker 杜绝并发泄漏, 内存 ~100MB fixed
-3. **_cleanup_process_pool 增强**: SIGTERM→SIGKILL + pgrep 兜底阶段2 (漏网者)
-
-**其他**:
-- signal SIGTERM/SIGKILL 模块级引入, 消除局部 import
-- web/app.py _clean_exit 删除 16 行重复 PID 清理, 导入 _cleanup_process_pool
-- _worker_timeout: 120→180s, 适配全量 5208 股因子计算
+### P77#10 (superseded by P78 — 已被纯线程方案取代)
 
 ### P76: 因子5状态生命周期 — 对标 WorldQuant/AQR (`d813c44`)
 

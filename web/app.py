@@ -394,6 +394,7 @@ def api_performance():
     """累计绩效统计. ?strategy=quant&quotes=true (quotes=true 用市价估值)"""
     from flask import request
     from config.loader import get as cfg
+    from config.constants import _require_cfg
     strategy = request.args.get("strategy", "quant")
     tc = sqlite3.connect(TRADE_DB)
     sells = tc.execute("SELECT pnl FROM sim_trades WHERE side='sell' AND strategy=?", (strategy,)).fetchall()

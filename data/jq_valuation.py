@@ -9,6 +9,7 @@ One API call per date fetches all stocks' valuation.
   .venv-tushare/bin/python3 data/jq_valuation.py 2026-01-01 2026-04-01
 """
 import os, sys, time, sqlite3, logging
+from config.constants import _require_cfg
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))

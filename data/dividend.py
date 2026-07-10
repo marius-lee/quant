@@ -6,6 +6,7 @@
 因子: 过去12月现金分红/股价 = dividend_yield. 高股息→正溢价 (A股震荡市).
 """
 import os, sqlite3, time
+from config.constants import _require_cfg
 
 import pandas as pd
 import akshare as ak

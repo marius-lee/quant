@@ -46,7 +46,7 @@ _COMPUTE_LOCK = threading.Lock()  # in-process reentrancy guard: 因子计算最
 
 def compute_factor_stats(
     symbols: list = None, n_symbols: int = None, lookback: int = None,
-    factor_names: list = None,
+    factor_names: list = None, status_filter=None,
 ) -> dict:
     """计算所有已注册因子的评估统计量，返回前端可用格式。
 
@@ -96,7 +96,9 @@ def compute_factor_stats(
     if factor_names is None:
         # 回测池 = registered(待评估) + candidate(待验证) + retired(待复评)
         # 排除: active(已投产), monitoring(生产中), rejected(不适合A股)
-        factor_names = get_factor_names(status_filter=('registered', 'candidate', 'retired'))
+        if status_filter is None:
+            status_filter = ('registered', 'candidate', 'retired')
+        factor_names = get_factor_names(status_filter=status_filter)
     factor_values_by_date = {name: {} for name in factor_names}
 
     conn = store._connect()
@@ -425,7 +427,9 @@ def _empty_result(factor_names: list = None) -> dict:
         from factor.compute import get_factor_names
         # 回测池 = registered(待评估) + candidate(待验证) + retired(待复评)
         # 排除: active(已投产), monitoring(生产中), rejected(不适合A股)
-        factor_names = get_factor_names(status_filter=('registered', 'candidate', 'retired'))
+        if status_filter is None:
+            status_filter = ('registered', 'candidate', 'retired')
+        factor_names = get_factor_names(status_filter=status_filter)
     names = factor_names
     return {
         "factors": names,
@@ -439,7 +443,7 @@ def _empty_result(factor_names: list = None) -> dict:
     }
 
 
-def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None) -> dict:
+def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, status_filter=None) -> dict:
     """获取缓存的因子评估数据。从 factor_snapshot 表读取，24h 过期自动重算。
 
     P78: 纯线程模型 — ThreadPoolExecutor with 语句自动回收，零孤儿进程风险。
@@ -484,7 +488,7 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None) 
     try:
         logger.info("computing factor stats (this may take ~30s)...")
         lookback_val = _require_cfg("factor.evaluation.lookback")
-        stats = compute_factor_stats(n_symbols=n_symbols, lookback=lookback_val)
+        stats = compute_factor_stats(n_symbols=n_symbols, lookback=lookback_val, status_filter=status_filter)
 
         try:
             conn = _sql.connect(_DB_PATH)

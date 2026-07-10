@@ -153,7 +153,7 @@ class DataStore:
         c = sqlite3.connect(self.db_path)
         c.execute("PRAGMA journal_mode=WAL")
         c.execute("PRAGMA synchronous=NORMAL")
-        c.execute("PRAGMA busy_timeout=30000")
+        c.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
         c.execute("PRAGMA cache_size=-64000")
         return c
 
@@ -1280,7 +1280,7 @@ def market_conn(mode='ro'):
     _db = os.path.join(os.path.dirname(__file__), "market.db")
     _c = sqlite3.connect(_db)
     _c.execute("PRAGMA journal_mode=WAL")
-    _c.execute("PRAGMA busy_timeout=30000")
+    _c.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
     if mode == 'ro':
         _c.execute("PRAGMA read_uncommitted=1")
     return _c

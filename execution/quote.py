@@ -97,7 +97,7 @@ def fetch_quotes(symbols: list[str]) -> dict[str, dict]:
         return partial
 
     if len(batches) > 1:
-        with ThreadPoolExecutor(max_workers=min(len(batches), 4)) as ex:
+        with ThreadPoolExecutor(max_workers=min(len(batches), _require_cfg("execution.quote.max_batch_workers"))) as ex:
             futures = {ex.submit(_fetch_batch, b): i for i, b in enumerate(batches)}
             for f in as_completed(futures):
                 result.update(f.result())

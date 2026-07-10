@@ -139,7 +139,7 @@ def sync_all(max_stocks: int = 500, conn=None):
         if (i + 1) % 10 == 0:
             print(f"  [{i+1}/{len(symbols)}] ok={ok} fail={fail} total_rows={total}")
         # Rate limit: ~1.5s between requests (API 限流)
-        time.sleep(5.0)
+        time.sleep(_require_cfg("data.api_delay.fund_flow"))
 
     logger.info(f"fund_flow sync done: {total} rows for {ok} stocks ({fail} failed)")
     print(f"Done: {total} rows, {ok} ok, {fail} failed")

@@ -57,7 +57,7 @@ def sync_date(date_str, conn=None):
                 logger.debug(f"daily_basic {bs_code} failed: {e}")
         if (i // batch_size) % 50 == 0 and i > 0:
             logger.info(f"daily_basic {date_str}: {i}/{len(symbols)} fetched, {inserted} inserted")
-        time.sleep(0.1)  # Rate limit
+        time.sleep(_require_cfg("data.api_delay.daily_basic"))
     
     conn.commit()
     bs.logout()

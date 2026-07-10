@@ -160,7 +160,7 @@ def sync_range(start_year: int, start_month: int,
         if m > 12:
             m = 1
             y += 1
-        time.sleep(0.5)  # 月度频率低, 可放宽
+        time.sleep(_require_cfg("data.api_delay.lhb"))
 
     logger.info(f"lhb sync done: {total} rows")
 

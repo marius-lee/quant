@@ -140,7 +140,7 @@ def sync_range(start_date: str, end_date: str = None, conn=None) -> int:
         total += n
         if (i + 1) % 10 == 0:
             logger.info(f"limit_up sync: {i+1}/{len(dates)} dates, {total} stocks")
-        time.sleep(0.3)
+        time.sleep(_require_cfg("data.api_delay.limit_up"))
     
     logger.info(f"limit_up sync done: {total} rows for {len(dates)} dates")
     

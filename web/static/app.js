@@ -535,7 +535,7 @@ function renderScheduler(tasks) {
 
   const tableEl = document.getElementById('table-scheduler');
   if (!tableEl) return;
-  const groups = ['盘前', '盘中', '盘后'];
+  const groups = ['盘前', '盘中', '盘后', '研究'];
   const cols = [
     { key: 'name', label: '任务' },
     { key: 'schedule', label: '时间' },
@@ -545,7 +545,7 @@ function renderScheduler(tasks) {
     { key: 'last_duration', label: '耗时' },
     { key: 'last_error', label: '错误' },
   ];
-  const nameMap = { signals: '信号生成', execute: '交易执行', monitor: '盘中风控', attribution: '盘后归因' };
+  const nameMap = { signals: '信号生成', execute: '交易执行', monitor: '盘中风控', attribution: '盘后归因', weekly_eval: '因子评估(周)' };
   const fmtMap = {
     name: v => nameMap[v] || v,
     has_multiprocess: v => v ? '⚠ 是' : '—',

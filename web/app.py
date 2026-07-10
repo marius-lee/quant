@@ -6,7 +6,7 @@
 
 import json, os, sqlite3
 from config.constants import _require_cfg
-from config.loader import get as cfg
+from config.loader import get as cfg, validate; validate()  # 启动时校验 config.yaml 类型
 from data.store import market_conn  # P69: 统一连接层
 from datetime import date, datetime
 from flask import Flask, jsonify, render_template
@@ -501,14 +501,17 @@ def api_stream():
     import json, queue
     from flask import Response
     q = broker.subscribe()
+    from execution.calendar import get_trading_period as _sp
     def generate():
         try:
             # 先发当前状态
-            yield f"data: {json.dumps(broker.get(), ensure_ascii=False)}\n\n"
+            init = broker.get()
+            init["status"] = _sp()
+            yield f"data: {json.dumps(init, ensure_ascii=False)}\n\n"
             while True:
                 try:
                     data = q.get(timeout=_require_cfg("web.sse.queue_timeout"))
-                    yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                    data["status"] = _sp(); yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
                 except queue.Empty:
                     yield ": keepalive\n\n"
         except GeneratorExit:
@@ -534,7 +537,6 @@ def api_health():
     # 最近 pipeline 状态
     state = broker.get()
     status["pipeline"] = {
-        "last_status": state.get("status", "unknown"),
         "last_progress": state.get("progress", ""),
         "last_trace_id": state.get("trace_id", ""),
     }

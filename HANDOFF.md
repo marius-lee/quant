@@ -1,6 +1,6 @@
 # HANDOFF — 盈迹 (quant) 项目当前状态
 
-**最后更新**: 2026-07-10 07:30 CST
+**最后更新**: 2026-07-10 08:30 CST
 
 > 旧版归档: docs/HANDOFF-2026-07-02.md / docs/HANDOFF-2026-07-03.md (已 superseded)
 > 项目根只有一个 HANDOFF.md 作为单一真相源
@@ -11,6 +11,8 @@
 
 | 提交 | 内容 |
 |------|------|
+| `acab523` | fix: 全局硬编码清零 — 21处API延迟/SQLite超时/Redis/SSE全部迁入config.yaml |
+| `9e093d2` | fix: execution/quote.py 缩进 + ProcessPoolExecutor→ThreadPoolExecutor 归档 |
 | `ca9f9a5` | refactor: P78 ProcessPoolExecutor→ThreadPoolExecutor — 根除多进程内存泄漏 (stats_cache.py -239行) |
 | `878fba1` | fix: P77#10 根除多进程内存泄漏 — 显式terminate/kill替代pgrep (stats_cache.py + web/app.py) |
 | `5c38dc3` | docs: HANDOFF 更新止盈止损 |
@@ -187,8 +189,8 @@ ProcessPoolExecutor worker 自加载:
 
 ## 关键约束
 
-- 修改前先备份 + 提交 git
-- 数值参数放 config/config.yaml, 永不硬编码
+- 所有数值参数仅存 config/config.yaml, 代码中用 _require_cfg() 快速失败 (零 fallback)
+- 修改前先 git commit 归档
 - **永不 fallback** — 静默降级 = 隐藏 bug, 改 raise
 - **>5 秒必埋点** — 模板 9 (coding-standards SKILL.md)
 - 因子 status 变更记入 notes 字段 (追加式)
@@ -240,6 +242,32 @@ pgrep 兜底不可靠, 导致 worker 指数级累积 → OOM。
 
 ### P77: 因子页面数字消失 — 2 个根因修复 (`66960cb`)
 
+
+### P79: 全局硬编码清零 (`acab523`)
+
+**config.yaml 修复**: 合并重复 `data:` key (第144行覆盖第30行的bug), 新增 13 个配置键:
+
+| 键路径 | 默认值 | 原硬编码位置 |
+|--------|--------|-------------|
+| `data.api_delay.limit_up` | 0.3 | data/limit_up.py:143 |
+| `data.api_delay.holder_trade` | 0.3 | data/holder_trade.py:142 |
+| `data.api_delay.lhb` | 0.5 | data/lhb.py:163 |
+| `data.api_delay.jq_valuation` | 0.15 | data/jq_valuation.py:221 |
+| `data.api_delay.fund_flow` | 5.0 | data/fund_flow.py:142 |
+| `data.api_delay.dividend` | 0.2 | data/dividend.py:126 |
+| `data.api_delay.daily_basic` | 0.1 | data/daily_basic.py:60 |
+| `data.api_delay.northbound` | 0.3 | data/northbound.py:125 |
+| `data.sqlite.timeout` | 30 | daily_sync.py, evaluation/run_store.py, holder_trade.py, dividend.py (共8处) |
+| `data.sqlite.busy_timeout` | 30000 | data/store.py, factor/registry.py (共3处) |
+| `cache.redis.socket_connect_timeout` | 2 | data/cache.py:113 |
+| `cache.retry_delay` | 0.5 | data/cache.py:342 |
+| `web.sse.queue_timeout` | 30 | web/app.py:509 |
+| `execution.quote.max_batch_workers` | 4 | execution/quote.py:100 |
+
+**所有文件用 `_require_cfg()` (快速失败), 禁止 fallback。**
+
+**最终扫描**: `time.sleep(数字)` 清零 / `timeout=数字` 清零 / `max_workers=数字` 清零 / `_cfg(x, fallback)` 清零 (16 文件全部 py_compile 通过)
+
 **#1 c.close() bug**: `web/app.py api_factors()` 中 `c.close()` 在后续 `c.execute()` 前调用 → `ProgrammingError` → 异常处理器只设 `n_registered`/`n_active`，其他字段(总计/候选/淘汰/退役/已评估)丢失 → JS 显示为横线。
 
 **修复**: `c.close()` 移到所有查询后; 异常处理器改为设 0 而非污染数据。
@@ -247,4 +275,3 @@ pgrep 兜底不可靠, 导致 worker 指数级累积 → OOM。
 **#2 margin_buy_ratio 重复**: `_PRICE_FN_MAP` 和 `_FUNDAMENTAL_FN_MAP` 同时注册 `margin_buy_ratio` → get_factor_names 只返回 1 个 → 静态注册 65 但 DB 只有 64。
 
 **修复**: 价格版重命名为 `margin_buy_ratio_5d` (5日均值); factor_registry 64→65 行; 因子数自洽 (38价格+27基本面=65)。
-

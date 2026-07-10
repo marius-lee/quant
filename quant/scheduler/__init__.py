@@ -1,10 +1,7 @@
-"""独立调度器 — 五个任务各自运行，互不依赖。
+"""调度器 — 单线程编排器 + 独立周频因子评估。
 
-signals:     每日 08:30 盘前信号生成
-execute:     每日 09:30 开盘执行
-monitor:     每日 09:35-14:55 盘中风控
-attribution: 每日 15:30 盘后归因
-weekly_eval: 每周六 06:00 因子 IC 权重更新 (业界标准: 周频)
+日频: orchestrator 串行 signals(08:30) → execute(09:30) → monitor(09:35-14:55) → attribution(15:30)
+周频: weekly 独立线程 (周六 06:00 force_refresh_cache)
 """
 import threading
 from utils.logger import get_logger
@@ -12,32 +9,10 @@ from utils.logger import get_logger
 _log = get_logger("quant.scheduler")
 
 
-def start_signals():
-    from quant.scheduler.signals import _run as _run_signals, _loop as _signals_loop
-    t = threading.Thread(target=_signals_loop, daemon=True, name="sch-signals")
-    t.start()
-    _log.info("signals scheduler launched (08:30)")
-
-
-def start_execute():
-    from quant.scheduler.execute import _run as _run_execute, _loop as _execute_loop
-    t = threading.Thread(target=_execute_loop, daemon=True, name="sch-execute")
-    t.start()
-    _log.info("execute scheduler launched (09:30)")
-
-
-def start_attribution():
-    from quant.scheduler.attribution import _run as _run_attribution, _loop as _attribution_loop
-    t = threading.Thread(target=_attribution_loop, daemon=True, name="sch-attribution")
-    t.start()
-    _log.info("attribution scheduler launched (15:30)")
-
-
-def start_monitor():
-    from quant.scheduler.monitor import _run_continuous as _run_monitor, _loop as _monitor_loop
-    t = threading.Thread(target=_monitor_loop, daemon=True, name="sch-monitor")
-    t.start()
-    _log.info("monitor scheduler launched (09:35-14:55)")
+def start_orchestrator():
+    from quant.scheduler.orchestrator import start as _start_orch
+    _start_orch()
+    _log.info("orchestrator launched (08:30→09:30→monitor→15:30)")
 
 
 def start_weekly():
@@ -48,15 +23,27 @@ def start_weekly():
 
 
 def start_all():
-    """启动五个独立调度器."""
-    start_signals()
-    start_execute()
-    start_monitor()
-    start_attribution()
+    """启动编排器 + 周频因子评估 (2 线程)."""
+    start_orchestrator()
     start_weekly()
-    _log.info("all 5 schedulers launched")
+    _log.info("all schedulers launched: 1 orchestrator + 1 weekly")
 
 
 # 兼容旧 API
 def start_scheduler():
     start_all()
+
+
+# 保留旧接口供其他模块直接引用 (向后兼容)
+def start_signals():
+    from quant.scheduler.orchestrator import start as _start_orch
+    _start_orch()
+
+def start_execute():
+    pass  # orchestrator handles this
+
+def start_attribution():
+    pass  # orchestrator handles this
+
+def start_monitor():
+    pass  # orchestrator handles this

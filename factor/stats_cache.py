@@ -13,21 +13,17 @@ t = |IR| × √n 提供 |IR|≥0.18 的最小可检测效应 (Grinold & Kahn 199
 用法:
   from factor.stats_cache import get_cached_factor_stats
   stats = get_cached_factor_stats()  # 返回前端需要的 dict
+
+多线程策略 (P78): 因子计算使用 ThreadPoolExecutor，worker 线程各自打开 DataStore
+(sqlite3 WAL 模式支持多线程并发读)。线程随 with 语句自动回收，无孤儿进程风险。
 """
-
-
-# 确保 spawned worker 进程能找到项目模块 (macOS spawn mode 不保证 PYTHONPATH 传递)
-import sys as _sys, os as _os
-_PROJ_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-if _PROJ_ROOT not in _sys.path:
-    _sys.path.insert(0, _PROJ_ROOT)
 
 import json
 import os
 import time
 import threading
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 
 import warnings
 import numpy as np
@@ -35,11 +31,8 @@ import pandas as pd
 
 from utils.logger import get_logger
 from config.constants import _require_cfg
-from config.loader import get as _cfg
-from signal import SIGTERM, SIGKILL  # P77#10: 显式进程终止信号
 
 # Suppress ConstantInputWarning from scipy/pandas spearmanr on near-constant arrays
-# (std check catches strict zero but not floating-point near-zero; NaN fallback handles all cases)
 warnings.filterwarnings("ignore", message="An input array is constant")
 
 logger = get_logger("factor.stats_cache")
@@ -48,136 +41,7 @@ _DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "mar
 _SNAPSHOT_TTL_SEC = _require_cfg("factor.stats.snapshot_ttl_sec")
 _MAX_WORKERS = _require_cfg("factor.evaluation.max_workers")
 _WORKER_TIMEOUT_SEC = _require_cfg("factor.evaluation.worker_timeout_sec")
-_COMPUTE_LOCK = threading.Lock()  # in-process reentrancy guard
-_my_pid = os.getpid()  # P77#10: own PID for cleanup protection
-_COMPUTE_FILE_LOCK = os.path.join(os.path.dirname(os.path.dirname(__file__)),
-                                   "data", ".factor_compute.lock")  # cross-process guard
-_ORPHAN_PID_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)),
-                                 "data", ".compute_pids")
-
-def _cleanup_process_pool():
-    """清理上次残留的 ProcessPoolExecutor 孤儿进程 — P77#10: 重写为显式 SIGKILL.
-    1. 读 .compute_pids → SIGKILL 所有列出的 PID → 删除文件
-    2. pgrep spawn_main → SIGKILL 漏网者 (自己除外)
-    3. 清理 stale lock file
-    """
-    _killed = 0
-    # 阶段1: PID 文件清理
-    if os.path.exists(_ORPHAN_PID_FILE):
-        try:
-            with open(_ORPHAN_PID_FILE) as _f:
-                _pids = [int(_l.strip()) for _l in _f if _l.strip()]
-            os.remove(_ORPHAN_PID_FILE)
-            for _pid in _pids:
-                try:
-                    os.kill(_pid, SIGKILL)
-                    _killed += 1
-                except ProcessLookupError:
-                    pass
-            if _killed:
-                logger.warning(f"Orphan cleanup: killed {_killed} worker(s) from PID file")
-        except Exception as _e:
-            logger.warning(f"Orphan PID cleanup failed: {_e}")
-
-    # 阶段2: pgrep 兜底 — 强杀所有残留 multiprocessing.spawn 子进程 (自己除外)
-    try:
-        import subprocess as _sp
-        _pg = _sp.run(
-            ["pgrep", "-f", "multiprocessing.spawn.*spawn_main"],
-            capture_output=True, text=True, timeout=5
-        )
-        if _pg.returncode == 0 and _pg.stdout.strip():
-            for _line in _pg.stdout.strip().split("\n"):
-                try:
-                    _p = int(_line.strip())
-                    if _p != _my_pid:
-                        os.kill(_p, SIGKILL)
-                        _killed += 1
-                except (ProcessLookupError, ValueError):
-                    pass
-    except Exception:
-        pass
-    if _killed:
-        logger.info(f"Orphan cleanup: total {_killed} processes killed")
-
-    # 阶段3: 清理残留锁文件
-    try:
-        if os.path.exists(_COMPUTE_FILE_LOCK):
-            os.remove(_COMPUTE_FILE_LOCK)
-            logger.info("Cleaned up stale lock file")
-    except OSError:
-        pass
-
-
-# ══════════════════════════════════════════════════════════════
-# ProcessPoolExecutor worker (module-level, pickle-safe per macOS spawn)
-# File-lock guarantees at most ONE compute_factor_stats runs system-wide,
-# preventing the exponential process cascade seen with concurrent invocations.
-# ══════════════════════════════════════════════════════════════
-
-def _pp_compute_chunk(args: tuple) -> list:
-    """ProcessPoolExecutor worker: load own data from DB, compute factors for a chunk.
-
-    args: (symbols_list, date_strs_list, factor_names_list)
-    Returns: list of (date_str, factor_values_dict, close_series, error_or_None)
-
-    macOS spawn mode: fresh Python interpreter per worker (~100MB RSS each).
-    Each worker opens its own DataStore → independent sqlite3 conn in WAL mode.
-    """
-    import sys, traceback as _tb
-    import warnings, logging, pandas as pd
-    warnings.filterwarnings("ignore", category=ResourceWarning)  # suppress sqlite3 conn cleanup noise on spawn
-    logging.captureWarnings(True)  # route warnings to logger, not stderr
-    symbols_list, date_strs_list, factor_names_list = args
-
-    try:
-        return _pp_compute_chunk_impl(symbols_list, date_strs_list, factor_names_list)
-    except Exception as e:
-        err_msg = f"{type(e).__name__}: {e}"
-        return [(d, {}, pd.Series(dtype=float), err_msg) for d in date_strs_list]
-
-
-def _pp_compute_chunk_impl(symbols_list: list, date_strs_list: list,
-                           factor_names_list: list) -> list:
-    """_pp_compute_chunk inner impl — outer try/except guards all stages."""
-
-    from data.store import DataStore
-    from factor.compute import compute_all_factors
-    import pandas as pd
-
-    store = DataStore()
-    min_date = date_strs_list[0]
-    max_date = date_strs_list[-1]
-    data_start = (pd.Timestamp(min_date) - pd.Timedelta(days=365)).strftime("%Y-%m-%d")
-    future_end = (pd.Timestamp(max_date) + pd.Timedelta(days=40)).strftime('%Y-%m-%d')
-    data = store.get_daily(symbols_list, start=data_start, end=future_end)
-
-    results = []
-    for date_str in date_strs_list:
-        try:
-            fundamentals = store.get_fundamentals(symbols_list, date=date_str)
-            fin = store.get_financials(symbols_list, date=date_str)
-            preloaded_fin = {date_str: fin} if fin is not None and not fin.empty else None
-            fv = compute_all_factors(data, date_str,
-                                     fundamentals=fundamentals,
-                                     factor_names=factor_names_list,
-                                     preloaded_financials=preloaded_fin)
-            result = {}
-            for name in factor_names_list:
-                if name in fv and not fv[name].dropna().empty:
-                    result[name] = fv[name]
-            # data is MultiIndex (date, symbol); check level 0 for date membership
-            try:
-                close_series = data["close"].loc[date_str]
-            except KeyError:
-                close_series = pd.Series(dtype=float)
-            results.append((date_str, result, close_series, None))
-        except Exception as e:
-            results.append((date_str, {}, pd.Series(dtype=float), str(e)))
-
-    store.close()
-    return results
-
+_COMPUTE_LOCK = threading.Lock()  # in-process reentrancy guard: 因子计算最多一个线程运行
 
 
 def compute_factor_stats(
@@ -187,7 +51,6 @@ def compute_factor_stats(
     """计算所有已注册因子的评估统计量，返回前端可用格式。
 
     n_symbols / lookback 默认值来源: config.yaml factor.evaluation (单一真相源).
-    fallback: n_symbols=800 (中证800), lookback=120 (券商研报惯例).
     """
     if n_symbols is None:
         n_symbols = _require_cfg("factor.evaluation.n_symbols")
@@ -202,8 +65,6 @@ def compute_factor_stats(
     # 1. 选择样本股票
     if symbols is None:
         conn = store._connect()
-        # 取日成交额最大的 n_symbols 只股票（保证流动性）
-        # 用 lookback 参数化选股窗口: 回看 lookback 个日历日, 至少交易一半天数
         stock_window = int(lookback * 1.5)
         min_days = max(5, lookback // 2)
         if n_symbols and n_symbols > 0:
@@ -231,10 +92,9 @@ def compute_factor_stats(
         logger.warning("No symbols available for factor evaluation")
         return _empty_result()
 
-    # 2. 获取评估日期 (轻量 SQL 查询, 不加载 OHLCV)
-    #    全量 daily 数据由 worker 各自加载, 主进程只查 DISTINCT date 列
+    # 2. 获取评估日期
     if factor_names is None:
-        factor_names = get_factor_names()  # 默认: status='active'
+        factor_names = get_factor_names()
     factor_values_by_date = {name: {} for name in factor_names}
 
     conn = store._connect()
@@ -246,47 +106,83 @@ def compute_factor_stats(
     ).fetchall()
     eval_dates = [pd.Timestamp(r[0]) for r in eval_dates_raw][-lookback:]
     eval_date_strs = [d.strftime("%Y-%m-%d") for d in eval_dates]
-    store.close()  # 子进程各自打开独立 DataStore, 主线程不再访问 DB
+    store.close()
 
     if not eval_date_strs:
         logger.warning("No eval dates available")
         return _empty_result()
 
     logger.info(f"eval dates: {len(eval_date_strs)} dates, {eval_date_strs[0]}→{eval_date_strs[-1]}, "
-                f"{len(factor_names)} factors, {_MAX_WORKERS} processes")
+                f"{len(factor_names)} factors, {_MAX_WORKERS} threads")
 
-    # ══ Phase B: ProcessPoolExecutor 并行因子计算 ══
-    # 跨进程文件锁: 确保整个系统最多一个 compute_factor_stats 实例运行,
-    # 防止并发调用导致 6→36→216 指数级进程繁殖 (macOS spawn ~100MB/进程)
+    # ══ Phase B: ThreadPoolExecutor 并行因子计算 (P78) ══
+    # 每个线程打开独立 DataStore, sqlite3 WAL mode 支持多线程并发读
     close_by_date = {}
     logger.info(f"factor compute start: {len(eval_date_strs)} dates x {len(factor_names)} factors, "
-                f"{_MAX_WORKERS} processes (workers load own data from DB)")
+                f"{_MAX_WORKERS} threads (each loads own DataStore)")
+
+    def _thread_compute_chunk(chunk_dates: list) -> list:
+        """Thread worker: each thread opens its own DataStore, loads data, computes factors."""
+        import logging as _log
+        _log.captureWarnings(True)
+        try:
+            from data.store import DataStore
+            from factor.compute import compute_all_factors
+            import pandas as _pd
+
+            _store = DataStore()
+            min_date = chunk_dates[0]
+            max_date = chunk_dates[-1]
+            data_start = (_pd.Timestamp(min_date) - _pd.Timedelta(days=365)).strftime("%Y-%m-%d")
+            future_end = (_pd.Timestamp(max_date) + _pd.Timedelta(days=40)).strftime("%Y-%m-%d")
+            data = _store.get_daily(symbols, start=data_start, end=future_end)
+
+            results = []
+            for date_str in chunk_dates:
+                try:
+                    fundamentals = _store.get_fundamentals(symbols, date=date_str)
+                    fin = _store.get_financials(symbols, date=date_str)
+                    preloaded_fin = {date_str: fin} if fin is not None and not fin.empty else None
+                    fv = compute_all_factors(data, date_str,
+                                             fundamentals=fundamentals,
+                                             factor_names=factor_names,
+                                             preloaded_financials=preloaded_fin)
+                    result = {}
+                    for name in factor_names:
+                        if name in fv and not fv[name].dropna().empty:
+                            result[name] = fv[name]
+                    try:
+                        close_series = data["close"].loc[date_str]
+                    except KeyError:
+                        close_series = _pd.Series(dtype=float)
+                    results.append((date_str, result, close_series, None))
+                except Exception as e:
+                    results.append((date_str, {}, _pd.Series(dtype=float), str(e)))
+
+            _store.close()
+            return results
+        except Exception as e:
+            return [(d, {}, _pd.Series(dtype=float), f"{type(e).__name__}: {e}") for d in chunk_dates]
 
     n_chunks = min(_MAX_WORKERS, len(eval_date_strs))
-    chunk_size = max(1, len(eval_dates) // n_chunks)
+    chunk_size = max(1, len(eval_date_strs) // n_chunks)
     date_chunks = [eval_date_strs[i:i + chunk_size] for i in range(0, len(eval_date_strs), chunk_size)]
     logger.info(f"partitioned {len(eval_date_strs)} dates into {len(date_chunks)} chunks (max {chunk_size}/chunk)")
 
-    executor = ProcessPoolExecutor(max_workers=n_chunks)
-    # 写入 worker PID → .compute_pids, 供 _cleanup_process_pool 清理孤儿进程
-    try:
-        with open(_ORPHAN_PID_FILE, 'w') as _pf:
-            for _proc in executor._processes.values():
-                _pf.write(f"{_proc.pid}\n")
-    except Exception:
-        pass
-    futures = {}
-    try:
+    with ThreadPoolExecutor(max_workers=n_chunks) as executor:
+        futures = {executor.submit(_thread_compute_chunk, chunk_dates): ci
+                   for ci, chunk_dates in enumerate(date_chunks)}
         for ci, chunk_dates in enumerate(date_chunks):
             logger.info(f"  chunk {ci+1}/{len(date_chunks)}: {len(chunk_dates)} dates")
-            futures[executor.submit(_pp_compute_chunk,
-                     (symbols, chunk_dates, factor_names))] = chunk_dates
-        logger.info(f"parallel compute: {len(futures)} chunks x {n_chunks} processes")
+
+        logger.info(f"parallel compute: {len(futures)} chunks x {n_chunks} threads")
+
         try:
             from tqdm import tqdm
             pbar = tqdm(total=len(futures), desc="Computing factors (parallel)")
         except ImportError:
             pbar = None
+
         try:
             for future in as_completed(futures, timeout=_WORKER_TIMEOUT_SEC):
                 chunk_results = future.result()
@@ -300,10 +196,10 @@ def compute_factor_stats(
                             close_by_date[date_str] = close_series
                 if pbar:
                     pbar.update(1)
-        except TimeoutError:
+        except FuturesTimeoutError:
             n_pending = sum(1 for f in futures if not f.done())
             logger.error(
-                f"ProcessPoolExecutor timed out after {_WORKER_TIMEOUT_SEC}s — "
+                f"ThreadPoolExecutor timed out after {_WORKER_TIMEOUT_SEC}s — "
                 f"{n_pending} chunk(s) incomplete, canceling"
             )
             for f in futures:
@@ -311,37 +207,10 @@ def compute_factor_stats(
         finally:
             if pbar:
                 pbar.close()
-    finally:
-        # shutdown(wait=False, cancel_futures=True): don't hang if workers are stuck — SIGTERM and move on
-        try:
-            executor.shutdown(wait=False, cancel_futures=True)
-        except Exception:
-            executor.shutdown(wait=False)
-        # 正常退出 → 清理 PID 文件 (避免下次启动误杀正常进程)
-        try:
-            if os.path.exists(_ORPHAN_PID_FILE):
-                os.remove(_ORPHAN_PID_FILE)
-        except Exception:
-            pass
-        # Nuke any remaining multiprocessing orphans (pgrep)
-        import time as _t, subprocess as _sp, signal as _sg
-        _t.sleep(0.5)
-        try:
-            _pg = _sp.run(["pgrep", "-f", "multiprocessing.spawn.*spawn_main"],
-                          capture_output=True, text=True, timeout=5)
-            if _pg.returncode == 0 and _pg.stdout.strip():
-                for _p in _pg.stdout.strip().split("\n"):
-                    try:
-                        os.kill(int(_p.strip()), _sg.SIGKILL)
-                        logger.warning(f"Force-killed straggler {_p.strip()}")
-                    except (ProcessLookupError, ValueError):
-                        pass
-        except Exception:
-            pass
+
     logger.info(f"factor compute complete: {len(eval_date_strs)}/{len(eval_date_strs)} dates")
 
-    # 4. 从 worker 返回的 close 数据构建 forward returns (无需主进程加载 daily)
-    #    close_by_date 由 worker 逐日返回, 拼接为 MultiIndex Series
+    # 4. 构建 forward returns
     close_parts = []
     for date_str in sorted(close_by_date.keys()):
         s = close_by_date[date_str]
@@ -366,8 +235,8 @@ def compute_factor_stats(
     ic_series = {}
     ic_decay = {}
 
-    # Parallel IC computation — each factor independent
     min_periods = _require_cfg("factor.stats.ic_min_periods")
+
     def _compute_ic(name, fv_dict, forward_1d, forward_5d, forward_20d):
         if len(fv_dict) < min_periods:
             return name, None
@@ -389,7 +258,6 @@ def compute_factor_stats(
             if not np.isnan(rho):
                 ics.append(rho)
                 ic_by_date[date_str] = float(rho)
-        # Compute decay per horizon
         decay = {}
         for horizon, fwd_df in [("1d", forward_1d), ("5d", forward_5d), ("20d", forward_20d)]:
             h_ics = []
@@ -402,7 +270,6 @@ def compute_factor_stats(
                 common = fv_series.dropna().index.intersection(fr.dropna().index)
                 if len(common) < 30:
                     continue
-                # Skip constant arrays
                 if np.std(fv_series.loc[common]) < 1e-10 or np.std(fr.loc[common]) < 1e-10:
                     continue
                 from scipy import stats
@@ -419,7 +286,6 @@ def compute_factor_stats(
             ic_ir_val = 0.0
         return name, (ic_mean, ic_ir_val, ic_by_date, decay)
 
-    # Execute IC computation in parallel
     logger.info(f"IC compute start: {len(factor_names)} factors")
 
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
@@ -438,9 +304,9 @@ def compute_factor_stats(
                 logger.info(f"IC compute progress: {ic_completed}/{len(factor_names)} factors")
         logger.info(f"IC compute complete: {len(factor_names)} factors")
 
-    # 6. 计算因子相关性矩阵 (pairwise — 不要求所有因子同日期都有值)
+    # 6. 计算因子相关性矩阵
     n = len(factor_names)
-    # Parallel pairwise correlation computation
+
     def _compute_pair(i, j, ni, nj):
         common_d = set(factor_values_by_date[ni].keys()) & set(factor_values_by_date[nj].keys())
         pair_corrs = []
@@ -475,38 +341,21 @@ def compute_factor_stats(
                 corr_counts[j][i] = n_pairs
     logger.info(f"corr matrix: {n}x{n}, avg pairwise periods: {corr_counts.sum()/(n*(n-1)):.1f}" if n > 1 else "corr: single factor")
 
-
-
     # 7. 生成因子元信息
     display_names = {
-        "size": "规模",
-        "momentum_63d": "动量63d",
-        "momentum_126d": "动量126d",
-        "momentum_252d": "动量252d",
-        "volatility_126d": "波动率126d",
-        "idio_vol_126d": "特质波动126d",
-        "skewness_60d": "偏度60d",
-        "amihud_250d": "Amihud 250d",
-        "bp_ratio": "BP比率",
-        "roe_ratio": "ROE比率",
-        "gap_5d": "隔夜缺口 5d",
-        "reversal_5d": "反转 5d",
-        "turnover_rev_5d": "换手率反转 5d",
+        "size": "规模", "momentum_63d": "动量63d", "momentum_126d": "动量126d",
+        "momentum_252d": "动量252d", "volatility_126d": "波动率126d",
+        "idio_vol_126d": "特质波动126d", "skewness_60d": "偏度60d",
+        "amihud_250d": "Amihud 250d", "bp_ratio": "BP比率",
+        "roe_ratio": "ROE比率", "gap_5d": "隔夜缺口 5d",
+        "reversal_5d": "反转 5d", "turnover_rev_5d": "换手率反转 5d",
     }
     categories = {
-        "size": "规模",
-        "momentum_63d": "动量",
-        "momentum_126d": "动量",
-        "momentum_252d": "动量",
-        "volatility_126d": "低波动",
-        "idio_vol_126d": "特质波动",
-        "skewness_60d": "偏度",
-        "amihud_250d": "流动性",
-        "bp_ratio": "价值",
-        "roe_ratio": "盈利",
-        "gap_5d": "隔夜",
-        "reversal_5d": "反转",
-        "turnover_rev_5d": "换手率",
+        "size": "规模", "momentum_63d": "动量", "momentum_126d": "动量",
+        "momentum_252d": "动量", "volatility_126d": "低波动",
+        "idio_vol_126d": "特质波动", "skewness_60d": "偏度",
+        "amihud_250d": "流动性", "bp_ratio": "价值", "roe_ratio": "盈利",
+        "gap_5d": "隔夜", "reversal_5d": "反转", "turnover_rev_5d": "换手率",
     }
     sources = {
         "size": "Fama & French (1993)",
@@ -555,7 +404,7 @@ def compute_factor_stats(
         "meta": meta,
         "cached_at": datetime.now().isoformat(),
     }
-    # 每次计算后同步写入 factor_registry，防止不同步
+    # 同步写入 factor_registry
     try:
         from factor.compute import update_factor_evaluation
         for k, ic_val in ic_means.items():
@@ -570,7 +419,7 @@ def compute_factor_stats(
 def _empty_result() -> dict:
     """返回空结果（数据不足时）。"""
     from factor.compute import get_factor_names
-    names = get_factor_names(status_filter=None)  # P45: 加载全量 IC 缓存
+    names = get_factor_names(status_filter=None)
     return {
         "factors": names,
         "factor_keys": names,
@@ -585,6 +434,9 @@ def _empty_result() -> dict:
 
 def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None) -> dict:
     """获取缓存的因子评估数据。从 factor_snapshot 表读取，24h 过期自动重算。
+
+    P78: 纯线程模型 — ThreadPoolExecutor with 语句自动回收，零孤儿进程风险。
+    _COMPUTE_LOCK (threading.Lock) 防并发重入：最多一个线程进入计算路径。
 
     返回: compute_factor_stats() 的输出格式
     """
@@ -609,70 +461,10 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None) 
         except Exception as e:
             logger.warning(f"Factor snapshot read failed: {e}")
 
-    # ══ PID-file 跨进程锁 (替代 fcntl — macOS APFS 上 fcntl 不可靠) ══
-    # 写入 PID → 读回 → 匹配即获取锁 → 不匹配则检查 PID 存活 → 死锁可窃取
-    import subprocess as _lock_sp
-    got_lock = False
-    _lock_msg = ""
-    _my_pid = str(os.getpid())
-    for _attempt in range(3):  # 最多重试3次
-        try:
-            # 写 PID 到锁文件 (原子性不强, 但结合读回验证足够)
-            with open(_COMPUTE_FILE_LOCK, 'w') as _lf:
-                _lf.write(_my_pid)
-            # 读回验证
-            with open(_COMPUTE_FILE_LOCK, 'r') as _lf:
-                _stored = _lf.read().strip()
-            if _stored == _my_pid:
-                got_lock = True
-                _lock_msg = "PID-lock acquired"
-                break
-            # PID 不匹配 → 检查存活性
-            try:
-                _stored_pid = int(_stored) if _stored.isdigit() else 0
-                if _stored_pid:
-                    os.kill(_stored_pid, 0)  # 信号0不杀, 仅检查进程存在
-                    _lock_msg = f"PID {_stored_pid} alive — waiting {_attempt+1}/3"
-                    time.sleep(0.5 * (_attempt + 1))
-                else:
-                    # 存活的 PID 是乱码 → 抢锁
-                    got_lock = True
-                    _lock_msg = "PID-lock stolen (invalid PID)"
-                    break
-            except ProcessLookupError:
-                # 进程已死 → 抢锁
-                got_lock = True
-                _lock_msg = f"PID-lock stolen (PID {_stored_pid} dead)"
-                break
-            except Exception:
-                got_lock = True
-                _lock_msg = "PID-lock stolen (error checking PID)"
-                break
-        except Exception as e:
-            _lock_msg = f"PID-lock file error: {e}"
-            time.sleep(0.3)
-    
-    if not got_lock:
-        logger.warning(f"factor stats: {_lock_msg}, returning stale/empty cache")
-        try:
-            conn = _sql.connect(_DB_PATH)
-            row = conn.execute("SELECT data FROM factor_snapshot WHERE id=1").fetchone()
-            conn.close()
-            if row:
-                return json.loads(row[0])
-        except Exception:
-            pass
-        return _empty_result()
-    logger.info(f"factor stats: {_lock_msg}")
-
-    # 进程内重入保护 + 锁前清剿孤儿
+    # 进程内重入保护
     if not _COMPUTE_LOCK.acquire(blocking=False):
         logger.warning("factor stats: in-process lock held by another thread, returning stale cache")
         try:
-            os.remove(_COMPUTE_FILE_LOCK)
-        except Exception:
-            pass
-        try:
             conn = _sql.connect(_DB_PATH)
             row = conn.execute("SELECT data FROM factor_snapshot WHERE id=1").fetchone()
             conn.close()
@@ -681,34 +473,12 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None) 
         except Exception:
             pass
         return _empty_result()
-    
-    # ══ 计算前强杀所有旧 worker (双重保障) ══
-    _killed = 0
-    try:
-        _pg = _lock_sp.run(
-            ["pgrep", "-f", "multiprocessing.spawn.*spawn_main"],
-            capture_output=True, text=True, timeout=5
-        )
-        if _pg.returncode == 0 and _pg.stdout.strip():
-            for _orphan_pid in _pg.stdout.strip().split("\n"):
-                try:
-                    _p = int(_orphan_pid.strip())
-                    if _p != _my_pid:
-                        os.kill(_p, SIGKILL)
-                        _killed += 1
-                except (ProcessLookupError, ValueError):
-                    pass
-    except Exception:
-        pass
-    if _killed:
-        logger.warning(f"factor stats: pre-killed {_killed} orphan workers before spawning")
-    
+
     try:
         logger.info("computing factor stats (this may take ~30s)...")
         lookback_val = _require_cfg("factor.evaluation.lookback")
         stats = compute_factor_stats(n_symbols=n_symbols, lookback=lookback_val)
 
-        # 存入 factor_snapshot 表 + 同步更新 factor_registry
         try:
             conn = _sql.connect(_DB_PATH)
             conn.execute(
@@ -724,19 +494,10 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None) 
         return stats
     finally:
         _COMPUTE_LOCK.release()
-        # 释放 PID 锁
-        try:
-            os.remove(_COMPUTE_FILE_LOCK)
-        except Exception:
-            pass
-
 
 
 def _load_ic_from_db(filter_names=None) -> dict:
-    """从 factor_registry 表加载 active 因子的 IC 权重。
-    
-    filter_names: 可选, 只保留这些因子名的 IC 权重 (filter_names 来自 factor_values).
-    """
+    """从 factor_registry 表加载 active 因子的 IC 权重。"""
     try:
         import sqlite3 as _sql
         db = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
@@ -761,6 +522,7 @@ def _load_ic_from_db(filter_names=None) -> dict:
         logger.warning(f"factor_registry load failed: {e}")
         return {}
 
+
 def load_ic_map_from_cache(factor_values: dict = None) -> dict:
     """从 factor_registry 表加载 IC 权重（单一数据源，不再依赖 JSON 文件）。
 
@@ -783,7 +545,3 @@ def force_refresh_cache(n_symbols: int = None) -> dict:
     stats = get_cached_factor_stats(force_refresh=True, n_symbols=n_symbols)
     logger.info(f"Factor refresh complete: {len(stats.get('factors', []))} factors")
     return stats
-
-
-# 模块加载时自动清理上次崩溃残留的孤儿进程
-_cleanup_process_pool()

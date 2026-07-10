@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""烟雾测试: 调用所有因子函数 + ThreadPoolExecutor 多线程路径 (P78).
+"""烟雾测试: 调用所有因子函数 + ThreadPoolExecutor 多线程路径 (P78 纯线程).
 
 用法:
   cd /Users/mariusto/project/quant
@@ -11,13 +11,10 @@
 import sys, os, time, traceback, pandas as pd, numpy as np
 
 
-def _test_process_pool() -> list:
+def _test_thread_pool() -> list:
     """[SMOKE-2] ThreadPoolExecutor 多线程测试 — 10 股 × 3 天 × 2 chunks (P78).
-
-    macOS spawn 模式要求此函数 top-level 定义，子进程 pickle 可达。
-    每个 worker 线程 data.copy() 隔离, 零共享状态 (P78).
-    返回: 错误信息列表，空列表 = 通过。
-    """
+    每个 worker 线程独立打开 DataStore, sqlite3 WAL 支持并发读。
+    返回: 错误信息列表，空列表 = 通过。"""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     from data.store import DataStore
@@ -32,7 +29,6 @@ def _test_process_pool() -> list:
     from factor.compute import get_factor_names
     factor_names = get_factor_names(status_filter=None)
 
-    # 3 个最近交易日
     store2 = DataStore()
     data = store2.get_daily(syms,
                             start=(pd.Timestamp.today() - pd.Timedelta(days=60)).strftime("%Y-%m-%d"),
@@ -42,21 +38,41 @@ def _test_process_pool() -> list:
                  for d in dates]
     store2.close()
 
-    # 分 2 个 chunks (确保 ≥2 个进程被启动)
     if len(date_strs) >= 2:
         chunks = [date_strs[:1], date_strs[1:]]
     else:
         chunks = [date_strs]
     chunks = [c for c in chunks if c]
 
-    from factor.stats_cache import _pp_compute_chunk
-    print(f"\n[SMOKE-2] {len(syms)} stocks × {len(date_strs)} dates × {len(factor_names)} factors")
-    print(f"[SMOKE-2] {len(chunks)} chunks, launching ProcessPoolExecutor(max_workers={len(chunks)})...")
+    print(f"\n[SMOKE-2] {len(syms)} stocks x {len(date_strs)} dates x {len(factor_names)} factors")
+    print(f"[SMOKE-2] {len(chunks)} chunks, launching ThreadPoolExecutor(max_workers={len(chunks)})...")
+
+    # inline thread worker: each thread opens its own DataStore
+    def _thread_worker(chunk_dates):
+        import pandas as _pd
+        from data.store import DataStore as _DS
+        from factor.compute import compute_all_factors as _caf
+        _store = _DS()
+        data_start = (_pd.Timestamp(chunk_dates[0]) - _pd.Timedelta(days=365)).strftime("%Y-%m-%d")
+        data_end = (_pd.Timestamp(chunk_dates[-1]) + _pd.Timedelta(days=40)).strftime("%Y-%m-%d")
+        data = _store.get_daily(syms, start=data_start, end=data_end)
+        results = []
+        for d in chunk_dates:
+            try:
+                fundamentals = _store.get_fundamentals(syms, date=d)
+                fin = _store.get_financials(syms, date=d)
+                preloaded_fin = {d: fin} if fin is not None and not fin.empty else None
+                fv = _caf(data, d, fundamentals=fundamentals,
+                          factor_names=factor_names, preloaded_financials=preloaded_fin)
+                results.append((d, fv, None))
+            except Exception as e:
+                results.append((d, {}, str(e)))
+        _store.close()
+        return results
 
     errors = []
     with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
-        futures = {executor.submit(_pp_compute_chunk, (syms, chunk, factor_names)): chunk
-                   for chunk in chunks}
+        futures = {executor.submit(_thread_worker, chunk): chunk for chunk in chunks}
         for future in as_completed(futures):
             chunk = futures[future]
             try:
@@ -69,7 +85,7 @@ def _test_process_pool() -> list:
                                      if hasattr(s, 'dropna') and not s.dropna().empty)
                         print(f"  [SMOKE-2] {date_str}: {filled}/{len(factor_names)} factors OK")
             except Exception as e:
-                errors.append(f"ProcessPool CHUNK CRASH: {type(e).__name__}: {e}")
+                errors.append(f"ThreadPool CHUNK CRASH: {type(e).__name__}: {e}")
                 traceback.print_exc()
 
     return errors
@@ -139,23 +155,23 @@ def main():
     if errors:
         print(f"[SMOKE-1] FAIL — {len(errors)} error(s) in {elapsed:.1f}s:")
         for e in errors:
-            print(f"  ❌ {e}")
+            print(f"  X {e}")
         return 1
     else:
         print(f"[SMOKE-1] PASS — {len(_PRICE_FN_MAP)} price + {len(_FUNDAMENTAL_FN_MAP)} fund factors OK ({elapsed:.1f}s)")
 
-    # ── [SMOKE-2] ProcessPoolExecutor 真实多进程测试 ──
-    pp_errors = _test_process_pool()
+    # ── [SMOKE-2] ThreadPoolExecutor 多线程测试 ──
+    pp_errors = _test_thread_pool()
     if pp_errors:
         print(f"\n[SMOKE-2] FAIL — {len(pp_errors)} error(s):")
         for e in pp_errors:
-            print(f"  ❌ {e}")
+            print(f"  X {e}")
         return 1
     else:
         print(f"[SMOKE-2] PASS — ThreadPoolExecutor OK")
 
     print(f"\n{'='*60}")
-    print(f"ALL PASS ✓")
+    print(f"ALL PASS")
     return 0
 
 

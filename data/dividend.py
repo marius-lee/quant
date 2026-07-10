@@ -47,8 +47,8 @@ def sync_range(start_date: str = None, end_date: str = None, conn=None) -> int:
     """同步分红数据 (akshare 逐只拉取, 免费无积分限制). 返回新增行数."""
     close_conn = False
     if conn is None:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        conn.execute("PRAGMA busy_timeout = 30000")
+        conn = sqlite3.connect(DB_PATH, timeout=_require_cfg("data.sqlite.timeout"))
+        conn.execute(f"PRAGMA busy_timeout = {_require_cfg('data.sqlite.busy_timeout')}")
         close_conn = True
 
     _ensure_table(conn)
@@ -123,7 +123,7 @@ def sync_range(start_date: str = None, end_date: str = None, conn=None) -> int:
         if (i + 1) % 100 == 0:
             conn.commit()
             logger.info(f"dividend [{i+1}/{len(symbols)}] {total} rows")
-            time.sleep(0.2)
+            time.sleep(_require_cfg("data.api_delay.dividend"))
 
     conn.commit()
     logger.info(f"dividend done: {total} rows from {len(symbols)} stocks")

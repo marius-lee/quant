@@ -80,8 +80,8 @@ def sync_range(start_date: str, end_date: str, conn=None) -> int:
     """同步大股东增减持数据 (akshare 逐只拉取). 返回新增行数."""
     close_conn = False
     if conn is None:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        conn.execute("PRAGMA busy_timeout = 30000")
+        conn = sqlite3.connect(DB_PATH, timeout=_require_cfg("data.sqlite.timeout"))
+        conn.execute(f"PRAGMA busy_timeout = {_require_cfg('data.sqlite.busy_timeout')}")
         close_conn = True
 
     _ensure_table(conn)
@@ -139,7 +139,7 @@ def sync_range(start_date: str, end_date: str, conn=None) -> int:
         if (i + 1) % 50 == 0:
             conn.commit()
             logger.info(f"holder_trade [{i+1}/{len(symbols)}] {total} rows")
-            time.sleep(0.3)
+            time.sleep(_require_cfg("data.api_delay.holder_trade"))
 
     conn.commit()
     logger.info(f"holder_trade done: {total} rows from {len(symbols)} stocks")

@@ -18,7 +18,7 @@ def save_phase(phase: str, data: dict) -> int:
     data_json = json.dumps(data, ensure_ascii=False, default=str)
     n_factors = data.get("n_factors") or len(data.get("factors", []))
     n_passed = len(data.get("passed", []))
-    conn = sqlite3.connect(_DB_PATH, timeout=30)
+    conn = sqlite3.connect(_DB_PATH, timeout=_require_cfg("data.sqlite.timeout"))
     conn.execute(
         """INSERT INTO evaluation_runs (run_ts, phase, data_json, n_factors, n_passed)
            VALUES (datetime('now','localtime'), ?, ?, ?, ?)""",
@@ -32,7 +32,7 @@ def save_phase(phase: str, data: dict) -> int:
 
 def load_latest(phase: str) -> dict | None:
     """Load the most recent result for a given phase. Returns None if no rows."""
-    conn = sqlite3.connect(_DB_PATH, timeout=30)
+    conn = sqlite3.connect(_DB_PATH, timeout=_require_cfg("data.sqlite.timeout"))
     row = conn.execute(
         "SELECT data_json FROM evaluation_runs WHERE phase=? ORDER BY run_ts DESC LIMIT 1",
         (phase,)
@@ -45,7 +45,7 @@ def load_latest(phase: str) -> dict | None:
 
 def list_runs(phase: str = None, limit: int = 10) -> list:
     """List recent runs, optionally filtered by phase."""
-    conn = sqlite3.connect(_DB_PATH, timeout=30)
+    conn = sqlite3.connect(_DB_PATH, timeout=_require_cfg("data.sqlite.timeout"))
     if phase:
         rows = conn.execute(
             """SELECT id, run_ts, phase, n_factors, n_passed

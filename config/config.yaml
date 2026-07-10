@@ -25,6 +25,8 @@ cache:
     db: 0
     host: localhost
     port: 6379
+    socket_connect_timeout: 2  # Redis 连接超时 (秒)
+  retry_delay: 0.5             # Redis 重试延迟 (秒)
 calendar:
   max_lookup_days: 30
 data:
@@ -42,11 +44,33 @@ data:
     tushare_batch_sec: 0.4
   fetch:
     max_lookback_days: 2000
+  http_timeout:
+    sina: 10                 # 新浪行情 HTTP 超时 (秒)
+    tushare: 10              # Tushare API HTTP 超时 (秒)
+    tencent: 15              # 腾讯行情 API HTTP 超时 (秒)
+    sse: 20                  # 上交所 SSE API HTTP 超时 (秒)
+  api_delay:
+    fund_hold: 2             # 基金持仓 API 限频间隔 (秒)
+    margin: 4                # 融资融券 SSE API 限频间隔 (秒)
+    margin_page: 5           # 融资融券翻页间隔 (秒)
+    limit_up: 0.3            # 涨跌停 API 限频间隔 (秒)
+    holder_trade: 0.3        # 股东交易 API 限频间隔 (秒)
+    lhb: 0.5                 # 龙虎榜 API 限频间隔 (秒)
+    jq_valuation: 0.15       # 聚宽估值 API 限频间隔 (秒)
+    fund_flow: 5.0           # 资金流向 API 限频间隔 (秒)
+    dividend: 0.2            # 分红 API 限频间隔 (秒)
+    daily_basic: 0.1         # 基础日线 API 限频间隔 (秒)
+    northbound: 0.3          # 北向资金 API 限频间隔 (秒)
+  sqlite:
+    timeout: 30              # SQLite 连接超时 (秒)
+    busy_timeout: 30000      # SQLite 忙等待超时 (ms)
 execution:
   commission: 0.0003
   min_commission: 5
   slippage: 0.001
   stamp_tax: 0.001
+  quote:
+    max_batch_workers: 4   # 新浪行情并行拉取最大线程数
 factor:
   accruals:
     max: 1
@@ -141,16 +165,6 @@ screening:
   backtest_end: '2026-06-30'
   backtest_start: '2025-06-30'
   timeout: 600
-data:
-  http_timeout:
-    sina: 10       # 新浪行情 HTTP 超时 (秒)
-    tushare: 10    # Tushare API HTTP 超时 (秒)
-    tencent: 15    # 腾讯行情 API HTTP 超时 (秒)
-    sse: 20        # 上交所 SSE API HTTP 超时 (秒)
-  api_delay:
-    fund_hold: 2   # 基金持仓 API 限频间隔 (秒)
-    margin: 4      # 融资融券 SSE API 限频间隔 (秒)
-    margin_page: 5 # 融资融券翻页间隔 (秒)
 monitor:
   alert:
     drawdown_critical: 0.20   # 累计回撤 ≥20% → critical 告警
@@ -162,3 +176,5 @@ sync:
   daily_interval: 3           # 日线同步 API 间隔 (秒)
 web:
   port: 8521
+  sse:
+    queue_timeout: 30         # SSE 事件队列超时 (秒)

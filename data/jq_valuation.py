@@ -218,7 +218,7 @@ def sync_range(start=TRIAL_START, end=TRIAL_END, max_dates=0):
         eta = (len(todo) - i - 1) / rate if rate > 0 else 0
         print(f"\r  [{i+1}/{len(todo)}] {d}: {n} stocks, {rate:.1f}/s, ETA {eta:.0f}s", end="", flush=True)
         if i < len(todo) - 1:
-            time.sleep(0.15)
+            time.sleep(_require_cfg("data.api_delay.jq_valuation"))
     print()
     conn.close()
     logger.info(f"Done: {total_rows} rows for {len(todo)} dates ({time.time()-t0:.0f}s)")

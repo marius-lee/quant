@@ -29,7 +29,7 @@ def _db_connect():
     """模块级共享连接 + WAL 模式。"""
     conn = sqlite3.connect(_market_db_path())
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
     return conn
 
 

@@ -122,7 +122,7 @@ def sync_all(max_stocks: int = None, conn=None) -> int:
         total += n
         if (i + 1) % 50 == 0:
             logger.info(f"northbound sync: {i+1}/{len(symbols)} stocks, {total} rows")
-        time.sleep(0.3)  # Rate limiting
+        time.sleep(_require_cfg("data.api_delay.northbound"))
     
     logger.info(f"northbound sync done: {total} rows for {len(symbols)} stocks")
     

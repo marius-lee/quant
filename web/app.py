@@ -506,7 +506,7 @@ def api_stream():
             yield f"data: {json.dumps(broker.get(), ensure_ascii=False)}\n\n"
             while True:
                 try:
-                    data = q.get(timeout=30)
+                    data = q.get(timeout=_require_cfg("web.sse.queue_timeout"))
                     yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
                 except queue.Empty:
                     yield ": keepalive\n\n"

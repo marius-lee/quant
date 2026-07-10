@@ -110,7 +110,7 @@ class RedisBackend(CacheBackend):
         self._pool = redis.ConnectionPool(
             host=host, port=port, db=db,
             decode_responses=False,
-            socket_connect_timeout=2,
+            socket_connect_timeout=_require_cfg("cache.redis.socket_connect_timeout"),
             socket_keepalive=True,
             health_check_interval=30,
         )
@@ -339,7 +339,7 @@ class RateLimiter:
         while time.monotonic() < deadline:
             if self.acquire():
                 return True
-            time.sleep(0.5)
+            time.sleep(_require_cfg("cache.retry_delay"))
         return False
 
     def __call__(self, fn):

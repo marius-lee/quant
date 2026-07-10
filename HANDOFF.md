@@ -8,6 +8,8 @@
 ---
 
 ## 最近提交 (2026-07-09 ~ 2026-07-10)
+| *(本次)* | P88: 移除 Redis 全链路 — state_broker 纯内存, cache.py 本地 NoopBackend (-743行) |
+| *(本次)* | fix: 可用资金 ¥NaN — SSE 数据 merge 不乱盖财务字段, broker.update 禁写财务字段 |
 
 | 提交 | 内容 |
 |------|------|

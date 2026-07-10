@@ -184,7 +184,7 @@ class DataStore:
             r[0] for r in conn.execute("SELECT symbol FROM stocks").fetchall()
         )
 
-        # 1. Cache check — skip API if fresh data in Redis
+        # 1. Cache check — skip API if fresh data in local cache
         cached = _stock_list_cache.get("symbols")
         if cached is not None and isinstance(cached, list) and len(cached) > 0:
             insert_count = 0
@@ -601,8 +601,22 @@ class DataStore:
             raise RuntimeError("pytdx not installed")
 
         api = TdxHq_API()
+        # socket pre-probe: avoid C extension connect() blocking indefinitely
+        import socket as _socket
+        _connect_timeout = cfg("data.pytdx.connect_timeout", 5)
+        try:
+            _sock = _socket.create_connection(("180.153.18.170", 7709), timeout=_connect_timeout)
+            _sock.close()
+        except Exception:
+            logger.warning("pytdx: pre-probe timeout/fail (server unreachable)")
+            return []
+
         if not api.connect('180.153.18.170', 7709):
             logger.warning("pytdx: server unreachable")
+            try:
+                api.disconnect()
+            except Exception:
+                pass
             return []
 
         rows = []
@@ -904,10 +918,10 @@ class DataStore:
             # P3: sina 已移除 — 返回未复权数据(除权日单日跳-34%)，tencent/akshare 均用 qfq 前复权
 
             all_sources = [
-                ("pytdx",    lambda: self._fetch_pytdx_daily(chunk, batch_start)),
                 ("tencent",  lambda: self._fetch_tencent_daily(chunk, batch_start)),
                 ("tushare",  lambda: self._fetch_batch_tushare(chunk, batch_start)),
                 ("akshare",  lambda: self._fetch_akshare_daily(chunk, batch_start)),
+                ("pytdx",    lambda: self._fetch_pytdx_daily(chunk, batch_start)),
             ]
             ordered = sorted(all_sources, key=lambda x: self._source_speed.get(x[0], 999), reverse=True)
             for src_name, fetch_fn in ordered:

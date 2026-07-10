@@ -122,7 +122,7 @@ def _fetch_tushare_valuation_rows(date_str):
     return rows or None
 
 def sync_date(date_str, conn):
-    """Sync PE_TTM/PB for one date. API 响应缓存到 Redis (4h TTL)。"""
+    """Sync PE_TTM/PB for one date. API 响应缓存 (4h TTL, P88: 本地 NoopBackend)。"""
     _init_cache()
 
     # 1. 尝试缓存命中

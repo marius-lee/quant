@@ -231,8 +231,7 @@ main {
 .heatmap-grid {
   display: flex; flex-wrap: wrap; gap: 2px;
   padding: 12px;
-  min-height: 280px;
-  align-items: flex-start; align-content: flex-start;
+  justify-content: space-between;
 }
 .heatmap-cell {
   width: 16px; height: 16px;
@@ -251,7 +250,7 @@ main {
   font-family: var(--font-mono); font-size: .78rem; color: var(--text2); font-weight: 500;
 }
 .heatmap-legend-bar {
-  width: 80px; height: 8px;
+  flex: 1; height: 8px;
   border-radius: 4px;
   background: linear-gradient(to right, var(--text3), var(--accent));
 }

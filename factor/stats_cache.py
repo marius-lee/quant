@@ -90,7 +90,7 @@ def compute_factor_stats(
 
     if not symbols:
         logger.warning("No symbols available for factor evaluation")
-        return _empty_result()
+        return _empty_result(factor_names)
 
     # 2. 获取评估日期
     if factor_names is None:
@@ -110,7 +110,7 @@ def compute_factor_stats(
 
     if not eval_date_strs:
         logger.warning("No eval dates available")
-        return _empty_result()
+        return _empty_result(factor_names)
 
     logger.info(f"eval dates: {len(eval_date_strs)} dates, {eval_date_strs[0]}→{eval_date_strs[-1]}, "
                 f"{len(factor_names)} factors, {_MAX_WORKERS} threads")
@@ -162,6 +162,7 @@ def compute_factor_stats(
             _store.close()
             return results
         except Exception as e:
+            logger.exception(f"Thread worker fatal error: {type(e).__name__}: {e}")
             return [(d, {}, _pd.Series(dtype=float), f"{type(e).__name__}: {e}") for d in chunk_dates]
 
     n_chunks = min(_MAX_WORKERS, len(eval_date_strs))
@@ -221,7 +222,7 @@ def compute_factor_stats(
         close_parts.append(pd.Series(s.values, index=mi, name='close'))
     if not close_parts:
         logger.warning("No close data from workers — cannot compute forward returns")
-        return _empty_result()
+        return _empty_result(factor_names)
     close = pd.concat(close_parts)
     if isinstance(close, pd.Series):
         close = close.unstack()
@@ -416,10 +417,12 @@ def compute_factor_stats(
     return result
 
 
-def _empty_result() -> dict:
-    """返回空结果（数据不足时）。"""
-    from factor.compute import get_factor_names
-    names = get_factor_names(status_filter=None)
+def _empty_result(factor_names: list = None) -> dict:
+    """返回空结果（数据不足时）。使用传入 factor_names，None 时回退到全量因子。"""
+    if factor_names is None:
+        from factor.compute import get_factor_names
+        factor_names = get_factor_names(status_filter=None)
+    names = factor_names
     return {
         "factors": names,
         "factor_keys": names,

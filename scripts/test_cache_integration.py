@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
-"""缓存集成测试 — 验证 Redis 缓存已正确接入数据同步函数。
+"""缓存集成测试 — 验证 缓存层集成测试 (P88: Redis 已移除，纯本地实现)。
 
-前置条件: Redis 运行中
 
 用法:
-  redis-server --daemonize yes --port 6379
   PYTHONPATH=. .venv/bin/python3 scripts/test_cache_integration.py
-  redis-cli shutdown
 """
 import os, sys, sqlite3, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data.cache import get_backend, reset_backend, RedisBackend, NoopBackend
+from data.cache import get_backend, reset_backend, NoopBackend
 from config.loader import reload
 
 passed = 0
@@ -35,8 +32,8 @@ print("\n--- Backend ---")
 reset_backend()
 cfg = reload()
 backend = get_backend(cfg)
-check("backend is RedisBackend", isinstance(backend, RedisBackend))
-check("redis ping", backend.ping())
+check("backend is NoopBackend", isinstance(backend, NoopBackend))
+check("ping", backend.ping())
 
 # ── jq_valuation cache integration ──
 print("\n--- jq_valuation ---")
@@ -112,8 +109,8 @@ check("akshare limiter acquire (2/3)", store_mod._akshare_limiter.acquire())
 
 # ── Cache layer independence ──
 print("\n--- Backend: SQLite independence ---")
-check("consumer reads from SQLite (not Redis)",
-      True)  # by design: pipeline reads from SQLite, Redis is API dedup only
+check("consumer reads from SQLite (sole data source)",
+      True)  # by design: pipeline reads from SQLite, API dedup in NoopBackend (local only)
 
 # Cleanup
 reset_backend()

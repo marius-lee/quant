@@ -1,53 +1,39 @@
-"""状态通信抽象层 — 模板 2/6.
-
-实现: RedisStateBroker (跨进程 Redis pub/sub), InProcessBroker (fallback).
+"""状态通信抽象层 — 模板 2/6. P88: 移除 Redis 依赖，纯内存实现。
 
 接口:
-  broker.get()       → dict   # 获取当前状态
-  broker.update(d)   → None   # 更新状态 + 广播 SSE
+  broker.get()       → dict   # 获取当前状态 (trades.db 为真相源)
+  broker.update(d)   → None   # pipeline 推送进度/信号 + 广播 SSE
   broker.subscribe() → Queue  # SSE 客户端订阅
   broker.unsubscribe(q)       # SSE 客户端取消
 """
+import json as _json
 import threading, queue
 import os as _os
-from abc import ABC, abstractmethod
+
+_FINANCIAL_KEYS = ("capital", "total_asset", "pnl", "metrics", "pos_value", "positions")
 
 
-class StateBroker(ABC):
-    @abstractmethod
-    def get(self) -> dict: ...
-    @abstractmethod
-    def update(self, data: dict): ...
-    @abstractmethod
-    def subscribe(self) -> queue.Queue: ...
-    @abstractmethod
-    def unsubscribe(self, q: queue.Queue): ...
+class InProcessBroker:
+    """纯内存实现 — pipeline 通过 HTTP POST 跨进程，SSE 通过内存 queue 推送。"""
 
-
-class RedisStateBroker(StateBroker):
-    """Redis 跨进程实现 — scheduler 和 web app 共享状态."""
-
-    def __init__(self, redis_url: str = 'redis://localhost:6379/0', prefix: str = 'quant:state'):
-        self._prefix = prefix
+    def __init__(self):
         self._lock = threading.Lock()
         self._clients: list[queue.Queue] = []
-        self._key = f'{prefix}:data'
-        self._r = None
+        self._cache: dict = {}          # pipeline 进度/信号 (非财务数据)
         self._quote_ts = 0.0
         self._quote_result = None
-        try:
-            import redis as _redis
-            self._r = _redis.from_url(redis_url)
-            self._r.ping()
-        except Exception:
-            pass
+
+    # ═══════════════════════════════════════════
+    # 内部
+    # ═══════════════════════════════════════════
 
     def _init_state(self) -> dict:
+        """从 trades.db 构建完整财务状态 (唯一真相源)。"""
         import sys as _sys
         _root = _os.path.dirname(_os.path.dirname(__file__))
         if _root not in _sys.path:
             _sys.path.insert(0, _root)
-        state = {'status': '休市', 'progress': '',
+        state = {'progress': '',
                  'mood': {}, 'signals': [], 'sectors': [],
                  'summary': {}, 'timestamp': '', 'trace_id': ''}
         try:
@@ -57,20 +43,19 @@ class RedisStateBroker(StateBroker):
             capital = repo.get_cash("quant")
             raw_positions = repo.get_positions("quant")
             positions = []
-            # stock name + latest close lookup
             close_map = {}
             import sqlite3 as _sql2
             try:
                 market_db = _os.path.join(_root, "data", "market.db")
                 if _os.path.exists(market_db):
                     mc = _sql2.connect(market_db)
-                    for sym in [r["symbol"] for r in raw_positions]:
+                    for rp in raw_positions:
                         cr = mc.execute(
                             "SELECT close FROM daily WHERE symbol=? ORDER BY date DESC LIMIT 1",
-                            (sym,)
+                            (rp["symbol"],)
                         ).fetchone()
                         if cr and cr[0]:
-                            close_map[sym] = cr[0]
+                            close_map[rp["symbol"]] = cr[0]
                     mc.close()
             except Exception:
                 pass
@@ -92,9 +77,7 @@ class RedisStateBroker(StateBroker):
             state["total_asset"] = round(capital + pos_value, 2)
             state["pos_value"] = round(pos_value, 2)
 
-            # ── PnL + metrics ──
             base = repo.get_initial_capital("quant")
-            # 由 _capital() 在 web 启动时保证DB有值, 无需 fallback
             realized = repo.get_pnl("quant")
             total_pnl = round(capital + pos_value - base, 2)
             state["pnl"] = {
@@ -113,14 +96,11 @@ class RedisStateBroker(StateBroker):
                 "initial_capital": base,
             }
 
-            # ── 交易日状态由 web 层实时注入，不进 broker/Redis ──
-
-            # ── 股票名称 lookup ──
-            import sqlite3 as _sql
+            import sqlite3 as _sql3
             try:
                 market_db = _os.path.join(_root, "data", "market.db")
                 if _os.path.exists(market_db):
-                    mc = _sql.connect(market_db)
+                    mc = _sql3.connect(market_db)
                     syms = [p["symbol"] for p in positions]
                     if syms:
                         placeholders = ",".join(["?"] * len(syms))
@@ -142,47 +122,14 @@ class RedisStateBroker(StateBroker):
             logging.getLogger("web.state_broker").exception("_init_state failed")
         return state
 
-    def _read_state(self) -> dict:
-        if self._r is None:
-            return {}
-        try:
-            import json as _json
-            data = self._r.get(self._key)
-            if data:
-                return _json.loads(data)
-        except Exception:
-            pass
-        return {}
-
-    def _write_state(self, data: dict):
-        if self._r is None:
-            return
-        try:
-            import json as _json
-            self._r.setex(self._key, 86400, _json.dumps(data, ensure_ascii=False, default=str))
-            self._r.publish(f'{self._prefix}:channel', 'updated')
-        except Exception:
-            pass
-
-    def get(self) -> dict:
-        cached = self._read_state()
-        if not cached:
-            state = self._init_state()
-        else:
-            # ── 清理 Redis 旧缓存污染 ──
-            cached.pop("positions", None)
-            cached.pop("status", None)  # 系统状态由 web 层实时注入，不进 Redis
-            state = self._init_state()
-            state.update(cached)
-
-        # ── 实时报价 overlay (盘中) ──
+    def _quote_overlay(self, state: dict):
+        """盘中实时报价覆盖持仓市值/总资产/PnL。"""
         import time as _time
         try:
             from execution.quote import fetch_quotes
             from execution.calendar import is_market_open
             if is_market_open() and state.get("positions"):
                 now = _time.time()
-                # 5s throttle on quote API calls
                 if self._quote_result is None or now - self._quote_ts > 5:
                     syms = [p["symbol"] for p in state["positions"]]
                     try:
@@ -206,23 +153,45 @@ class RedisStateBroker(StateBroker):
                     cap = state.get("capital", 0)
                     state["total_asset"] = round(cap + new_pos_value, 2)
                     base = state.get("metrics", {}).get("initial_capital")
-                    new_total_pnl = round(cap + new_pos_value - base, 2)
-                    if state.get("pnl"):
-                        state["pnl"]["total"] = new_total_pnl
-                        state["pnl"]["unrealized"] = round(new_total_pnl - state["pnl"].get("realized", 0), 2)
-                    if state.get("metrics"):
-                        state["metrics"]["total_return_pct"] = round(new_total_pnl / base * 100, 2) if base > 0 else 0
+                    if base:
+                        new_total_pnl = round(cap + new_pos_value - base, 2)
+                        if state.get("pnl"):
+                            state["pnl"]["total"] = new_total_pnl
+                            state["pnl"]["unrealized"] = round(new_total_pnl - state["pnl"].get("realized", 0), 2)
+                        if state.get("metrics"):
+                            state["metrics"]["total_return_pct"] = round(new_total_pnl / base * 100, 2) if base > 0 else 0
         except Exception:
             pass
 
+    # ═══════════════════════════════════════════
+    # 公开接口
+    # ═══════════════════════════════════════════
+
+    def get(self) -> dict:
+        """获取完整状态: trades.db 财务数据 + pipeline 进度/信号 overlay。"""
+        state = self._init_state()
+        with self._lock:
+            cached = dict(self._cache)
+        # pipeline 进度/信号 overlay (signals/progress/mood/trace_id/timestamp)
+        for k in ("signals", "progress", "mood", "trace_id", "timestamp"):
+            if k in cached:
+                state[k] = cached[k]
+        # Dynamically inject trading period status
+        try:
+            from execution.calendar import get_trading_period
+            state['status'] = get_trading_period()
+        except Exception:
+            state['status'] = 'offline'
+        self._quote_overlay(state)
         return state
 
     def update(self, data: dict):
+        """接收 pipeline 推送的进度/信号，写入内存缓存并广播 SSE。"""
         with self._lock:
-            current = self._read_state()
-            current.update(data)
-            self._write_state(current)
-        payload = dict(current)
+            for _fk in _FINANCIAL_KEYS:
+                data.pop(_fk, None)
+            self._cache.update(data)
+            payload = dict(self._cache)
         dead = []
         for q in self._clients:
             try:
@@ -244,5 +213,5 @@ class RedisStateBroker(StateBroker):
             pass
 
 
-# 全局单例 — Redis 跨进程，fallback 到内存
-broker = RedisStateBroker()
+# 全局单例
+broker = InProcessBroker()

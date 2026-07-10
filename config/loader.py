@@ -95,8 +95,6 @@ def validate() -> None:
     _check(cfg, 'risk.stop_profit_pct', (int, float))
     _check(cfg, 'monitor.alert.drawdown_critical', (int, float))
     _check(cfg, 'monitor.alert.drawdown_warning', (int, float))
-    _check(cfg, 'cache.redis.socket_connect_timeout', (int, float))
-    _check(cfg, 'cache.retry_delay', (int, float))
     _check(cfg, 'optimizer.min_holding_days', int)
     _check(cfg, 'factor.compute.zscore_min_count', int)
     _check(cfg, 'factor.stats.ic_min_periods', int)

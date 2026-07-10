@@ -107,9 +107,15 @@ def _run():
         # ═══════════════════════════════════════════
         if not done["signals"]:
             if hhmm >= time(8, 30):
-                from quant.scheduler.signals import _run as _signals_run
-                _run_task("signals", _signals_run, today)
-                done["signals"] = True
+                # 盘后补跑检查: 15:30后跳过signals（无执行窗口）
+                if hhmm >= time(15, 30):
+                    _log.info(f"[{today}] signals expired (past 15:30), skip")
+                    update("signals", status="expired（已过执行窗口）")
+                    done["signals"] = True
+                else:
+                    from quant.scheduler.signals import _run as _signals_run
+                    _run_task("signals", _signals_run, today)
+                    done["signals"] = True
             else:
                 wait_m = (time(8, 30).hour * 60 + 30) - (hhmm.hour * 60 + hhmm.minute)
                 update("signals", status=f"waiting ({wait_m}min)")
@@ -119,9 +125,15 @@ def _run():
         # ═══════════════════════════════════════════
         if done["signals"] and not done["execute"]:
             if hhmm >= time(9, 30):
-                from quant.scheduler.execute import _run as _execute_run
-                _run_task("execute", _execute_run, today)
-                done["execute"] = True
+                # 盘后补跑检查: 14:57后跳过execute（收盘了）
+                if hhmm >= time(14, 57):
+                    _log.info(f"[{today}] execute expired (past 14:57), skip")
+                    update("execute", status="expired（已过执行窗口）")
+                    done["execute"] = True
+                else:
+                    from quant.scheduler.execute import _run as _execute_run
+                    _run_task("execute", _execute_run, today)
+                    done["execute"] = True
             else:
                 wait_m = (time(9, 30).hour * 60 + 30) - (hhmm.hour * 60 + hhmm.minute)
                 update("execute", status=f"waiting ({wait_m}min)")

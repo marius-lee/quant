@@ -19,8 +19,7 @@ def _run(today: str):
     positions = engine.get_positions(strategy="quant")
 
     if positions:
-        attr = brinson_attribution(positions, date=today, benchmark="000300")
-        _log.info(f"[{today}] attribution done: {attr.get('summary', 'N/A')}")
+        _log.info(f"[{today}] Brinson 归因数据准备未实现, 跳过")
     else:
         _log.info(f"[{today}] no positions, skip attribution")
 
@@ -30,7 +29,7 @@ def _run(today: str):
         import sqlite3, json
         conn = sqlite3.connect("data/market.db")
         rows = conn.execute(
-            "SELECT name, ic_weight FROM factor_registry WHERE active=1 AND ic_weight IS NOT NULL"
+            "SELECT name, ic_mean FROM factor_registry WHERE status IN ('active','monitoring') AND ic_mean IS NOT NULL"
         ).fetchall()
         conn.close()
         if rows:

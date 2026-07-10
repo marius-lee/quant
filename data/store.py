@@ -847,7 +847,6 @@ class DataStore:
         symbols: None 表示自动分析缺口并只拉缺失/不足的股票
         返回: 新写入的行数
         """
-        from config.loader import get as cfg
         if start is None:
             start = cfg("data.start_date", DEFAULT_START_DATE)
 
@@ -1100,7 +1099,6 @@ class DataStore:
         优先从本地 market.db benchmark_daily 表读取。
         """
         if start is None:
-            from config.loader import get as cfg
             start = cfg("backtest.benchmark_start_date", "2020-01-01")
         # 本地 market.db benchmark_daily 表
         import sqlite3, os

@@ -129,10 +129,9 @@ class PortfolioConstructor:
 
     def __init__(self, config: Optional[dict] = None):
         if config is None:
-            from config.loader import get as cfg
             config = {
-                "max_positions": cfg("risk.max_positions"),
-                "max_single_position": cfg("risk.max_single_position"),
+                "max_positions": _cfg("risk.max_positions"),
+                "max_single_position": _cfg("risk.max_single_position"),
             }
         self.max_positions = config.get("max_positions")
         self.max_single = config.get("max_single_position")

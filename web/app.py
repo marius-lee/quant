@@ -394,7 +394,6 @@ def api_risk():
 def api_performance():
     """累计绩效统计. ?strategy=quant&quotes=true (quotes=true 用市价估值)"""
     from flask import request
-    from config.loader import get as cfg
     strategy = request.args.get("strategy", "quant")
     tc = sqlite3.connect(TRADE_DB)
     sells = tc.execute("SELECT pnl FROM sim_trades WHERE side='sell' AND strategy=?", (strategy,)).fetchall()
@@ -559,7 +558,6 @@ def api_metrics():
     return _api_response(data=_mm.snapshot())
 
 if __name__ == "__main__":
-    from config.loader import get as cfg
     port = int(cfg("web.port", 8521))
     logger.info(f"Web 服务启动于端口 {port}")
     app.run(host="0.0.0.0", port=port, debug=False)

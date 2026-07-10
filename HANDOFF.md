@@ -1,6 +1,6 @@
 # HANDOFF — 盈迹 (quant) 项目当前状态
 
-**最后更新**: 2026-07-10 10:00 CST
+**最后更新**: 2026-07-10 10:30 CST
 
 > 旧版归档: docs/HANDOFF-2026-07-02.md / docs/HANDOFF-2026-07-03.md (已 superseded)
 > 项目根只有一个 HANDOFF.md 作为单一真相源
@@ -73,13 +73,14 @@ layer 8: evaluation/ — 五阶段回测评估 (CPCV+PBO)
 
 | 文件 | 职责 |
 |------|------|
-| `_base.py` | _timed_loop() 通用定时循环 + 状态上报 |
+| `_base.py` | _timed_loop() 每日循环 + _weekly_loop() 每周循环 + 状态上报 |
 | `signals.py` | 08:30 generate_signals → Redis (has_multiprocess=False) |
 | `execute.py` | 09:30 读Redis targets → execute_signals (has_multiprocess=False) |
 | `monitor.py` | 09:35-14:55 风控: 回撤/熔断/止盈/止损 (P75) |
-| `attribution.py` | 15:30 Brinson 归因 + IC 衰减快照 |
-| `status.py` | 线程安全 register/update/all_tasks (带 group 字段) |
-| `__init__.py` | start_all() 四 daemon 线程 |
+| `attribution.py` | 15:30 Brinson 归因 + IC 衰减检测 |
+| `weekly.py` | 周六 06:00 force_refresh_cache() — 周刊 IC 权重更新 (业界标准) |
+| `status.py` | 线程安全 register/update/all_tasks (带 group 字段: 盘前/盘中/盘后/研究) |
+| `__init__.py` | start_all() 五 daemon 线程 |
 
 ### evaluation/ 包 (五阶段回测)
 
@@ -90,6 +91,26 @@ layer 8: evaluation/ — 五阶段回测评估 (CPCV+PBO)
 | Phase 3 | CPCV N=5 + PBO | logit(PBO) < -0.847 |
 | Phase 4 | 扣费后 Sharpe | Net Sharpe > 0.3 |
 | Phase 5 | 监控报告 | 拥挤度/衰减/换手率/容量 |
+
+---
+
+## P80: 因子评估周频调度 — 对标业界标准 (本次)
+
+**背景**: 之前因子 IC 权重无自动更新机制，08:30 信号生成用的可能是数周前的旧权重。
+因子评估触发散落在服务器启动、用户手动刷新、缓存过期三处，缺乏统一策略。
+
+**业界标准** (Grinold & Kahn / AQR):
+- 因子 IC 权重更新周期为周频或月频，非日频
+- 每日只新增 1/120 ≈ 0.8% 的数据，IC 估计变化 < 0.001，日更 = 引入噪声
+- 高频更新 IC 权重会增大换手率，摩擦成本抵消超额收益
+
+**实现**:
+- `quant/scheduler/_base.py`: 新增 `_weekly_loop()` — 不检查交易日，按 weekday 判断
+- `quant/scheduler/weekly.py`: 新文件 — 周六 06:00 调用 `force_refresh_cache()`
+- 调度器 4→5，启动时 `all 5 schedulers launched`
+- 前端调度Tab 新增"研究"分组，weekly_eval 显示"周六 06:00"
+
+**15:30 归因保持不变**: IC 衰减检测读的是每周六刷新的新鲜权重，衰减 >30% → monitoring。
 
 ---
 
@@ -172,13 +193,13 @@ web/app.py:562 cfg fallback → _require_cfg("web.port")
 ## 当前状态
 
 - **config.yaml**: n_symbols=800, lookback=120, max_workers=4 (ThreadPoolExecutor)
-- **调度器**: 4 daemon (signals/execute/monitor/attribution)
+- **调度器**: 5 daemon (signals/execute/monitor/attribution/weekly_eval), weekly 每周六 06:00 自动刷新 IC 权重
 - **止盈止损**: monitor.py 统一管理, stop_profit_pct=0.20 / stop_loss_pct=0.15
 - **factor_registry**: 65 因子注册, 1 active (zt_streak), 5 状态生命周期
 - **State Broker**: 模块级 dict + SSE 队列, 进程内存
 - **并发**: 纯 ThreadPoolExecutor, 零 ProcessPoolExecutor, 零孤儿进程风险
 - **测试**: 67 passed
-- **因子评估触发**: 仅2处 — 用户手动刷新因子页面 + 24h缓存过期自动重算。服务器启动不触发重算
+- **因子评估触发**: 3 处 — (1) 每周六 06:00 自动, (2) 用户手动刷新因子页面, (3) 24h 缓存过期自动重算。服务器启动不触发重算。业界标准: 因子权重不应日更 (会引入噪声/增大换手率)
 - **HANDOFF**: 项目根唯一真相源
 
 ---

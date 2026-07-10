@@ -59,6 +59,28 @@ def _run(today: str):
                         dc.close()
                     except Exception:
                         pass
+            # monitoring → retired: 已经告警中，持续衰减 → 退役回回测池
+            try:
+                import sqlite3
+                dc2 = sqlite3.connect("data/market.db")
+                monitoring_rows = dc2.execute(
+                    "SELECT name FROM factor_registry WHERE status='monitoring'"
+                ).fetchall()
+                for mr in monitoring_rows:
+                    mname = mr[0]
+                    # 检查是否仍然在今日衰减列表中
+                    still_decaying = any(e.startswith(mname + ':') for e in degraded)
+                    if still_decaying:
+                        dc2.execute(
+                            "UPDATE factor_registry SET status='retired', status_reason=? WHERE name=? AND status='monitoring'",
+                            (f"持续衰减退役: {next(e for e in degraded if e.startswith(mname + ':'))}", mname)
+                        )
+                        _log.warning(f'[{today}] {mname}: monitoring → retired (持续IC衰减)')
+                        _m.inc("scheduler.attribution.retired", 1)
+                dc2.commit()
+                dc2.close()
+            except Exception:
+                pass
             broker.update({"metrics": {"factor_ic_snapshot": json.dumps(today_weights)}})
     except Exception as e:
         _log.warning(f"[{today}] IC snapshot failed (non-fatal): {e}")

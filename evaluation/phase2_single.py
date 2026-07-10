@@ -37,7 +37,7 @@ def screen_factors(input_json: str = "/tmp/_eval_phase1.json",
     # 获取 active 因子
     conn = sqlite3.connect("data/market.db")
     active_names = [r[0] for r in conn.execute(
-        "SELECT name FROM factor_registry WHERE status='active'").fetchall()]
+        "SELECT name FROM factor_registry WHERE status IN ('registered','candidate','retired')").fetchall()]
     conn.close()
     logger.info(f"Active factors: {len(active_names)}")
 

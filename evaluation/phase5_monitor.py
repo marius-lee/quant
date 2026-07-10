@@ -28,7 +28,7 @@ def run_monitor(output_dir: str = "docs/reports") -> str:
 
     # ── 1. 因子拥挤度 (pairwise correlation) ──
     active = [r[0] for r in conn.execute(
-        "SELECT name FROM factor_registry WHERE status='active'").fetchall()]
+        "SELECT name FROM factor_registry WHERE status IN ('active','monitoring')").fetchall()]
 
     crowding_section = _check_crowding(conn, active)
 
@@ -186,7 +186,7 @@ def _estimate_capacity(conn) -> str:
     safe_position_pct = 0.01
     positions = cfg("alpha.sleeve.positions_per_factor", 20)
     n_factors = len([r for r in conn.execute(
-        "SELECT 1 FROM factor_registry WHERE status='active'").fetchall()])
+        "SELECT 1 FROM factor_registry WHERE status IN ('active','monitoring')").fetchall()])
 
     per_stock_capacity = avg_daily_amount * safe_position_pct
     total_capacity = per_stock_capacity * positions * max(n_factors, 1)

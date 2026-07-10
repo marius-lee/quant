@@ -1,6 +1,6 @@
 # HANDOFF — 盈迹 (quant) 项目当前状态
 
-**最后更新**: 2026-07-10 10:30 CST
+**最后更新**: 2026-07-10 12:50 CST
 
 > 旧版归档: docs/HANDOFF-2026-07-02.md / docs/HANDOFF-2026-07-03.md (已 superseded)
 > 项目根只有一个 HANDOFF.md 作为单一真相源
@@ -11,6 +11,7 @@
 
 | 提交 | 内容 |
 |------|------|
+| `4fdf075` | feat: 系统状态重构 + 配置类型校验 + _require_cfg 类型修复 (P81) |
 | *(本次)* | fix: P78 真正的 ProcessPoolExecutor→ThreadPoolExecutor 迁移 — stats_cache.py 重写 (-353行), smoke_test 适配, web/app.py cfg→_require_cfg |
 | `acab523` | fix: 全局硬编码清零 — 21处API延迟/SQLite超时/Redis/SSE全部迁入config.yaml |
 | `9e093d2` | fix: execution/quote.py 缩进 + ProcessPoolExecutor→ThreadPoolExecutor 归档 |
@@ -93,6 +94,40 @@ layer 8: evaluation/ — 五阶段回测评估 (CPCV+PBO)
 | Phase 5 | 监控报告 | 拥挤度/衰减/换手率/容量 |
 
 ---
+
+## P81: 系统状态重构 — 纯时间驱动 (`4fdf075`)
+
+**背景**: 系统状态栏显示 pipeline 运算码 (`"trades_executed"`) 而非交易时段 (`"午休"`)。
+根因: `STATUS_LABELS` 把系统状态和运算状态混为一谈, `_status_label()` 从未被调用, pipeline post_state 的状态码覆盖了 broker 中的交易日段。
+
+**修复**:
+
+1. **系统状态从 broker/Redis 完全移除** — `_init_state()` 不再写 status, `get()` 中 `cached.pop("status")` 防止 Redis 残留覆盖, `update()` SSE 推送不再含系统状态
+
+2. **SSE `/api/stream` 唯一注入点** — `from execution.calendar import get_trading_period as _sp`, `init["status"] = _sp()`, 后续每条 SSE 消息 `data["status"] = _sp()`
+
+3. **删除 `config/constants.py` 中的 `STATUS_LABELS` 和 `_status_label()`** — 死代码, 从未被 import 调用
+
+4. **`_require_cfg` 添加 `-> Any` 返回类型** — 消除 70+ 处 Pylance 类型红线。不加 `float()` 包装, YAML 本身有类型。
+
+5. **`config/loader.py` 新增 `validate()` + `_check()`** — 启动时校验 40 个数值型配置项类型, 不合规 `TypeError` crash。
+
+6. **`web/app.py` 启动时调用 `validate()`** — 服务启动即校验。
+
+7. **`cached.pop("status")` 在 broker.get() else 分支** — pipeline post_state 的状态码不再污染系统状态。
+
+**系统状态映射** (`execution/calendar.py.get_trading_period()`):
+| 状态 | 时段 |
+|------|------|
+| 盘前 | 交易日 00:00–09:30 |
+| 上午交易 | 交易日 09:30–11:30 |
+| 午休 | 交易日 11:30–13:00 |
+| 下午交易 | 交易日 13:00–15:00 |
+| 盘后 | 交易日 15:00–24:00 |
+| 休市 | 非交易日 |
+
+前端绿色呼吸灯: `上午交易` / `下午交易` 时亮。
+
 
 ## P80: 因子评估周频调度 — 对标业界标准 (本次)
 
@@ -207,6 +242,8 @@ web/app.py:562 cfg fallback → _require_cfg("web.port")
 ## 关键约束
 
 - 所有数值参数仅存 config/config.yaml, 代码中用 _require_cfg() 快速失败 (零 fallback)
+- 配置启动时 validate() 校验 40 项数值类型, 不合规 TypeError crash
+- 系统状态由 execution.calendar.get_trading_period() 实时驱动, SSE 唯一注入点
 - 修改前先 git commit 归档
 - **永不 fallback** — 静默降级 = 隐藏 bug, 改 raise
 - **>5 秒必埋点** — 模板 9 (coding-standards SKILL.md)

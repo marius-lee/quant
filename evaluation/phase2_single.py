@@ -31,21 +31,17 @@ def screen_factors(input_json: str = None, output_json: str = None,
     logger.info(f"Phase 2 [{tid}] start — single-factor screening")
 
     # ── 数据健康检查: 读 Phase 1 ──
-    try:
-        from evaluation.run_store import load_latest
-        p1 = load_latest("phase1")
-        if p1 is None:
-            logger.warning("Phase 2: no Phase 1 data in evaluation_runs — proceeding anyway")
-        else:
-            db_status = p1.get("db_status", "unknown")
-            n_stocks = p1.get("n_stocks", 0)
-            logger.info("Phase 2: DB status=%s, universe=%d stocks", db_status, n_stocks)
-            if db_status == "degraded":
-                logger.error("Phase 2: DB degraded — aborting. Check data/store.py sync.")
-                return {"passed": [], "failed": {}, "ic_means": {}, "ic_irs": {}, "ic_series": {}, "n_factors": 0}
-    except Exception:
-        raise  # 错误不吞
-        logger.error("Phase 2 load_latest(phase1) traceback:\n" + traceback.format_exc())
+    from evaluation.run_store import load_latest
+    p1 = load_latest("phase1")
+    if p1 is None:
+        logger.warning("Phase 2: no Phase 1 data in evaluation_runs — proceeding anyway")
+    else:
+        db_status = p1.get("db_status", "unknown")
+        n_stocks = p1.get("n_stocks", 0)
+        logger.info("Phase 2: DB status=%s, universe=%d stocks", db_status, n_stocks)
+        if db_status == "degraded":
+            logger.error("Phase 2: DB degraded — aborting. Check data/store.py sync.")
+            return {"passed": [], "failed": {}, "ic_means": {}, "ic_irs": {}, "ic_series": {}, "n_factors": 0}
 
     # ── 阈值来源: config.yaml ──
     t_threshold = _require_cfg("factor.evaluation.t_threshold")
@@ -63,22 +59,17 @@ def screen_factors(input_json: str = None, output_json: str = None,
         "SELECT name FROM factor_registry WHERE status IN ('registered','candidate','retired')").fetchall()]
 
     if prefilter_from_diagnostics:
-        try:
-            from evaluation.run_store import load_latest
-            diag = load_latest("diagnostics")
-            if diag and diag.get("passed"):
-                diag_passed = set(diag["passed"])
-                active_names = [n for n in all_backtesting if n in diag_passed]
-                logger.info("Phase 2: diagnostics pre-filter %d -> %d factors",
-                            len(all_backtesting), len(active_names))
-            else:
-                active_names = all_backtesting
-                logger.info("Phase 2: no diagnostics data — using all %d backtesting factors",
-                            len(active_names))
-        except Exception:
-            raise  # 错误不吞
-            logger.error("Phase 2 diagnostics pre-filter traceback:\n" + traceback.format_exc())
+        from evaluation.run_store import load_latest
+        diag = load_latest("diagnostics")
+        if diag and diag.get("passed"):
+            diag_passed = set(diag["passed"])
+            active_names = [n for n in all_backtesting if n in diag_passed]
+            logger.info("Phase 2: diagnostics pre-filter %d -> %d factors",
+                        len(all_backtesting), len(active_names))
+        else:
             active_names = all_backtesting
+            logger.info("Phase 2: no diagnostics data — using all %d backtesting factors",
+                        len(active_names))
     else:
         active_names = all_backtesting
         logger.info(f"Phase 2: --all mode — evaluating all {len(active_names)} backtesting factors")
@@ -165,18 +156,14 @@ def screen_factors(input_json: str = None, output_json: str = None,
     # 持久化到 evaluation_runs (纯 DB, 无临时文件, 不减 ic_series)
 
     # 持久化到 evaluation_runs (精简: 不含 ic_series — Phase 3 自行重算)
-    try:
-        from evaluation.run_store import save_phase
-        slim = dict(result)
-        slim.pop("ic_series", None)
-        slim.pop("ic_series_dict", None)
-        slim["n_factors"] = len(active_names)
-        save_phase("phase2", slim)
-        logger.info("Phase 2 saved to evaluation_runs (%d factors, ~%d bytes)",
-                     slim["n_factors"], len(json.dumps(slim, default=str)))
-    except Exception as _e:
-        raise  # 错误不吞
-        logger.error("Phase 2 save_phase traceback:\n" + traceback.format_exc())
+    from evaluation.run_store import save_phase
+    slim = dict(result)
+    slim.pop("ic_series", None)
+    slim.pop("ic_series_dict", None)
+    slim["n_factors"] = len(active_names)
+    save_phase("phase2", slim)
+    logger.info("Phase 2 saved to evaluation_runs (%d factors, ~%d bytes)",
+                 slim["n_factors"], len(json.dumps(slim, default=str)))
 
     logger.info(f"Phase 2 complete ({time.monotonic()-t0:.1f}s). {len(passed)} factors advance to Phase 3.")
     return result

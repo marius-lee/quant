@@ -19,10 +19,7 @@ _shared_limit_conn = None
 def _close_shared():
     global _shared_limit_conn
     if _shared_limit_conn is not None:
-        try:
-            _shared_limit_conn.close()
-        except Exception:
-            raise
+        _shared_limit_conn.close()
         _shared_limit_conn = None
 
 

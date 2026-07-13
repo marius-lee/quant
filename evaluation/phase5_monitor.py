@@ -113,16 +113,12 @@ def _check_ic_decay(active_factors: list) -> str:
     from factor.stats_cache import compute_factor_stats
     lookback = _require_cfg("factor.evaluation.lookback")
 
-    try:
-        stats = compute_factor_stats(
-            factor_names=active_factors[:20],  # 最多20个, 节省时间
-            n_symbols=None,
-            lookback=min(lookback, 60),
-        )
-        decay = stats.get("decay", {})
-    except Exception as e:
-        raise  # 错误不吞
-        return f"IC 衰减计算失败: {e}\n"
+    stats = compute_factor_stats(
+        factor_names=active_factors[:20],  # 最多20个, 节省时间
+        n_symbols=None,
+        lookback=min(lookback, 60),
+    )
+    decay = stats.get("decay", {})
 
     lines = []
     for name in sorted(decay.keys()):
@@ -149,19 +145,13 @@ def _check_ic_decay(active_factors: list) -> str:
 
 def _check_turnover(conn) -> str:
     """检查最近持仓换手率."""
-    try:
-        rows = conn.execute("""
-            SELECT date, symbol, action, shares
-            FROM sim_trades
-            WHERE date >= date('now', '-10 days')
-              AND strategy='quant'
-            ORDER BY date DESC
-        """).fetchall()
-    except Exception:
-        raise  # 错误不吞
-        logger = get_logger("evaluation.phase5")
-        logger.error("Phase 5 _check_turnover traceback:\n" + __import__('traceback').format_exc())
-        return "sim_trades 表不可用, 跳过换手率检查.\n"
+    rows = conn.execute("""
+        SELECT date, symbol, action, shares
+        FROM sim_trades
+        WHERE date >= date('now', '-10 days')
+          AND strategy='quant'
+        ORDER BY date DESC
+    """).fetchall()
 
     if not rows:
         return "最近10天无交易记录.\n"
@@ -175,18 +165,14 @@ def _check_turnover(conn) -> str:
 
 def _estimate_capacity(conn) -> str:
     """基于 Amihud 非流动性估算策略容量."""
-    try:
-        rows = conn.execute("""
-            SELECT symbol, AVG(amount) as avg_amt
-            FROM daily
-            WHERE date >= date('now', '-60 days')
-            GROUP BY symbol
-            ORDER BY avg_amt DESC
-            LIMIT 100
-        """).fetchall()
-    except Exception as e:
-        raise  # 错误不吞
-        return f"容量估算失败: {e}\n"
+    rows = conn.execute("""
+        SELECT symbol, AVG(amount) as avg_amt
+        FROM daily
+        WHERE date >= date('now', '-60 days')
+        GROUP BY symbol
+        ORDER BY avg_amt DESC
+        LIMIT 100
+    """).fetchall()
 
     if not rows:
         return "无成交额数据.\n"

@@ -2,8 +2,6 @@
 
 import numpy as np
 import pandas as pd
-import sqlite3
-import os as _os
 from typing import Optional
 
 from config.constants import *

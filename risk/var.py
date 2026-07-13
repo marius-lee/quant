@@ -24,6 +24,36 @@ STRESS_SCENARIOS = {
 }
 
 
+
+def historical_var(returns: "pd.Series", confidence: float = 0.95) -> float:
+    """Historical VaR: actual percentile of realized returns.
+
+    Unlike parametric VaR (assumes normality), this uses empirical distribution.
+    VaR_95 = -percentile(returns, 5%) — the loss exceeded only 5% of the time.
+
+    Args:
+        returns: daily PnL returns (positive = gain)
+        confidence: 0.95 = VaR_95, 0.99 = VaR_99
+
+    Returns: absolute VaR value (positive number = loss)
+    """
+    if len(returns) < 20:
+        return 0.0
+    var = -returns.quantile(1 - confidence)
+    return float(abs(var))
+
+
+def historical_cvar(returns: "pd.Series", confidence: float = 0.95) -> float:
+    """Historical CVaR: expected loss beyond VaR threshold."""
+    if len(returns) < 20:
+        return 0.0
+    var = -returns.quantile(1 - confidence)
+    tail = returns[returns <= -var]
+    if len(tail) == 0:
+        return float(abs(var))
+    return float(abs(tail.mean()))
+
+
 def compute_var(portfolio_value, weights, cov_matrix, confidence=0.95):
     """Parametric VaR: loss that won't be exceeded with given confidence.
 

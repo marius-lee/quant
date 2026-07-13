@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 import traceback
 from utils.logger import get_logger
 from backtest.diagnostics import FactorTracker, diagnose, compute_pre_backtest_ic
+from backtest.broker import SimulatedBroker
 from config.constants import _require_cfg
 from factor.ic import compute_ic as _compute_ic
 from alpha.model import AlphaModel
@@ -120,6 +121,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
     _log.info(f"backtest: initialized {strategy} with Y{capital:,}")
 
     store = DataStore()
+    broker = SimulatedBroker(store, engine, BACKTEST_DB)
     cost_model = CostModel()
 
     # ── Generate trading day list ──
@@ -218,28 +220,11 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
             continue
 
         # ── Step 2: Execute at next-day open prices ──
-        all_syms = set()
-        for tp in targets:
-            all_syms.add(tp["symbol"])
-        current = engine.get_positions(strategy)
-        for p in current:
-            all_syms.add(p["symbol"])
-
-        open_prices = _get_prices(list(all_syms), next_day, store, field="open")
-
-        if not open_prices:
+        exec_result = broker.execute(targets, next_day, strategy=strategy)
+        if exec_result.get("skipped"):
             _log.warning(f"backtest {next_day}: no open prices available, skipping")
-            equity_curve.append({"date": next_day, "equity": engine.get_capital(strategy)})
+            equity_curve.append({"date": next_day, "equity": broker.get_capital(strategy)})
             continue
-
-        # Execute with open prices override
-        from pipeline import execute_signals
-        exec_result = execute_signals(
-            targets, next_day, strategy=strategy,
-            prices=open_prices,
-            db_path=BACKTEST_DB,
-            suppress_push=True,
-        )
 
         # ── Step 2.5: Update cooling-off from stop-loss events ──
         stopped = exec_result.get("stopped_out", [])
@@ -249,8 +234,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
                 _cooloff[s] = cooloff_end.strftime("%Y-%m-%d")
 
         # ── Step 3: Record equity ──
-        wealth = engine.get_capital(strategy)
-        equity_curve.append({"date": next_day, "equity": wealth})
+        equity_curve.append({"date": next_day, "equity": exec_result.get("wealth", broker.get_capital(strategy))})
 
         # Progress log every 60 days
         if (i + 1) % _require_cfg("backtest.progress_log_interval") == 0:

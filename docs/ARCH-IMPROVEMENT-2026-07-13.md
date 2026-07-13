@@ -103,3 +103,41 @@ Layer 2: DataCache (Redis/file, cross-process) — 已有，用于 stock_list、
 | 2 | 因子向量化 _preload | pending | - |
 | 3 | 风险预算 VaR | pending | - |
 | 4 | 事件驱动回测 | pending | - |
+
+---
+
+## 第二轮深层分析 (2026-07-13 18:00)
+
+### 1. 事件驱动回测 — 三个缺位
+
+| 缺口 | 现状 | 成熟做法 |
+|------|------|----------|
+| 市场冲击模型 | CostModel 固定滑点 0.1% | sqrt(order_size/daily_volume) 非线性滑点 |
+| 除权除息事件 | get_daily() ffill 填停牌，不复权 | 复权因子调整前复权价格 |
+| 订单类型 | 仅开盘市价单 | 限价单 / TWAP / VWAP |
+
+### 2. 因子向量化 — 29 个独立连接 + 无共享中间结果
+
+- _event.py 10 个因子 lhb/fund_flow/pledge 独立查库
+- 价格因子间不共享 pct_change/rolling/rank 等中间结果
+- fundamental.py 1272 行，33 个因子混在一起
+
+### 3. 风险预算 — 参数 VaR 不够
+
+- 需补: 历史 VaR bootstrap、ATR 动态止损、风险平价头寸管理
+
+### 4. 数据管线 — IC/ZTD 数据复用、派生序列预计算
+
+- compute_ic() 和 preload_ztd_cache() 的数据窗口有重叠
+- covariance 的 log_ret 和 pipeline 的 close_df.diff() 重复计算
+
+---
+
+## 第二轮实施记录
+
+| 方向 | 改动 | commit |
+|------|------|--------|
+| 2-深层 | _preload 扩展 lhb/fund_flow；_event.py 3因子(lhb_net_buy/main_flow_ratio/analyst_buy)接入aux | 44d9799 |
+| 3-深层 | risk/atr.py 新建(ATR14/atr_stop_loss/atr_position_size)；var.py 补 historical_var/historical_cvar | 7544fad |
+| 1-深层 | execution/cost.py 加 market_impact() sqrt模型 | affc550 |
+| 4-深层 | preload_ztd_cache 接收 volume_data；pipeline.py 传入已加载 data | c1438d2 |

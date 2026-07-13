@@ -247,6 +247,13 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     if _store_in is None:
         store.close()
     elapsed = time.time() - t0
+    # Persist to daily_signals — every caller (scheduler, web, CLI) gets DB-backed signals
+    targets = results.get("target_positions", [])
+    if targets:
+        from data.trade_repo import TradeRepo
+        TradeRepo(db_path=db_path).save_signals(date_str, targets, total_capital, strategy)
+        logger.info(f"[pipeline] saved {len(targets)} targets to daily_signals for {date_str}")
+
     results["elapsed_sec"] = round(elapsed, 1)
     logger.info(f"generate_signals done trace_id={tid} elapsed={elapsed:.1f}s date={date_str}")
     return results

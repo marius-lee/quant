@@ -222,15 +222,9 @@ class PortfolioConstructor:
         n_stocks = min(self.max_positions, len(alpha))
         if n_stocks == 0:
             return TargetPortfolio(pd.Series(dtype=int), capital, "kelly_greedy", 0.0)
-        try:
-            lots, cash = compute_lot_allocation(
-                alpha, prices, capital, ic_map, self.max_positions, LOT_SIZE
-            )
-        except Exception as e:
-            logger.warning(
-                "[portfolio] Kelly allocation failed, falling back to equal_weight: {e}"
-            )
-            return self._equal_weight_greedy(alpha, prices, capital)
+        lots, cash = compute_lot_allocation(
+            alpha, prices, capital, ic_map, self.max_positions, LOT_SIZE
+        )
         total_value = (lots * prices.loc[lots.index] * LOT_SIZE).sum()
         if lots.sum() == 0:
             raise ValueError(

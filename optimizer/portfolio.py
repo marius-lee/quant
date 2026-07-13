@@ -186,6 +186,11 @@ class PortfolioConstructor:
         )
 
         if tier == "greedy":
+            # Try risk parity first if covariance available
+            if covariance is not None:
+                result = self._risk_parity(a, p, capital, covariance)
+                if result.lots.sum() > 0:
+                    return result
             return self._kelly_greedy(a, p, capital, ic_map)
         elif tier == "weighted":
             result = self._score_weighted_rounding(a, p, capital)
@@ -341,6 +346,36 @@ class PortfolioConstructor:
                     cash -= cost
         total_value = (lots * p * LOT_SIZE).sum()
         return TargetPortfolio(lots[lots > 0], round(cash, 2), "mean_variance", total_value)
+
+    def _risk_parity(self, alpha, prices, capital, covariance):
+        """Risk parity: w_i = (1/sigma_i) / sum(1/sigma_j)"""
+        common = [s for s in alpha.index if s in covariance.index and s in prices.index]
+        if len(common) < 2:
+            return self._kelly_greedy(alpha, prices, capital)
+        n = min(self.max_positions, len(common))
+        top = common[:n]
+        sigmas = pd.Series({s: max(abs(covariance.loc[s, s]), 1e-10)**0.5
+                            for s in top if s in covariance.index})
+        if sigmas.empty or sigmas.sum() == 0:
+            return self._kelly_greedy(alpha, prices, capital)
+        w = (1.0 / sigmas) / (1.0 / sigmas).sum()
+        w = w.clip(upper=self.max_single)
+        w = w / w.sum()
+        lots = pd.Series(0, index=top, dtype=int)
+        cash = capital
+        for sym in top:
+            if sym in w.index:
+                alloc = capital * w[sym]
+                n_lots = int(alloc / (prices[sym] * LOT_SIZE))
+                if n_lots > 0:
+                    cost = n_lots * prices[sym] * LOT_SIZE
+                    if cost <= cash:
+                        lots[sym] = n_lots
+                        cash -= cost
+        tv = (lots * prices.loc[top] * LOT_SIZE).fillna(0).sum()
+        if lots.sum() == 0:
+            return self._kelly_greedy(alpha, prices, capital)
+        return TargetPortfolio(lots[lots > 0], round(cash, 2), "risk_parity", tv)
 
     @classmethod
     def from_config(cls) -> "PortfolioConstructor":

@@ -65,6 +65,7 @@ class DataStore:
         self._conn = None
         self._local = threading.local()  # thread-local connections for WAL concurrent reads
         self._lock = threading.Lock()     # guard shared _conn creation (P71)
+        self._query_cache: dict = {}  # LRU query cache per DataStore instance
         conn = self._connect()
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS stocks (
@@ -945,13 +946,28 @@ class DataStore:
     # ============================================================
 
     def get_daily(self, symbols: list, start: str = DEFAULT_START_DATE,
-                  end: str = None) -> pd.DataFrame:
-        """从 SQLite 读取日线，返回 (dates × stocks) 宽表 DataFrame。
-        自动分块避免 SQLite 的 999 参数上限。"""
+                  end: str = None, columns: list = None) -> pd.DataFrame:
+        """从 SQLite 读取日线，返回 (dates x stocks) 宽表 DataFrame。
+
+        columns: 需要的列，默认全部。可只传 ['close','volume'] 节省 IO。
+        自动分块避免 SQLite 的 999 参数上限。
+        结果缓存: 同一次 DataStore 实例内相同参数只查一次 DB。"""
         # 来源: SQLite SQLITE_MAX_VARIABLE_NUMBER=999, 900+99(date params)=999
         MAX_SYMBOLS = 900
+        # LRU cache: same (symbols, start, end, columns) -> reuse
+        _ck = (tuple(sorted(symbols)[:200]), start, end, tuple(columns or []))
+        _cached = self._query_cache.get(_ck)
+        if _cached is not None:
+            if columns:
+                _have = [c for c in columns if c in _cached.columns.get_level_values(0)]
+                if _have:
+                    return _cached[_have].copy()
+            return _cached.copy()
         if len(symbols) <= MAX_SYMBOLS:
-            return self._get_daily_chunk(symbols, start, end)
+            _result = self._get_daily_chunk(symbols, start, end, columns=columns)
+            if len(self._query_cache) < 16:
+                self._query_cache[_ck] = _result.copy()
+            return _result
 
         frames = []
         for i in range(0, len(symbols), MAX_SYMBOLS):
@@ -967,7 +983,7 @@ class DataStore:
         return result
 
     def _get_daily_chunk(self, symbols: list, start: str = DEFAULT_START_DATE,
-                          end: str = None) -> pd.DataFrame:
+                          end: str = None, columns: list = None) -> pd.DataFrame:
         end = end or to_str(datetime.today())
         placeholders = ",".join("?" for _ in symbols)
         conn = self._connect()
@@ -980,8 +996,10 @@ class DataStore:
             conn, params=symbols + [start, end]
         )
         if df.empty:
-            return pd.DataFrame()
+            return pd.DataFrame({})
         df["date"] = pd.to_datetime(df["date"])
+        if columns:
+            return df.pivot(index="date", columns="symbol", values=columns).ffill()
         result = df.pivot(index="date", columns="symbol", values=[
             "open", "high", "low", "close", "volume", "amount", "turnover"
         ])
@@ -1001,6 +1019,20 @@ class DataStore:
             "date_max": date_range[1],
             "trading_days": date_range[2],
         }
+
+    def rank_by_turnover(self, symbols: list, date: str, lookback_days: int = 60,
+                         top_n: int = 800) -> list:
+        """按日均成交额降序取 top N 股票。复用 DataStore 连接。"""
+        conn = self._connect()
+        t0 = (pd.Timestamp(date) - pd.Timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        ph = ",".join("?" * len(symbols))
+        rows = conn.execute(
+            f"SELECT symbol, AVG(amount) as avg_amt FROM daily "
+            f"WHERE date >= ? AND symbol IN ({ph}) "
+            f"GROUP BY symbol ORDER BY avg_amt DESC LIMIT ?",
+            [t0] + list(symbols) + [top_n]
+        ).fetchall()
+        return [r[0] for r in rows] if rows else list(symbols)[:top_n]
 
     def sync_fundamentals(self) -> int:
         """同步 PE/PB/市值 — 批量PE+市值, 逐只补PB, 多源容错"""

@@ -80,10 +80,10 @@ def _run(today: str):
         from web.state_broker import broker
         import json
         from config.constants import _market_db_path, _require_cfg
-        conn = _db_connect()
-        rows = conn.execute(
-            "SELECT name, ic_mean FROM factor_registry WHERE status IN ('active','monitoring') AND ic_mean IS NOT NULL"
-        ).fetchall()
+        from data.repos import FactorRepo
+        repo = FactorRepo()
+        rows = repo.get_factors_with_ic(('active', 'monitoring'))
+        rows = [(r["name"], r["ic_mean"]) for r in rows]
         if rows:
             today_weights = {r[0]: round(r[1], 6) for r in rows}
             prev_raw = (broker.get().get("metrics") or {}).get("factor_ic_snapshot")
@@ -100,34 +100,24 @@ def _run(today: str):
                 for entry in degraded:
                     fname = entry.split(":")[0]
                     try:
-                        conn.execute(
-                            "UPDATE factor_registry SET status='monitoring', status_reason=? WHERE name=? AND status='active'",
-                            (f"IC degraded: {entry}", fname)
-                        )
+                        repo.update_status(fname, 'monitoring', f"IC degraded: {entry}")
                         _log.warning(f"[{today}] {fname}: active → monitoring (IC degraded)")
                     except Exception:
                         _log.warning(f"[{today}] IC degrade update failed for {fname}", exc_info=True)
                         raise
                 # monitoring → retired: 已经告警中，持续衰减 → 退役回回测池
                 try:
-                    monitoring_rows = conn.execute(
-                        "SELECT name FROM factor_registry WHERE status='monitoring'"
-                    ).fetchall()
+                    monitoring_rows = repo.get_factors_by_status(('monitoring',), [])
                     for mr in monitoring_rows:
-                        mname = mr[0]
+                        mname = mr["name"]
                         still_decaying = any(e.startswith(mname + ':') for e in degraded)
                         if still_decaying:
-                            conn.execute(
-                                "UPDATE factor_registry SET status='retired', status_reason=? WHERE name=? AND status='monitoring'",
-                                (f"持续衰减退役: {next(e for e in degraded if e.startswith(mname + ':'))}", mname)
-                            )
+                            repo.update_status(mname, 'retired', f"持续衰减退役: {next(e for e in degraded if e.startswith(mname + ':'))}")
                             _log.warning(f'[{today}] {mname}: monitoring → retired (持续IC衰减)')
                             _m.inc("scheduler.attribution.retired", 1)
                 except Exception:
                     _log.warning(f"[{today}] retired transition check failed", exc_info=True)
                     raise
-                conn.commit()
-        conn.close()
         if rows:
             broker.update({"metrics": {"factor_ic_snapshot": json.dumps(today_weights)}})
     except Exception as e:

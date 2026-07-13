@@ -96,10 +96,12 @@ def _sync_sse_raw(date_str: str, conn) -> int:
                       None))
                 n += 1
             except Exception as e_row:
+                raise  # 错误不吞
                 logger.debug(f"margin SSE row skip {sym} {date_str}: {e_row}")
         conn.commit()
         return n
     except Exception as e:
+        raise  # 错误不吞
         logger.warning(f"margin SSE {date_str}: {type(e).__name__}: {str(e)[:60]}")
         return 0
 
@@ -157,6 +159,7 @@ def _sync_szse_wrapper(date_str: str, conn) -> int:
                           _to_float(row.get('margin_total'))))
                     n += 1
                 except Exception as e_row:
+                    raise  # 错误不吞
                     logger.debug(f"margin SZSE row skip {sym} {date_str}: {e_row}")
             conn.commit()
             return n
@@ -164,6 +167,7 @@ def _sync_szse_wrapper(date_str: str, conn) -> int:
         except AttributeError:
             return 0
         except Exception as e:
+            raise  # 错误不吞
             if attempt < 2:
                 time.sleep((attempt + 1) * 8)
             else:

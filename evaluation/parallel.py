@@ -70,6 +70,7 @@ def _evaluate_batch(args):
                     "std": float(series.std()) if series.notna().any() else 0,
                 }
     except Exception as e:
+        raise  # 错误不吞
         _log.warning(f"batch_evaluate error: {e}")
     finally:
         store.close()

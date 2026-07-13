@@ -121,6 +121,7 @@ def _check_ic_decay(active_factors: list) -> str:
         )
         decay = stats.get("decay", {})
     except Exception as e:
+        raise  # 错误不吞
         return f"IC 衰减计算失败: {e}\n"
 
     lines = []
@@ -157,6 +158,7 @@ def _check_turnover(conn) -> str:
             ORDER BY date DESC
         """).fetchall()
     except Exception:
+        raise  # 错误不吞
         logger = get_logger("evaluation.phase5")
         logger.error("Phase 5 _check_turnover traceback:\n" + __import__('traceback').format_exc())
         return "sim_trades 表不可用, 跳过换手率检查.\n"
@@ -183,6 +185,7 @@ def _estimate_capacity(conn) -> str:
             LIMIT 100
         """).fetchall()
     except Exception as e:
+        raise  # 错误不吞
         return f"容量估算失败: {e}\n"
 
     if not rows:

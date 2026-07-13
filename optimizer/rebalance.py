@@ -6,8 +6,8 @@ import numpy as np
 from execution.engine import Order
 
 
-from config.loader import get as _cfg
-LOT_SIZE = _cfg("backtest.lot_size")
+from config.constants import _require_cfg
+LOT_SIZE = _require_cfg("backtest.lot_size")
 
 
 def compute_trades(

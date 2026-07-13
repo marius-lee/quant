@@ -198,6 +198,7 @@ def with_fallback(*fetchers: Callable):
                     if result is not None:
                         return result
                 except Exception as e:
+                    raise  # 错误不吞
                     logger.warning(f"fetcher {fetcher.__name__} failed: {e}")
             return None
         return wrapper

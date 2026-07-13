@@ -44,6 +44,7 @@ def screen_factors(input_json: str = None, output_json: str = None,
                 logger.error("Phase 2: DB degraded — aborting. Check data/store.py sync.")
                 return {"passed": [], "failed": {}, "ic_means": {}, "ic_irs": {}, "ic_series": {}, "n_factors": 0}
     except Exception:
+        raise  # 错误不吞
         logger.error("Phase 2 load_latest(phase1) traceback:\n" + traceback.format_exc())
 
     # ── 阈值来源: config.yaml ──
@@ -75,6 +76,7 @@ def screen_factors(input_json: str = None, output_json: str = None,
                 logger.info("Phase 2: no diagnostics data — using all %d backtesting factors",
                             len(active_names))
         except Exception:
+            raise  # 错误不吞
             logger.error("Phase 2 diagnostics pre-filter traceback:\n" + traceback.format_exc())
             active_names = all_backtesting
     else:
@@ -173,6 +175,7 @@ def screen_factors(input_json: str = None, output_json: str = None,
         logger.info("Phase 2 saved to evaluation_runs (%d factors, ~%d bytes)",
                      slim["n_factors"], len(json.dumps(slim, default=str)))
     except Exception as _e:
+        raise  # 错误不吞
         logger.error("Phase 2 save_phase traceback:\n" + traceback.format_exc())
 
     logger.info(f"Phase 2 complete ({time.monotonic()-t0:.1f}s). {len(passed)} factors advance to Phase 3.")

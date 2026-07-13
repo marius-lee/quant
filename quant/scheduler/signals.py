@@ -24,6 +24,7 @@ def _run(today: str):
             cap = TradeRepo().get_cash("quant")
             TradeRepo().save_signals(today, targets, cap or 0.0)
         except Exception as _e_db:
+            raise  # 错误不吞
             _log.warning(f"[{today}] save_signals to DB failed: {_e_db}")
 
     elapsed = _time.time() - t0

@@ -53,6 +53,7 @@ def _run():
                 try:
                     _run_continuous(current_day)
                 except Exception as e:
+                    raise  # 错误不吞
                     update("monitor", status=f"error", last_error=str(e))
             else:
                 update("monitor", status="sleep (收市)")
@@ -72,6 +73,7 @@ def _run():
             _log.info(f"[SCHEDULER] {task_today} | TASK={name} | STATUS=OK | elapsed={elapsed:.1f}s")
             _m.inc(f"scheduler.{name}.ok")
         except Exception as e:
+            raise  # 错误不吞
             elapsed = _time.time() - t0
             update(name, status="error", last_run=datetime.now().isoformat(),
                    last_duration=elapsed, last_error=str(e))

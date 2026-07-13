@@ -55,6 +55,7 @@ def sync_date(date_str, conn=None):
                     )
                     inserted += 1
             except Exception as e:
+                raise  # 错误不吞
                 logger.debug(f"daily_basic {bs_code} failed: {e}")
         if (i // batch_size) % 50 == 0 and i > 0:
             logger.info(f"daily_basic {date_str}: {i}/{len(symbols)} fetched, {inserted} inserted")

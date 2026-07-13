@@ -90,6 +90,7 @@ class ExecutionEngine:
                     )
                     return True
         except Exception as e:
+            raise  # 错误不吞
             from utils.logger import get_logger
             get_logger("execution.engine").warning(f"Ex-dividend check failed for {symbol}: {e}")
         return False
@@ -174,6 +175,7 @@ class ExecutionEngine:
             logger.info(f"executed {executed} orders via TradeRepo")
             return executed
         except Exception as e:
+            raise  # 错误不吞
             conn.rollback()
             logger.error(f"execute() failed, rolled back {executed} orders: {e}\n{traceback.format_exc()}")
             raise

@@ -34,6 +34,7 @@ def validate_oos(input_json: str = "/tmp/_eval_phase2.json",
         from evaluation.run_store import load_latest
         p2 = load_latest("phase2")
     except Exception:
+        raise  # 错误不吞
         logger.error("Phase 3 load_latest(phase2) traceback:\n" + __import__('traceback').format_exc())
     if p2 is None:
         logger.error("Phase 3: no Phase 2 data in evaluation_runs — aborting (no temp file fallback)")
@@ -83,6 +84,7 @@ def validate_oos(input_json: str = "/tmp/_eval_phase2.json",
                     s.index = pd.to_datetime(list(ic_data.keys()))
                     ic_series_dict[name] = s
         except Exception as _e:
+            raise  # 错误不吞
             logger.error("Phase 3 IC series recompute traceback:\n" + __import__('traceback').format_exc())
             return {"kept": [], "oos_irs": [], "pbo_result": {}, "n_folds": 0}
 
@@ -167,6 +169,7 @@ def validate_oos(input_json: str = "/tmp/_eval_phase2.json",
         save_phase("phase3", result)
         logger.info("Phase 3 saved to evaluation_runs")
     except Exception as _e:
+        raise  # 错误不吞
         logger.error("Phase 3 save_phase traceback:\n" + __import__('traceback').format_exc())
 
     return result

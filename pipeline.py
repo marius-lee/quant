@@ -13,7 +13,6 @@ import numpy as np
 import pandas as pd
 
 from data.store import DataStore
-from config.loader import get as cfg
 
 from factor.compute import compute_all_factors
 from risk.neutralize import neutralize
@@ -26,7 +25,7 @@ from optimizer.rebalance import compute_trades, validate_orders
 from execution.cost import CostModel
 from execution.engine import ExecutionEngine, Order
 from monitor.report import generate_report, push_to_web
-from config.loader import get as _ecfg
+from config.constants import _require_cfg
 from utils.logger import get_logger
 
 # ── HTTP state push (P69: 抽取到 web/state_pusher.py) ──
@@ -35,7 +34,7 @@ from web.state_broker import broker
 
 logger = get_logger("pipeline")
 
-LOT_SIZE = _ecfg("backtest.lot_size")
+LOT_SIZE = _require_cfg("backtest.lot_size")
 
 
 
@@ -80,13 +79,14 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     # ── Step 1: Data Update ──
     if not skip_pull:
         try:
-            n_new = store.update_daily(start=_ecfg("data.start_date"))
+            n_new = store.update_daily(start=_require_cfg("data.start_date"))
             results["steps"]["data"] = {"new_rows": n_new, "status": "ok"}
             logger.info(f"[1/5] data: {n_new} new daily rows")
             if not suppress_push:
                 broker.update({"status": "data_synced", "progress": "1/5", "new_rows": n_new, "trace_id": tid})
             _m.inc("data.sync.rows", n_new)
         except Exception as e:
+            raise  # 错误不吞
             _m.inc("pipeline.errors")
             results["steps"]["data"] = {"error": str(e), "status": "failed"}
             logger.warning(f"[1/5] data failed: {e}")
@@ -100,7 +100,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
             "SELECT DISTINCT d.symbol FROM daily d JOIN stocks s ON d.symbol=s.symbol WHERE s.market!='BJ'"
         ).fetchall()]
         from factor.windows import max_factor_calendar_days
-        _eff_days = max(_ecfg("data.lookback_days"), max_factor_calendar_days(None))
+        _eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(None))
         hist_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
         data = store.get_daily(symbols, start=hist_start, end=date_str)
         fundamentals = store.get_fundamentals(symbols, date=date_str)
@@ -111,6 +111,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         if not suppress_push:
             broker.update({"status": "data_loaded", "progress": "2/5", "symbols": len(symbols), "trace_id": tid})
     except Exception as e:
+        raise  # 错误不吞
         _m.inc("pipeline.errors")
         results["steps"]["load"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[2/5] load failed: {e}")
@@ -124,7 +125,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
             latest_date = close_df.index[-1]
             latest_close = close_df.loc[latest_date].dropna()
             candidate_syms = set(latest_close.index)
-            if _ecfg("backtest.universe_filter_affordable"):
+            if _require_cfg("backtest.universe_filter_affordable"):
                 affordable = latest_close[latest_close * LOT_SIZE <= total_capital]
                 if len(affordable) > 0:
                     candidate_syms &= set(affordable.index)
@@ -133,7 +134,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
             # ── Step 2.5b: Rank by turnover, take top N ──
             candidates = list(candidate_syms & set(symbols))
             conn2 = store._connect()
-            turnover_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_ecfg("backtest.universe_turnover_days"))).strftime("%Y-%m-%d")
+            turnover_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_require_cfg("backtest.universe_turnover_days"))).strftime("%Y-%m-%d")
             placeholders = ",".join("?" * len(candidates))
             rows = conn2.execute(
                 f"SELECT symbol, AVG(amount) as avg_amt FROM daily "
@@ -147,6 +148,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
             fundamentals = fundamentals[fundamentals.index.isin(keep_syms)]
             results["steps"]["load"]["symbols"] = len(symbols)
         except Exception:
+            raise  # 错误不吞
             from utils.logger import get_logger as _gl1
             _gl1("quant.pipeline").warning("universe filter failed, using full universe: %s",
                                           traceback.format_exc().splitlines()[-1])
@@ -166,10 +168,11 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
 
         benchmark_ret = None
         try:
-            bm = store.get_benchmark("000300", start=_ecfg("benchmark.start_date"))
+            bm = store.get_benchmark("000300", start=_require_cfg("benchmark.start_date"))
             if not bm.empty:
                 benchmark_ret = bm[:pd.Timestamp(actual_date)]
         except Exception:
+            raise  # 错误不吞
             from utils.logger import get_logger as _glbm
             _glbm("quant.pipeline").error("benchmark fetch failed: %s", traceback.format_exc())
 
@@ -198,6 +201,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
             broker.update({"status": "factors_computed", "progress": "3/5", "n_factors": len(factor_values), "trace_id": tid})
         _m.gauge("factor.n_active", len(factor_values))
     except Exception as e:
+        raise  # 错误不吞
         _m.inc("pipeline.errors")
         results["steps"]["factor"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[3/5] factor failed: {e}")
@@ -212,7 +216,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         mcap_real = fundamentals["total_mv"].reindex(prices.index)
         mcap_real = mcap_real.fillna(prices * 1e8)
         industries = fundamentals["industry"].reindex(prices.index) if "industry" in fundamentals.columns else None
-        industry_min = cfg("risk.neutralize.min_common_stocks")
+        industry_min = _require_cfg("risk.neutralize.min_common_stocks")
         if industries is not None and industries.notna().sum() < industry_min:
             industries = None
         alpha_neut = neutralize(alpha, industries=industries, market_caps=mcap_real)
@@ -231,6 +235,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         if not suppress_push:
             broker.update({"status": "risk_filtered", "progress": "4/5", "candidates": len(filtered), "trace_id": tid})
     except Exception as e:
+        raise  # 错误不吞
         _m.inc("pipeline.errors")
         results["steps"]["risk"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[4/5] risk failed: {e}")
@@ -270,6 +275,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
             broker.update({"status": "signals_generated", "progress": "5/5",
                         "n_positions": portfolio.positions, "invested": portfolio.invested, "trace_id": tid, "signals": target_positions})
     except Exception as e:
+        raise  # 错误不吞
         _m.inc("pipeline.errors")
         results["steps"]["optimizer"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[5/5] optimizer failed: {e}")
@@ -364,7 +370,7 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
     total_capital = round(cash + position_value, 2)
 
     # ── Stop-Loss check ──
-    sl_pct = _ecfg("risk.stop_loss_pct")
+    sl_pct = _require_cfg("risk.stop_loss_pct")
     for p in current_positions:
         cost_basis = p.get("price", 0)
         current_px = prices.get(p["symbol"], None)
@@ -408,6 +414,7 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
             broker.update({"status": "trades_executed", "progress": "6/7", "orders": len(orders), "trace_id": tid, "signals": target_positions})
         _m.inc("pipeline.trades", len(orders))
     except Exception as e:
+        raise  # 错误不吞
         _m.inc("pipeline.errors")
         results["steps"]["execution"] = {"error": str(e), "status": "failed"}
         logger.warning(f"execute: execution failed: {e}")
@@ -435,6 +442,7 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
         }
         logger.info(f"execute monitor: wealth=Y{cap['total_wealth']:,.2f} return={report['metrics']['total_return_pct']}%")
     except Exception as e:
+        raise  # 错误不吞
         results["steps"]["monitor"] = {"error": str(e), "status": "failed"}
         logger.error(f"execute: monitor traceback:\n{traceback.format_exc()}")
         logger.warning(f"execute: monitor failed: {e}")

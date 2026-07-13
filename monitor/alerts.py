@@ -4,7 +4,7 @@
 """
 
 from datetime import datetime, timedelta
-from config.loader import get as _cfg
+from config.constants import _require_cfg
 
 
 def check_alerts(state: dict, metrics_snap: dict) -> list[dict]:
@@ -20,8 +20,8 @@ def check_alerts(state: dict, metrics_snap: dict) -> list[dict]:
     alerts = []
 
     # ── Rule 1: 回撤告警 (阈值来自 config.yaml monitor.alert) ──
-    critical_pct = _cfg("monitor.alert.drawdown_critical")
-    warning_pct = _cfg("monitor.alert.drawdown_warning")
+    critical_pct = _require_cfg("monitor.alert.drawdown_critical")
+    warning_pct = _require_cfg("monitor.alert.drawdown_warning")
     capital = float(state.get("capital", 0) or 0)
     total_pnl = float(state.get("total_pnl", 0) or 0)
     if capital > 0:

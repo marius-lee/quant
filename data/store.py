@@ -16,7 +16,6 @@ logger = get_logger("data.store")
 
 from data.cache import get_backend, DataCache, RateLimiter
 from config.loader import load as _load_config
-from config.loader import get as cfg
 from config.constants import _require_cfg
 
 # ── Module-level cache (lazy init) ──
@@ -173,12 +172,14 @@ class DataStore:
             try:
                 self._conn.close()
             except Exception:
+                raise  # 错误不吞
                 import logging; logging.getLogger("quant.data.store").warning("close conn failed", exc_info=True)
             self._conn = None
         if hasattr(self._local, 'conn') and self._local.conn is not None:
             try:
                 self._local.conn.close()
             except Exception:
+                raise  # 错误不吞
                 import logging; logging.getLogger("quant.data.store").warning("close local conn failed", exc_info=True)
             self._local.conn = None
 
@@ -240,6 +241,7 @@ class DataStore:
                     logger.info(f"stock list (tushare): {total} total")
                     return total
             except Exception as e:
+                raise  # 错误不吞
                 logger.warning(f"stock list tushare failed: {e}, trying akshare")
 
         # 回退 akshare
@@ -266,6 +268,7 @@ class DataStore:
             logger.info(f"stock list (akshare): {total} total ({new_count} new)")
             return new_count
         except Exception as e:
+            raise  # 错误不吞
             logger.warning(f"stock list akshare also failed: {e}")
             return 0
 
@@ -327,6 +330,7 @@ class DataStore:
             logger.warning("akshare not available — delisted sync skipped")
             return 0
         except Exception as e:
+            raise  # 错误不吞
             logger.warning(f"delisted sync failed: {e}")
             return 0
 
@@ -430,9 +434,11 @@ class DataStore:
             logger.info(f"industry sync done (baostock): {updated} updates, {classified}/{total}")
             return updated
         except Exception as e:
+            raise  # 错误不吞
             try:
                 bs.logout()
             except Exception:
+                raise  # 错误不吞
                 import logging; logging.getLogger("quant.data.store").warning("industry sync failed", exc_info=True)
             logger.warning(f"baostock industry sync failed: {e}, trying akshare...")
             return self._sync_industry_akshare(conn)
@@ -471,6 +477,7 @@ class DataStore:
             ts.set_token(self.token)
             pro = ts.pro_api()
         except Exception as e:
+            raise  # 错误不吞
             logger.warning(f"tushare basic info fetch failed: {e}")
             return None
 
@@ -496,6 +503,7 @@ class DataStore:
                 end_date=to_compact(datetime.today()),
             )
         except Exception as e:
+            raise  # 错误不吞
             logger.warning(f"[tushare] batch fetch failed: {e}")
             return None
 
@@ -528,6 +536,7 @@ class DataStore:
                 })
                 data = _json.loads(urllib.request.urlopen(req, timeout=_require_cfg("data.http_timeout.tushare")).read().decode("utf-8"))
             except Exception:
+                raise  # 错误不吞
                 continue
             for bar in data:
                 d = bar["day"]
@@ -571,6 +580,7 @@ class DataStore:
                         amt_raw / 1000,         # 元 → 千元
                         0.0))
             except Exception:
+                raise  # 错误不吞
                 continue
         if rows:
             logger.info(f"[tencent] {len(symbols)} stocks: {len(rows)} rows (vol/100→手, amt/1000→千元)")
@@ -604,6 +614,7 @@ class DataStore:
                         float(row.get("换手率", 0) or 0)))
                 import time; time.sleep(_require_cfg("data.rate_limit.akshare_per_stock_sec"))
             except Exception:
+                raise  # 错误不吞
                 continue
         if rows:
             logger.info(f"[akshare] {len(symbols)} stocks: {len(rows)} rows (vol=手✅, amt/1000→千元)")
@@ -631,6 +642,7 @@ class DataStore:
                         float(row.get("low", 0) or 0), float(row.get("close", 0) or 0),
                         float(row.get("vol", 0) or 0), float(row.get("amount", 0) or 0), 0.0))
             except Exception:
+                raise  # 错误不吞
                 continue
         if rows:
             logger.info(f"[zzshare] {len(symbols)} stocks: {len(rows)} rows (vol=手, amt=千元)")
@@ -652,6 +664,7 @@ class DataStore:
         try:
             dfs = tf.klines.batch(codes, period="1d", count=10000, as_dataframe=True, show_progress=False)
         except Exception:
+            raise  # 错误不吞
             # 回退到逐只
             dfs = {}
             for code in codes:
@@ -660,6 +673,7 @@ class DataStore:
                     if not df.empty:
                         dfs[code] = df
                 except Exception:
+                    raise  # 错误不吞
                     continue
         for code, df in dfs.items():
             if df.empty:
@@ -702,6 +716,7 @@ class DataStore:
             _sock = _socket.create_connection(("180.153.18.170", 7709), timeout=_connect_timeout)
             _sock.close()
         except Exception:
+            raise  # 错误不吞
             logger.warning("pytdx: pre-probe timeout/fail (server unreachable)")
             return []
 
@@ -710,6 +725,7 @@ class DataStore:
             try:
                 api.disconnect()
             except Exception:
+                raise  # 错误不吞
                 import logging; logging.getLogger("quant.data.store").warning("get_daily_price failed", exc_info=True)
                 return []
 
@@ -726,6 +742,7 @@ class DataStore:
                 try:
                     xdxr = api.get_xdxr_info(market, sym)
                 except Exception:
+                    raise  # 错误不吞
                     xdxr = []
 
                 # 2. 构建前复权因子表: {date_str: factor}
@@ -753,6 +770,7 @@ class DataStore:
                 try:
                     bars = api.get_security_bars(9, market, sym, 0, 2000)
                 except Exception:
+                    raise  # 错误不吞
                     continue
 
                 if not bars:
@@ -847,6 +865,7 @@ class DataStore:
                         filled += 1
                 import time; time.sleep(_require_cfg("data.rate_limit.akshare_per_stock_sec"))
             except Exception:
+                raise  # 错误不吞
                 continue
         conn.commit()
         logger.info(f"turnover backfill (akshare): {filled} rows updated for {len(symbols)} stocks")
@@ -891,6 +910,7 @@ class DataStore:
                     if idx < 3:
                         logger.info(f"stock {sym}: industry='{industry}', items={list(info_dict.keys())[:5]}")
                 except Exception as e:
+                    raise  # 错误不吞
                     if idx < 3:
                         logger.info(f"stock {sym} industry query failed: {e}")
                     continue
@@ -903,6 +923,7 @@ class DataStore:
             logger.info(f"industry sync (akshare individual): {updated} updates, {classified}/{total}")
             return updated
         except Exception as e:
+            raise  # 错误不吞
             logger.warning(f"akshare industry sync failed: {e}")
             return 0
 
@@ -983,6 +1004,7 @@ class DataStore:
                 ts.set_token(self.token)
                 pro = ts.pro_api()
             except Exception:
+                raise  # 错误不吞
                 import logging; logging.getLogger("quant.data.store").warning("stock list sync failed", exc_info=True)
 
         total_new = 0
@@ -1033,6 +1055,7 @@ class DataStore:
                         old = self._source_speed.get(src_name, rps)
                         self._source_speed[src_name] = old * 0.7 + rps * 0.3
                 except Exception:
+                    raise  # 错误不吞
                     self._source_speed[src_name] = -1  # 失败排最后
                     continue
 
@@ -1163,6 +1186,7 @@ class DataStore:
         try:
             df = ak.stock_lhb_detail_em(start_date=start, end_date=end)
         except Exception as e:
+            raise  # 错误不吞
             logger.warning(f"LHB fetch failed: {e}")
             return 0
 
@@ -1194,6 +1218,7 @@ class DataStore:
                 )
                 new_count += 1
             except Exception:
+                raise  # 错误不吞
                 continue
 
         conn.commit()
@@ -1224,6 +1249,7 @@ class DataStore:
                     df = df.set_index("date")["close"]
                     return df.pct_change().dropna()
             except Exception as e:
+                raise  # 错误不吞
                 logger.debug(f"benchmark local read failed: {e}")
         # 回退: akshare 实时拉取
         try:
@@ -1234,6 +1260,7 @@ class DataStore:
                 return pd.Series(dtype=float, name=code)
             return bm_pct / 100.0
         except Exception as e:
+            raise  # 错误不吞
             logger.warning(f"benchmark {code} fetch failed: {e}")
             return pd.Series()
 

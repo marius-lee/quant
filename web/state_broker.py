@@ -60,6 +60,7 @@ class InProcessBroker:
                     mc.close()
             except Exception:
                 logging.getLogger("web.state_broker").warning("_init_state: stock close prices query failed", exc_info=True)
+                raise
 
             for p in raw_positions:
                 sym = p["symbol"]
@@ -116,11 +117,13 @@ class InProcessBroker:
                     mc.close()
             except Exception:
                 logging.getLogger("web.state_broker").warning("_init_state: stock close prices query failed", exc_info=True)
+                raise
 
             state["positions"] = positions
         except Exception:
             import logging
             logging.getLogger("web.state_broker").exception("_init_state failed")
+            raise
         return state
 
     def _quote_overlay(self, state: dict):
@@ -136,7 +139,7 @@ class InProcessBroker:
                     try:
                         self._quote_result = fetch_quotes(syms)
                     except Exception:
-                        self._quote_result = {}
+                        raise
                     self._quote_ts = now
                 quotes = self._quote_result or {}
                 if quotes:
@@ -163,6 +166,7 @@ class InProcessBroker:
                             state["metrics"]["total_return_pct"] = round(new_total_pnl / base * 100, 2) if base > 0 else 0
         except Exception:
             logging.getLogger("web.state_broker").warning("_quote_overlay: position value calc failed", exc_info=True)
+            raise
 
     # ═══════════════════════════════════════════
     # 公开接口
@@ -182,7 +186,7 @@ class InProcessBroker:
             from execution.calendar import get_trading_period
             state['status'] = get_trading_period()
         except Exception:
-            state['status'] = 'offline'
+            raise  # get_trading_period failed
         self._quote_overlay(state)
         return state
 

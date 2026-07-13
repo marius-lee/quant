@@ -25,6 +25,7 @@ def verify_costs(input_json: str = None) -> dict:
         from evaluation.run_store import load_latest
         p3 = load_latest("phase3")
     except Exception:
+        raise  # 错误不吞
         logger.error("Phase 4 load_latest(phase3) traceback:\n" + __import__('traceback').format_exc())
     if p3 is None:
         logger.error("Phase 4: no Phase 3 data in evaluation_runs — aborting")
@@ -40,6 +41,7 @@ def verify_costs(input_json: str = None) -> dict:
             from evaluation.run_store import save_phase
             save_phase("phase4", result)
         except Exception as _e:
+            raise  # 错误不吞
             logger.error("Phase 4 save_phase traceback:\n" + __import__('traceback').format_exc())
         return result
 
@@ -62,6 +64,7 @@ def verify_costs(input_json: str = None) -> dict:
         save_phase("phase4", result)
         logger.info("Phase 4 saved to evaluation_runs")
     except Exception as _e:
+        raise  # 错误不吞
         logger.error("Phase 4 save_phase traceback:\n" + __import__('traceback').format_exc())
 
     logger.info(f"Phase 4 complete ({time.monotonic()-t0:.1f}s).")

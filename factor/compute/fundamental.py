@@ -1038,6 +1038,7 @@ def compute_ocfp(fundamentals, date, financials=None):
                 if mv and mv > 0:
                     ocfp_vals[sym] = ttm / mv
     except Exception as _e:
+        raise  # 错误不吞
         import logging as _log_ocfp, traceback as _tb_ocfp
         _log_ocfp.getLogger("factor.compute").error("ocfp TTM query failed: %s", _tb_ocfp.format_exc())
 
@@ -1062,6 +1063,7 @@ def compute_ocfp(fundamentals, date, financials=None):
                 resid = y - LinearRegression().fit(X, y).predict(X)
                 raw = pd.Series(resid, index=common)
     except Exception:
+        raise  # 错误不吞
         import logging as _log_ocfp2, traceback as _tb_ocfp2
         _log_ocfp2.getLogger("factor.compute").error("ocfp industry neutralization failed: %s", _tb_ocfp2.format_exc())
 
@@ -1136,6 +1138,7 @@ def compute_insider_cluster(data, date, window=60):
                 score = n_insiders * 0.3 + min(total_ratio / 100, 1.0)
                 result[sym] = score if n_insiders >= 2 else 0
     except Exception:
+        raise  # 错误不吞
         import logging as _log_is, traceback as _tb_is
         _log_is.getLogger("factor.compute").error(f"insider_cluster failed: {_tb_is.format_exc()}")
     return _cs_zscore(result).rename("insider_cluster")
@@ -1176,6 +1179,7 @@ def compute_earnings_upgrade(data, date, window=90):
                     bear_ratio = (row["underweight"] or 0) / total
                     result[sym] = bull_ratio - bear_ratio
     except Exception:
+        raise  # 错误不吞
         import logging as _log_eu, traceback as _tb_eu
         _log_eu.getLogger("factor.compute").error(f"earnings_upgrade failed: {_tb_eu.format_exc()}")
     return _cs_zscore(result, sparse=True).rename("earnings_upgrade")

@@ -89,6 +89,7 @@ def sync_single_stock(symbol: str, market: str = 'sh', conn=None, max_retries: i
                           row.get('small_net_inflow'), row.get('small_net_ratio')))
                     n += 1
                 except Exception as e_row:
+                    raise  # 错误不吞
                     logger.debug(f"fund_flow row skip {symbol} {row.get("date", "?")}: {e_row}")
 
             conn.commit()
@@ -97,6 +98,7 @@ def sync_single_stock(symbol: str, market: str = 'sh', conn=None, max_retries: i
             return n
 
         except Exception as e:
+            raise  # 错误不吞
             last_err = e
             if attempt < max_retries - 1:
                 wait = (attempt + 1) * 3  # 3s, 6s, 9s backoff

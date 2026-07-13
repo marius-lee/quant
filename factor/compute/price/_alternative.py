@@ -214,6 +214,7 @@ def compute_str(data, date, window=20):
             resid = y - LinearRegression().fit(X, y).predict(X)
             raw = pd.Series(resid, index=common)
     except Exception:
+        raise  # 错误不吞
         _log.error("STR residual failed: %s", traceback.format_exc())
 
     # 取负: 低波动→高分
@@ -300,6 +301,7 @@ def compute_abn_turnover(data, date, window=20):
         resid = y - LinearRegression().fit(X, y).predict(X)
         raw = pd.Series(resid, index=common)
     except Exception:
+        raise  # 错误不吞
         _log.error("ABN_TURN residual failed, using raw turnover: %s", traceback.format_exc())
         raw = turn_series.loc[common]
 
@@ -327,6 +329,7 @@ def _get_limit_pool(date_str: str, conn=None):
             "SELECT * FROM limit_down_pool WHERE date=?", conn, params=(date_str,)
         )
     except Exception:
+        raise  # 错误不吞
         _log.error("limit_down_pool query failed: %s", traceback.format_exc())
         df_down = pd.DataFrame()
     if own:
@@ -488,6 +491,7 @@ def compute_trcf(data: "pd.DataFrame", date: str, window: int = 120) -> "pd.Seri
             std_ma = np.std(mas)
             result[sym] = -np.log(1 + std_ma)
         except Exception:
+            raise  # 错误不吞
             _log.error("TRCF per-symbol %s failed: %s", sym, traceback.format_exc())
             continue
 
@@ -521,6 +525,7 @@ def compute_ideal_amplitude(data: "pd.DataFrame", date: str, window: int = 20) -
             low_q = recent.nsmallest(max(int(len(recent) * 0.25), 1)).mean()
             result[sym] = -(high_q - low_q)
         except Exception:
+            raise  # 错误不吞
             _log.error("ideal_amplitude per-symbol %s failed: %s", sym, traceback.format_exc())
             continue
 
@@ -560,6 +565,7 @@ def compute_short_interest(data, date, window=20):
             if sym in symbols and mt > 0:
                 result[sym] = float(sb) / float(mt) if sb else 0
     except Exception:
+        raise  # 错误不吞
         _log.error("short_interest failed: %s", traceback.format_exc())
     # High short interest → negative signal
     return _cs_zscore(-result).rename("short_interest")
@@ -591,6 +597,7 @@ def compute_fund_flow_3m(data, date, window=60):
                 if len(sym_data) > 0:
                     result[sym] = sym_data["change_ratio"].mean()
     except Exception:
+        raise  # 错误不吞
         _log.error("fund_flow_3m failed: %s", traceback.format_exc())
     return _cs_zscore(result).rename("fund_flow_3m")
 

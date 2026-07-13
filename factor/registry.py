@@ -22,7 +22,7 @@ def _close_shared():
         try:
             _shared_limit_conn.close()
         except Exception:
-            pass
+            raise
         _shared_limit_conn = None
 
 

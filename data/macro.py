@@ -64,6 +64,7 @@ def sync_macro_data():
                     total += 1
             logger.info(f"CPI synced: {total} rows")
     except Exception as e:
+        raise  # 错误不吞
         logger.warning(f"CPI sync failed: {e}")
     
     # ── PMI 制造业 ──
@@ -80,6 +81,7 @@ def sync_macro_data():
                     )
                     total += 1
     except Exception as e:
+        raise  # 错误不吞
         logger.warning(f"PMI sync failed: {e}")
     
     # ── M2 同比增速 ──
@@ -96,6 +98,7 @@ def sync_macro_data():
                     )
                     total += 1
     except Exception as e:
+        raise  # 错误不吞
         logger.warning(f"M2 sync failed: {e}")
     
     # ── 10年期国债收益率 ──
@@ -112,6 +115,7 @@ def sync_macro_data():
                     )
                     total += 1
     except Exception as e:
+        raise  # 错误不吞
         logger.warning(f"Bond yield sync failed: {e}")
     
     conn.commit()

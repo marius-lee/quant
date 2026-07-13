@@ -15,8 +15,8 @@ logger = get_logger("risk.neutralize")
 
 import numpy as np
 
-from config.loader import get as _cfg
-_MIN_COMMON = _cfg("risk.neutralize.min_common_stocks")
+from config.constants import _require_cfg
+_MIN_COMMON = _require_cfg("risk.neutralize.min_common_stocks")
 import pandas as pd
 from scipy import stats
 from typing import Optional

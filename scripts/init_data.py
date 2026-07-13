@@ -117,6 +117,7 @@ def init_all():
             logger.info(f"[{name}] {n} rows, {elapsed:.1f}s")
             print(f"  {name}: {n} rows ({elapsed:.1f}s)")
         except Exception as e:
+            raise  # 错误不吞
             logger.warning(f"[{name}] failed: {e}")
             print(f"  {name}: FAILED — {e}")
     print("\n初始化完成。运行 check 查看结果:")

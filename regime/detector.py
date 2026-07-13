@@ -107,6 +107,7 @@ class RegimeDetector:
             prob_dict = {REGIME_LABELS[i]: float(p) for i, p in enumerate(probs)}
             return (REGIME_LABELS[regime_idx], prob_dict)
         except Exception as e:
+            raise  # 错误不吞
             _log.warning(f"predict_proba: {e}")
             return ("unknown", {})
 
@@ -129,6 +130,7 @@ def get_current_regime():
 
         return _detector.predict_proba(returns)
     except Exception as e:
+        raise  # 错误不吞
         _log.warning(f"get_current_regime: {e}")
         return ("unknown", {})
 

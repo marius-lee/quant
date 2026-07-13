@@ -79,6 +79,7 @@ def sync_benchmark(index_code: str = "000300") -> int:
         logger.info(f"benchmark {index_code} ({BENCHMARKS.get(index_code, '')}): {new_rows} new rows")
         return new_rows
     except Exception as e:
+        raise  # 错误不吞
         logger.warning(f"benchmark {index_code} sync failed: {e}")
         return 0
     finally:

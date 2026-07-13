@@ -17,7 +17,7 @@
 """
 import sqlite3, os
 import numpy as np
-from config.loader import get as _cfg
+from config.constants import _require_cfg
 from utils.logger import get_logger
 
 _log = get_logger("execution.stop_loss")
@@ -59,6 +59,7 @@ def _compute_atr(symbol: str, period: int = 20) -> float:
         _CACHE[key] = (atr, now)
         return atr
     except Exception as e:
+        raise  # 错误不吞
         _log.error(f"_compute_atr({symbol}): {e}")
         return 0.0
 
@@ -67,12 +68,12 @@ class RiskManager:
     """无状态 — 每次 check() 传入持仓快照."""
 
     def __init__(self):
-        self.atr_mult_sl = _cfg("risk.atr_mult_stop_loss")
-        self.atr_mult_tp1 = _cfg("risk.atr_mult_take_profit_1")
-        self.atr_mult_tp2 = _cfg("risk.atr_mult_take_profit_2")
-        self.atr_mult_trail = _cfg("risk.atr_mult_trailing")
-        self.max_hold_days = _cfg("risk.max_hold_days")
-        self.atr_period = _cfg("risk.atr_period")
+        self.atr_mult_sl = _require_cfg("risk.atr_mult_stop_loss")
+        self.atr_mult_tp1 = _require_cfg("risk.atr_mult_take_profit_1")
+        self.atr_mult_tp2 = _require_cfg("risk.atr_mult_take_profit_2")
+        self.atr_mult_trail = _require_cfg("risk.atr_mult_trailing")
+        self.max_hold_days = _require_cfg("risk.max_hold_days")
+        self.atr_period = _require_cfg("risk.atr_period")
 
     def check(self, positions: list, quotes: dict, today: str) -> list:
         """返回触发信号列表."""
@@ -146,6 +147,7 @@ class RiskManager:
                         results.append({"symbol": sym, "action": "sell", "shares": shares,
                                         "price": cur, "reason": "time_stop({}d)".format(days)})
                 except Exception:
+                    raise  # 错误不吞
                     import traceback as _tb_ts
                     _log.error("time_stop day parsing failed for %s (buy_time=%s): %s", sym, buy_time, _tb_ts.format_exc())
 

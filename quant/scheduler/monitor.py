@@ -7,7 +7,6 @@ import time as _time
 import os
 from datetime import datetime, time
 from config.constants import _require_cfg
-from config.loader import get as cfg
 from utils.logger import get_logger
 from monitor.metrics import metrics as _m
 
@@ -77,6 +76,7 @@ def _run_continuous(today: str):
                         from execution.quote import fetch_quotes
                         quotes = fetch_quotes(syms) or {}
                     except Exception as e:
+                        raise  # 错误不吞
                         _log.warning(f"[{today}] quote fetch failed: {e}")
 
                     # ATR 动态止盈止损三重体系
@@ -121,6 +121,7 @@ def _run_continuous(today: str):
             update("monitor", status=status, last_run=now.isoformat())
 
         except Exception as e:
+            raise  # 错误不吞
             update("monitor", status="error", last_error=str(e))
             _log.warning(f"[{today}] monitor error: {e}")
             _m.inc("scheduler.monitor.error")
@@ -142,6 +143,7 @@ def _execute_sell(today: str, symbol: str, shares: int, price: float,
         _log.warning(f"[{today}] {reason}: {symbol} {shares}股 @¥{price:.2f} "
                      f"PnL={pnl_pct:+.1f}%")
     except Exception as e:
+        raise  # 错误不吞
         _log.error(f"[{today}] {reason} execute failed {symbol}: {e}")
 
 
@@ -167,6 +169,7 @@ def _outer_loop():
                 try:
                     _run_continuous(today)
                 except Exception as e:
+                    raise  # 错误不吞
                     _log.error(f"[{today}] monitor outer exception: {e}")
 
         _time.sleep(_require_cfg("quant.scheduler.poll_interval"))

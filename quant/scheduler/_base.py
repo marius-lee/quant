@@ -56,6 +56,7 @@ def _timed_loop(name: str, target_time: time, run_fn, skip_deadline: time = None
                     update(name, status="idle", last_run=now.isoformat(),
                            last_duration=elapsed, last_error=None)
                 except Exception as e:
+                    raise  # 错误不吞
                     elapsed = _time.time() - t0
                     update(name, status="error", last_run=now.isoformat(),
                            last_duration=elapsed, last_error=str(e))
@@ -113,6 +114,7 @@ def _weekly_loop(name: str, target_weekday: int, target_time: time, run_fn):
                 update(name, status="idle", last_run=now.isoformat(),
                        last_duration=elapsed, last_error=None)
             except Exception as e:
+                raise  # 错误不吞
                 elapsed = _time.time() - t0
                 update(name, status="error", last_run=now.isoformat(),
                        last_duration=elapsed, last_error=str(e))

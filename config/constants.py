@@ -4,8 +4,8 @@ import numpy as np
 import pandas as pd
 import sqlite3
 import os as _os
-from typing import Any, Optional
-from config.loader import get as _cfg
+from typing import Any
+
 
 
 # ═══════════════════════════════════════════════════════════
@@ -14,7 +14,7 @@ from config.loader import get as _cfg
 
 def _require_cfg(key: str) -> Any:
     """Return config value for key. Raise if missing — no silent defaults."""
-    val = _cfg(key)
+    import config.loader as _loader; val = _loader.get(key)
     if val is None:
         raise KeyError(f"config.yaml missing required key: {key}")
     return val
@@ -65,3 +65,15 @@ __all__ = [
 ]
 
 
+
+
+# ============================================================
+#  ⛔ _cfg 已永久弃用 ⛔
+#
+#  全项目强制使用 _require_cfg (缺 key → KeyError, fail-fast)
+#  禁止: 
+#  正确: from config.constants import _require_cfg
+#
+#  config/loader.py:get() 仅作 _require_cfg 的底层实现，
+#  任何业务代码不得直接调用。
+# ============================================================

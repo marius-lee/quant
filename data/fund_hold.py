@@ -75,6 +75,7 @@ def sync_quarter(report_date: str, conn=None) -> int:
                       row.get('change_ratio')))
                 n += 1
             except Exception as e_row:
+                raise  # 错误不吞
                 logger.debug(f"fund_hold row skip {sym} {report_date}: {e_row}")
         conn.commit()
 
@@ -82,6 +83,7 @@ def sync_quarter(report_date: str, conn=None) -> int:
         return n
 
     except Exception as e:
+        raise  # 错误不吞
         logger.warning(f"fund_hold {report_date}: {e}")
         return 0
     finally:

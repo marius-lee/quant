@@ -5,6 +5,26 @@
 from utils.logger import get_logger
 from execution.impact import estimate_impact_pct
 from config.constants import _require_cfg
+
+def market_impact(order_shares: float, daily_amount: float, eta: float = 0.1) -> float:
+    """Non-linear market impact: sqrt(order_size / daily_volume) model.
+
+    slippage = eta * sqrt(order_shares * avg_price / daily_amount)
+    Source: Almgren & Chriss (2001), Kissell & Glantz (2003)
+
+    Args:
+        order_shares: number of shares to trade
+        daily_amount: daily turnover amount (元)
+        eta: impact coefficient (calibrated per market, default 0.1 = 10bp base)
+
+    Returns: estimated slippage as fraction (e.g., 0.0015 = 15bp)
+    """
+    import numpy as np
+    if daily_amount <= 0 or order_shares <= 0:
+        return 0.0
+    participation = abs(order_shares * 10) / max(daily_amount, 1)  # rough: assume avg_price ~10
+    return float(eta * np.sqrt(min(participation, 1.0)))
+
 logger = get_logger("execution.cost")
 
 from dataclasses import dataclass

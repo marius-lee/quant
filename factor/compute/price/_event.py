@@ -237,7 +237,7 @@ def compute_dt_streak(data: "pd.DataFrame", date: str, window: int = 0) -> "pd.S
     return _cs_zscore(result).rename("dt_streak")
 
 
-def compute_lhb_net_buy(data: "pd.DataFrame", date: str, window: int = _LHB_WINDOW) -> "pd.Series":
+def compute_lhb_net_buy(data: "pd.DataFrame", date: str, window: int = _LHB_WINDOW, aux=None) -> "pd.Series":
     """龙虎榜净买入强度因子: total_net_buy / avg(circ_mv), N日窗口.
 
     算法:
@@ -453,7 +453,7 @@ def compute_margin_buy_ratio_price(data: "pd.DataFrame", date: str, window: int 
     result = pd.Series(scores, dtype=float)
     result = result.reindex(symbols).fillna(0.0)
     return _cs_zscore(result).rename("margin_buy_ratio_5d")
-def compute_main_flow_ratio(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.Series":
+def compute_main_flow_ratio(data: "pd.DataFrame", date: str, window: int = 5, aux=None) -> "pd.Series":
     """主力资金流向: AVG(main_net_ratio) over window 天。
 
     数据源: fund_flow 表 (个股资金流向)
@@ -526,7 +526,7 @@ def compute_fund_change(data: "pd.DataFrame", date: str, window: int = 0) -> "pd
     return _cs_zscore(result).rename("fund_change")
 
 
-def compute_analyst_buy(data: "pd.DataFrame", date: str, window: int = 0) -> "pd.Series":
+def compute_analyst_buy(data: "pd.DataFrame", date: str, window: int = 0, aux=None) -> "pd.Series":
     """分析师看好度: 买入+增持占全部评级的比例。
 
     数据源: analyst_forecast 表 (全量分析师预测)

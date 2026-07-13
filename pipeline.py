@@ -78,80 +78,60 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
 
     # ── Step 1: Data Update ──
     if not skip_pull:
-        try:
-            n_new = store.update_daily(start=_require_cfg("data.start_date"))
-            results["steps"]["data"] = {"new_rows": n_new, "status": "ok"}
-            logger.info(f"[1/5] data: {n_new} new daily rows")
-            if not suppress_push:
-                broker.update({"status": "data_synced", "progress": "1/5", "new_rows": n_new, "trace_id": tid})
-            _m.inc("data.sync.rows", n_new)
-        except Exception as e:
-            raise  # 错误不吞
-            _m.inc("pipeline.errors")
-            results["steps"]["data"] = {"error": str(e), "status": "failed"}
-            logger.warning(f"[1/5] data failed: {e}")
+        n_new = store.update_daily(start=_require_cfg("data.start_date"))
+        results["steps"]["data"] = {"new_rows": n_new, "status": "ok"}
+        logger.info(f"[1/5] data: {n_new} new daily rows")
+        if not suppress_push:
+            broker.update({"status": "data_synced", "progress": "1/5", "new_rows": n_new, "trace_id": tid})
+        _m.inc("data.sync.rows", n_new)
     else:
         results["steps"]["data"] = {"new_rows": 0, "status": "skipped"}
 
     # ── Step 2: Load ──
-    try:
-        conn = store._connect()
-        symbols = [r[0] for r in conn.execute(
-            "SELECT DISTINCT d.symbol FROM daily d JOIN stocks s ON d.symbol=s.symbol WHERE s.market!='BJ'"
-        ).fetchall()]
-        from factor.windows import max_factor_calendar_days
-        _eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(None))
-        hist_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
-        data = store.get_daily(symbols, start=hist_start, end=date_str)
-        fundamentals = store.get_fundamentals(symbols, date=date_str)
-        results["steps"]["load"] = {"symbols": len(symbols), "status": "ok"}
-        pe_cnt = int(fundamentals["pe"].notna().sum()) if "pe" in fundamentals.columns else 0
-        pb_cnt = int(fundamentals["pb"].notna().sum()) if "pb" in fundamentals.columns else 0
-        logger.info(f"[2/5] load: {len(symbols)} symbols, {data.shape[0]} days, PE/PB={pe_cnt}/{pb_cnt}")
-        if not suppress_push:
-            broker.update({"status": "data_loaded", "progress": "2/5", "symbols": len(symbols), "trace_id": tid})
-    except Exception as e:
-        raise  # 错误不吞
-        _m.inc("pipeline.errors")
-        results["steps"]["load"] = {"error": str(e), "status": "failed"}
-        logger.warning(f"[2/5] load failed: {e}")
-        return results
+    conn = store._connect()
+    symbols = [r[0] for r in conn.execute(
+        "SELECT DISTINCT d.symbol FROM daily d JOIN stocks s ON d.symbol=s.symbol WHERE s.market!='BJ'"
+    ).fetchall()]
+    from factor.windows import max_factor_calendar_days
+    _eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(None))
+    hist_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
+    data = store.get_daily(symbols, start=hist_start, end=date_str)
+    fundamentals = store.get_fundamentals(symbols, date=date_str)
+    results["steps"]["load"] = {"symbols": len(symbols), "status": "ok"}
+    pe_cnt = int(fundamentals["pe"].notna().sum()) if "pe" in fundamentals.columns else 0
+    pb_cnt = int(fundamentals["pb"].notna().sum()) if "pb" in fundamentals.columns else 0
+    logger.info(f"[2/5] load: {len(symbols)} symbols, {data.shape[0]} days, PE/PB={pe_cnt}/{pb_cnt}")
+    if not suppress_push:
+        broker.update({"status": "data_loaded", "progress": "2/5", "symbols": len(symbols), "trace_id": tid})
 
     # ── Step 2.5: Universe size filter (backtest only) ──
     if universe_size and len(symbols) > universe_size:
-        try:
-            # ── Step 2.5a: Affordability filter (remove stocks too expensive for 1 lot) ──
-            close_df = data["close"]
-            latest_date = close_df.index[-1]
-            latest_close = close_df.loc[latest_date].dropna()
-            candidate_syms = set(latest_close.index)
-            if _require_cfg("backtest.universe_filter_affordable"):
-                affordable = latest_close[latest_close * LOT_SIZE <= total_capital]
-                if len(affordable) > 0:
-                    candidate_syms &= set(affordable.index)
-                # else: empty affordable pool → keep all (edge case for tiny capital)
+        close_df = data["close"]
+        latest_date = close_df.index[-1]
+        latest_close = close_df.loc[latest_date].dropna()
+        candidate_syms = set(latest_close.index)
+        if _require_cfg("backtest.universe_filter_affordable"):
+            affordable = latest_close[latest_close * LOT_SIZE <= total_capital]
+            if len(affordable) > 0:
+                candidate_syms &= set(affordable.index)
+            # else: empty affordable pool → keep all (edge case for tiny capital)
 
-            # ── Step 2.5b: Rank by turnover, take top N ──
-            candidates = list(candidate_syms & set(symbols))
-            conn2 = store._connect()
-            turnover_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_require_cfg("backtest.universe_turnover_days"))).strftime("%Y-%m-%d")
-            placeholders = ",".join("?" * len(candidates))
-            rows = conn2.execute(
-                f"SELECT symbol, AVG(amount) as avg_amt FROM daily "
-                f"WHERE date >= ? AND symbol IN ({placeholders}) GROUP BY symbol ORDER BY avg_amt DESC LIMIT ?",
-                [turnover_start] + candidates + [universe_size]
-            ).fetchall()
-            keep_syms = [r[0] for r in rows] if rows else candidates[:universe_size]
-            symbols = [s for s in symbols if s in keep_syms]
-            # data is wide-format MultiIndex columns (field, symbol) — filter 2nd level
-            data = data.loc[:, data.columns.get_level_values(1).isin(keep_syms)]
-            fundamentals = fundamentals[fundamentals.index.isin(keep_syms)]
-            results["steps"]["load"]["symbols"] = len(symbols)
-        except Exception:
-            raise  # 错误不吞
-            from utils.logger import get_logger as _gl1
-            _gl1("quant.pipeline").warning("universe filter failed, using full universe: %s",
-                                          traceback.format_exc().splitlines()[-1])
+        # ── Step 2.5b: Rank by turnover, take top N ──
+        candidates = list(candidate_syms & set(symbols))
+        conn2 = store._connect()
+        turnover_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_require_cfg("backtest.universe_turnover_days"))).strftime("%Y-%m-%d")
+        placeholders = ",".join("?" * len(candidates))
+        rows = conn2.execute(
+            f"SELECT symbol, AVG(amount) as avg_amt FROM daily "
+            f"WHERE date >= ? AND symbol IN ({placeholders}) GROUP BY symbol ORDER BY avg_amt DESC LIMIT ?",
+            [turnover_start] + candidates + [universe_size]
+        ).fetchall()
+        keep_syms = [r[0] for r in rows] if rows else candidates[:universe_size]
+        symbols = [s for s in symbols if s in keep_syms]
+        # data is wide-format MultiIndex columns (field, symbol) — filter 2nd level
+        data = data.loc[:, data.columns.get_level_values(1).isin(keep_syms)]
+        fundamentals = fundamentals[fundamentals.index.isin(keep_syms)]
+        results["steps"]["load"]["symbols"] = len(symbols)
 
 
     # ── Step 2.6: Cooling-off exclude (backtest only) ──
@@ -160,126 +140,105 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         data = data.loc[:, data.columns.get_level_values(1).isin(symbols)] if symbols else data.iloc[:0]
         fundamentals = fundamentals[fundamentals.index.isin(symbols)]
     # ── Step 3: Factor + Alpha ──
+    actual_date = date_str
+    if pd.Timestamp(actual_date) not in data.index:
+        actual_date = data.index[-1].strftime("%Y-%m-%d")
+        logger.info(f"[3/5] date adjusted: {date_str} -> {actual_date}")
+
+    benchmark_ret = None
     try:
-        actual_date = date_str
-        if pd.Timestamp(actual_date) not in data.index:
-            actual_date = data.index[-1].strftime("%Y-%m-%d")
-            logger.info(f"[3/5] date adjusted: {date_str} -> {actual_date}")
-
-        benchmark_ret = None
-        try:
-            bm = store.get_benchmark("000300", start=_require_cfg("benchmark.start_date"))
-            if not bm.empty:
-                benchmark_ret = bm[:pd.Timestamp(actual_date)]
-        except Exception:
-            raise  # 错误不吞
-            from utils.logger import get_logger as _glbm
-            _glbm("quant.pipeline").error("benchmark fetch failed: %s", traceback.format_exc())
-
-        # ── ztd 预计算缓存: 确保 compute_ztd 在实盘 / 回测均能命中缓存 ──
-        from factor.compute.price._alternative import preload_ztd_cache
-        _ztd_dates = pd.date_range(start=pd.Timestamp(hist_start), end=pd.Timestamp(date_str), freq="B")
-        preload_ztd_cache([d.strftime("%Y-%m-%d") for d in _ztd_dates], symbols)
-
-        logger.info(f"step 3 starting: computing factors for {len(symbols)} symbols on {actual_date}...")
-        factor_values = compute_all_factors(data, actual_date,
-                                            fundamentals=fundamentals,
-                                            status_filter=status_filter,
-                                            benchmark_ret=benchmark_ret)
-        n_valid = sum(1 for v in factor_values.values() if isinstance(v, pd.Series) and v.notna().sum() > 0)
-
-        from alpha.model import AlphaModel
-        am = AlphaModel()
-        ic_map = ic_map if ic_map is not None else load_ic_map_from_cache(factor_values, status_filter=status_filter)
-        alpha_raw = am.combine(factor_values, ic_map=ic_map)
-        alpha = am.rank(alpha_raw)
-
-        results["_factor_values"] = {k: v for k, v in factor_values.items() if isinstance(v, pd.Series)}
-        results["_alpha_raw"] = alpha_raw
-        results["steps"]["factor"] = {"factors": len(factor_values), "valid_stocks": alpha.dropna().count(), "status": "ok"}
-        if not suppress_push:
-            broker.update({"status": "factors_computed", "progress": "3/5", "n_factors": len(factor_values), "trace_id": tid})
-        _m.gauge("factor.n_active", len(factor_values))
-    except Exception as e:
+        bm = store.get_benchmark("000300", start=_require_cfg("benchmark.start_date"))
+        if not bm.empty:
+            benchmark_ret = bm[:pd.Timestamp(actual_date)]
+    except Exception:
         raise  # 错误不吞
-        _m.inc("pipeline.errors")
-        results["steps"]["factor"] = {"error": str(e), "status": "failed"}
-        logger.warning(f"[3/5] factor failed: {e}")
-        return results
+        from utils.logger import get_logger as _glbm
+        _glbm("quant.pipeline").error("benchmark fetch failed: %s", traceback.format_exc())
+
+    # ── ztd 预计算缓存: 确保 compute_ztd 在实盘 / 回测均能命中缓存 ──
+    from factor.compute.price._alternative import preload_ztd_cache
+    _ztd_dates = pd.date_range(start=pd.Timestamp(hist_start), end=pd.Timestamp(date_str), freq="B")
+    preload_ztd_cache([d.strftime("%Y-%m-%d") for d in _ztd_dates], symbols)
+
+    logger.info(f"step 3 starting: computing factors for {len(symbols)} symbols on {actual_date}...")
+    factor_values = compute_all_factors(data, actual_date,
+                                        fundamentals=fundamentals,
+                                        status_filter=status_filter,
+                                        benchmark_ret=benchmark_ret)
+    n_valid = sum(1 for v in factor_values.values() if isinstance(v, pd.Series) and v.notna().sum() > 0)
+
+    from alpha.model import AlphaModel
+    am = AlphaModel()
+    ic_map = ic_map if ic_map is not None else load_ic_map_from_cache(factor_values, status_filter=status_filter)
+    alpha_raw = am.combine(factor_values, ic_map=ic_map)
+    alpha = am.rank(alpha_raw)
+
+    results["_factor_values"] = {k: v for k, v in factor_values.items() if isinstance(v, pd.Series)}
+    results["_alpha_raw"] = alpha_raw
+    results["steps"]["factor"] = {"factors": len(factor_values), "valid_stocks": alpha.dropna().count(), "status": "ok"}
+    if not suppress_push:
+        broker.update({"status": "factors_computed", "progress": "3/5", "n_factors": len(factor_values), "trace_id": tid})
+    _m.gauge("factor.n_active", len(factor_values))
 
     # ── Step 4: Risk ──
     cov = None  # 协方差矩阵, Step 4 内计算, 供 Step 5 的 construct() 使用
-    try:
-        close_df = data["close"]
-        risk_date = actual_date if actual_date in close_df.index else close_df.index[-1].strftime("%Y-%m-%d")
-        prices = close_df.loc[risk_date].dropna()
-        mcap_real = fundamentals["total_mv"].reindex(prices.index)
-        mcap_real = mcap_real.fillna(prices * 1e8)
-        industries = fundamentals["industry"].reindex(prices.index) if "industry" in fundamentals.columns else None
-        industry_min = _require_cfg("risk.neutralize.min_common_stocks")
-        if industries is not None and industries.notna().sum() < industry_min:
-            industries = None
-        alpha_neut = neutralize(alpha, industries=industries, market_caps=mcap_real)
+    close_df = data["close"]
+    risk_date = actual_date if actual_date in close_df.index else close_df.index[-1].strftime("%Y-%m-%d")
+    prices = close_df.loc[risk_date].dropna()
+    mcap_real = fundamentals["total_mv"].reindex(prices.index)
+    mcap_real = mcap_real.fillna(prices * 1e8)
+    industries = fundamentals["industry"].reindex(prices.index) if "industry" in fundamentals.columns else None
+    industry_min = _require_cfg("risk.neutralize.min_common_stocks")
+    if industries is not None and industries.notna().sum() < industry_min:
+        industries = None
+    alpha_neut = neutralize(alpha, industries=industries, market_caps=mcap_real)
 
-        log_ret = np.log(close_df).diff().dropna(how="all")
-        cov = covariance_matrix(log_ret, method="ledoit_wolf")
+    log_ret = np.log(close_df).diff().dropna(how="all")
+    cov = covariance_matrix(log_ret, method="ledoit_wolf")
 
-        candidates = pd.DataFrame({
-            "alpha": alpha_neut, "close": prices,
-            "amount": data["amount"].loc[risk_date] if risk_date in data["amount"].index
-                      else data["amount"].iloc[-1]
-        })
-        filtered = apply_all_filters(candidates.reindex(prices.index))
-        results["steps"]["risk"] = {"candidates": len(filtered), "status": "ok"}
-        logger.info(f"[4/5] risk: {len(filtered)} candidates after filters")
-        if not suppress_push:
-            broker.update({"status": "risk_filtered", "progress": "4/5", "candidates": len(filtered), "trace_id": tid})
-    except Exception as e:
-        raise  # 错误不吞
-        _m.inc("pipeline.errors")
-        results["steps"]["risk"] = {"error": str(e), "status": "failed"}
-        logger.warning(f"[4/5] risk failed: {e}")
-        return results
+    candidates = pd.DataFrame({
+        "alpha": alpha_neut, "close": prices,
+        "amount": data["amount"].loc[risk_date] if risk_date in data["amount"].index
+                  else data["amount"].iloc[-1]
+    })
+    filtered = apply_all_filters(candidates.reindex(prices.index))
+    results["steps"]["risk"] = {"candidates": len(filtered), "status": "ok"}
+    logger.info(f"[4/5] risk: {len(filtered)} candidates after filters")
+    if not suppress_push:
+        broker.update({"status": "risk_filtered", "progress": "4/5", "candidates": len(filtered), "trace_id": tid})
 
     # ── Step 5: Optimizer (generate target positions, do NOT execute) ──
-    try:
-        portfolio = constructor.construct(
-            filtered["alpha"], filtered["close"],
-            total_capital,
-            covariance=cov, ic_map=ic_map,
-        )
-        # Build target positions list for the scheduler to consume
-        target_positions = []
-        for sym, lots in portfolio.lots.items():
-            if lots > 0 and sym in prices:
-                score = round(float(alpha_neut.get(sym, 0)), 4)
-                target_positions.append({
-                    "symbol": sym,
-                    "score": score if not (isinstance(score, float) and score != score) else 0.0,
-                    "shares": int(lots) * LOT_SIZE,
-                    "price": round(float(prices[sym]), 2),
-                    "side": "buy",
-                    "industry": str(industries.get(sym, "")) if (industries is not None and not (isinstance(industries.get(sym, ""), float) and industries.get(sym, "") != industries.get(sym, ""))) else "",
-                })
-        # ── rank by score descending, annotate reason ──
-        target_positions.sort(key=lambda x: x.get("score", 0), reverse=True)
-        for i, tp in enumerate(target_positions):
-            tp["reason"] = f"#{i+1}"
-        results["target_positions"] = target_positions
-        results["steps"]["optimizer"] = {
-            "method": portfolio.method, "positions": portfolio.positions,
-            "invested": round(portfolio.invested, 2), "status": "ok",
-        }
-        logger.info(f"[5/5] optimizer: {portfolio.method}, {portfolio.positions} pos, invested=Y{portfolio.invested:,.0f}")
-        if not suppress_push:
-            broker.update({"status": "signals_generated", "progress": "5/5",
-                        "n_positions": portfolio.positions, "invested": portfolio.invested, "trace_id": tid, "signals": target_positions})
-    except Exception as e:
-        raise  # 错误不吞
-        _m.inc("pipeline.errors")
-        results["steps"]["optimizer"] = {"error": str(e), "status": "failed"}
-        logger.warning(f"[5/5] optimizer failed: {e}")
-        return results
+    portfolio = constructor.construct(
+        filtered["alpha"], filtered["close"],
+        total_capital,
+        covariance=cov, ic_map=ic_map,
+    )
+    # Build target positions list for the scheduler to consume
+    target_positions = []
+    for sym, lots in portfolio.lots.items():
+        if lots > 0 and sym in prices:
+            score = round(float(alpha_neut.get(sym, 0)), 4)
+            target_positions.append({
+                "symbol": sym,
+                "score": score if not (isinstance(score, float) and score != score) else 0.0,
+                "shares": int(lots) * LOT_SIZE,
+                "price": round(float(prices[sym]), 2),
+                "side": "buy",
+                "industry": str(industries.get(sym, "")) if (industries is not None and not (isinstance(industries.get(sym, ""), float) and industries.get(sym, "") != industries.get(sym, ""))) else "",
+            })
+    # ── rank by score descending, annotate reason ──
+    target_positions.sort(key=lambda x: x.get("score", 0), reverse=True)
+    for i, tp in enumerate(target_positions):
+        tp["reason"] = f"#{i+1}"
+    results["target_positions"] = target_positions
+    results["steps"]["optimizer"] = {
+        "method": portfolio.method, "positions": portfolio.positions,
+        "invested": round(portfolio.invested, 2), "status": "ok",
+    }
+    logger.info(f"[5/5] optimizer: {portfolio.method}, {portfolio.positions} pos, invested=Y{portfolio.invested:,.0f}")
+    if not suppress_push:
+        broker.update({"status": "signals_generated", "progress": "5/5",
+                    "n_positions": portfolio.positions, "invested": portfolio.invested, "trace_id": tid, "signals": target_positions})
 
     if _store_in is None:
         store.close()
@@ -388,64 +347,52 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
         current_lots = {p2["symbol"]: p2["shares"] // LOT_SIZE for p2 in current_positions}
 
     # ── Compute trades (delta) ──
-    try:
-        current_lots_series = pd.Series(current_lots, dtype=int)
-        target_lots_series = pd.Series(target_lots, dtype=int)
-        orders = compute_trades(
-            target_lots_series, current_lots_series, prices, cost_model,
-            capital=total_capital, cash=engine.get_cash(strategy),
-        )
-        if orders:
-            is_valid, msg = validate_orders(orders, engine.get_cash(strategy))
-            if not is_valid:
-                logger.warning(f"execute: validate_orders failed: {msg}, skipping")
-                orders = []
-            else:
-                engine.execute(orders, date_str, strategy)
+    current_lots_series = pd.Series(current_lots, dtype=int)
+    target_lots_series = pd.Series(target_lots, dtype=int)
+    orders = compute_trades(
+        target_lots_series, current_lots_series, prices, cost_model,
+        capital=total_capital, cash=engine.get_cash(strategy),
+    )
+    if orders:
+        is_valid, msg = validate_orders(orders, engine.get_cash(strategy))
+        if not is_valid:
+            logger.warning(f"execute: validate_orders failed: {msg}, skipping")
+            orders = []
+        else:
+            engine.execute(orders, date_str, strategy)
 
-        results["steps"]["execution"] = {
-            "orders": len(orders),
-            "buys": sum(1 for o in orders if o.side == "buy"),
-            "sells": sum(1 for o in orders if o.side == "sell"),
-            "status": "ok",
-        }
-        logger.info(f"execute: {len(orders)} orders ({results['steps']['execution']['buys']} buys, {results['steps']['execution']['sells']} sells)")
-        if not suppress_push:
-            broker.update({"status": "trades_executed", "progress": "6/7", "orders": len(orders), "trace_id": tid, "signals": target_positions})
-        _m.inc("pipeline.trades", len(orders))
-    except Exception as e:
-        raise  # 错误不吞
-        _m.inc("pipeline.errors")
-        results["steps"]["execution"] = {"error": str(e), "status": "failed"}
-        logger.warning(f"execute: execution failed: {e}")
+    results["steps"]["execution"] = {
+        "orders": len(orders),
+        "buys": sum(1 for o in orders if o.side == "buy"),
+        "sells": sum(1 for o in orders if o.side == "sell"),
+        "status": "ok",
+    }
+    logger.info(f"execute: {len(orders)} orders ({results['steps']['execution']['buys']} buys, {results['steps']['execution']['sells']} sells)")
+    if not suppress_push:
+        broker.update({"status": "trades_executed", "progress": "6/7", "orders": len(orders), "trace_id": tid, "signals": target_positions})
+    _m.inc("pipeline.trades", len(orders))
 
     # ── Step 7: Monitor ──
-    try:
-        positions = engine.get_positions(strategy)
-        trades = engine.get_trades(strategy, limit=50)
-        total_wealth = engine.get_capital(strategy)
-        cash_balance = engine.get_cash(strategy)
-        from data.trade_repo import TradeRepo
-        seed = TradeRepo(db_path=db_path).get_initial_capital(strategy)
-        from monitor.report import generate_report, push_to_web
-        report = generate_report(
-            date_str, cash_balance, positions, trades,
-            pnl_total=total_wealth - seed,
-            initial_capital=seed,
-        )
-        push_to_web(report)
-        cap = report["capital"]
-        results["steps"]["monitor"] = {
-            "cash": cap["cash"], "positions_value": cap["positions_value"],
-            "total_wealth": cap["total_wealth"],
-            "total_return": report["metrics"]["total_return_pct"], "status": "ok",
-        }
-        logger.info(f"execute monitor: wealth=Y{cap['total_wealth']:,.2f} return={report['metrics']['total_return_pct']}%")
-    except Exception as e:
-        raise  # 错误不吞
-        results["steps"]["monitor"] = {"error": str(e), "status": "failed"}
-        logger.error(f"execute: monitor traceback:\n{traceback.format_exc()}")
-        logger.warning(f"execute: monitor failed: {e}")
+    positions = engine.get_positions(strategy)
+    trades = engine.get_trades(strategy, limit=50)
+    total_wealth = engine.get_capital(strategy)
+    cash_balance = engine.get_cash(strategy)
+    from data.trade_repo import TradeRepo
+    seed = TradeRepo(db_path=db_path).get_initial_capital(strategy)
+    from monitor.report import generate_report, push_to_web
+    report = generate_report(
+        date_str, cash_balance, positions, trades,
+        pnl_total=total_wealth - seed,
+        initial_capital=seed,
+    )
+    push_to_web(report)
+    cap = report["capital"]
+    results["steps"]["monitor"] = {
+        "cash": cap["cash"], "positions_value": cap["positions_value"],
+        "total_wealth": cap["total_wealth"],
+        "total_return": report["metrics"]["total_return_pct"], "status": "ok",
+    }
+    logger.info(f"execute monitor: wealth=Y{cap['total_wealth']:,.2f} return={report['metrics']['total_return_pct']}%")
 
     elapsed = time.time() - t0
     results["elapsed_sec"] = round(elapsed, 1)

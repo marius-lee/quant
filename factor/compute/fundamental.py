@@ -1014,58 +1014,48 @@ def compute_ocfp(fundamentals, date, financials=None):
 
     # TTM经营现金流: 直接查 financial_cash_flow 表最近4个季度
     ocfp_vals = {}
-    try:
-        _conn = _market_conn("ro")
-        placeholders = ",".join("?" for _ in valid_syms)
-        cf_df = pd.read_sql_query(
-            f"""SELECT symbol, stat_date, net_operate_cash_flow
-                FROM financial_cash_flow
-                WHERE stat_date >= date(?, '-1 year')
-                  AND symbol IN ({placeholders})
-                ORDER BY symbol, stat_date""",
-            _conn, params=[date] + valid_syms
-        )
-        _conn.close()
-        if not cf_df.empty:
-            for sym in valid_syms:
-                sym_cf = cf_df[cf_df['symbol'] == sym]
-                if len(sym_cf) == 0:
-                    continue
-                # TTM: 最近4个季度
-                recent = sym_cf.tail(4)
-                ttm = recent['net_operate_cash_flow'].sum()
-                mv = mv_map.get(sym)
-                if mv and mv > 0:
-                    ocfp_vals[sym] = ttm / mv
-    except Exception as _e:
-        raise  # 错误不吞
-        import logging as _log_ocfp, traceback as _tb_ocfp
-        _log_ocfp.getLogger("factor.compute").error("ocfp TTM query failed: %s", _tb_ocfp.format_exc())
+    _conn = _market_conn("ro")
+    placeholders = ",".join("?" for _ in valid_syms)
+    cf_df = pd.read_sql_query(
+        f"""SELECT symbol, stat_date, net_operate_cash_flow
+            FROM financial_cash_flow
+            WHERE stat_date >= date(?, '-1 year')
+              AND symbol IN ({placeholders})
+            ORDER BY symbol, stat_date""",
+        _conn, params=[date] + valid_syms
+    )
+    _conn.close()
+    if not cf_df.empty:
+        for sym in valid_syms:
+            sym_cf = cf_df[cf_df['symbol'] == sym]
+            if len(sym_cf) == 0:
+                continue
+            # TTM: 最近4个季度
+            recent = sym_cf.tail(4)
+            ttm = recent['net_operate_cash_flow'].sum()
+            mv = mv_map.get(sym)
+            if mv and mv > 0:
+                ocfp_vals[sym] = ttm / mv
 
     raw = pd.Series(ocfp_vals, name="ocfp")
     if raw.empty or raw.count() < 30:
         return raw
 
     # 行业中性化
-    try:
-        import numpy as np
-        common = [s for s in raw.index if s in ind_map]
-        if len(common) >= 30:
-            industries = [ind_map[s] for s in common]
-            ind_counts = pd.Series(industries).value_counts()
-            valid_inds = ind_counts[ind_counts >= 3].index.tolist()
-            ind_dummies = pd.get_dummies(industries)
-            valid_cols = [c for c in ind_dummies.columns if c in valid_inds and c != '']
-            if valid_cols:
-                from sklearn.linear_model import LinearRegression
-                X = ind_dummies[valid_cols].values
-                y = raw.loc[common].values
-                resid = y - LinearRegression().fit(X, y).predict(X)
-                raw = pd.Series(resid, index=common)
-    except Exception:
-        raise  # 错误不吞
-        import logging as _log_ocfp2, traceback as _tb_ocfp2
-        _log_ocfp2.getLogger("factor.compute").error("ocfp industry neutralization failed: %s", _tb_ocfp2.format_exc())
+    import numpy as np
+    common = [s for s in raw.index if s in ind_map]
+    if len(common) >= 30:
+        industries = [ind_map[s] for s in common]
+        ind_counts = pd.Series(industries).value_counts()
+        valid_inds = ind_counts[ind_counts >= 3].index.tolist()
+        ind_dummies = pd.get_dummies(industries)
+        valid_cols = [c for c in ind_dummies.columns if c in valid_inds and c != '']
+        if valid_cols:
+            from sklearn.linear_model import LinearRegression
+            X = ind_dummies[valid_cols].values
+            y = raw.loc[common].values
+            resid = y - LinearRegression().fit(X, y).predict(X)
+            raw = pd.Series(resid, index=common)
 
     # 正向: 高OCFP→高分
     return _cs_zscore(raw, sparse=True).rename("ocfp")
@@ -1117,30 +1107,25 @@ def compute_insider_cluster(data, date, window=60):
     import sqlite3, os as _os5
     symbols = list(data.index)
     result = pd.Series(0.0, index=symbols)
-    try:
-        conn = sqlite3.connect(_os.path.join(_os.path.dirname(__file__), "../../data/market.db"))
-        rows = conn.execute(
-            "SELECT symbol, holder_type, direction, change_ratio FROM holder_trade "
-            "WHERE ann_date >= date(?, '-{} days') AND direction IN ('增加','增持','买入')".format(window),
-            (str(date)[:10],)
-        ).fetchall()
-        conn.close()
-        if rows:
-            import pandas as _pd5
-            df = _pd5.DataFrame(rows, columns=["symbol", "holder_type", "direction", "change_ratio"])
-            for sym in symbols:
-                sym_data = df[df["symbol"] == sym]
-                if len(sym_data) == 0:
-                    continue
-                n_insiders = len(sym_data)
-                total_ratio = sym_data["change_ratio"].fillna(0).sum()
-                # Signal: number of insiders + total ratio
-                score = n_insiders * 0.3 + min(total_ratio / 100, 1.0)
-                result[sym] = score if n_insiders >= 2 else 0
-    except Exception:
-        raise  # 错误不吞
-        import logging as _log_is, traceback as _tb_is
-        _log_is.getLogger("factor.compute").error(f"insider_cluster failed: {_tb_is.format_exc()}")
+    conn = sqlite3.connect(_os.path.join(_os.path.dirname(__file__), "../../data/market.db"))
+    rows = conn.execute(
+        "SELECT symbol, holder_type, direction, change_ratio FROM holder_trade "
+        "WHERE ann_date >= date(?, '-{} days') AND direction IN ('增加','增持','买入')".format(window),
+        (str(date)[:10],)
+    ).fetchall()
+    conn.close()
+    if rows:
+        import pandas as _pd5
+        df = _pd5.DataFrame(rows, columns=["symbol", "holder_type", "direction", "change_ratio"])
+        for sym in symbols:
+            sym_data = df[df["symbol"] == sym]
+            if len(sym_data) == 0:
+                continue
+            n_insiders = len(sym_data)
+            total_ratio = sym_data["change_ratio"].fillna(0).sum()
+            # Signal: number of insiders + total ratio
+            score = n_insiders * 0.3 + min(total_ratio / 100, 1.0)
+            result[sym] = score if n_insiders >= 2 else 0
     return _cs_zscore(result).rename("insider_cluster")
 
 
@@ -1153,35 +1138,30 @@ def compute_earnings_upgrade(data, date, window=90):
     import sqlite3, os as _os6
     symbols = list(data.index)
     result = pd.Series(0.0, index=symbols)
-    try:
-        conn = sqlite3.connect(_os.path.join(_os.path.dirname(__file__), "../../data/market.db"))
-        # Get latest analyst forecast for each stock
-        rows = conn.execute(
-            "SELECT symbol, buy_count, overweight_count, neutral_count, "
-            "underweight_count, report_count FROM analyst_forecast "
-            "WHERE sync_date <= ? ORDER BY sync_date DESC",
-            (str(date)[:10],)
-        ).fetchall()
-        conn.close()
-        if rows:
-            import pandas as _pd6
-            df = _pd6.DataFrame(rows, columns=[
-                "symbol", "buy", "overweight", "neutral", "underweight", "total"
-            ]).drop_duplicates(subset="symbol", keep="first")
+    conn = sqlite3.connect(_os.path.join(_os.path.dirname(__file__), "../../data/market.db"))
+    # Get latest analyst forecast for each stock
+    rows = conn.execute(
+        "SELECT symbol, buy_count, overweight_count, neutral_count, "
+        "underweight_count, report_count FROM analyst_forecast "
+        "WHERE sync_date <= ? ORDER BY sync_date DESC",
+        (str(date)[:10],)
+    ).fetchall()
+    conn.close()
+    if rows:
+        import pandas as _pd6
+        df = _pd6.DataFrame(rows, columns=[
+            "symbol", "buy", "overweight", "neutral", "underweight", "total"
+        ]).drop_duplicates(subset="symbol", keep="first")
 
-            for _, row in df.iterrows():
-                sym = row["symbol"]
-                if sym not in symbols:
-                    continue
-                total = row["total"]
-                if total and total > 0:
-                    bull_ratio = ((row["buy"] or 0) + (row["overweight"] or 0)) / total
-                    bear_ratio = (row["underweight"] or 0) / total
-                    result[sym] = bull_ratio - bear_ratio
-    except Exception:
-        raise  # 错误不吞
-        import logging as _log_eu, traceback as _tb_eu
-        _log_eu.getLogger("factor.compute").error(f"earnings_upgrade failed: {_tb_eu.format_exc()}")
+        for _, row in df.iterrows():
+            sym = row["symbol"]
+            if sym not in symbols:
+                continue
+            total = row["total"]
+            if total and total > 0:
+                bull_ratio = ((row["buy"] or 0) + (row["overweight"] or 0)) / total
+                bear_ratio = (row["underweight"] or 0) / total
+                result[sym] = bull_ratio - bear_ratio
     return _cs_zscore(result, sparse=True).rename("earnings_upgrade")
 
 
@@ -1195,16 +1175,11 @@ def _get_macro_value(indicator: str, date: str) -> float:
     import sqlite3
     db = _os.path.join(_os.path.dirname(__file__), "../../data/market.db")
     conn = sqlite3.connect(db)
-    try:
-        row = conn.execute(
-            "SELECT value FROM macro_indicator WHERE indicator=? AND date <= ? ORDER BY date DESC LIMIT 1",
-            (indicator, date)
-        ).fetchone()
-        return row[0] if row else None
-    except sqlite3.OperationalError:
-        return None
-    finally:
-        conn.close()
+    row = conn.execute(
+        "SELECT value FROM macro_indicator WHERE indicator=? AND date <= ? ORDER BY date DESC LIMIT 1",
+        (indicator, date)
+    ).fetchone()
+    return row[0] if row else None
 
 
 def compute_macro_pmi_diff(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":

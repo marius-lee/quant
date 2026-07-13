@@ -49,13 +49,9 @@ def prepare_data(output_json: str = "/tmp/_eval_phase1.json") -> dict:
               "effective_start": effective_start, "db_max": db_max, "db_min": db_min}
 
     # 写入 evaluation_runs (ADR 028: DB 替代临时文件)
-    try:
-        from evaluation.run_store import save_phase
-        save_phase("phase1", result)
-        logger.info("Phase 1 saved to evaluation_runs")
-    except Exception as _e:
-        raise  # 错误不吞
-        logger.error("Phase 1 save_phase traceback: %s", _e, exc_info=True)
+    from evaluation.run_store import save_phase
+    save_phase("phase1", result)
+    logger.info("Phase 1 saved to evaluation_runs")
 
     logger.info(f"Phase 1 complete ({__import__('time').monotonic()-t0:.1f}s)")
     return result

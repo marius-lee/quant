@@ -36,23 +36,18 @@ def _get_open_prices(symbols, date_str, store):
     result = {}
     syms = list(symbols)
     chunk_size = 500
-    try:
-        conn = sqlite3.connect(os.path.join(_root, "data", "market.db"))
-        for i in range(0, len(syms), chunk_size):
-            chunk = syms[i:i + chunk_size]
-            placeholders = ",".join("?" * len(chunk))
-            rows = conn.execute(
-                f"SELECT symbol, open FROM daily WHERE date=? AND symbol IN ({placeholders})",
-                [date_str] + chunk
-            ).fetchall()
-            for r in rows:
-                if r[1] and r[1] > 0:
-                    result[r[0]] = r[1]
-        conn.close()
-    except Exception as e:
-        raise  # 错误不吞
-        _log.error(f"_get_open_prices({date_str}) traceback:\n{traceback.format_exc()}")
-        _log.warning(f"_get_open_prices({date_str}): {e}")
+    conn = sqlite3.connect(os.path.join(_root, "data", "market.db"))
+    for i in range(0, len(syms), chunk_size):
+        chunk = syms[i:i + chunk_size]
+        placeholders = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"SELECT symbol, open FROM daily WHERE date=? AND symbol IN ({placeholders})",
+            [date_str] + chunk
+        ).fetchall()
+        for r in rows:
+            if r[1] and r[1] > 0:
+                result[r[0]] = r[1]
+    conn.close()
     return result
 
 
@@ -62,23 +57,18 @@ def _get_close_prices(symbols, date_str, store):
     result = {}
     syms = list(symbols)
     chunk_size = 500
-    try:
-        conn = sqlite3.connect(os.path.join(_root, "data", "market.db"))
-        for i in range(0, len(syms), chunk_size):
-            chunk = syms[i:i + chunk_size]
-            placeholders = ",".join("?" * len(chunk))
-            rows = conn.execute(
-                f"SELECT symbol, close FROM daily WHERE date=? AND symbol IN ({placeholders})",
-                [date_str] + chunk
-            ).fetchall()
-            for r in rows:
-                if r[1] and r[1] > 0:
-                    result[r[0]] = r[1]
-        conn.close()
-    except Exception as e:
-        raise  # 错误不吞
-        _log.error(f"_get_close_prices({date_str}) traceback:\n{traceback.format_exc()}")
-        _log.warning(f"_get_close_prices({date_str}): {e}")
+    conn = sqlite3.connect(os.path.join(_root, "data", "market.db"))
+    for i in range(0, len(syms), chunk_size):
+        chunk = syms[i:i + chunk_size]
+        placeholders = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"SELECT symbol, close FROM daily WHERE date=? AND symbol IN ({placeholders})",
+            [date_str] + chunk
+        ).fetchall()
+        for r in rows:
+            if r[1] and r[1] > 0:
+                result[r[0]] = r[1]
+    conn.close()
     return result
 
 
@@ -208,98 +198,88 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
     for i, today in enumerate(trading_days[:-1]):
         next_day = trading_days[i + 1]
 
-        try:
-            # ── Step 1: Generate signals using data up to 'today' ──
-            from pipeline import generate_signals
-            # Filter out cooling-off symbols
-            cooloff_syms = [s for s, d in _cooloff.items() if pd.Timestamp(d) > pd.Timestamp(today)]
-            kwargs = {
-                "date_str": today,
-                "capital": engine.get_capital(strategy),
-                "strategy": strategy,
-                "skip_pull": True,
-                "status_filter": "backtesting",
-                "suppress_push": True,
-                "universe_size": _require_cfg("backtest.universe_size"),
-                "db_path": BACKTEST_DB,
-                "store": store,
-                "exclude_symbols": cooloff_syms,
-            }
-            # Walk-forward IC retrain
-            if retrain_freq > 0 and (i - _last_retrain_idx) >= retrain_freq and bt_factor_names:
-                _log.info("backtest: retraining IC at day %d (%s)", i, today)
-                _current_ic_map_raw = _compute_ic(
-                    factor_names=bt_factor_names, date=today,
-                    symbols=store.get_universe(today)[:_require_cfg("factor.evaluation.n_symbols")],
-                    lookback=ic_lookback, store=store, status_filter="backtesting"
-                )
-                _last_retrain_idx = i
-            kwargs["ic_map"] = _current_ic_map
-            signals = generate_signals(**kwargs)
-            _last_signals = signals
-            targets = signals.get("target_positions", [])
-            signal_counts.append(len(targets))
-            # ── Record factor contributions for attribution ──
-            fv = signals.get("_factor_values", {})
-            ar = signals.get("_alpha_raw", pd.Series(dtype=float))
-            # Get next-day returns for PnL tracking
-            all_syms_track = list(set([tp["symbol"] for tp in targets]))
-            next_ret = _get_close_prices(all_syms_track, next_day, store) if all_syms_track and targets else {}
-            if isinstance(next_ret, dict) and next_ret:
-                ret_series = pd.Series(next_ret)
-            else:
-                ret_series = pd.Series(dtype=float)
-            if fv and not ar.empty and not ret_series.empty:
-                tracker.record_day(today, fv, ar, targets, ret_series)
-
-            if not targets:
-                # Record equity without trading
-                wealth = engine.get_capital(strategy)
-                equity_curve.append({"date": next_day, "equity": wealth})
-                continue
-
-            # ── Step 2: Execute at next-day open prices ──
-            all_syms = set()
-            for tp in targets:
-                all_syms.add(tp["symbol"])
-            current = engine.get_positions(strategy)
-            for p in current:
-                all_syms.add(p["symbol"])
-
-            open_prices = _get_open_prices(list(all_syms), next_day, store)
-
-            if not open_prices:
-                _log.warning(f"backtest {next_day}: no open prices available, skipping")
-                equity_curve.append({"date": next_day, "equity": engine.get_capital(strategy)})
-                continue
-
-            # Execute with open prices override
-            from pipeline import execute_signals
-            exec_result = execute_signals(
-                targets, next_day, strategy=strategy,
-                prices=open_prices,
-                db_path=BACKTEST_DB,
-                suppress_push=True,
+        from pipeline import generate_signals
+        # Filter out cooling-off symbols
+        cooloff_syms = [s for s, d in _cooloff.items() if pd.Timestamp(d) > pd.Timestamp(today)]
+        kwargs = {
+            "date_str": today,
+            "capital": engine.get_capital(strategy),
+            "strategy": strategy,
+            "skip_pull": True,
+            "status_filter": "backtesting",
+            "suppress_push": True,
+            "universe_size": _require_cfg("backtest.universe_size"),
+            "db_path": BACKTEST_DB,
+            "store": store,
+            "exclude_symbols": cooloff_syms,
+        }
+        # Walk-forward IC retrain
+        if retrain_freq > 0 and (i - _last_retrain_idx) >= retrain_freq and bt_factor_names:
+            _log.info("backtest: retraining IC at day %d (%s)", i, today)
+            _current_ic_map_raw = _compute_ic(
+                factor_names=bt_factor_names, date=today,
+                symbols=store.get_universe(today)[:_require_cfg("factor.evaluation.n_symbols")],
+                lookback=ic_lookback, store=store, status_filter="backtesting"
             )
+            _last_retrain_idx = i
+        kwargs["ic_map"] = _current_ic_map
+        signals = generate_signals(**kwargs)
+        _last_signals = signals
+        targets = signals.get("target_positions", [])
+        signal_counts.append(len(targets))
+        # ── Record factor contributions for attribution ──
+        fv = signals.get("_factor_values", {})
+        ar = signals.get("_alpha_raw", pd.Series(dtype=float))
+        # Get next-day returns for PnL tracking
+        all_syms_track = list(set([tp["symbol"] for tp in targets]))
+        next_ret = _get_close_prices(all_syms_track, next_day, store) if all_syms_track and targets else {}
+        if isinstance(next_ret, dict) and next_ret:
+            ret_series = pd.Series(next_ret)
+        else:
+            ret_series = pd.Series(dtype=float)
+        if fv and not ar.empty and not ret_series.empty:
+            tracker.record_day(today, fv, ar, targets, ret_series)
 
-            # ── Step 2.5: Update cooling-off from stop-loss events ──
-            stopped = exec_result.get("stopped_out", [])
-            if stopped:
-                cooloff_end = pd.Timestamp(next_day) + pd.Timedelta(days=_require_cfg("risk.stop_loss_cooloff_days"))
-                for s in stopped:
-                    _cooloff[s] = cooloff_end.strftime("%Y-%m-%d")
-
-            # ── Step 3: Record equity ──
+        if not targets:
+            # Record equity without trading
             wealth = engine.get_capital(strategy)
             equity_curve.append({"date": next_day, "equity": wealth})
+            continue
 
-        except Exception as e:
-            raise  # 错误不吞
-            errors += 1
-            _log.error(f"backtest {today}: traceback:\n{traceback.format_exc()}")
-            _log.warning(f"backtest {today}: error ({errors}): {e}")
-            last_equity = equity_curve[-1]["equity"] if equity_curve else capital
-            equity_curve.append({"date": next_day, "equity": last_equity})
+        # ── Step 2: Execute at next-day open prices ──
+        all_syms = set()
+        for tp in targets:
+            all_syms.add(tp["symbol"])
+        current = engine.get_positions(strategy)
+        for p in current:
+            all_syms.add(p["symbol"])
+
+        open_prices = _get_open_prices(list(all_syms), next_day, store)
+
+        if not open_prices:
+            _log.warning(f"backtest {next_day}: no open prices available, skipping")
+            equity_curve.append({"date": next_day, "equity": engine.get_capital(strategy)})
+            continue
+
+        # Execute with open prices override
+        from pipeline import execute_signals
+        exec_result = execute_signals(
+            targets, next_day, strategy=strategy,
+            prices=open_prices,
+            db_path=BACKTEST_DB,
+            suppress_push=True,
+        )
+
+        # ── Step 2.5: Update cooling-off from stop-loss events ──
+        stopped = exec_result.get("stopped_out", [])
+        if stopped:
+            cooloff_end = pd.Timestamp(next_day) + pd.Timedelta(days=_require_cfg("risk.stop_loss_cooloff_days"))
+            for s in stopped:
+                _cooloff[s] = cooloff_end.strftime("%Y-%m-%d")
+
+        # ── Step 3: Record equity ──
+        wealth = engine.get_capital(strategy)
+        equity_curve.append({"date": next_day, "equity": wealth})
 
         # Progress log every 60 days
         if (i + 1) % _require_cfg("backtest.progress_log_interval") == 0:
@@ -316,69 +296,61 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
     metrics = _compute_backtest_metrics(equity_curve)
 
     # ── Post-backtest diagnosis ──
+    _backtest_symbols = []
+    if _last_signals:
+        fv = _last_signals.get("_factor_values", {})
+        sym_set = set()
+        for series in fv.values():
+            if isinstance(series, pd.Series):
+                sym_set.update(series.dropna().index.tolist())
+        _backtest_symbols = list(sym_set)
+    ic_map_pre = _current_ic_map  # reuse walk-forward IC (was: compute_pre_backtest_ic)
+    diag = diagnose(ic_map_pre, tracker, metrics)
+    _log.info("diagnosis: %s", diag["summary"])
+    for adj in diag["adjustments"]:
+        _log.info("  adjust: %s", adj)
+
+    # ── 两步架构 Step 1: 诊断结果持久化 ──
+    # 写入 evaluation_runs (供 Step 2 正式评估做预筛)
     try:
-        # Compute pre-backtest IC for factor evaluation
-        _backtest_symbols = []
-        if _last_signals:
-            fv = _last_signals.get("_factor_values", {})
-            sym_set = set()
-            for series in fv.values():
-                if isinstance(series, pd.Series):
-                    sym_set.update(series.dropna().index.tolist())
-            _backtest_symbols = list(sym_set)
-        ic_map_pre = _current_ic_map  # reuse walk-forward IC (was: compute_pre_backtest_ic)
-        diag = diagnose(ic_map_pre, tracker, metrics)
-        _log.info("diagnosis: %s", diag["summary"])
-        for adj in diag["adjustments"]:
-            _log.info("  adjust: %s", adj)
-
-        # ── 两步架构 Step 1: 诊断结果持久化 ──
-        # 写入 evaluation_runs (供 Step 2 正式评估做预筛)
-        try:
-            from evaluation.run_store import save_phase
-            passed = [name for name, info in diag.get("factor_report", {}).items()
-                      if info.get("recommendation") in ("keep", "boost")]
-            save_phase("diagnostics", {
-                "n_factors": len(diag.get("factor_report", {})),
-                "passed": passed,
-                "factor_report": diag.get("factor_report", {}),
-                "adjustments": diag.get("adjustments", []),
-                "backtest_strategy": strategy,
-                "backtest_period": f"{start_date}_{end_date}",
-                "sharpe": metrics.get("sharpe", 0),
-                "cagr_pct": metrics.get("cagr_pct", 0),
-            })
-            _log.info("diagnosis saved to evaluation_runs: %d passed", len(passed))
-        except Exception as _se:
-            raise  # 错误不吞
-            _log.error("diagnosis save_phase traceback:\n%s", traceback.format_exc())
-
-        # 更新 factor_registry.status_reason (只改 backtesting 因子)
-        try:
-            import sqlite3 as _sqlite
-            _conn = _sqlite.connect(os.path.join(_root, "data", "market.db"))
-            _today = datetime.now().strftime("%Y-%m-%d")
-            for name, info in diag.get("factor_report", {}).items():
-                rec = info.get("recommendation", "keep")
-                ir_val = info.get("ic_ir", 0)
-                pnl_val = info.get("pnl_contrib", 0)
-                reason = f"diag:{rec}(ICIR={ir_val:.2f},PnL={pnl_val:.3f},{_today})"
-                _conn.execute(
-                    "UPDATE factor_registry SET status_reason=?, updated_at=datetime('now','localtime') "
-                    "WHERE name=? AND status IN ('registered','candidate','retired')",
-                    (reason, name)
-                )
-            _conn.commit()
-            _conn.close()
-        except Exception as _fe:
-            raise  # 错误不吞
-            _log.error("diagnosis factor_registry update traceback:\n%s", traceback.format_exc())
-
-    except Exception as e:
+        from evaluation.run_store import save_phase
+        passed = [name for name, info in diag.get("factor_report", {}).items()
+                  if info.get("recommendation") in ("keep", "boost")]
+        save_phase("diagnostics", {
+            "n_factors": len(diag.get("factor_report", {})),
+            "passed": passed,
+            "factor_report": diag.get("factor_report", {}),
+            "adjustments": diag.get("adjustments", []),
+            "backtest_strategy": strategy,
+            "backtest_period": f"{start_date}_{end_date}",
+            "sharpe": metrics.get("sharpe", 0),
+            "cagr_pct": metrics.get("cagr_pct", 0),
+        })
+        _log.info("diagnosis saved to evaluation_runs: %d passed", len(passed))
+    except Exception as _se:
         raise  # 错误不吞
-        _log.error("diagnosis traceback:\n%s", traceback.format_exc())
-        _log.warning("diagnosis failed: %s", e)
-        diag = {"factor_report": {}, "adjustments": [], "summary": str(e)}
+        _log.error("diagnosis save_phase traceback:\n%s", traceback.format_exc())
+
+    # 更新 factor_registry.status_reason (只改 backtesting 因子)
+    try:
+        import sqlite3 as _sqlite
+        _conn = _sqlite.connect(os.path.join(_root, "data", "market.db"))
+        _today = datetime.now().strftime("%Y-%m-%d")
+        for name, info in diag.get("factor_report", {}).items():
+            rec = info.get("recommendation", "keep")
+            ir_val = info.get("ic_ir", 0)
+            pnl_val = info.get("pnl_contrib", 0)
+            reason = f"diag:{rec}(ICIR={ir_val:.2f},PnL={pnl_val:.3f},{_today})"
+            _conn.execute(
+                "UPDATE factor_registry SET status_reason=?, updated_at=datetime('now','localtime') "
+                "WHERE name=? AND status IN ('registered','candidate','retired')",
+                (reason, name)
+            )
+        _conn.commit()
+        _conn.close()
+    except Exception as _fe:
+        raise  # 错误不吞
+        _log.error("diagnosis factor_registry update traceback:\n%s", traceback.format_exc())
 
 
     avg_signals = sum(signal_counts) / max(len(signal_counts), 1)

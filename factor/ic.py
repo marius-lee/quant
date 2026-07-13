@@ -109,6 +109,14 @@ def compute_ic(*,
     from factor.compute.price._alternative import preload_ztd_cache as _preload_ztd_ic
     _preload_ztd_ic(trading_days, symbols)
 
+    # ── 一次性加载全窗口数据（避免逐日 SQLite 查询 × 8 线程锁争抢） ──
+    _data_min = trading_days[-1]  # earliest date
+    _data_max = trading_days[0]   # latest date
+    _log.info("compute_ic: loading data for %d symbols from %s to %s (single query)",
+              len(symbols), _data_min, _data_max)
+    data = store.get_daily(symbols, start=_data_min, end=_data_max)
+    _log.info("compute_ic: data loaded, shape=%s", data.shape if data is not None else "None")
+
     factor_daily = {name: {} for name in factor_names}
     fwd_1d = {}
 
@@ -117,11 +125,13 @@ def compute_ic(*,
     max_workers = min(8, max(1, len(compute_days)))
 
     def _compute_one_day(ds):
+        """从预加载的 data 切片出截至 ds 的窗口，计算因子。（不调 SQLite）"""
         try:
-            data = store.get_daily(symbols, ds)
-            if data is None or data.empty:
+            # 切片: 只保留 <= ds 的数据（模拟"截至 ds 已知的数据"）
+            ds_data = data.loc[:ds]
+            if ds_data is None or ds_data.empty:
                 return (ds, {}, None)
-            close = data["close"]
+            close = ds_data["close"]
             if not isinstance(close, pd.DataFrame):
                 return (ds, {}, None)
             if len(close) < 2:
@@ -129,7 +139,7 @@ def compute_ic(*,
             fwd = (close.iloc[-1] / close.iloc[-2]) - 1
             fundamentals = store.get_fundamentals(symbols, ds)
             factor_vals = compute_all_factors(
-                data, ds, fundamentals=fundamentals,
+                ds_data, ds, fundamentals=fundamentals,
                 factor_names=factor_names, status_filter=status_filter,
             )
             return (ds, factor_vals, fwd)

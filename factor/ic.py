@@ -104,6 +104,10 @@ def compute_ic(*,
 
     _log.info("compute_ic: %d trading days available before %s", len(trading_days), date)
 
+    # ── ztd 预计算缓存: 消除 IC 计算每交易日重复 SQL 查询 ──
+    from factor.compute.price._alternative import preload_ztd_cache as _preload_ztd_ic
+    _preload_ztd_ic(trading_days, symbols)
+
     factor_daily = {name: {} for name in factor_names}
     fwd_1d = {}
 

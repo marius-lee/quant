@@ -50,3 +50,34 @@ SQLite WAL 模式支持多读单写：
 - ADR 029: 四层回测
 - P78: ProcessPoolExecutor→ThreadPoolExecutor 迁移 (9040df2)
 - HANDOFF.md: 性能优化建议 (提到 ztd/IC 瓶颈)
+
+## 后续优化 (2026-07-13)
+
+### compute_str / compute_abn_turnover 冗余 SQL 消除
+
+**问题**：这两个因子在 `data["turnover"]` 已可用的情况下（`store.get_daily()` 已 pivot 全部 7 列），仍然用独立 SQL 查询 `daily.turnover`。每个交易日 × 2 次冗余查询。
+
+**根因历史**：
+1. 早期 `get_daily` 未包含 turnover 列 → 因子自己查 SQL
+2. `get_daily` 后来加上了 turnover 但因子代码未更新
+3. 前几次"优化"只修了 ztd 缓存，忽略了这两个因子
+
+**修复**：
+- `compute_str`: 删除 ~30 行 `daily.turnover` SQL 查询，改用 `data["turnover"].rolling(...).std()`
+- `compute_abn_turnover`: 删除 ~30 行 `daily.turnover` SQL 查询，改用 `data["turnover"].rolling(...).mean()`
+- `stocks.total_mv` 和 `stocks.industry` SQL 查询保留（不在 data 中）
+- 同时修复 `_dispatch.py` 和 `_alternative.py` 中 `bc034e9` 遗留的 raise 前死代码（日志移到 raise 前）
+
+**教训**：
+- 数据层加新列时必须同时更新下游消费者
+- `bc034e9` 的 raise 修复不完整，留下 30+ 处死代码未清理，需要单独修复
+
+### 修订 (2026-07-13 晚): 明确不改项
+
+**stocks.total_mv SQL 保留**：
+- `compute_str` 和 `compute_abn_turnover` 的市值/行业 SQL 查询**不改**，原因：
+  - 每次调用只查 1 行/股票，几十到几百条，数据量小
+  - 数据不在 `get_daily()` 的 pivot 列中
+  - 改函数签名（从外层批量传入 mv_map）会增加接口复杂度，但收益微小
+  - 两者已非主要瓶颈（daily.turnover SQL 才是）
+- **改动范围为**：`daily.turnover` SQL → `data["turnover"]`，不改 `stocks` 查询

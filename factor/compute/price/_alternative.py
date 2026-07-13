@@ -159,37 +159,17 @@ def compute_str(data, date, window=20):
     Args:
         window: 标准差回看窗口 (默认20日, 匹配月频调仓; 10-60日均稳健)
     """
-    import sqlite3, numpy as np, os
+    import numpy as np
     close = data["close"]
-    syms = close.columns.tolist()
-    end_date = close.index[-1].strftime("%Y-%m-%d") if hasattr(close.index[-1], 'strftime') else str(close.index[-1])[:10]
+    turnover_df = data["turnover"]
 
-    # 从 daily 表读取换手率 (get_daily 不含 turnover 字段)
-    db = _market_db_path()
-    conn = _market_conn("ro")
-    _ph = ",".join(["?"] * len(syms))
-    rows = conn.execute(f"""
-        SELECT date, symbol, turnover FROM daily
-        WHERE date <= ? AND symbol IN ({_ph})
-        ORDER BY date
-    """, [end_date] + syms).fetchall()
-    conn.close()
-
-    if not rows:
+    if turnover_df.empty:
         return pd.Series(np.nan, index=close.columns, name="str")
 
-    df = pd.DataFrame(rows, columns=['date', 'symbol', 'turnover'])
-    df['date'] = pd.to_datetime(df['date'])
-
-    # 用 groupby 替代逐只循环 — O(n) vs O(n²)
-    df = df.sort_values(['symbol', 'date'])
-    df['_rn'] = df.groupby('symbol').cumcount(ascending=False)  # 倒序行号
-    recent = df[df['_rn'] < window]
-    raw = recent.groupby('symbol')['turnover'].std()
-    counts = df.groupby('symbol').size()
     min_records = max(window // 2, 10)
-    raw = raw[counts >= min_records]
-    raw = raw.dropna()
+    raw = turnover_df.rolling(window, min_periods=min_records).std().iloc[-1].dropna()
+    valid_mask = turnover_df.notna().sum() >= min_records
+    raw = raw[valid_mask]
     raw.name = 'str'
     if raw.empty or raw.count() < 30:
         return _cs_zscore(-raw).rename("str")
@@ -214,8 +194,8 @@ def compute_str(data, date, window=20):
             resid = y - LinearRegression().fit(X, y).predict(X)
             raw = pd.Series(resid, index=common)
     except Exception:
-        raise  # 错误不吞
         _log.error("STR residual failed: %s", traceback.format_exc())
+        raise
 
     # 取负: 低波动→高分
     return _cs_zscore(-raw).rename("str")
@@ -232,23 +212,17 @@ def compute_abn_turnover(data, date, window=20):
     Args:
         window: 换手率均值窗口 (默认20日)
     """
-    import sqlite3, numpy as np
+    import numpy as np
     close = data["close"]
-    syms = close.columns.tolist()
-    end_date = close.index[-1].strftime("%Y-%m-%d") if hasattr(close.index[-1], 'strftime') else str(close.index[-1])[:10]
+    turnover_df = data["turnover"]
 
-    db = _market_db_path()
-    conn = _market_conn("ro")
-    _ph = ",".join(["?"] * len(syms))
-
-    # 取换手率
-    rows = conn.execute(f"""
-        SELECT date, symbol, turnover FROM daily
-        WHERE date <= ? AND symbol IN ({_ph})
-        ORDER BY date
-    """, [end_date] + syms).fetchall()
+    if turnover_df.empty:
+        return pd.Series(np.nan, index=close.columns, name="abn_turnover")
 
     # 取市值 + 行业
+    syms = close.columns.tolist()
+    conn = _market_conn("ro")
+    _ph = ",".join(["?"] * len(syms))
     meta_rows = conn.execute(f"""
         SELECT symbol, total_mv, industry FROM stocks
         WHERE symbol IN ({_ph})
@@ -258,20 +232,11 @@ def compute_abn_turnover(data, date, window=20):
     mv_map = {r[0]: r[1] for r in meta_rows if r[1]}
     ind_map = {r[0]: r[2] for r in meta_rows if r[2]}
 
-    if not rows:
-        return pd.Series(np.nan, index=close.columns, name="abn_turnover")
-
-    df = pd.DataFrame(rows, columns=['date', 'symbol', 'turnover'])
-    df['date'] = pd.to_datetime(df['date'])
-
-    # 用 groupby 替代逐只循环 — O(n) vs O(n²)
-    df = df.sort_values(['symbol', 'date'])
-    df['_rn'] = df.groupby('symbol').cumcount(ascending=False)
-    recent = df[df['_rn'] < window]
-    avg_turn = recent.groupby('symbol')['turnover'].mean()
-    counts = df.groupby('symbol').size()
     min_records = max(window // 2, 10)
-    avg_turn = avg_turn[(avg_turn > 0) & (counts >= min_records)]
+    avg_turn = turnover_df.rolling(window, min_periods=min_records).mean().iloc[-1]
+    valid_mask = turnover_df.notna().sum() >= min_records
+    avg_turn = avg_turn[valid_mask & (avg_turn > 0)]
+
     turn_series = np.log(avg_turn)
     turn_series.name = 'ln_turnover'
     if turn_series.empty or turn_series.count() < 30:
@@ -301,9 +266,8 @@ def compute_abn_turnover(data, date, window=20):
         resid = y - LinearRegression().fit(X, y).predict(X)
         raw = pd.Series(resid, index=common)
     except Exception:
-        raise  # 错误不吞
         _log.error("ABN_TURN residual failed, using raw turnover: %s", traceback.format_exc())
-        raw = turn_series.loc[common]
+        raise
 
     # 取负: 异常高换手→低分
     return _cs_zscore(-raw).rename("abn_turnover")

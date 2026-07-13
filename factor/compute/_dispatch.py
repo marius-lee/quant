@@ -44,9 +44,8 @@ def compute_all_factors(data: pd.DataFrame, date: str,
             else:
                 results[name] = fn(data, date, win)
         except Exception as e:
-            raise  # 错误不吞
             import traceback; _plog.error(f"traceback: {traceback.format_exc()}")
-            _plog.warning(f"price factor {name} failed: {e}")
+            raise
             results[name] = pd.Series(dtype=float)
         done_pf += 1
         if done_pf % 5 == 0 or done_pf == total_pf:
@@ -75,9 +74,8 @@ def compute_all_factors(data: pd.DataFrame, date: str,
                 else:
                     results[name] = fn(fundamentals, date)
             except Exception as e:
-                raise  # 错误不吞
                 import traceback; _plog.error(f"traceback: {traceback.format_exc()}")
-                _plog.warning(f"fundamental factor {name} failed: {e}")
+                raise
                 results[name] = pd.Series(dtype=float)
             done_ff += 1
             if done_ff % 5 == 0 or done_ff == total_ff:

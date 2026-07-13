@@ -50,16 +50,10 @@ def _timed_loop(name: str, target_time: time, run_fn, skip_deadline: time = None
             if hhmm >= target_time:
                 update(name, status="running")
                 t0 = _time.time()
-                try:
-                    run_fn(today)
-                    elapsed = _time.time() - t0
-                    update(name, status="idle", last_run=now.isoformat(),
-                           last_duration=elapsed, last_error=None)
-                except Exception as e:
-                    raise  # 错误不吞
-                    elapsed = _time.time() - t0
-                    update(name, status="error", last_run=now.isoformat(),
-                           last_duration=elapsed, last_error=str(e))
+                run_fn(today)
+                elapsed = _time.time() - t0
+                update(name, status="idle", last_run=now.isoformat(),
+                       last_duration=elapsed, last_error=None)
                 ran = True
             else:
                 wait_min = (target_time.hour * 60 + target_time.minute) - (hhmm.hour * 60 + hhmm.minute)
@@ -108,16 +102,10 @@ def _weekly_loop(name: str, target_weekday: int, target_time: time, run_fn):
         if not ran and hhmm >= target_time:
             update(name, status="running")
             t0 = _time.time()
-            try:
-                run_fn(today)
-                elapsed = _time.time() - t0
-                update(name, status="idle", last_run=now.isoformat(),
-                       last_duration=elapsed, last_error=None)
-            except Exception as e:
-                raise  # 错误不吞
-                elapsed = _time.time() - t0
-                update(name, status="error", last_run=now.isoformat(),
-                       last_duration=elapsed, last_error=str(e))
+            run_fn(today)
+            elapsed = _time.time() - t0
+            update(name, status="idle", last_run=now.isoformat(),
+                   last_duration=elapsed, last_error=None)
             ran = True
         else:
             wait_min = (target_time.hour * 60 + target_time.minute) - (hhmm.hour * 60 + hhmm.minute)

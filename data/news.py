@@ -44,12 +44,8 @@ def _ensure_table(conn):
 
 def _sentiment_snownlp(text: str) -> float:
     """SnowNLP 中文情感分析: 返回 [0, 1], >0.6 正面."""
-    try:
-        from snownlp import SnowNLP
-        return SnowNLP(text).sentiments
-    except ImportError:
-        logger.warning("SnowNLP not installed — pip install snownlp. Returning neutral.")
-        return 0.5
+    from snownlp import SnowNLP
+    return SnowNLP(text).sentiments
 
 
 def _sentiment_fallback(text: str) -> float:
@@ -81,11 +77,7 @@ def sync_news_sentiment(start_date: str = None, end_date: str = None, max_per_da
         end_date: YYYY-MM-DD, 默认今天
         max_per_day: 每天最多拉取新闻数 (akshare 限流)
     """
-    try:
-        import akshare as ak
-    except ImportError:
-        logger.error("akshare not installed — pip install akshare")
-        return 0
+    import akshare as ak
     
     if start_date is None:
         start_date = (datetime.now().strftime("%Y-%m-%d"))
@@ -96,58 +88,46 @@ def sync_news_sentiment(start_date: str = None, end_date: str = None, max_per_da
     _ensure_table(conn)
     
     total_new = 0
-    try:
-        news_df = ak.stock_news_em()
-        if news_df.empty:
-            logger.warning("stock_news_em returned empty")
-            return 0
-        
-        # Process each news item
-        for _, row in news_df.iterrows():
-            if total_new >= max_per_day:
-                break
-            try:
-                title = str(row.get("新闻标题", row.get("title", "")))
-                if not title:
-                    continue
-                
-                # Extract symbol from news content/code
-                sym = str(row.get("关键词", row.get("code", ""))).strip()
-                if not sym or len(sym) < 6:
-                    continue
-                
-                pub_time = str(row.get("发布时间", row.get("pub_time", "")))[:19]
-                date = pub_time[:10] if pub_time else start_date
-                
-                # Sentiment analysis
-                score = _sentiment_snownlp(title)
-                
-                conn.execute(
-                    "INSERT OR REPLACE INTO news_sentiment (symbol, date, pub_time, title, sentiment_score) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (sym, date, pub_time, title, round(score, 4))
-                )
-                total_new += 1
-            except Exception:
-                raise  # 错误不吞
-                continue
-        
-        # Aggregate daily counts
-        conn.execute("""
-            INSERT OR REPLACE INTO news_daily_count (symbol, date, news_count, avg_sentiment)
-            SELECT symbol, date, COUNT(*), AVG(sentiment_score)
-            FROM news_sentiment
-            WHERE date BETWEEN ? AND ?
-            GROUP BY symbol, date
-        """, (start_date, end_date))
-        
-        conn.commit()
-        logger.info(f"news_sentiment synced: {total_new} news items")
-    except Exception as e:
-        raise  # 错误不吞
-        logger.warning(f"news_sentiment sync failed: {e}")
-    finally:
-        conn.close()
+    news_df = ak.stock_news_em()
+    if news_df.empty:
+        logger.warning("stock_news_em returned empty")
+        return 0
+
+    # Process each news item
+    for _, row in news_df.iterrows():
+        if total_new >= max_per_day:
+            break
+        title = str(row.get("新闻标题", row.get("title", "")))
+        if not title:
+            continue
+
+        # Extract symbol from news content/code
+        sym = str(row.get("关键词", row.get("code", ""))).strip()
+        if not sym or len(sym) < 6:
+            continue
+
+        pub_time = str(row.get("发布时间", row.get("pub_time", "")))[:19]
+        date = pub_time[:10] if pub_time else start_date
+
+        # Sentiment analysis
+        score = _sentiment_snownlp(title)
+
+        conn.execute(
+            "INSERT OR REPLACE INTO news_sentiment (symbol, date, pub_time, title, sentiment_score) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (sym, date, pub_time, title, round(score, 4))
+        )
+        total_new += 1
+    conn.execute("""
+        INSERT OR REPLACE INTO news_daily_count (symbol, date, news_count, avg_sentiment)
+        SELECT symbol, date, COUNT(*), AVG(sentiment_score)
+        FROM news_sentiment
+        WHERE date BETWEEN ? AND ?
+        GROUP BY symbol, date
+    """, (start_date, end_date))
+
+    conn.commit()
+    logger.info(f"news_sentiment synced: {total_new} news items")
     
     return total_new
 

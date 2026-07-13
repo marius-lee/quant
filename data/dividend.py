@@ -36,13 +36,8 @@ def _ensure_table(conn):
 
 def _get_stock_pool(conn) -> list:
     """从 stocks 表获取股票池 code 列表."""
-    try:
-        rows = conn.execute("SELECT DISTINCT symbol FROM stocks").fetchall()
-        return [r[0] for r in rows if r[0]]
-    except Exception:
-        raise  # 错误不吞
-        rows = conn.execute("SELECT DISTINCT symbol FROM daily").fetchall()
-        return [r[0] for r in rows if r[0]]
+    rows = conn.execute("SELECT DISTINCT symbol FROM stocks").fetchall()
+    return [r[0] for r in rows if r[0]]
 
 
 def sync_range(start_date: str = None, end_date: str = None, conn=None) -> int:
@@ -64,12 +59,7 @@ def sync_range(start_date: str = None, end_date: str = None, conn=None) -> int:
 
     total = 0
     for i, sym in enumerate(symbols):
-        try:
-            df = ak.stock_history_dividend_detail(symbol=sym, indicator='分红', date='')
-        except Exception as e:
-            raise  # 错误不吞
-            logger.debug(f"dividend {sym} fetch failed: {e}")
-            continue
+        df = ak.stock_history_dividend_detail(symbol=sym, indicator='分红', date='')
 
         if df is None or df.empty:
             continue
@@ -86,42 +76,38 @@ def sync_range(start_date: str = None, end_date: str = None, conn=None) -> int:
             continue
 
         for _, row in df.iterrows():
-            try:
-                ex_date = row['除权除息日']
-                if pd.isna(ex_date):
-                    continue
+            ex_date = row['除权除息日']
+            if pd.isna(ex_date):
+                continue
 
-                # 派息 = 每10股派息金额, 转为每股
-                cash_div_raw = float(row.get('派息', 0) or 0)
-                cash_div = cash_div_raw / 10.0
+            # 派息 = 每10股派息金额, 转为每股
+            cash_div_raw = float(row.get('派息', 0) or 0)
+            cash_div = cash_div_raw / 10.0
 
-                # 送股 + 转增 = 每10股送转数
-                song_gu = float(row.get('送股', 0) or 0)
-                zhuan_zeng = float(row.get('转增', 0) or 0)
-                stk_div = (song_gu + zhuan_zeng) / 10.0  # 每股送转数
+            # 送股 + 转增 = 每10股送转数
+            song_gu = float(row.get('送股', 0) or 0)
+            zhuan_zeng = float(row.get('转增', 0) or 0)
+            stk_div = (song_gu + zhuan_zeng) / 10.0  # 每股送转数
 
-                # 股权登记日
-                record_date = row.get('股权登记日')
-                if pd.isna(record_date):
-                    record_date = ''
+            # 股权登记日
+            record_date = row.get('股权登记日')
+            if pd.isna(record_date):
+                record_date = ''
 
-                conn.execute("""
-                    INSERT OR REPLACE INTO dividend
-                    (symbol, end_date, div_year, cash_div, stk_div, record_date, ex_date)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    sym,
-                    str(ex_date)[:10],
-                    int(ex_date.year),
-                    cash_div,
-                    stk_div,
-                    str(record_date)[:10] if record_date else '',
-                    str(ex_date)[:10],
-                ))
-                total += 1
-            except Exception as e_row:
-                raise  # 错误不吞
-                logger.debug(f"dividend row skip {sym}: {e_row}")
+            conn.execute("""
+                INSERT OR REPLACE INTO dividend
+                (symbol, end_date, div_year, cash_div, stk_div, record_date, ex_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                sym,
+                str(ex_date)[:10],
+                int(ex_date.year),
+                cash_div,
+                stk_div,
+                str(record_date)[:10] if record_date else '',
+                str(ex_date)[:10],
+            ))
+            total += 1
 
         # 进度
         if (i + 1) % 100 == 0:

@@ -29,10 +29,7 @@ def _safe_float(val) -> float | None:
     s = str(val).strip()
     if s in ("", "-", "--", "nan", "NaN", "None"):
         return None
-    try:
-        return float(s)
-    except (ValueError, TypeError):
-        return None
+    return float(s)
 
 
 def _fetch_value_em(conn: sqlite3.Connection, symbols: list, sleep_ms: int = 200) -> int:
@@ -47,11 +44,7 @@ def _fetch_value_em(conn: sqlite3.Connection, symbols: list, sleep_ms: int = 200
 
     返回: 更新成功数。
     """
-    try:
-        import akshare as ak
-    except ImportError:
-        logger.warning("akshare not installed")
-        return 0
+    import akshare as ak
 
     updated = 0
     skipped = 0
@@ -65,47 +58,41 @@ def _fetch_value_em(conn: sqlite3.Connection, symbols: list, sleep_ms: int = 200
             logger.info(f"value_em [{i}/{total}] {updated} updated, {skipped} skipped | {rate:.1f}/s, ETA {eta:.0f}s")
         if i > 0:
             time.sleep(sleep_ms / 1000.0)
-        try:
-            df = ak.stock_value_em(symbol=sym)
-            if df is None or df.empty:
-                skipped += 1
-                continue
-
-            last = df.iloc[-1]
-
-            pe = _safe_float(last.get("PE(TTM)"))
-            pb = _safe_float(last.get("市净率"))
-            total_mv = _safe_float(last.get("总市值"))
-            total_shares = _safe_float(last.get("总股本"))
-
-            updates = []
-            params = []
-            if pe is not None and pe > 0:
-                updates.append("pe=?")
-                params.append(round(pe, 4))
-            if pb is not None and pb >= 0:
-                updates.append("pb=?")
-                params.append(round(pb, 4))
-            if total_mv is not None and total_mv > 0:
-                updates.append("total_mv=?")
-                params.append(round(total_mv, 2))
-            if total_shares is not None and total_shares > 0:
-                updates.append("total_shares=?")
-                params.append(round(total_shares, 0))
-
-            if updates:
-                params.append(sym)
-                conn.execute(
-                    f"UPDATE stocks SET {', '.join(updates)} WHERE symbol=?",
-                    params,
-                )
-                updated += 1
-                print(f"\r{updated}/{total}", end="", flush=True)
-        except Exception as e_row:
-            raise  # 错误不吞
-            logger.debug(f"value_em row skip {sym}: {e_row}")
+        df = ak.stock_value_em(symbol=sym)
+        if df is None or df.empty:
             skipped += 1
             continue
+
+        last = df.iloc[-1]
+
+        pe = _safe_float(last.get("PE(TTM)"))
+        pb = _safe_float(last.get("市净率"))
+        total_mv = _safe_float(last.get("总市值"))
+        total_shares = _safe_float(last.get("总股本"))
+
+        updates = []
+        params = []
+        if pe is not None and pe > 0:
+            updates.append("pe=?")
+            params.append(round(pe, 4))
+        if pb is not None and pb >= 0:
+            updates.append("pb=?")
+            params.append(round(pb, 4))
+        if total_mv is not None and total_mv > 0:
+            updates.append("total_mv=?")
+            params.append(round(total_mv, 2))
+        if total_shares is not None and total_shares > 0:
+            updates.append("total_shares=?")
+            params.append(round(total_shares, 0))
+
+        if updates:
+            params.append(sym)
+            conn.execute(
+                f"UPDATE stocks SET {', '.join(updates)} WHERE symbol=?",
+                params,
+            )
+            updated += 1
+            print(f"\r{updated}/{total}", end="", flush=True)
 
     print()  # newline after progress line
     conn.commit()

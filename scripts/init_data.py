@@ -111,15 +111,10 @@ def init_all():
     ]
     for name, fn in steps:
         t0 = time.time()
-        try:
-            n = fn()
-            elapsed = time.time() - t0
-            logger.info(f"[{name}] {n} rows, {elapsed:.1f}s")
-            print(f"  {name}: {n} rows ({elapsed:.1f}s)")
-        except Exception as e:
-            raise  # 错误不吞
-            logger.warning(f"[{name}] failed: {e}")
-            print(f"  {name}: FAILED — {e}")
+        n = fn()
+        elapsed = time.time() - t0
+        logger.info(f"[{name}] {n} rows, {elapsed:.1f}s")
+        print(f"  {name}: {n} rows ({elapsed:.1f}s)")
     print("\n初始化完成。运行 check 查看结果:")
     check_data_status()
 

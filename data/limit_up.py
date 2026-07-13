@@ -61,62 +61,49 @@ def sync_date(date_str: str, conn=None) -> int:
     
     _ensure_table(conn)
     
-    try:
-        df = ak.stock_zt_pool_em(date=date_str.replace('-', ''))
-        if df.empty:
-            return 0
-        
-        # Normalize
-        col_map = {
-            '代码': 'symbol',
-            '名称': 'name',
-            '涨跌幅': 'change_pct',
-            '最新价': 'close',
-            '成交额': 'amount',
-            '流通市值': 'circ_mv',
-            '总市值': 'total_mv',
-            '换手率': 'turnover_rate',
-            '封板资金': 'lock_capital',
-            '首次封板时间': 'first_time',
-            '最后封板时间': 'last_time',
-            '炸板次数': 'open_times',
-            '涨停统计': 'zt_stat',
-            '连板数': 'limit_up_times',
-            '所属行业': 'industry',
-        }
-        df = df.rename(columns=col_map)
-        df['date'] = date_str
-        df['symbol'] = df['symbol'].astype(str).str.zfill(6)
-        
-        n = 0
-        for _, row in df.iterrows():
-            try:
-                conn.execute("""
-                    INSERT OR REPLACE INTO limit_up_pool 
-                    (date, symbol, name, change_pct, close, amount, circ_mv, total_mv,
-                     turnover_rate, lock_capital, first_time, last_time, open_times, 
-                     zt_stat, limit_up_times, industry)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (date_str, row['symbol'], row.get('name'),
-                      row.get('change_pct'), row.get('close'), row.get('amount'),
-                      row.get('circ_mv'), row.get('total_mv'), row.get('turnover_rate'),
-                      row.get('lock_capital'), row.get('first_time'), row.get('last_time'),
-                      row.get('open_times'), row.get('zt_stat'), row.get('limit_up_times'),
-                      row.get('industry')))
-                n += 1
-            except Exception as e_row:
-                raise  # 错误不吞
-                logger.debug(f"limit_up row skip {row.get("symbol", "?")} {date_str}: {e_row}")
-        
-        conn.commit()
-        logger.info(f"limit_up: {date_str} — {n} stocks")
-        
-    except Exception as e:
-        raise  # 错误不吞
-        logger.warning(f"limit_up sync failed for {date_str}: {e}")
-    finally:
-        if close_conn:
-            conn.close()
+    df = ak.stock_zt_pool_em(date=date_str.replace('-', ''))
+    if df.empty:
+        return 0
+
+    # Normalize
+    col_map = {
+        '代码': 'symbol',
+        '名称': 'name',
+        '涨跌幅': 'change_pct',
+        '最新价': 'close',
+        '成交额': 'amount',
+        '流通市值': 'circ_mv',
+        '总市值': 'total_mv',
+        '换手率': 'turnover_rate',
+        '封板资金': 'lock_capital',
+        '首次封板时间': 'first_time',
+        '最后封板时间': 'last_time',
+        '炸板次数': 'open_times',
+        '涨停统计': 'zt_stat',
+        '连板数': 'limit_up_times',
+        '所属行业': 'industry',
+    }
+    df = df.rename(columns=col_map)
+    df['date'] = date_str
+    df['symbol'] = df['symbol'].astype(str).str.zfill(6)
+
+    n = 0
+    for _, row in df.iterrows():
+        conn.execute("""
+            INSERT OR REPLACE INTO limit_up_pool 
+            (date, symbol, name, change_pct, close, amount, circ_mv, total_mv,
+             turnover_rate, lock_capital, first_time, last_time, open_times, 
+             zt_stat, limit_up_times, industry)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (date_str, row['symbol'], row.get('name'),
+              row.get('change_pct'), row.get('close'), row.get('amount'),
+              row.get('circ_mv'), row.get('total_mv'), row.get('turnover_rate'),
+              row.get('lock_capital'), row.get('first_time'), row.get('last_time'),
+              row.get('open_times'), row.get('zt_stat'), row.get('limit_up_times'),
+              row.get('industry')))
+        n += 1
+    conn.commit()
+    logger.info(f"limit_up: {date_str} — {n} stocks")
     
     return n
 

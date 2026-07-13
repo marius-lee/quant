@@ -47,84 +47,71 @@ def _run_continuous(today: str):
             continue
 
         # ── 盘中检查 ──
-        try:
-            state = broker.get()
-            total = state.get("total_asset", 0) or 0
-            initial = (state.get("metrics") or {}).get("initial_capital", 5000)
-            positions = state.get("positions") or []
+        state = broker.get()
+        total = state.get("total_asset", 0) or 0
+        initial = (state.get("metrics") or {}).get("initial_capital", 5000)
+        positions = state.get("positions") or []
 
-            alerts = []
+        alerts = []
 
-            # 1. 总资产回撤 / 熔断
-            if initial > 0 and total > 0:
-                dd_pct = round((1 - total / initial) * 100, 1)
-                if dd_pct > MAX_DRAWDOWN_PCT:
-                    alerts.append(f"回撤 {dd_pct}% > {MAX_DRAWDOWN_PCT}%")
-                if total < initial * (1 - CIRCUIT_BREAKER_PCT / 100):
-                    alerts.append(f"熔断! ¥{total:,.0f} < ¥{initial*0.95:,.0f}")
-                    broker.update({"circuit_breaker": True,
-                                   "cb_reason": f"总资产 {total:,.0f} < 95%初始资金"})
+        # 1. 总资产回撤 / 熔断
+        if initial > 0 and total > 0:
+            dd_pct = round((1 - total / initial) * 100, 1)
+            if dd_pct > MAX_DRAWDOWN_PCT:
+                alerts.append(f"回撤 {dd_pct}% > {MAX_DRAWDOWN_PCT}%")
+            if total < initial * (1 - CIRCUIT_BREAKER_PCT / 100):
+                alerts.append(f"熔断! ¥{total:,.0f} < ¥{initial*0.95:,.0f}")
+                broker.update({"circuit_breaker": True,
+                               "cb_reason": f"总资产 {total:,.0f} < 95%初始资金"})
 
-            # 2. 止盈止损扫描 — 每 QUOTE_THROTTLE_SEC 拉一次行情
-            if positions:
-                now_ts = _time.time()
-                if now_ts - last_quote_ts >= QUOTE_THROTTLE_SEC:
-                    last_quote_ts = now_ts
-                    syms = [p["symbol"] for p in positions]
-                    quotes = {}
-                    try:
-                        from execution.quote import fetch_quotes
-                        quotes = fetch_quotes(syms) or {}
-                    except Exception as e:
-                        raise  # 错误不吞
-                        _log.warning(f"[{today}] quote fetch failed: {e}")
+        # 2. 止盈止损扫描 — 每 QUOTE_THROTTLE_SEC 拉一次行情
+        if positions:
+            now_ts = _time.time()
+            if now_ts - last_quote_ts >= QUOTE_THROTTLE_SEC:
+                last_quote_ts = now_ts
+                syms = [p["symbol"] for p in positions]
+                quotes = {}
+                from execution.quote import fetch_quotes
+                quotes = fetch_quotes(syms) or {}
+                from execution.stop_loss import RiskManager as _RM
+                rm = _RM()
+                signals = rm.check(positions, quotes, today)
+                for sig in signals:
+                    sym = sig["symbol"]
+                    cur = sig["price"]
+                    sell_shares = sig["shares"]
+                    reason = sig["reason"]
+                    pnl_pct = 0.0
+                    for p2 in positions:
+                        if p2["symbol"] == sym:
+                            cost = p2.get("price", 0)
+                            if cost > 0:
+                                pnl_pct = (cur / cost - 1)
+                            break
 
-                    # ATR 动态止盈止损三重体系
-                    from execution.stop_loss import RiskManager as _RM
-                    rm = _RM()
-                    signals = rm.check(positions, quotes, today)
-                    for sig in signals:
-                        sym = sig["symbol"]
-                        cur = sig["price"]
-                        sell_shares = sig["shares"]
-                        reason = sig["reason"]
-                        pnl_pct = 0.0
-                        for p2 in positions:
-                            if p2["symbol"] == sym:
-                                cost = p2.get("price", 0)
-                                if cost > 0:
-                                    pnl_pct = (cur / cost - 1)
-                                break
+                    if "TP" in reason.upper():
+                        tp_key = f"{sym}:profit"
+                        if tp_key not in triggered_stop:
+                            _execute_sell(today, sym, sell_shares, cur, "止盈", round(pnl_pct * 100, 1))
+                            triggered_stop.add(tp_key)
+                            alerts.append(f"{sym} 止盈 {pnl_pct*100:.0f}% ({reason})")
+                            _m.inc("scheduler.monitor.stop_profit")
+                    else:
+                        sl_key = f"{sym}:loss"
+                        if sl_key not in triggered_stop:
+                            _execute_sell(today, sym, sell_shares, cur, "止损", round(pnl_pct * 100, 1))
+                            triggered_stop.add(sl_key)
+                            alerts.append(f"{sym} 止损 {pnl_pct*100:.0f}% ({reason})")
+                            _m.inc("scheduler.monitor.stop_loss")
 
-                        if "TP" in reason.upper():
-                            tp_key = f"{sym}:profit"
-                            if tp_key not in triggered_stop:
-                                _execute_sell(today, sym, sell_shares, cur, "止盈", round(pnl_pct * 100, 1))
-                                triggered_stop.add(tp_key)
-                                alerts.append(f"{sym} 止盈 {pnl_pct*100:.0f}% ({reason})")
-                                _m.inc("scheduler.monitor.stop_profit")
-                        else:
-                            sl_key = f"{sym}:loss"
-                            if sl_key not in triggered_stop:
-                                _execute_sell(today, sym, sell_shares, cur, "止损", round(pnl_pct * 100, 1))
-                                triggered_stop.add(sl_key)
-                                alerts.append(f"{sym} 止损 {pnl_pct*100:.0f}% ({reason})")
-                                _m.inc("scheduler.monitor.stop_loss")
+        status = "ok" if not alerts else "⚠ " + "; ".join(alerts)
+        if alerts:
+            _log.warning(f"[{today}] MONITOR: {status}")
+            _m.inc("scheduler.monitor.alert")
+        else:
+            _m.inc("scheduler.monitor.ok")
 
-            status = "ok" if not alerts else "⚠ " + "; ".join(alerts)
-            if alerts:
-                _log.warning(f"[{today}] MONITOR: {status}")
-                _m.inc("scheduler.monitor.alert")
-            else:
-                _m.inc("scheduler.monitor.ok")
-
-            update("monitor", status=status, last_run=now.isoformat())
-
-        except Exception as e:
-            raise  # 错误不吞
-            update("monitor", status="error", last_error=str(e))
-            _log.warning(f"[{today}] monitor error: {e}")
-            _m.inc("scheduler.monitor.error")
+        update("monitor", status=status, last_run=now.isoformat())
 
         _time.sleep(CHECK_INTERVAL_SEC)
 
@@ -132,19 +119,15 @@ def _run_continuous(today: str):
 def _execute_sell(today: str, symbol: str, shares: int, price: float,
                   reason: str, pnl_pct: float):
     """执行卖出订单 + 写入 trades DB."""
-    try:
-        from execution.engine import ExecutionEngine, Order
-        engine = ExecutionEngine()
-        engine.execute(
-            [Order(symbol=symbol, side="sell", shares=shares,
-                   price=round(price, 2), cost=5.0)],
-            today, strategy="quant"
-        )
-        _log.warning(f"[{today}] {reason}: {symbol} {shares}股 @¥{price:.2f} "
-                     f"PnL={pnl_pct:+.1f}%")
-    except Exception as e:
-        raise  # 错误不吞
-        _log.error(f"[{today}] {reason} execute failed {symbol}: {e}")
+    from execution.engine import ExecutionEngine, Order
+    engine = ExecutionEngine()
+    engine.execute(
+        [Order(symbol=symbol, side="sell", shares=shares,
+               price=round(price, 2), cost=5.0)],
+        today, strategy="quant"
+    )
+    _log.warning(f"[{today}] {reason}: {symbol} {shares}股 @¥{price:.2f} "
+                 f"PnL={pnl_pct:+.1f}%")
 
 
 def _outer_loop():
@@ -166,11 +149,7 @@ def _outer_loop():
             hhmm = time(now.hour, now.minute)
             if hhmm >= time(9, 35):
                 started = True
-                try:
-                    _run_continuous(today)
-                except Exception as e:
-                    raise  # 错误不吞
-                    _log.error(f"[{today}] monitor outer exception: {e}")
+                _run_continuous(today)
 
         _time.sleep(_require_cfg("quant.scheduler.poll_interval"))
 

@@ -42,15 +42,7 @@ def sync_range(start_date: str = None, end_date: str = None, conn=None) -> int:
     _ensure_table(conn)
 
     total = 0
-    try:
-        # akshare 免费全市场质押比例 — 批拉约 2294 行, ~5s
-        df = ak.stock_gpzy_pledge_ratio_em()
-    except Exception as e:
-        raise  # 错误不吞
-        logger.warning(f"pledge_stat akshare failed: {e}")
-        if close_conn:
-            conn.close()
-        return 0
+    df = ak.stock_gpzy_pledge_ratio_em()
 
     if df is None or df.empty:
         if close_conn:
@@ -60,35 +52,31 @@ def sync_range(start_date: str = None, end_date: str = None, conn=None) -> int:
     # 列映射: 股票代码→symbol, 交易日期→end_date, 质押笔数→pledge_times,
     #          质押股数→pledge_shares, 质押市值→pledge_amount
     for _, row in df.iterrows():
-        try:
-            code = str(row.get('股票代码', ''))
-            if not code or len(code) != 6:
-                continue
-            # 统一为 6 位数字
-            sym = code.zfill(6)
-            # 从质押比例(%)反推总股本: total_shares = 质押股数 / (质押比例%/100)
-            pledge_shares_val = float(row.get('质押股数', 0) or 0)
-            pledge_ratio_pct = float(row.get('质押比例', 0) or 0)
-            if pledge_ratio_pct > 0 and pledge_shares_val > 0:
-                total_shares_val = round(pledge_shares_val / (pledge_ratio_pct / 100.0), 2)
-            else:
-                total_shares_val = None
-            conn.execute("""
-                INSERT OR REPLACE INTO pledge_stat
-                (symbol, end_date, pledge_times, pledge_shares, pledge_amount, total_shares)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                sym,
-                str(row.get('交易日期', ''))[:10] if pd.notna(row.get('交易日期')) else '',
-                int(row.get('质押笔数', 0) or 0),
-                pledge_shares_val,
-                float(row.get('质押市值', 0) or 0),
-                total_shares_val,
-            ))
-            total += 1
-        except Exception as e_row:
-            raise  # 错误不吞
-            logger.debug(f"pledge row skip: {e_row}")
+        code = str(row.get('股票代码', ''))
+        if not code or len(code) != 6:
+            continue
+        # 统一为 6 位数字
+        sym = code.zfill(6)
+        # 从质押比例(%)反推总股本: total_shares = 质押股数 / (质押比例%/100)
+        pledge_shares_val = float(row.get('质押股数', 0) or 0)
+        pledge_ratio_pct = float(row.get('质押比例', 0) or 0)
+        if pledge_ratio_pct > 0 and pledge_shares_val > 0:
+            total_shares_val = round(pledge_shares_val / (pledge_ratio_pct / 100.0), 2)
+        else:
+            total_shares_val = None
+        conn.execute("""
+            INSERT OR REPLACE INTO pledge_stat
+            (symbol, end_date, pledge_times, pledge_shares, pledge_amount, total_shares)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            sym,
+            str(row.get('交易日期', ''))[:10] if pd.notna(row.get('交易日期')) else '',
+            int(row.get('质押笔数', 0) or 0),
+            pledge_shares_val,
+            float(row.get('质押市值', 0) or 0),
+            total_shares_val,
+        ))
+        total += 1
 
     conn.commit()
     logger.info(f"pledge_stat done: {total} rows")

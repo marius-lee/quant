@@ -53,29 +53,20 @@ def _parse_change_vol(raw: str) -> tuple:
     else:
         return ('', 0.0)
 
-    try:
-        if '亿' in num_str:
-            vol = float(num_str.replace('亿', '')) * 1_0000_0000
-        elif '万' in num_str:
-            vol = float(num_str.replace('万', '')) * 1_0000
-        else:
-            vol = float(num_str.replace('股', ''))
-    except (ValueError, AttributeError):
-        return (direction, 0.0)
+    if '亿' in num_str:
+        vol = float(num_str.replace('亿', '')) * 1_0000_0000
+    elif '万' in num_str:
+        vol = float(num_str.replace('万', '')) * 1_0000
+    else:
+        vol = float(num_str.replace('股', ''))
 
     return (direction, vol)
 
 
 def _get_stock_pool(conn) -> list:
     """从 stocks 表获取股票池 code 列表."""
-    try:
-        rows = conn.execute("SELECT DISTINCT symbol FROM stocks").fetchall()
-        return [r[0] for r in rows if r[0]]
-    except Exception:
-        raise  # 错误不吞
-        # fallback: 从 daily 表获取
-        rows = conn.execute("SELECT DISTINCT symbol FROM daily").fetchall()
-        return [r[0] for r in rows if r[0]]
+    rows = conn.execute("SELECT DISTINCT symbol FROM stocks").fetchall()
+    return [r[0] for r in rows if r[0]]
 
 
 def sync_range(start_date: str, end_date: str, conn=None) -> int:
@@ -97,12 +88,7 @@ def sync_range(start_date: str, end_date: str, conn=None) -> int:
 
     total = 0
     for i, sym in enumerate(symbols):
-        try:
-            df = ak.stock_shareholder_change_ths(symbol=sym)
-        except Exception as e:
-            raise  # 错误不吞
-            logger.debug(f"holder_trade {sym} fetch failed: {e}")
-            continue
+        df = ak.stock_shareholder_change_ths(symbol=sym)
 
         if df is None or df.empty:
             continue
@@ -119,25 +105,21 @@ def sync_range(start_date: str, end_date: str, conn=None) -> int:
 
         for _, row in df.iterrows():
             direction, vol = _parse_change_vol(row.get('变动数量'))
-            try:
-                conn.execute("""
-                    INSERT OR REPLACE INTO holder_trade
-                    (symbol, ann_date, holder_name, holder_type, change_vol, change_ratio, direction, avg_price)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    sym,
-                    str(row['公告日期'])[:10] if pd.notna(row['公告日期']) else '',
-                    str(row.get('变动股东', '')),
-                    '',  # akshare 无 holder_type
-                    vol,
-                    0.0,  # akshare 无 change_ratio
-                    direction,
-                    0.0,  # akshare 返回的交易均价多为"未披露"
-                ))
-                total += 1
-            except Exception as e_row:
-                raise  # 错误不吞
-                logger.debug(f"holder_trade row skip {sym}: {e_row}")
+            conn.execute("""
+                INSERT OR REPLACE INTO holder_trade
+                (symbol, ann_date, holder_name, holder_type, change_vol, change_ratio, direction, avg_price)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                sym,
+                str(row['公告日期'])[:10] if pd.notna(row['公告日期']) else '',
+                str(row.get('变动股东', '')),
+                '',  # akshare 无 holder_type
+                vol,
+                0.0,  # akshare 无 change_ratio
+                direction,
+                0.0,  # akshare 返回的交易均价多为"未披露"
+            ))
+            total += 1
 
         # 进度 & rate limit
         if (i + 1) % 50 == 0:

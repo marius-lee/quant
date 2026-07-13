@@ -47,57 +47,44 @@ def sync_forecasts(conn=None) -> int:
     _ensure_table(conn)
     today = datetime.now().strftime("%Y-%m-%d")
 
-    try:
-        df = ak.stock_profit_forecast_em()
-        if df is None or df.empty:
-            return 0
-
-        col_map = {
-            '代码': 'symbol', '名称': 'name', '研报数': 'report_count',
-            '机构投资评级(近六个月)-买入': 'buy_count',
-            '机构投资评级(近六个月)-增持': 'overweight_count',
-            '机构投资评级(近六个月)-中性': 'neutral_count',
-            '机构投资评级(近六个月)-减持': 'underweight_count',
-            '2026预测每股收益': 'eps_2026',
-            '2027预测每股收益': 'eps_2027',
-            '2028预测每股收益': 'eps_2028',
-        }
-        df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
-        if 'symbol' in df.columns:
-            df['symbol'] = df['symbol'].astype(str).str.zfill(6)
-
-        n = 0
-        for _, row in df.iterrows():
-            try:
-                sym = str(row.get('symbol', '')).strip()
-                if len(sym) < 6:
-                    continue
-                conn.execute("""
-                    INSERT OR REPLACE INTO analyst_forecast
-                    (symbol, sync_date, report_count, buy_count, overweight_count,
-                     neutral_count, underweight_count, eps_2026, eps_2027, eps_2028)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (sym, today,
-                      row.get('report_count'), row.get('buy_count'),
-                      row.get('overweight_count'), row.get('neutral_count'),
-                      row.get('underweight_count'),
-                      row.get('eps_2026'), row.get('eps_2027'), row.get('eps_2028')))
-                n += 1
-            except Exception as e_row:
-                raise  # 错误不吞
-                logger.debug(f"analyst row skip {sym} {today}: {e_row}")
-        conn.commit()
-
-        print(f"  {today}: {n} stocks")
-        return n
-
-    except Exception as e:
-        raise  # 错误不吞
-        logger.warning(f"analyst forecast sync: {e}")
+    df = ak.stock_profit_forecast_em()
+    if df is None or df.empty:
         return 0
-    finally:
-        if close_conn:
-            conn.close()
+
+    col_map = {
+        '代码': 'symbol', '名称': 'name', '研报数': 'report_count',
+        '机构投资评级(近六个月)-买入': 'buy_count',
+        '机构投资评级(近六个月)-增持': 'overweight_count',
+        '机构投资评级(近六个月)-中性': 'neutral_count',
+        '机构投资评级(近六个月)-减持': 'underweight_count',
+        '2026预测每股收益': 'eps_2026',
+        '2027预测每股收益': 'eps_2027',
+        '2028预测每股收益': 'eps_2028',
+    }
+    df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+    if 'symbol' in df.columns:
+        df['symbol'] = df['symbol'].astype(str).str.zfill(6)
+
+    n = 0
+    for _, row in df.iterrows():
+        sym = str(row.get('symbol', '')).strip()
+        if len(sym) < 6:
+            continue
+        conn.execute("""
+            INSERT OR REPLACE INTO analyst_forecast
+            (symbol, sync_date, report_count, buy_count, overweight_count,
+             neutral_count, underweight_count, eps_2026, eps_2027, eps_2028)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (sym, today,
+              row.get('report_count'), row.get('buy_count'),
+              row.get('overweight_count'), row.get('neutral_count'),
+              row.get('underweight_count'),
+              row.get('eps_2026'), row.get('eps_2027'), row.get('eps_2028')))
+        n += 1
+    conn.commit()
+
+    print(f"  {today}: {n} stocks")
+    return n
 
 
 if __name__ == "__main__":

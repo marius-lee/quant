@@ -38,11 +38,7 @@ def _init_db():
 
 def sync_benchmark(index_code: str = "000300") -> int:
     """同步指数日线数据。返回新写入行数。"""
-    try:
-        import akshare as ak
-    except ImportError:
-        logger.warning("akshare not installed — benchmark sync skipped")
-        return 0
+    import akshare as ak
     conn = _init_db()
     # 获取已有日期范围
     row = conn.execute(
@@ -51,39 +47,31 @@ def sync_benchmark(index_code: str = "000300") -> int:
     ).fetchone()
     last_date = row[0] if row and row[0] else "2020-01-01"
 
-    try:
-        # akshare 指数日线: stock_zh_index_daily
-        df = ak.stock_zh_index_daily(symbol=f"sh{index_code}")
-        if df is None or df.empty:
-            logger.warning(f"benchmark {index_code}: empty response")
-            return 0
-        new_rows = 0
-        for _, row in df.iterrows():
-            d = str(row.get("date", ""))[:10]
-            if d <= last_date:
-                continue
-            conn.execute(
-                """INSERT OR IGNORE INTO benchmark_daily
-                   (index_code, date, open, high, low, close, volume, amount)
-                   VALUES (?,?,?,?,?,?,?,?)""",
-                (index_code, d,
-                 float(row.get("open", 0) or 0),
-                 float(row.get("high", 0) or 0),
-                 float(row.get("low", 0) or 0),
-                 float(row.get("close", 0) or 0),
-                 float(row.get("volume", 0) or 0),
-                 float(row.get("amount", 0) or 0))
-            )
-            new_rows += 1
-        conn.commit()
-        logger.info(f"benchmark {index_code} ({BENCHMARKS.get(index_code, '')}): {new_rows} new rows")
-        return new_rows
-    except Exception as e:
-        raise  # 错误不吞
-        logger.warning(f"benchmark {index_code} sync failed: {e}")
+    df = ak.stock_zh_index_daily(symbol=f"sh{index_code}")
+    if df is None or df.empty:
+        logger.warning(f"benchmark {index_code}: empty response")
         return 0
-    finally:
-        conn.close()
+    new_rows = 0
+    for _, row in df.iterrows():
+        d = str(row.get("date", ""))[:10]
+        if d <= last_date:
+            continue
+        conn.execute(
+            """INSERT OR IGNORE INTO benchmark_daily
+               (index_code, date, open, high, low, close, volume, amount)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (index_code, d,
+             float(row.get("open", 0) or 0),
+             float(row.get("high", 0) or 0),
+             float(row.get("low", 0) or 0),
+             float(row.get("close", 0) or 0),
+             float(row.get("volume", 0) or 0),
+             float(row.get("amount", 0) or 0))
+        )
+        new_rows += 1
+    conn.commit()
+    logger.info(f"benchmark {index_code} ({BENCHMARKS.get(index_code, '')}): {new_rows} new rows")
+    return new_rows
 
 
 def get_benchmark_returns(index_code: str = "000300",

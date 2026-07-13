@@ -36,27 +36,23 @@ def sync_date(date_str, conn=None):
     for i in range(0, len(symbols), batch_size):
         batch = symbols[i:i+batch_size]
         for bs_code in batch:
-            try:
-                rs = bs.query_history_k_data_plus(
-                    bs_code,
-                    "date,code,close,peTTM,pbMRQ",
-                    start_date=date_str.replace('-', '-'), end_date=date_str.replace('-', '-'),
-                    frequency="d", adjustflag="2")
-                rows = []
-                while rs.next():
-                    rows.append(rs.get_row_data())
-                if rows:
-                    r = rows[0]
-                    sym = bs_code.split('.')[1]
-                    conn.execute(
-                        """INSERT OR REPLACE INTO daily_basic (symbol, date, close, pe_ttm, pb)
-                           VALUES (?, ?, ?, ?, ?)""",
-                        (sym, r[0], float(r[2]), float(r[3]), float(r[4]))
-                    )
-                    inserted += 1
-            except Exception as e:
-                raise  # 错误不吞
-                logger.debug(f"daily_basic {bs_code} failed: {e}")
+            rs = bs.query_history_k_data_plus(
+                bs_code,
+                "date,code,close,peTTM,pbMRQ",
+                start_date=date_str.replace('-', '-'), end_date=date_str.replace('-', '-'),
+                frequency="d", adjustflag="2")
+            rows = []
+            while rs.next():
+                rows.append(rs.get_row_data())
+            if rows:
+                r = rows[0]
+                sym = bs_code.split('.')[1]
+                conn.execute(
+                    """INSERT OR REPLACE INTO daily_basic (symbol, date, close, pe_ttm, pb)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (sym, r[0], float(r[2]), float(r[3]), float(r[4]))
+                )
+                inserted += 1
         if (i // batch_size) % 50 == 0 and i > 0:
             logger.info(f"daily_basic {date_str}: {i}/{len(symbols)} fetched, {inserted} inserted")
         time.sleep(_require_cfg("data.api_delay.daily_basic"))

@@ -90,34 +90,29 @@ class MultiTimeframeConfirmer:
         if len(daily_signals) == 0:
             return daily_signals
 
-        try:
-            symbols = list(daily_signals.index)
-            weekly_dir = self._weekly_direction(symbols, date)
+        symbols = list(daily_signals.index)
+        weekly_dir = self._weekly_direction(symbols, date)
 
-            adjusted = daily_signals.copy()
+        adjusted = daily_signals.copy()
 
-            for sym in symbols:
-                wdir = weekly_dir.get(sym, 0)
-                dal_score = daily_signals.get(sym, 0)
+        for sym in symbols:
+            wdir = weekly_dir.get(sym, 0)
+            dal_score = daily_signals.get(sym, 0)
 
-                if wdir == -1 and dal_score > 0:
-                    # 周线空 + 日线多 → 压制为 0
-                    adjusted[sym] = 0
-                elif wdir == 0:
-                    # 周线中性 → 日线信号 × 0.5 (半仓)
-                    adjusted[sym] = dal_score * 0.5
-                elif wdir == 1 and dal_score < 0:
-                    # 周线多 + 日线空 → 中性
-                    adjusted[sym] = 0
+            if wdir == -1 and dal_score > 0:
+                # 周线空 + 日线多 → 压制为 0
+                adjusted[sym] = 0
+            elif wdir == 0:
+                # 周线中性 → 日线信号 × 0.5 (半仓)
+                adjusted[sym] = dal_score * 0.5
+            elif wdir == 1 and dal_score < 0:
+                # 周线多 + 日线空 → 中性
+                adjusted[sym] = 0
 
-            n_suppressed = (daily_signals != 0) & (adjusted == 0) & (daily_signals.abs() > 0)
-            if n_suppressed.any():
-                _log.info(
-                    f"MultiTimeframe({date}): suppressed {n_suppressed.sum()}/{len(daily_signals)} signals"
-                )
+        n_suppressed = (daily_signals != 0) & (adjusted == 0) & (daily_signals.abs() > 0)
+        if n_suppressed.any():
+            _log.info(
+                f"MultiTimeframe({date}): suppressed {n_suppressed.sum()}/{len(daily_signals)} signals"
+            )
 
-            return adjusted
-        except Exception as e:
-            raise  # 错误不吞
-            _log.warning(f"MultiTimeframe.confirm({date}): {e}")
-            return daily_signals
+        return adjusted

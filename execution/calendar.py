@@ -46,43 +46,31 @@ _KNOWN_HOLIDAYS: set[str] = {
 def _load_cache() -> set[str]:
     """从缓存文件加载交易日集合"""
     if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE) as f:
-                data = json.load(f)
-            return set(data.get("trading_days", []))
-        except Exception:
-            raise  # 错误不吞
-            logger.exception("failed to load trade calendar cache")
+        with open(CACHE_FILE) as f:
+            data = json.load(f)
+        return set(data.get("trading_days", []))
     return set()
 
 
 def _save_cache(trading_days: set[str]):
     """保存交易日集合到缓存文件"""
-    try:
-        os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
-        with open(CACHE_FILE, "w") as f:
-            json.dump({
-                "updated_at": datetime.now().isoformat(),
-                "trading_days": sorted(trading_days),
-            }, f, ensure_ascii=False)
-    except Exception:
-        raise  # 错误不吞
-        logger.exception("failed to save trade calendar cache")
+    os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
+    with open(CACHE_FILE, "w") as f:
+        json.dump({
+            "updated_at": datetime.now().isoformat(),
+            "trading_days": sorted(trading_days),
+        }, f, ensure_ascii=False)
 
 
 def _fetch_from_akshare() -> Optional[set[str]]:
     """从 akshare 获取历史交易日历。失败返回 None。"""
-    try:
-        import akshare as ak
-        df = ak.tool_trade_date_hist_sina()
-        if df is not None and len(df) > 0:
-            trade_date_col = df.columns[0]
-            days = set(df[trade_date_col].astype(str).tolist())
-            logger.info(f"fetched {len(days)} trading days from akshare")
-            return days
-    except Exception:
-        raise  # 错误不吞
-        logger.warning("akshare trade calendar unavailable, using local calendar")
+    import akshare as ak
+    df = ak.tool_trade_date_hist_sina()
+    if df is not None and len(df) > 0:
+        trade_date_col = df.columns[0]
+        days = set(df[trade_date_col].astype(str).tolist())
+        logger.info(f"fetched {len(days)} trading days from akshare")
+        return days
     return None
 
 

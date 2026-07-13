@@ -53,61 +53,43 @@ def sync_single_stock(symbol: str, market: str = 'sh', conn=None, max_retries: i
 
     last_err = None
     for attempt in range(max_retries):
-        try:
-            df = ak.stock_individual_fund_flow(stock=symbol, market=market)
-            if df is None or df.empty:
-                if close_conn:
-                    conn.close()
-                return 0
-
-            col_map = {
-                '日期': 'date', '收盘价': 'close', '涨跌幅': 'change_pct',
-                '主力净流入-净额': 'main_net_inflow', '主力净流入-净占比': 'main_net_ratio',
-                '超大单净流入-净额': 'super_large_net_inflow', '超大单净流入-净占比': 'super_large_net_ratio',
-                '大单净流入-净额': 'large_net_inflow', '大单净流入-净占比': 'large_net_ratio',
-                '中单净流入-净额': 'mid_net_inflow', '中单净流入-净占比': 'mid_net_ratio',
-                '小单净流入-净额': 'small_net_inflow', '小单净流入-净占比': 'small_net_ratio',
-            }
-            df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
-            df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
-            df['symbol'] = symbol
-
-            n = 0
-            for _, row in df.iterrows():
-                try:
-                    conn.execute("""
-                        INSERT OR REPLACE INTO fund_flow
-                        (symbol, date, close, change_pct, main_net_inflow, main_net_ratio,
-                         super_large_net_inflow, super_large_net_ratio, large_net_inflow, large_net_ratio,
-                         mid_net_inflow, mid_net_ratio, small_net_inflow, small_net_ratio)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (symbol, row.get('date'), row.get('close'), row.get('change_pct'),
-                          row.get('main_net_inflow'), row.get('main_net_ratio'),
-                          row.get('super_large_net_inflow'), row.get('super_large_net_ratio'),
-                          row.get('large_net_inflow'), row.get('large_net_ratio'),
-                          row.get('mid_net_inflow'), row.get('mid_net_ratio'),
-                          row.get('small_net_inflow'), row.get('small_net_ratio')))
-                    n += 1
-                except Exception as e_row:
-                    raise  # 错误不吞
-                    logger.debug(f"fund_flow row skip {symbol} {row.get("date", "?")}: {e_row}")
-
-            conn.commit()
+        df = ak.stock_individual_fund_flow(stock=symbol, market=market)
+        if df is None or df.empty:
             if close_conn:
                 conn.close()
-            return n
+            return 0
 
-        except Exception as e:
-            raise  # 错误不吞
-            last_err = e
-            if attempt < max_retries - 1:
-                wait = (attempt + 1) * 3  # 3s, 6s, 9s backoff
-                time.sleep(wait)
-            else:
-                logger.warning(f"fund_flow sync failed for {symbol} after {max_retries} retries: {last_err}")
-                if close_conn:
-                    conn.close()
-                return 0
+        col_map = {
+            '日期': 'date', '收盘价': 'close', '涨跌幅': 'change_pct',
+            '主力净流入-净额': 'main_net_inflow', '主力净流入-净占比': 'main_net_ratio',
+            '超大单净流入-净额': 'super_large_net_inflow', '超大单净流入-净占比': 'super_large_net_ratio',
+            '大单净流入-净额': 'large_net_inflow', '大单净流入-净占比': 'large_net_ratio',
+            '中单净流入-净额': 'mid_net_inflow', '中单净流入-净占比': 'mid_net_ratio',
+            '小单净流入-净额': 'small_net_inflow', '小单净流入-净占比': 'small_net_ratio',
+        }
+        df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+        df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+        df['symbol'] = symbol
+
+        n = 0
+        for _, row in df.iterrows():
+            conn.execute("""
+                INSERT OR REPLACE INTO fund_flow
+                (symbol, date, close, change_pct, main_net_inflow, main_net_ratio,
+                 super_large_net_inflow, super_large_net_ratio, large_net_inflow, large_net_ratio,
+                 mid_net_inflow, mid_net_ratio, small_net_inflow, small_net_ratio)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (symbol, row.get('date'), row.get('close'), row.get('change_pct'),
+                  row.get('main_net_inflow'), row.get('main_net_ratio'),
+                  row.get('super_large_net_inflow'), row.get('super_large_net_ratio'),
+                  row.get('large_net_inflow'), row.get('large_net_ratio'),
+                  row.get('mid_net_inflow'), row.get('mid_net_ratio'),
+                  row.get('small_net_inflow'), row.get('small_net_ratio')))
+            n += 1
+        conn.commit()
+        if close_conn:
+            conn.close()
+        return n
 
     return 0
 

@@ -72,27 +72,22 @@ class ExecutionEngine:
             True: 检测到除权跳变, 应跳过买入
             False: 正常, 可执行
         """
-        try:
-            mc = market_conn("ro")
-            row = mc.execute(
-                "SELECT close FROM daily WHERE symbol=? AND date < ? ORDER BY date DESC LIMIT 1",
-                (symbol, date)
-            ).fetchone()
-            mc.close()
-            if row and row[0]:
-                prev_close = float(row[0])
-                gap = abs(order_price / prev_close - 1)
-                if gap > EX_DIVIDEND_THRESHOLD:
-                    from utils.logger import get_logger
-                    get_logger("execution.engine").warning(
-                        f"Ex-dividend detected: {symbol} order_price={order_price:.2f} "
-                        f"prev_close={prev_close:.2f} gap={gap:.1%} > {EX_DIVIDEND_THRESHOLD:.0%} — skipping buy"
-                    )
-                    return True
-        except Exception as e:
-            raise  # 错误不吞
-            from utils.logger import get_logger
-            get_logger("execution.engine").warning(f"Ex-dividend check failed for {symbol}: {e}")
+        mc = market_conn("ro")
+        row = mc.execute(
+            "SELECT close FROM daily WHERE symbol=? AND date < ? ORDER BY date DESC LIMIT 1",
+            (symbol, date)
+        ).fetchone()
+        mc.close()
+        if row and row[0]:
+            prev_close = float(row[0])
+            gap = abs(order_price / prev_close - 1)
+            if gap > EX_DIVIDEND_THRESHOLD:
+                from utils.logger import get_logger
+                get_logger("execution.engine").warning(
+                    f"Ex-dividend detected: {symbol} order_price={order_price:.2f} "
+                    f"prev_close={prev_close:.2f} gap={gap:.1%} > {EX_DIVIDEND_THRESHOLD:.0%} — skipping buy"
+                )
+                return True
         return False
 
     def execute(
@@ -157,30 +152,22 @@ class ExecutionEngine:
         # ── Phase 2: 写入 (事务内) ──
         conn = repo._conn()
         executed = 0
-        try:
-            conn.execute("BEGIN")
-            for e in entries:
-                if e.get("skip") or e.get("t1_blocked"):
-                    continue
-                repo.record_trade(
-                    strategy, date, e["symbol"], e["side"],
-                    e["price"], e["shares"],
-                    pnl=e["pnl"], pnl_pct=e["pnl_pct"],
-                    board_count=e["board_count"],
-                    cost=e["cost"],
-                    conn=conn,
-                )
-                executed += 1
-            conn.commit()
-            logger.info(f"executed {executed} orders via TradeRepo")
-            return executed
-        except Exception as e:
-            raise  # 错误不吞
-            conn.rollback()
-            logger.error(f"execute() failed, rolled back {executed} orders: {e}\n{traceback.format_exc()}")
-            raise
-        finally:
-            conn.close()
+        conn.execute("BEGIN")
+        for e in entries:
+            if e.get("skip") or e.get("t1_blocked"):
+                continue
+            repo.record_trade(
+                strategy, date, e["symbol"], e["side"],
+                e["price"], e["shares"],
+                pnl=e["pnl"], pnl_pct=e["pnl_pct"],
+                board_count=e["board_count"],
+                cost=e["cost"],
+                conn=conn,
+            )
+            executed += 1
+        conn.commit()
+        logger.info(f"executed {executed} orders via TradeRepo")
+        return executed
 
     def get_positions(self, strategy: str = "quant") -> list[dict]:
         """获取当前持仓列表 — 委托 TradeRepo。"""

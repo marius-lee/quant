@@ -136,7 +136,8 @@ def compute_ic(*,
         except Exception:
             raise
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    try:
         futures = {executor.submit(_compute_one_day, ds): ds for ds in compute_days}
         for future in as_completed(futures):
             ds, factor_vals, fwd = future.result()
@@ -147,6 +148,8 @@ def compute_ic(*,
                     factor_daily[name][ds] = series
             if fwd is not None:
                 fwd_1d[ds] = fwd
+    finally:
+        executor.shutdown(wait=False)
 
     # 转为 Mode B 格式 → 统一 IC 计算
     fv_dict = {}

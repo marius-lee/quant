@@ -46,12 +46,25 @@ class AlphaModel:
         from alpha.synth import sleeve_compose, ic_weighted, equal_weight, intersection_alpha
 
         if self.combine_mode == "sleeve":
+            # IC filtering: drop factors with IC <= 0 (maintains independent sub-portfolios per ADR 017)
+            # Handles both {name: {ic_mean, ...}} (from compute_ic) and {name: float} (from DB)
+            if ic_map:
+                def _ic_ok(name):
+                    v = ic_map.get(name, {})
+                    if isinstance(v, dict):
+                        return v.get("ic_mean", 0) > 0
+                    return v > 0  # plain float from factor_registry
+                keep = {k: v for k, v in factor_values.items() if _ic_ok(k)}
+                if len(keep) >= self.min_factors:
+                    factor_values = keep
+                # else: keep all if insufficient factors survive filtering
+
             alpha_raw = sleeve_compose(
                 factor_values,
                 positions_per_factor=self.positions_per_factor,
                 min_factors=self.min_factors,
             )
-            _log.info("sleeve: %d factors -> %d stocks", len(factor_values), alpha_raw.notna().sum())
+            _log.info("sleeve: %d factors -> %d stocks (filtered=%s)", len(factor_values), alpha_raw.notna().sum(), bool(ic_map))
             return alpha_raw
 
         # composite mode
@@ -68,6 +81,27 @@ class AlphaModel:
             if method == "ic_weighted" and not ic_map:
                 _log.info("IC cache unavailable, falling back to equal_weight")
             return equal_weight(factor_values)
+
+
+    def combine_regime(self, factor_values, ic_map=None, regime_label=None, regime_probs=None):
+        """Gap 3: Regime-conditional factor combination.
+
+        Boosts factors known to work in the current market regime.
+        Falls back to standard combine() if regime info is unavailable.
+        """
+        if regime_label is None or regime_label == "unknown":
+            return self.combine(factor_values, ic_map=ic_map)
+
+        from regime.detector import get_regime_weights
+        regime_weights = get_regime_weights(
+            list(factor_values.keys()), ic_map, regime_label, regime_probs
+        )
+
+        from utils.logger import get_logger
+        _rl = get_logger("alpha.model")
+        _rl.info(f"regime combine: {regime_label} (confidence={regime_probs.get(regime_label, 0):.2f})")
+
+        return self.combine(factor_values, ic_map=regime_weights)
 
     def rank(self, alpha_raw, method_override=None):
         """Soft cutoff: 削弱弱信号 (二次衰减) 而非硬砍.

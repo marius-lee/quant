@@ -2,8 +2,10 @@
 
 日志输出:
   - 控制台: INFO 级别，关键路径和进度
-  - 文件: DEBUG 级别，完整记录到 logs/quant.log
-  - 轮转: 单文件最大 10MB，保留最近 5 个
+  - app.log: 非回测模块日轮转 (INFO+)
+  - backtest.log: 回测模块日轮转 (INFO+)
+  - quant.log: JSON 结构化全量 (DEBUG)
+  - 轮转: 单文件最大 50MB，保留最近 5 个
 """
 
 import logging
@@ -36,12 +38,6 @@ def _init():
 
     os.makedirs(_log_dir, exist_ok=True)
 
-    # TUI-01: 日轮转日志 (INFO+, 30天保留)
-    _daily = TimedRotatingFileHandler(
-        os.path.join(_log_dir, "app.log"), when="midnight", interval=1,
-        backupCount=10, encoding="utf-8"
-    )
-
     root = logging.getLogger("quant")
     root.setLevel(logging.DEBUG)
 
@@ -55,17 +51,36 @@ def _init():
     ))
     root.addHandler(console)
 
-    # 日轮转文件 (INFO+, 人类可读, 30天)
-    _daily.setLevel(logging.INFO)
-    _daily.setFormatter(logging.Formatter(
+    # ── 人类可读文件日志: 按模块名分离 ──
+    _fmt = logging.Formatter(
         "[%(asctime)s] %(levelname)-5s %(name)s | %(trace_id)s%(message)s",
         datefmt="%m-%d %H:%M:%S", defaults={"trace_id": ""}
-    ))
-    root.addHandler(_daily)
+    )
+    _is_backtest = lambda r: r.name.startswith("quant.backtest.") or r.name.startswith("backtest.")
+
+    # app.log: 非回测 (web, pipeline, scheduler, factor...)
+    _app_handler = TimedRotatingFileHandler(
+        os.path.join(_log_dir, "app.log"), when="midnight", interval=1,
+        backupCount=10, encoding="utf-8"
+    )
+    _app_handler.setLevel(logging.INFO)
+    _app_handler.setFormatter(_fmt)
+    _app_handler.addFilter(lambda r: not _is_backtest(r))
+    root.addHandler(_app_handler)
+
+    # backtest.log: 回测专用
+    _bt_handler = TimedRotatingFileHandler(
+        os.path.join(_log_dir, "backtest.log"), when="midnight", interval=1,
+        backupCount=10, encoding="utf-8"
+    )
+    _bt_handler.setLevel(logging.INFO)
+    _bt_handler.setFormatter(_fmt)
+    _bt_handler.addFilter(_is_backtest)
+    root.addHandler(_bt_handler)
 
     # 文件: JSON 结构化 DEBUG (模板9 T1)
     file_handler = RotatingFileHandler(
-        _log_file, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+        _log_file, maxBytes=50 * 1024 * 1024, backupCount=5, encoding="utf-8"
     )
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(_JsonFormatter())

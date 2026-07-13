@@ -1,0 +1,561 @@
+"""价量因子子模块。"""
+
+import numpy as np
+import pandas as pd
+import sqlite3
+import os as _os
+from typing import Optional
+
+from config.constants import *
+from factor.registry import _cs_zscore, _db_connect, _FIN_FACTORS, _shared_limit_conn
+from factor.compute._shared import _market_db_path
+
+from utils.logger import get_logger as _get_logger
+from data.store import market_conn as _market_conn
+
+_log = _get_logger("factor.compute")
+
+def compute_limit_up_proximity(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.Series":
+    """涨停距离因子: 近期涨幅占涨跌停板比例的平均值.
+    
+    算法: avg(daily_return / board_limit_up_pct, window).
+    主板 ±10%, 科创板/创业板 ±20%. 自动识别.
+    高分 = 近期持续接近涨停 → 强势股 → 动量延续.
+    
+    来源: A股涨跌停制度独有异象. 接近涨停板的股票存在动量溢出效应.
+    """
+    close = data["close"]
+    
+    if date not in close.index:
+        return pd.Series(np.nan, index=close.columns, name=f"limit_up_prox_{window}d")
+    
+    idx = close.index.get_loc(date)
+    start = max(0, idx - window + 1)
+    
+    ret = close.pct_change()
+    ret_slice = ret.iloc[start:idx + 1]
+    
+    # Determine board limit: use market info from stocks table
+    # 主板 ±10%, 科创(688xxx) ±20%, 创业(300xxx) ±20%, 北交(8/9xxxxx) ±30%
+    import sqlite3
+    db_path = _market_db_path()
+    conn = _db_connect()
+    symbols_sample = list(close.columns[:100])  # sample for market check
+    placeholders = ",".join("?" * len(symbols_sample))
+    market_rows = conn.execute(
+        f"SELECT symbol, market FROM stocks WHERE symbol IN ({placeholders})",
+        symbols_sample
+    ).fetchall()
+    conn.close()
+    market_map = {r[0]: r[1] for r in market_rows}
+    
+    def _limit_pct(sym):
+        m = market_map.get(sym, "SH")
+        if m in ("BJ",):
+            return 0.30
+        if sym.startswith("688") or sym.startswith("300") or sym.startswith("301"):
+            return 0.20
+        return 0.10
+    
+    avg_proximity = {}
+    for sym in close.columns:
+        r = ret_slice[sym].dropna()
+        if len(r) < 2:
+            continue
+        limit = _limit_pct(sym)
+        prox = (r / limit).mean()
+        avg_proximity[sym] = prox
+    
+    result = pd.Series(avg_proximity)
+    return _cs_zscore(result).rename(f"limit_up_prox_{window}d")
+
+
+
+# ═══════════════════════════════════════════════════════════
+# 21. 涨停板因子 (Limit-Up) — A股最强动量异象
+# 首板次日连板概率 30-40%, IC≈0.06-0.10 (A股独有)
+# ═══════════════════════════════════════════════════════════
+
+def compute_limit_up_streak(data: "pd.DataFrame", date: str, window: int = 0) -> "pd.Series":
+    """涨停连板因子: 从 data OHLCV 自算涨停 + 连板数(不依赖 limit_up_pool)。
+
+    算法:
+      - 主板(60/00开头): 涨停 = 日收益 >= 9.5% 且 close == high
+      - 科创/创业(68/30开头): 涨停 = 日收益 >= 19.5% 且 close == high
+      - 连板数 = 从今日往前连续涨停的天数
+      - 倒U型评分: 1连板→1, 2→3, 3→6, 4→10, 5→8, 6+→递减
+
+    来源: A股涨跌停制度独有异象. 涨停板有显著动量溢出.
+    修改: 2026-07-03 — 从 limit_up_pool 改为 data OHLCV 自算, 覆盖 6 年历史.
+          limit_up_pool 仍每日积累(封板资金/炸板次数), 但不用于因子计算.
+    """
+    close = data["close"]
+    high = data["high"]
+
+    # 匹配日期索引 (兼容 Timestamp 和 string)
+    date_str = str(date)[:10]
+    matched = [d for d in close.index if str(d)[:10] == date_str]
+    if not matched:
+        return pd.Series(dtype=float, name="zt_streak")
+
+    idx = close.index.get_loc(matched[0])
+    symbols = list(close.columns)
+
+    # 往前看 5 个交易日判断连板 (最多 5 连板, 超过递减)
+    lookback = 5
+    start = max(0, idx - lookback)
+    cw = close.iloc[start:idx + 1]
+    hw = high.iloc[start:idx + 1]
+
+    ret = cw.pct_change()  # row 0 = NaN (无前一日 close)
+
+    # 涨停幅度: 科创/创业板 20%, 主板 10%
+    limit_map = {}
+    for sym in symbols:
+        if sym.startswith('30') or sym.startswith('68'):
+            limit_map[sym] = 19.5
+        else:
+            limit_map[sym] = 9.5
+
+    # 今日是否涨停
+    today_ret = ret.iloc[-1] * 100
+    today_close = cw.iloc[-1]
+    today_high = hw.iloc[-1]
+
+    scores = {}
+    for sym in symbols:
+        lim = limit_map[sym]
+        r = today_ret.get(sym)
+        c = today_close.get(sym)
+        h = today_high.get(sym)
+        if pd.isna(r) or pd.isna(c) or pd.isna(h):
+            continue
+        if not (r >= lim and c == h and h > 0):
+            continue  # 今日未涨停 → 无信号
+
+        # 往前数连板
+        streak = 1
+        for j in range(len(cw) - 2, -1, -1):
+            rj = ret.iloc[j].get(sym)
+            cj = cw.iloc[j].get(sym)
+            hj = hw.iloc[j].get(sym)
+            if pd.isna(rj) or pd.isna(cj) or pd.isna(hj):
+                break
+            if (rj * 100 >= lim) and (cj == hj and hj > 0):
+                streak += 1
+            else:
+                break
+
+        # 倒U型评分: 连板越多越强, 但 >=5 连板风险加大
+        if streak <= 4:
+            scores[sym] = streak * (streak + 1) / 2  # 1→1, 2→3, 3→6, 4→10
+        else:
+            scores[sym] = max(0, 10 - (streak - 4) * 2)  # 5→8, 6→6, 7→4, ...
+
+    result = pd.Series(scores, dtype=float)
+    result = result.reindex(symbols).fillna(0.0)
+    return _cs_zscore(result).rename("zt_streak")
+
+
+def compute_dt_streak(data: "pd.DataFrame", date: str, window: int = 0) -> "pd.Series":
+    """跌停连板因子: zt_streak 的镜像 — 从 data OHLCV 自算跌停 + 连板数。
+
+    算法:
+      - 主板(60/00开头): 跌停 = 日收益 <= -9.5% 且 close == low
+      - 科创/创业(68/30开头): 跌停 = 日收益 <= -19.5% 且 close == low
+      - 连板数 = 从今日往前连续跌停的天数
+      - 负向评分(镜像倒U): 1连板→-1, 2→-3, 3→-6, 4→-10, 5→-8, 6+→递减
+      - 跌停后大概率继续下跌(A股实证~70%), 连板越多负信号越强
+
+    来源: A股涨跌停制度独有异象. 跌停板有显著的负向动量溢出.
+    添加: 2026-07-03 — zt_streak 镜像, Phase 7 P1.
+    """
+    close = data["close"]
+    low = data["low"]
+
+    # 匹配日期索引
+    date_str = str(date)[:10]
+    matched = [d for d in close.index if str(d)[:10] == date_str]
+    if not matched:
+        return pd.Series(dtype=float, name="dt_streak")
+
+    idx = close.index.get_loc(matched[0])
+    symbols = list(close.columns)
+
+    # 往前看 5 个交易日判断连板
+    lookback = 5
+    start = max(0, idx - lookback)
+    cw = close.iloc[start:idx + 1]
+    lw = low.iloc[start:idx + 1]
+
+    ret = cw.pct_change()
+
+    # 跌停幅度: 科创/创业板 -20%, 主板 -10%
+    limit_map = {}
+    for sym in symbols:
+        if sym.startswith('30') or sym.startswith('68'):
+            limit_map[sym] = -19.5
+        else:
+            limit_map[sym] = -9.5
+
+    today_ret = ret.iloc[-1] * 100
+    today_close = cw.iloc[-1]
+    today_low = lw.iloc[-1]
+
+    scores = {}
+    for sym in symbols:
+        lim = limit_map[sym]
+        r = today_ret.get(sym)
+        c = today_close.get(sym)
+        lo = today_low.get(sym)
+        if pd.isna(r) or pd.isna(c) or pd.isna(lo):
+            continue
+        if not (r <= lim and c == lo and lo > 0):
+            continue  # 今日未跌停 → 无信号
+
+        # 往前数连板
+        streak = 1
+        for j in range(len(cw) - 2, -1, -1):
+            rj = ret.iloc[j].get(sym)
+            cj = cw.iloc[j].get(sym)
+            lj = lw.iloc[j].get(sym)
+            if pd.isna(rj) or pd.isna(cj) or pd.isna(lj):
+                break
+            if (rj * 100 <= lim) and (cj == lj and lj > 0):
+                streak += 1
+            else:
+                break
+
+        # 负向评分(镜像倒U): 连板越多负得越强
+        if streak <= 4:
+            scores[sym] = -streak * (streak + 1) / 2  # 1→-1, 2→-3, 3→-6, 4→-10
+        else:
+            scores[sym] = -(max(0, 10 - (streak - 4) * 2))  # 5→-8, 6→-6, 7→-4, ...
+
+    result = pd.Series(scores, dtype=float)
+    result = result.reindex(symbols).fillna(0.0)
+    return _cs_zscore(result).rename("dt_streak")
+
+
+def compute_lhb_net_buy(data: "pd.DataFrame", date: str, window: int = _LHB_WINDOW) -> "pd.Series":
+    """龙虎榜净买入强度因子: total_net_buy / avg(circ_mv), N日窗口.
+
+    算法:
+      - 从 lhb_detail 表读取过去 N 个交易日龙虎榜记录
+      - 每只股票: SUM(net_buy) / AVG(circ_mv) = 净买入占比
+      - 截面 z-score 标准化
+      - 未上榜股票得 0 分 (中性)
+
+    来源: A股龙虎榜制度独有信号. 机构/游资上榜净买入是资金流入代理变量,
+          龙虎榜净买入与次日收益正相关 (A股实证 IC≈0.04-0.08).
+
+    添加日期: 2026-07-03 — lhb_detail 表补齐后激活.
+    """
+    import sqlite3
+    db_path = _market_db_path()
+    conn = _db_connect()
+
+    symbols = list(data["close"].columns)
+
+    all_dates = sorted(data.index)
+    date_str = date.strftime("%Y-%m-%d") if hasattr(date, "strftime") else str(date)[:10]
+    if date_str not in all_dates:
+        conn.close()
+        return pd.Series(np.nan, index=symbols, name=f"lhb_net_buy_{window}d")
+
+    pos = all_dates.index(date_str)
+    start = max(0, pos - window + 1)
+    if hasattr(all_dates[start], "strftime"):
+        start_date = all_dates[start].strftime("%Y-%m-%d")
+    else:
+        start_date = str(all_dates[start])[:10]
+
+    rows = conn.execute("""
+        SELECT symbol,
+               COALESCE(SUM(net_buy), 0) as total_net_buy,
+               AVG(COALESCE(circ_mv, 0)) as avg_circ_mv
+        FROM lhb_detail
+        WHERE trade_date BETWEEN ? AND ?
+        GROUP BY symbol
+    """, (start_date, date_str)).fetchall()
+    conn.close()
+
+    if not rows:
+        return pd.Series(0.0, index=symbols, name=f"lhb_net_buy_{window}d")
+
+    scores = {}
+    for sym, total_buy, avg_mv in rows:
+        if avg_mv and avg_mv > 0 and total_buy is not None:
+            scores[sym] = total_buy / avg_mv
+
+    result = pd.Series(scores, dtype=float)
+    result = result.reindex(symbols).fillna(0.0)
+    return _cs_zscore(result).rename(f"lhb_net_buy_{window}d")
+
+
+
+def compute_lhb_post_quality(data: "pd.DataFrame", date: str, window: int = 90) -> "pd.Series":
+    """LHB 上榜后质量因子: 历史上榜后 post_5d 平均收益。
+
+    算法:
+      - 从 lhb_detail 读取过去 window 天上榜记录 (排除最近5天, post_5d未实现)
+      - 每只股票: AVG(post_5d) — 历史上榜后平均收益
+      - 截面 z-score 标准化
+      - 从未上榜股票: 0 (中性)
+      - 至少上榜2次才纳入计算
+
+    来源: A股龙虎榜制度独有信号. 历史上榜后持续涨的股票是真正的强势股,
+          上榜后持续跌的是散户接盘 (A股实证: 上榜后平均跌0.87%).
+
+    添加: 2026-07-03 — lhb_detail 表补齐后, post_5d 字段已有 24,386 行.
+    """
+    import sqlite3
+    db_path = _market_db_path()
+    conn = _db_connect()
+
+    symbols = list(data["close"].columns)
+
+    all_dates = [str(d)[:10] for d in sorted(data.index)]
+    date_str = str(date)[:10]
+    if date_str not in all_dates:
+        conn.close()
+        return pd.Series(0.0, index=symbols, name="lhb_post_quality")
+
+    idx = all_dates.index(date_str)
+    start_idx = max(0, idx - window)
+    end_idx = max(0, idx - 5)  # 排除最近5天 (post_5d 尚未实现)
+    if end_idx <= start_idx:
+        conn.close()
+        return pd.Series(0.0, index=symbols, name="lhb_post_quality")
+
+    start_date = all_dates[start_idx]
+    end_date = all_dates[end_idx]
+
+    rows = conn.execute("""
+        SELECT symbol, AVG(post_5d) as avg_post5, COUNT(*) as n
+        FROM lhb_detail
+        WHERE trade_date BETWEEN ? AND ? AND post_5d IS NOT NULL
+        GROUP BY symbol
+        HAVING n >= 2
+    """, (start_date, end_date)).fetchall()
+    conn.close()
+
+    scores = {}
+    for sym, avg_p5, n in rows:
+        if avg_p5 is not None:
+            scores[sym] = avg_p5
+
+    result = pd.Series(scores, dtype=float)
+    result = result.reindex(symbols).fillna(0.0)
+    return _cs_zscore(result).rename("lhb_post_quality")
+
+
+
+
+def compute_margin_balance_chg(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.Series":
+    """融资余额变化率: (今日余额 - window日前余额) / window日前余额。
+
+    数据源: margin_detail 表 (融资融券每日明细)
+    逻辑: 融资余额增加 → 杠杆资金看多 → 正向预期收益
+    实证: A股融资余额变化率与次日收益 IC≈0.03-0.06
+
+    添加: 2026-07-03 — Phase 8 P2, margin_detail 表同步后激活.
+    """
+    import sqlite3
+    db_path = _market_db_path()
+    conn = _db_connect()
+    symbols = list(data["close"].columns)
+    date_str = str(date)[:10]
+
+    all_dates = sorted(data.index)
+    idx = None
+    for i, d in enumerate(all_dates):
+        if str(d)[:10] == date_str:
+            idx = i
+            break
+    if idx is None or idx < window:
+        conn.close()
+        return pd.Series(0.0, index=symbols, name="margin_balance_chg")
+
+    prev_date = str(all_dates[idx - window])[:10]
+
+    rows = conn.execute("""
+        SELECT symbol, margin_balance FROM margin_detail WHERE date IN (?, ?)
+    """, (date_str, prev_date)).fetchall()
+    conn.close()
+
+    today = {}
+    prev = {}
+    for sym, bal in rows:
+        # Multiple rows possible if sym appears in both dates, need to track which date
+        pass
+
+    # Re-query properly
+    conn2 = _db_connect()
+    today_rows = conn2.execute(
+        "SELECT symbol, margin_balance FROM margin_detail WHERE date=?", (date_str,)
+    ).fetchall()
+    prev_rows = conn2.execute(
+        "SELECT symbol, margin_balance FROM margin_detail WHERE date=?", (prev_date,)
+    ).fetchall()
+    conn2.close()
+
+    today_map = {r[0]: r[1] for r in today_rows if r[1] and r[1] > 0}
+    prev_map = {r[0]: r[1] for r in prev_rows if r[1] and r[1] > 0}
+
+    scores = {}
+    for sym in symbols:
+        t = today_map.get(sym)
+        p = prev_map.get(sym)
+        if t and p and p > 0:
+            scores[sym] = (t - p) / p
+
+    result = pd.Series(scores, dtype=float)
+    result = result.reindex(symbols).fillna(0.0)
+    return _cs_zscore(result).rename("margin_balance_chg")
+
+
+def compute_margin_buy_ratio_price(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.Series":
+    """融资买入占比: AVG(margin_buy / margin_balance) over window 天。
+
+    数据源: margin_detail 表
+    逻辑: 融资买入占余额比高 → 杠杆资金活跃 → 正向预期收益
+    实证: 融资买入占比与短期动量正相关 IC≈0.02-0.04
+
+    命名: margin_buy_ratio_5d — 与单日版 margin_buy_ratio 区分, 避免重复注册。
+    添加: 2026-07-03 — Phase 8 P2.
+    """
+    import sqlite3
+    db_path = _market_db_path()
+    conn = _db_connect()
+    symbols = list(data["close"].columns)
+    date_str = str(date)[:10]
+
+    dates = []
+    for d in sorted(data.index):
+        if str(d)[:10] < date_str:
+            dates.append(str(d)[:10])
+    if len(dates) < window:
+        conn.close()
+        return pd.Series(0.0, index=symbols, name="margin_buy_ratio_5d")
+    lookback_dates = dates[-window:]
+
+    placeholders = ','.join(['?'] * len(lookback_dates))
+    rows = conn.execute(f"""
+        SELECT symbol, AVG(CASE WHEN margin_balance > 0 THEN margin_buy * 1.0 / margin_balance ELSE NULL END) as avg_ratio
+        FROM margin_detail
+        WHERE date IN ({placeholders}) AND margin_buy IS NOT NULL AND margin_balance > 0
+        GROUP BY symbol
+    """, lookback_dates).fetchall()
+    conn.close()
+
+    scores = {r[0]: r[1] for r in rows if r[1] is not None}
+    result = pd.Series(scores, dtype=float)
+    result = result.reindex(symbols).fillna(0.0)
+    return _cs_zscore(result).rename("margin_buy_ratio_5d")
+def compute_main_flow_ratio(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.Series":
+    """主力资金流向: AVG(main_net_ratio) over window 天。
+
+    数据源: fund_flow 表 (个股资金流向)
+    逻辑: 主力净流入占比高 → 聪明钱进场 → 正向预期收益
+    实证: 主力资金净流入与短期收益正相关 IC≈0.03-0.05
+
+    添加: 2026-07-03 — Phase 8 P2.
+    """
+    import sqlite3
+    db_path = _market_db_path()
+    conn = _db_connect()
+    symbols = list(data["close"].columns)
+    date_str = str(date)[:10]
+
+    dates = []
+    for d in sorted(data.index):
+        if str(d)[:10] < date_str:
+            dates.append(str(d)[:10])
+    if len(dates) < window:
+        conn.close()
+        return pd.Series(0.0, index=symbols, name="main_flow_ratio")
+    lookback_dates = dates[-window:]
+
+    placeholders = ','.join(['?'] * len(lookback_dates))
+    rows = conn.execute(f"""
+        SELECT symbol, AVG(main_net_ratio) as avg_ratio
+        FROM fund_flow
+        WHERE date IN ({placeholders}) AND main_net_ratio IS NOT NULL
+        GROUP BY symbol
+    """, lookback_dates).fetchall()
+    conn.close()
+
+    scores = {r[0]: r[1] for r in rows if r[1] is not None}
+    result = pd.Series(scores, dtype=float)
+    result = result.reindex(symbols).fillna(0.0)
+    return _cs_zscore(result).rename("main_flow_ratio")
+
+
+
+def compute_fund_change(data: "pd.DataFrame", date: str, window: int = 0) -> "pd.Series":
+    """基金持仓变动: 最新季报的持股变动比例 (change_ratio)。
+
+    数据源: fund_hold 表 (季度基金持仓)
+    逻辑: 基金增持 → 机构看好 → 正向预期收益
+    实证: 机构持仓变动 IC≈+0.03~0.05
+    频率: 季度更新, 窗口=120天(覆盖最近季度+披露滞后)
+
+    添加: 2026-07-03 — Phase 9.
+    """
+    import sqlite3
+    db_path = _market_db_path()
+    conn = _db_connect()
+    symbols = list(data["close"].columns)
+    date_str = str(date)[:10]
+
+    # Find latest quarter end date before this trading date
+    rows = conn.execute("""
+        SELECT symbol, change_ratio FROM fund_hold
+        WHERE report_date = (SELECT MAX(report_date) FROM fund_hold WHERE report_date <= ?)
+    """, (date_str,)).fetchall()
+    conn.close()
+
+    scores = {}
+    for sym, ratio in rows:
+        if ratio is not None:
+            scores[sym] = float(ratio)
+
+    result = pd.Series(scores, dtype=float)
+    result = result.reindex(symbols).fillna(0.0)
+    return _cs_zscore(result).rename("fund_change")
+
+
+def compute_analyst_buy(data: "pd.DataFrame", date: str, window: int = 0) -> "pd.Series":
+    """分析师看好度: 买入+增持占全部评级的比例。
+
+    数据源: analyst_forecast 表 (全量分析师预测)
+    逻辑: 买入/增持占比高 → 分析师共识看多 → 正向预期收益
+    实证: 分析师评级修正 IC≈+0.04~0.07
+
+    添加: 2026-07-03 — Phase 9.
+    """
+    import sqlite3
+    db_path = _market_db_path()
+    conn = _db_connect()
+    symbols = list(data["close"].columns)
+    date_str = str(date)[:10]
+
+    rows = conn.execute("""
+        SELECT symbol, buy_count, overweight_count, neutral_count, underweight_count
+        FROM analyst_forecast
+        WHERE sync_date = (SELECT MAX(sync_date) FROM analyst_forecast WHERE sync_date <= ?)
+    """, (date_str,)).fetchall()
+    conn.close()
+
+    scores = {}
+    for sym, buy, over, neutral, under in rows:
+        total = (buy or 0) + (over or 0) + (neutral or 0) + (under or 0)
+        if total > 0:
+            scores[sym] = ((buy or 0) + (over or 0)) / total
+
+    result = pd.Series(scores, dtype=float)
+    result = result.reindex(symbols).fillna(0.5)  # 无数据 -> 中性
+    return _cs_zscore(result).rename("analyst_buy")
+
+

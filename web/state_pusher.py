@@ -1,3 +1,11 @@
+"""DEPRECATED — 2026-07-13: 已被直接内存写入替代.
+
+pipeline.py 现在直接调用 broker.update() 写入状态,
+不再通过 HTTP POST 中间层。此文件保留用于回退参考,
+新代码不应导入。
+
+原用途: POST 状态到 Flask, 指数退避重试.
+"""
 """HTTP State Pusher — pipeline → Flask 状态同步 (P69: 从 pipeline.py 抽取).
 
 方案B: pipeline 盘后计算完成后 POST 状态到 Flask，Flask 提供 /api/state 读取。
@@ -11,6 +19,15 @@ import numpy as np
 from config.loader import get as _cfg
 from config.constants import _require_cfg
 from utils.logger import get_logger
+
+
+# ── Suppression toggle (for backtest mode) ──
+_suppressed = False
+
+def _suppress_push():
+    """Suppress all post_state calls (used during backtesting to avoid noise)."""
+    global _suppressed
+    _suppressed = True
 
 # ── Failure tracking: alert when consecutive failures exceed threshold ──
 _FAIL_COUNT = 0
@@ -70,6 +87,8 @@ def post_state(data: dict, timeout: float = 5.0, max_retries: int = 3, async_mod
 
 def _post_state_sync(data: dict, timeout: float, max_retries: int):
     """POST state to Flask. Sanitizes numpy types. Retries only on transient errors."""
+    if _suppressed:
+        return
     import time as _time
     url = state_url()
     data = sanitize_for_json(data)

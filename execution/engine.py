@@ -108,56 +108,68 @@ class ExecutionEngine:
 
         返回: 执行的订单数。
         所有订单在同一事务中执行 — 部分失败时整体回滚。
+        读操作（T+1、除权检测、PnL 计算）在事务外完成，只有 write 在事务内。
         """
         import traceback
         from utils.logger import get_logger
         logger = get_logger("execution.engine")
         repo = TradeRepo(self.db_path)
+
+        # ── Phase 1: 预计算 (纯读, 事务外) ──
+        entries = []
+        for o in orders:
+            if isinstance(o, (list, tuple)):
+                symbol, side, shares, price = o[0], o[1], o[2], o[3]
+            else:
+                symbol, side, shares, price = o.symbol, o.side, o.shares, o.price
+            e = {
+                "symbol": symbol, "side": side, "shares": shares, "price": price,
+                "board_count": getattr(o, "board_count", 0),
+            }
+            if side == "buy" and self._check_ex_dividend(symbol, price, date):
+                e["skip"] = True
+                entries.append(e)
+                continue
+            if side == "buy":
+                e["cost"] = round(self.cost_model.buy_cost(price, shares) - price * shares, 2)
+                e["pnl"] = 0.0
+                e["pnl_pct"] = 0.0
+            else:
+                if repo.check_t1(strategy, symbol, date):
+                    logger.warning(
+                        f"T+1 blocked: {symbol} bought today, cannot sell until next trading day"
+                    )
+                    e["t1_blocked"] = True
+                    entries.append(e)
+                    continue
+                proceeds = self.cost_model.sell_proceeds(price, shares)
+                e["cost"] = round(price * shares - proceeds, 2)
+                orig = repo.get_last_buy_price(strategy, symbol)
+                if orig and orig[0] * shares > 0:
+                    e["pnl"] = round(proceeds - orig[0] * shares, 2)
+                    e["pnl_pct"] = round(proceeds / (orig[0] * shares) - 1, 2)
+                else:
+                    e["pnl"] = 0.0
+                    e["pnl_pct"] = 0.0
+            entries.append(e)
+
+        # ── Phase 2: 写入 (事务内) ──
         conn = repo._conn()
         executed = 0
         try:
             conn.execute("BEGIN")
-            for o in orders:
-                if isinstance(o, (list, tuple)):
-                    symbol, side, shares, price = o[0], o[1], o[2], o[3]
-                else:
-                    symbol, side, shares, price = o.symbol, o.side, o.shares, o.price
-
-                # ── 除权除息检测 (A股涨跌停 ±10% 硬规则) ──
-                if side == "buy" and self._check_ex_dividend(symbol, price, date):
+            for e in entries:
+                if e.get("skip") or e.get("t1_blocked"):
                     continue
-
-                # 计算交易成本 (佣金, 滑点)
-                if side == "buy":
-                    cost = self.cost_model.buy_cost(price, shares) - price * shares
-                    pnl = 0.0
-                    pnl_pct = 0.0
-                else:
-                    # T+1 检查
-                    if repo.check_t1(strategy, symbol, date):
-                        logger.warning(
-                            f"T+1 blocked: {symbol} bought today, cannot sell until next trading day"
-                        )
-                        continue
-                    # 计算 PnL (含佣金)
-                    proceeds = self.cost_model.sell_proceeds(price, shares)
-                    cost = price * shares - proceeds  # 佣金部分
-                    orig = repo.get_last_buy_price(strategy, symbol)
-                    pnl = 0.0
-                    pnl_pct = 0.0
-                    if orig:
-                        pnl = proceeds - orig[0] * shares
-                        pnl_pct = (proceeds / (orig[0] * shares) - 1) if orig[0] * shares > 0 else 0.0
-
                 repo.record_trade(
-                    strategy, date, symbol, side, price, shares,
-                    pnl=round(pnl, 2), pnl_pct=round(pnl_pct, 2),
-                    board_count=getattr(o, 'board_count', 0),
-                    cost=round(cost, 2),
-                    conn=conn
+                    strategy, date, e["symbol"], e["side"],
+                    e["price"], e["shares"],
+                    pnl=e["pnl"], pnl_pct=e["pnl_pct"],
+                    board_count=e["board_count"],
+                    cost=e["cost"],
+                    conn=conn,
                 )
                 executed += 1
-
             conn.commit()
             logger.info(f"executed {executed} orders via TradeRepo")
             return executed

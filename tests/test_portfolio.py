@@ -63,19 +63,19 @@ class TestPortfolioConstructorWeighted:
         pc = PortfolioConstructor({"max_positions": 20, "max_single_position": 0.05})
         alpha = pd.Series([1.0, 0.5], index=["A", "B"])
         prices = pd.Series([10.0, 10.0], index=["A", "B"])
-        pf = pc.construct(alpha, prices, 12000)
+        pf = pc.construct(alpha, prices, 50000)
         assert pf.method == "score_weighted"
         assert pf.positions >= 1
-        assert 0 < pf.invested <= 12000
+        assert 0 < pf.invested <= 50000
 
     def test_zero_score_sum(self):
         """所有 alpha 相等 → 等权分配."""
         pc = PortfolioConstructor({"max_positions": 10, "max_single_position": 0.10})
         alpha = pd.Series([5.0, 5.0, 5.0], index=["A", "B", "C"])
         prices = pd.Series([10.0, 10.0, 10.0], index=["A", "B", "C"])
-        # avg_price=10, lot_cost=1000, greedy_threshold=2000, mv_threshold=10000
-        # capital=3000 → weighted
-        pf = pc.construct(alpha, prices, 3000)
+        # greedy_cap=¥20,000, weighted_cap=¥100,000
+        # capital=50000 → weighted
+        pf = pc.construct(alpha, prices, 50000)
         assert pf.method in ("score_weighted", "greedy")
         assert pf.positions >= 1
 
@@ -93,10 +93,10 @@ class TestPortfolioConstructorMeanVar:
             np.eye(5) * 0.01 + np.ones((5, 5)) * 0.002,
             index=stocks, columns=stocks
         )
-        pf = pc.construct(alpha, prices, 100000, covariance=cov)
+        pf = pc.construct(alpha, prices, 200000, covariance=cov)
         assert pf.method == "mean_variance"
         assert pf.positions >= 1
-        assert pf.invested <= 100000
+        assert pf.invested <= 200000
 
     def test_mean_var_requires_covariance(self):
         """均值-方差无协方差矩阵 → raise."""
@@ -105,7 +105,7 @@ class TestPortfolioConstructorMeanVar:
         alpha = pd.Series([0.1, 0.2, 0.15], index=stocks)
         prices = pd.Series([5.0, 5.0, 5.0], index=stocks)
         with pytest.raises(ValueError, match="covariance matrix"):
-            pc.construct(alpha, prices, 500000)
+            pc.construct(alpha, prices, 200000)
 
 
 class TestPortfolioConstructorEdgeCases:

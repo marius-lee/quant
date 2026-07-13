@@ -113,16 +113,17 @@ def calibrate_risk_aversion(
 class PortfolioConstructor:
     """资本自适应组合构建器。
 
-    资本自适应分级 (阈值由资金量与股价实时决定, 无硬编码):
+    资本自适应分级 (阈值来自 config.yaml, 来源 ARCHITECTURE.md v3.0):
 
-      贪心等权:   capital < 均价×lot_size×2
-        → 资金太小 (连2手都买不起), 强制逐手买入得分最高的股票
+      贪心等权:   capital < greedy_cap (¥20,000)
+        → 微型账户: 集中持仓, 逐手买入得分最高的股票, 降低佣金占比
 
-      得分倾斜:   均价×lot_size×2 ≤ capital < 均价×lot_size×max_positions
-        → 按得分比例分配 → 整手舍入
+      得分倾斜:   greedy_cap ≤ capital < weighted_cap (¥100,000)
+        → 小型账户: 按得分比例分配 → 整手舍入
+        → 若产出 0 仓位则自动回退到贪心等权
 
-      均值-方差:  capital ≥ 均价×lot_size×max_positions
-        → Markowitz 均值-方差优化 + 整手离散化
+      均值-方差:  capital ≥ weighted_cap
+        → 中型+: Markowitz 均值-方差优化 + 整手离散化
         → 每次进入此分支时实时调用 calibrate_risk_aversion() 确定 λ
         → 来源: Markowitz (1952); Grinold & Kahn (2000) Chapter 7
     """
@@ -132,22 +133,24 @@ class PortfolioConstructor:
             config = {
                 "max_positions": _cfg("risk.max_positions"),
                 "max_single_position": _cfg("risk.max_single_position"),
+                "greedy_cap": _cfg("optimizer.greedy_cap"),
+                "weighted_cap": _cfg("optimizer.weighted_cap"),
             }
         self.max_positions = config.get("max_positions")
         self.max_single = config.get("max_single_position")
+        self.greedy_cap = config.get("greedy_cap", _cfg("optimizer.greedy_cap"))
+        self.weighted_cap = config.get("weighted_cap", _cfg("optimizer.weighted_cap"))
 
     def _tier(self, capital: float, avg_price: float) -> str:
-        """根据资金量与当前均价自动判定组合优化层级。
+        """根据资金量判定组合优化层级 (固定阈值, 来源 ARCHITECTURE.md v3.0)。
 
-        lot_cost = avg_price × LOT_SIZE  — 买1手需要的资金
-        capital < lot_cost × 2  → greedy
-        capital < lot_cost × max_positions → weighted
-        否则 → mean_var
+        capital < greedy_cap  → 贪心逐手买入 (微型账户: 集中持仓, 降低佣金占比)
+        capital < weighted_cap → 得分配比 (小型账户: 适度分散)
+        否则 → 均值-方差 (中型+: 分散化收益大于成本)
         """
-        lot_cost = avg_price * LOT_SIZE
-        if capital < lot_cost * 2:
+        if capital < self.greedy_cap:
             return "greedy"
-        elif capital < lot_cost * self.max_positions:
+        elif capital < self.weighted_cap:
             return "weighted"
         else:
             return "mean_var"
@@ -158,6 +161,7 @@ class PortfolioConstructor:
         prices: pd.Series,
         capital: float,
         covariance: Optional[pd.DataFrame] = None,
+        ic_map: dict = None,
     ) -> TargetPortfolio:
         """资本自适应组合构建。
 
@@ -182,9 +186,17 @@ class PortfolioConstructor:
         )
 
         if tier == "greedy":
-            return self._equal_weight_greedy(a, p, capital)
+            return self._kelly_greedy(a, p, capital, ic_map)
         elif tier == "weighted":
-            return self._score_weighted_rounding(a, p, capital)
+            result = self._score_weighted_rounding(a, p, capital)
+            # Safety net: weighted produces 0 lots → fall back to greedy
+            if result.lots.sum() == 0:
+                logger.warning(
+                    "[portfolio] weighted tier produced 0 lots (capital=¥%s), "
+                    "falling back to Kelly greedy", f"{capital:,.0f}"
+                )
+                return self._kelly_greedy(a, p, capital, ic_map)
+            return result
         else:
             # 均值-方差分支: 实时校准 risk_aversion
             if covariance is None:
@@ -197,6 +209,37 @@ class PortfolioConstructor:
                 self.max_positions, self.max_single,
             )
             return self._mean_variance_lot(a, p, capital, covariance, risk_aversion)
+
+    def _kelly_greedy(
+        self, alpha: pd.Series, prices: pd.Series, capital: float, ic_map: dict = None,
+    ) -> TargetPortfolio:
+        """Kelly 头寸分配: 用 Kelly 分数替代等权，集中资金到最强信号。
+
+        来源: Kelly (1956), Fractional Kelly per Ralph Vince (1990).
+        当 ic_map 为 None 或全零时退化为贪心等权 (向后兼容).
+        """
+        from optimizer.kelly import compute_lot_allocation
+        n_stocks = min(self.max_positions, len(alpha))
+        if n_stocks == 0:
+            return TargetPortfolio(pd.Series(dtype=int), capital, "kelly_greedy", 0.0)
+        try:
+            lots, cash = compute_lot_allocation(
+                alpha, prices, capital, ic_map, self.max_positions, LOT_SIZE
+            )
+        except Exception as e:
+            logger.warning(
+                "[portfolio] Kelly allocation failed, falling back to equal_weight: {e}"
+            )
+            return self._equal_weight_greedy(alpha, prices, capital)
+        total_value = (lots * prices.loc[lots.index] * LOT_SIZE).sum()
+        if lots.sum() == 0:
+            raise ValueError(
+                f"Kelly greedy produced 0 lots: "
+                f"n_stocks={n_stocks} capital={capital:,.0f} "
+                f"top3_prices={prices.loc[alpha.index[:min(3,n_stocks)]].tolist()} "
+                f"cheapest_lot={prices.loc[alpha.index[:n_stocks]].min() * LOT_SIZE:,.0f}"
+            )
+        return TargetPortfolio(lots, cash, "kelly_greedy", total_value)
 
     def _equal_weight_greedy(
         self, alpha: pd.Series, prices: pd.Series, capital: float,

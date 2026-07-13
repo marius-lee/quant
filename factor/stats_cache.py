@@ -245,51 +245,17 @@ def compute_factor_stats(
     def _compute_ic(name, fv_dict, forward_1d, forward_5d, forward_20d):
         if len(fv_dict) < min_periods:
             return name, None
-        from scipy import stats as _stats
-        ics = []
-        ic_by_date = {}
-        for date_str, fv_series in fv_dict.items():
-            if date_str not in forward_1d.index:
-                continue
-            fr = forward_1d.loc[date_str].dropna()
-            if isinstance(fr, pd.DataFrame):
-                fr = fr.iloc[0]
-            common = fv_series.dropna().index.intersection(fr.dropna().index)
-            if len(common) < 30:
-                continue
-            if np.std(fv_series.loc[common]) < 1e-10 or np.std(fr.loc[common]) < 1e-10:
-                continue
-            rho, _ = _stats.spearmanr(fv_series.loc[common], fr.loc[common])
-            if not np.isnan(rho):
-                ics.append(rho)
-                ic_by_date[date_str] = float(rho)
-        decay = {}
-        for horizon, fwd_df in [("1d", forward_1d), ("5d", forward_5d), ("20d", forward_20d)]:
-            h_ics = []
-            for date_str, fv_series in fv_dict.items():
-                if date_str not in fwd_df.index:
-                    continue
-                fr = fwd_df.loc[date_str].dropna()
-                if isinstance(fr, pd.DataFrame):
-                    fr = fr.iloc[0]
-                common = fv_series.dropna().index.intersection(fr.dropna().index)
-                if len(common) < 30:
-                    continue
-                if np.std(fv_series.loc[common]) < 1e-10 or np.std(fr.loc[common]) < 1e-10:
-                    continue
-                from scipy import stats
-                rho, _ = stats.spearmanr(fv_series.loc[common], fr.loc[common])
-                if not np.isnan(rho):
-                    h_ics.append(rho)
-            decay[horizon] = round(float(np.mean(h_ics)), 4) if h_ics else 0.0
-        if ics:
-            ic_arr = np.array(ics)
-            ic_mean = float(np.mean(ic_arr))
-            ic_ir_val = float(np.mean(ic_arr) / np.std(ic_arr, ddof=1)) if np.std(ic_arr, ddof=1) > 0 else 0.0
-        else:
-            ic_mean = 0.0
-            ic_ir_val = 0.0
-        return name, (ic_mean, ic_ir_val, ic_by_date, decay)
+        from factor.ic import compute_ic
+        fv_single = {name: fv_dict}
+        result = compute_ic(
+            factor_values=fv_single, forward_1d=forward_1d,
+            forward_5d=forward_5d, forward_20d=forward_20d, min_periods=min_periods
+        )
+        ic_means = result["ic_means"]
+        if name in ic_means:
+            return name, (ic_means[name], result["ic_irs"][name],
+                         result["ic_series"].get(name, {}), result["ic_decay"].get(name, {}))
+        return name, None
 
     logger.info(f"IC compute start: {len(factor_names)} factors")
 
@@ -482,8 +448,8 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
             if row:
                 return json.loads(row[0])
         except Exception:
-            pass
-        return _empty_result()
+            import logging; logging.getLogger("quant.factor.stats_cache").warning("load_latest failed", exc_info=True)
+            return _empty_result()
 
     try:
         logger.info("computing factor stats (this may take ~30s)...")
@@ -507,14 +473,28 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
         _COMPUTE_LOCK.release()
 
 
-def _load_ic_from_db(filter_names=None) -> dict:
-    """从 factor_registry 表加载 active 因子的 IC 权重。"""
+def _load_ic_from_db(filter_names=None, status_filter='using') -> dict:
+    """从 factor_registry 表加载因子 IC 权重。
+
+    status_filter: 'using'→active+monitoring (实盘), 'backtesting'→registered+candidate+retired+active+monitoring (回测).
+    """
+    if status_filter == 'backtesting':
+        statuses = ('registered', 'candidate', 'retired', 'active', 'monitoring')
+    elif status_filter == 'using':
+        statuses = ('active', 'monitoring')
+    elif isinstance(status_filter, (list, tuple)):
+        statuses = tuple(status_filter)
+    else:
+        statuses = (status_filter,)
+
     try:
         import sqlite3 as _sql
         db = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
         conn = _sql.connect(db, timeout=30)
+        ph = ",".join("?" * len(statuses))
         rows = conn.execute(
-            "SELECT name, ic_mean FROM factor_registry WHERE status IN ('active','monitoring')"
+            f"SELECT name, ic_mean FROM factor_registry WHERE status IN ({ph})",
+            list(statuses)
         ).fetchall()
         conn.close()
         if not rows:
@@ -530,17 +510,18 @@ def _load_ic_from_db(filter_names=None) -> dict:
         logger.info(f"IC weights loaded from DB: {len(ic_map)} factors")
         return ic_map
     except Exception as e:
-        logger.warning(f"factor_registry load failed: {e}")
-        return {}
+        logger.exception(f"factor_registry IC load failed — cannot proceed without IC weights")
+        raise
 
 
-def load_ic_map_from_cache(factor_values: dict = None) -> dict:
+def load_ic_map_from_cache(factor_values: dict = None, status_filter='using') -> dict:
     """从 factor_registry 表加载 IC 权重（单一数据源，不再依赖 JSON 文件）。
 
     返回: {factor_name: weight} 字典，已归一化。
     factor_values: 可选，用于过滤只保留实际计算出的因子。
+    status_filter: 'using'→实盘, 'backtesting'→回测.
     """
-    return _load_ic_from_db(factor_values)
+    return _load_ic_from_db(factor_values, status_filter=status_filter)
 
 
 def force_refresh_cache(n_symbols: int = None) -> dict:

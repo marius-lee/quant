@@ -4,6 +4,8 @@ alpha:
   intersection_top_fraction: 0.2
   method: ic_weighted
   retrain_freq: 20
+  weekly_weight: 0.3       # MultiTimeframe: 周线信号权重 (0=只用日线, 0.5=等权, 来源: Faber 2007)
+  sector_rotation: true    # SectorRotator: 启用美林时钟行业轮动
   sleeve:
     min_factors: 1
     positions_per_factor: 20
@@ -14,15 +16,25 @@ attribution:
   risk_free_rate: 0.02
 backtest:
   benchmark: '000300'
-  default_capital: 100000
+  default_capital: 5000
   default_end: '2026-06-30'
   default_start: '2023-01-01'
   lot_size: 100
   min_backtest_days: 250
   rebalance_interval_days: 5
+  universe_size: 800  # 回测股票池大小, 按日均成交额取前 N 只 (Gap 性能优化)
+  universe_turnover_days: 7       # 按近 N 日平均成交额截断 universe; 来源: 业界标准 5-20 日窗口
+  diagnosis_ic_window: 120        # 回测前 IC 滚动窗口; 来源: 与 factor.evaluation.lookback 一致
+  progress_log_interval: 60       # 进度日志输出间隔; 来源: 月频输出(≈60交易日/季)
+  min_trading_days: 10            # 最少交易日; 来源: 至少 2 个自然周
+  universe_filter_affordable: true  # 筛掉一手都买不起的股票; 来源: 减少无效计算, 聚焦可交易标的
 cache:
 calendar:
   max_lookup_days: 30
+
+benchmark:
+  start_date: '2025-12-01'        # 沪深 300 基准回看起始; 来源: 2025-12 起 A 股波动特征切换
+
 data:
   batch_size: 50
   derived_ratio_max: 100
@@ -31,6 +43,7 @@ data:
   pe_max: 200
   stale_days: 250
   start_date: '2020-01-01'
+  benchmark_start_date: '2020-01-01'  # 基准对比起始日; 来源: 沪深300可追溯日
   tushare_token: ${TUSHARE_TOKEN}
   rate_limit:
     akshare_per_stock_sec: 1.5
@@ -62,6 +75,8 @@ execution:
   commission: 0.0003
   min_commission: 5
   slippage: 0.001
+  impact_eta: 0.1            # Almgren-Chriss 冲击模型 η; 来源: Almgren et al. (2005) 线性冲击
+  default_daily_vol: 0.02    # 日波动率默认值; 来源: A股日波动率中位数 ~2%
   stamp_tax: 0.001
   quote:
     max_batch_workers: 4   # 新浪行情并行拉取最大线程数
@@ -74,7 +89,8 @@ factor:
     min_valid_ratio: 0.5
     scale: 1000000
   compute:
-    zscore_min_count: 30
+    zscore_min_count_dense: 30
+    zscore_min_count_sparse: 10
   debt_ratio:
     max: 2
     min: 0
@@ -93,9 +109,17 @@ factor:
     worker_timeout_sec: 300  # P78: ThreadPoolExecutor 5min timeout
     min_abs_ic: 0.02
     min_half_life: 20
-    min_icir: 0.5
+    # -- ICIR 阈值 --
+    # A股单因子 IC 中位数≈0.01-0.03, ICIR 到 0.2 就算好因子
+    # 来源: Grinold & Kahn (1999) 美股 0.5→1.0; Qian/Hua/Sorensen (2007) 单因子 0.25-0.5
+    #       国内平台(聚宽/米筐/BigQuant) A股 0.2-0.3; AQR Asness 全球 0.3
+    min_icir: 0.25
+    # ── 两步架构: 诊断快筛阈值 ──
+    diagnostics_min_icir: 0.15            # ICIR<0.15 → drop; A股预筛松阈值, 保留微弱信号给 Phase 2 验证
+    diagnostics_pnl_threshold: 0.1        # PnL>0.1 → boost; 来源: backtest/diagnostics.py diagnose()
+    diagnostics_review_threshold: -0.5    # PnL<-0.5 → review; 来源: backtest/diagnostics.py diagnose()
     n_days: 120
-    n_symbols: 500
+    n_symbols: 800
     net_sharpe_min: 0.3
     pbo_max: 0.3
     sharpe_decay_max: 0.5
@@ -135,6 +159,9 @@ optimizer:
   method: equal_weight
   min_holding_days: 5
   rebalance_freq: weekly
+  greedy_cap: 20000       # 低于此资金: 贪心逐手买入得分最高的股票
+  weighted_cap: 100000    # 低于此资金: 得分配比; 高于此: 均值-方差
+  kelly_fraction: 4.0      # Fractional Kelly: 1=full, 2=half, 4=quarter (conservative). Source: Ralph Vince 1990
 risk:
   covariance:
     min_periods: 30
@@ -156,6 +183,9 @@ risk:
   # ── ATR 动态止损止盈 (替代固定百分比) ──
   atr_period: 20
   atr_mult_stop_loss: 2.0          # 止损: 现价≤成本-2×ATR → 全卖
+  # ── 固定百分比止损 (backup for non-ATR signals) ──
+  stop_loss_pct: 0.08              # 浮亏≥8% → 强制止损; 来源: A股±10%跌停下, 15%来不及执行
+  stop_loss_cooloff_days: 5       # 止损后 N 日内不再买入同一只股票; 来源: 防止 buy→止损→rebuy 螺旋
   atr_mult_take_profit_1: 2.0      # 止盈1: 现价≥成本+2×ATR → 卖50%
   atr_mult_take_profit_2: 3.0      # 止盈2: 现价≥成本+3×ATR → 卖剩余50%
   atr_mult_trailing: 1.5           # 移动锁利: 盈利超2ATR后回撤1.5ATR → 全卖
@@ -177,3 +207,6 @@ web:
   port: 8521
   sse:
     queue_timeout: 30         # SSE 事件队列超时 (秒)
+
+live:
+  default_capital: 5000    # 实盘默认本金; 来源: 策略首次启动时自动写入 DB 的种子资金

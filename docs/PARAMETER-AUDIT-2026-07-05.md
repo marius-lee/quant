@@ -154,7 +154,8 @@ compute_ma_alignment 的 window=20 参数完全不参与计算 (MAs 硬编码), 
 | store | derived ratio max | data.derived_ratio_max | 100 | 数据清洗 |
 | stats_cache | snapshot TTL | factor.stats.snapshot_ttl_sec | 86400 | 缓存策略 |
 | stats_cache | IC min periods | factor.stats.ic_min_periods | 20 | 统计门禁 |
-| compute | zscore min | factor.compute.zscore_min_count | 30 | 统计门禁 |
+| compute | zscore min (dense) | factor.compute.zscore_min_count_dense | 30 | 统计门禁 — 价量因子 |
+| compute | zscore min (sparse) | factor.compute.zscore_min_count_sparse | 10 | 统计门禁 — 基本面因子 |
 | covariance | window | risk.covariance.window | 60 | 协方差估计 |
 | covariance | min_periods | risk.covariance.min_periods | 30 | 最少数据量 |
 

@@ -14,8 +14,17 @@ def _run(today: str):
     t0 = _time.time()
 
     from pipeline import generate_signals
+    from data.trade_repo import TradeRepo
     result = generate_signals(date_str=today)
     targets = result.get("target_positions", [])
+
+    # ── 持久化: 信号写入 DB (execute 从此读取) ──
+    if targets:
+        try:
+            cap = TradeRepo().get_cash("quant")
+            TradeRepo().save_signals(today, targets, cap or 0.0)
+        except Exception as _e_db:
+            _log.warning(f"[{today}] save_signals to DB failed: {_e_db}")
 
     elapsed = _time.time() - t0
     _log.info(f"[{today}] signals done: {len(targets)} targets ({elapsed:.1f}s)")

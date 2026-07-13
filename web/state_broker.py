@@ -9,6 +9,7 @@
 import json as _json
 import threading, queue
 import os as _os
+import logging
 
 _FINANCIAL_KEYS = ("capital", "total_asset", "pnl", "metrics", "pos_value", "positions")
 
@@ -58,7 +59,7 @@ class InProcessBroker:
                             close_map[rp["symbol"]] = cr[0]
                     mc.close()
             except Exception:
-                pass
+                logging.getLogger("web.state_broker").warning("_init_state: stock close prices query failed", exc_info=True)
 
             for p in raw_positions:
                 sym = p["symbol"]
@@ -114,7 +115,7 @@ class InProcessBroker:
                                 p["name"] = name_map[p["symbol"]]
                     mc.close()
             except Exception:
-                pass
+                logging.getLogger("web.state_broker").warning("_init_state: stock close prices query failed", exc_info=True)
 
             state["positions"] = positions
         except Exception:
@@ -161,7 +162,7 @@ class InProcessBroker:
                         if state.get("metrics"):
                             state["metrics"]["total_return_pct"] = round(new_total_pnl / base * 100, 2) if base > 0 else 0
         except Exception:
-            pass
+            logging.getLogger("web.state_broker").warning("_quote_overlay: position value calc failed", exc_info=True)
 
     # ═══════════════════════════════════════════
     # 公开接口
@@ -187,9 +188,8 @@ class InProcessBroker:
 
     def update(self, data: dict):
         """接收 pipeline 推送的进度/信号，写入内存缓存并广播 SSE。"""
+        data = {k: v for k, v in data.items() if k not in _FINANCIAL_KEYS}
         with self._lock:
-            for _fk in _FINANCIAL_KEYS:
-                data.pop(_fk, None)
             self._cache.update(data)
             payload = dict(self._cache)
         dead = []

@@ -74,7 +74,7 @@ PYTHONPATH=. python3 -m pytest tests/ -v
 ## Data flow
 
 ```
-scheduler.py (三阶段: 08:30 信号 → 09:30 执行 → 15:30 归因)
+quant/scheduler/ (单线程编排器: 08:30 信号 → 09:30 执行 → 15:30 归因)
   └─ pipeline.py.run(date)
        ├─ Step 1: DataStore.update_daily()
        ├─ Step 2: factor/evaluate.py → IC/IR report
@@ -163,3 +163,25 @@ Before proposing any solution:
 3. **Fit the change into that pattern** — minimum addition, same shape
 
 If the existing code already has a merge/overlay step, add to it. Never design alternatives before reading.
+
+
+## Workflow Rule: 回测后自动分析日志
+
+**用户回测完成后**，agent 必须主动检查日志文件，不得等待用户粘贴错误。
+
+**触发词**: "跑完了" / "done" / "回测跑完了" / "测试跑完了"
+
+**Agent 必须执行**:
+1. grep ERROR 最近 20 条
+2. 如有错误，按 trace_id 回溯上下文
+3. 检查 WARNING 中是否有新的非边界告警
+
+**职责分工**:
+- 终端 (stdout): INFO+ — 用户确认代码在跑、进度、诊断结论
+- logs/quant.log: DEBUG+ (全量) — agent 抓 ERROR/WARNING 定位 bug
+
+**已知无害 WARNING (不需报告)**:
+- post_state failed N consecutive times — 回测时无 Flask 服务
+- no open prices available, skipping — 最后一天无次日开盘价
+- empty common universe / insufficient common stocks — 正常边界
+- T+1 blocked — 正常风控拦截

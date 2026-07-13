@@ -180,7 +180,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
 
         from alpha.model import AlphaModel
         am = AlphaModel()
-        ic_map = ic_map or load_ic_map_from_cache(factor_values, status_filter=status_filter)
+        ic_map = ic_map if ic_map is not None else load_ic_map_from_cache(factor_values, status_filter=status_filter)
         alpha_raw = am.combine(factor_values, ic_map=ic_map)
         alpha = am.rank(alpha_raw)
 

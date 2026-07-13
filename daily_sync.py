@@ -35,6 +35,7 @@ def step2_margin(date_str: str):
     """融资融券: SSE 直接JSON + SZSE akshare wrapper。"""
     from data.margin import _sync_sse_raw, _sync_szse_wrapper
     import sqlite3
+from data.repos._base import DatabaseManager
     conn = sqlite3.connect(os.path.join(os.path.dirname(__file__), "data", "market.db"), timeout=_require_cfg("data.sqlite.timeout"))
     n_sse = _sync_sse_raw(date_str.replace("-", ""), conn)
     time.sleep(_require_cfg("sync.daily_interval"))
@@ -65,7 +66,8 @@ def step5_fundamentals():
     if datetime.now().weekday() != 0:
         logger.info("[5] fundamentals: skipped (not Monday)")
         return 0
-    import sqlite3, os
+    import sqlite3
+from data.repos._base import DatabaseManager, os
     conn = sqlite3.connect(os.path.join(os.path.dirname(__file__), "data", "market.db"), timeout=_require_cfg("data.sqlite.timeout"))
     from data.fundamental import sync_all
     n = sync_all(conn, max_fetch=500)

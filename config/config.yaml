@@ -23,10 +23,13 @@ backtest:
   min_backtest_days: 250
   rebalance_interval_days: 5
   universe_size: 800  # 回测股票池大小, 按日均成交额取前 N 只 (Gap 性能优化)
+  #   冒烟测试覆盖: run_backtest(universe_size=300) → A档200-300只
   universe_turnover_days: 7       # 按近 N 日平均成交额截断 universe; 来源: 业界标准 5-20 日窗口
   diagnosis_ic_window: 120        # 回测前 IC 滚动窗口; 来源: 与 factor.evaluation.lookback 一致
+  #   冒烟测试覆盖: run_backtest(ic_lookback=60) → A档60天
   progress_log_interval: 60       # 进度日志输出间隔; 来源: 月频输出(≈60交易日/季)
   min_trading_days: 10            # 最少交易日; 来源: 至少 2 个自然周
+  #   冒烟测试覆盖: run_backtest() 走此值
   universe_filter_affordable: true  # 筛掉一手都买不起的股票; 来源: 减少无效计算, 聚焦可交易标的
 cache:
 calendar:

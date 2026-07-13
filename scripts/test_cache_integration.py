@@ -44,7 +44,7 @@ jq_init()
 db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 db_path = db.name
 db.close()
-conn = sqlite3.connect(db_path)
+conn = DatabaseManager.get_instance().get_connection(db_path)
 conn.execute("""
     CREATE TABLE IF NOT EXISTS daily_valuation (
         symbol TEXT, date TEXT, pe_ttm REAL, pb REAL,

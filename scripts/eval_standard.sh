@@ -35,6 +35,7 @@ echo "============================================"
 echo "Phase 1: 数据准备"
 echo "============================================"
 PYTHONPATH=. .venv/bin/python3 -c "
+from utils.excepthook import setup; setup()
 from evaluation.phase1_data import prepare_data
 prepare_data()
 "
@@ -57,6 +58,7 @@ for arg in "$@"; do
 done
 
 PYTHONPATH=. .venv/bin/python3 -c "
+from utils.excepthook import setup; setup()
 from evaluation.phase2_single import screen_factors
 screen_factors(prefilter_from_diagnostics=$PREFILTER)
 "
@@ -69,6 +71,7 @@ echo "============================================"
 echo "Phase 3: CPCV + PBO (Walk-Forward OOS)"
 echo "============================================"
 PYTHONPATH=. .venv/bin/python3 -c "
+from utils.excepthook import setup; setup()
 from evaluation.phase3_oos import validate_oos
 validate_oos()
 "
@@ -81,6 +84,7 @@ echo "============================================"
 echo "Phase 4: 交易成本扣除后验证"
 echo "============================================"
 PYTHONPATH=. .venv/bin/python3 -c "
+from utils.excepthook import setup; setup()
 from evaluation.phase4_costs import verify_costs
 verify_costs()
 "
@@ -99,6 +103,7 @@ echo "============================================"
 echo "Phase 5b: 因子状态同步"
 echo "============================================"
 PYTHONPATH=. .venv/bin/python3 -c "
+from utils.excepthook import setup; setup()
 from evaluation.phase5_monitor import sync_factor_status
 r = sync_factor_status()
 print(f'  rejected={len(r[\"rejected\"])} active={len(r[\"active\"])} unchanged={r[\"unchanged\"]}')
@@ -112,6 +117,7 @@ if $RUN_PHASE5; then
     echo "Phase 5: 持续监控报告"
     echo "============================================"
     PYTHONPATH=. .venv/bin/python3 -c "
+from utils.excepthook import setup; setup()
 from evaluation.phase5_monitor import run_monitor
 path = run_monitor()
 print(f'Report: {path}')
@@ -135,6 +141,7 @@ if $RUN_PHASE6; then
     echo "Phase 6: 策略级全链路回测 (walk-forward)"
     echo "============================================"
     PYTHONPATH=. .venv/bin/python3 -c "
+from utils.excepthook import setup; setup()
 from evaluation.phase6_backtest import run_strategy_backtest
 import json
 result = run_strategy_backtest(

@@ -28,11 +28,12 @@ logger = get_logger("init_data")
 def check_data_status():
     """打印当前数据状态。"""
     import sqlite3
+from data.repos._base import DatabaseManager
     db = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
     if not os.path.exists(db):
         print("market.db 不存在 — 尚未初始化")
         return
-    conn = sqlite3.connect(db)
+    conn = DatabaseManager.get_instance().get_connection(db)
     stocks = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
     daily = conn.execute("SELECT COUNT(*) FROM daily").fetchone()[0]
     symbols = conn.execute("SELECT COUNT(DISTINCT symbol) FROM daily").fetchone()[0]

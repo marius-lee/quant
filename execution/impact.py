@@ -17,7 +17,8 @@ A股校准: η (冲击系数) ≈ 0.1~0.3, γ (平方根幂) ≈ 0.5.
 
 import numpy as np
 import pandas as pd
-import sqlite3, os
+import sqlite3
+from data.repos._base import DatabaseManager, os
 
 from utils.logger import get_logger
 from config.constants import _require_cfg

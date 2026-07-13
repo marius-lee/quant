@@ -1056,3 +1056,107 @@ factor/compute/fundamental/
   PYTHONPATH=. .venv/bin/python3 scripts/run_task.py signals  [YYYY-MM-DD]
   PYTHONPATH=. .venv/bin/python3 scripts/run_task.py execute  [YYYY-MM-DD]
   PYTHONPATH=. .venv/bin/python3 scripts/run_task.py cleanup  [YYYY-MM-DD]
+
+## 标准入口点速查
+
+每次需要跑测试时，用以下命令给用户，不要自己执行：
+
+| 用途 | 命令 |
+|------|------|
+| 冒烟测试（14天） | `PYTHONPATH=. .venv/bin/python3 scripts/smoke_test.py` |
+| 完整回测（自定义日期） | 写 /tmp 临时文件，参考 `scripts/smoke_test.py` 结构 |
+| 五阶段正式评估 | `PYTHONPATH=. bash scripts/eval_standard.sh` |
+| Web 服务 | `PYTHONPATH=. .venv/bin/python3 web/app.py` |
+| 手动任务（信号/执行/监控） | `PYTHONPATH=. .venv/bin/python3 scripts/run_task.py <signals\|execute\|monitor>` |
+
+所有入口必须在开头调用：`from utils.excepthook import setup; setup()` — 已在 scripts/smoke_test.py、eval_standard.sh、web/app.py 注入。
+
+## 日志分布速查
+
+| 入口 | 业务日志 | 崩溃日志 (excepthook) |
+|------|----------|----------------------|
+| `web/app.py` | `logs/app.log` | `logs/app.log` |
+| `scripts/smoke_test.py` | `logs/backtest.log` | `logs/app.log` |
+| `scripts/eval_standard.sh` | `logs/backtest.log` | `logs/app.log` |
+| 临时回测脚本 `/tmp/_bt_*.py` | `logs/backtest.log` | `logs/app.log` |
+
+分析错误时：先看 `logs/app.log`（崩溃异常），再看 `logs/backtest.log`（回测业务错误）。
+
+---
+
+## 2026-07-13#23: 修复 backtesting filter 错误包含 rejected
+
+**Bug**: `_resolve_statuses("backtesting")` 返回 `('registered', 'candidate', 'retired', 'rejected')`，
+多含了 `rejected`。HANDOFF#2026-07-11 和 HANDOFF#2026-07-12#14 明确规定
+backtesting 过滤仅含 `registered + candidate + retired`。
+
+**根因**: 某次修改 `_registry.py` 时误加了 `'rejected'` 进入 backtesting 元组。
+rejected 因子已经过多轮评估判定无效，不应再参与回测。
+
+**修复**: `factor/compute/_registry.py:16` — 删除 `'rejected'`。
+
+**影响**: 冒烟测试和回测诊断不再加载 67 个 rejected 因子，仅加载 registered + candidate + retired。
+当前后三者总数 = 0 + 0 + 2 = 2 个 (northbound 数据源已死)。
+
+---
+
+## 2026-07-13#24: 因子状态批量修正 + phase2_single.py 两 bug 修复
+
+**背景**: 
+- 67 个 rejected 因子堵塞了 backtesting 池，诊断通过的 64 个因子因状态为 rejected 无法进入 Phase 2 评估
+- 2 个 northbound 因子数据源断绝（证监会 2024-08 停止发布北向资金每日明细），应标记为 rejected
+- phase2_single.py 存在两个 bug: get_factors_by_status 传参类型错误 + conn.close() NameError
+
+**因子状态变更**:
+- `northbound_20d`: retired → rejected，备注「数据源断绝 — 证监会 2024-08 停止发布北向资金每日明细，此因子永久无效」
+- `northbound_streak`: 已是 rejected，补全备注同上
+- `sue`: retired → rejected（诊断 drop，非 northbound）
+- 64 个诊断通过因子: rejected → retired，备注「回测诊断通过，待正式评估重新检验」
+- **结果**: retired=64, rejected=5, active=1 — backtesting 池 = registered(0)+candidate(0)+retired(64) = 64
+
+**Bug 修复** (evaluation/phase2_single.py):
+1. `repo.get_factors_by_status("SELECT ...")` → `get_factor_names(status_filter="backtesting")`
+   - 原代码传入 SQL 字符串给期望 `tuple[str,...]` 的方法，类型不匹配
+   - 改用已有的 `get_factor_names()` 函数，与 `_registry.py` 的 `_resolve_statuses` 保持一致
+2. 删除 `conn.close()` — `conn` 变量在函数内从未定义，会引发 NameError
+
+**影响**: backtesting 池从 0 因子恢复为 64 个待评估因子，eval_standard.sh Phase 2 现可正常运行。
+
+---
+
+## 2026-07-13#25: Phase 5 探伤断点 + rejected 安全重置脚本
+
+### A. Phase 5 全零 IC 守卫 (circuit breaker)
+
+**位置**: `evaluation/phase5_monitor.py` → `sync_factor_status()`
+
+**逻辑**: Phase 5 同步前检查 Phase 2 结果:
+- 所有因子 IC≈0.0000
+- passed 数量 = 0
+- 因子数 > 4（排除真的只有少量因子且全无效的情况）
+
+若全部命中 → CRITICAL 日志 + 拒绝同步，保留因子原状态。
+防止 IC 计算因超时/数据缺失/bug 批量产全零导致假阴性误杀。
+
+### C. rejected → retired 安全重置脚本
+
+**脚本**: `scripts/reset_rejected.sh`
+
+**用法**:
+```bash
+bash scripts/reset_rejected.sh          # 预览
+bash scripts/reset_rejected.sh --apply  # 执行
+```
+
+**保护**: 只重置 `status_reason LIKE 'Phase %: %'` 的因子（Phase 2/3/4 评估失败）。
+永久 rejected（northbound 数据源永死等，reason 不含 "Phase" 前缀）自动跳过。
+
+**因子状态生命周期** (更新):
+```
+registered → candidate → retired → Phase 2/3/4 → active  (通过)
+                                               → rejected (失败)
+                                                  ↓
+                                     reset_rejected.sh --apply
+                                                  ↓
+                                               retired (重新入池)
+```

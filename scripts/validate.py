@@ -35,7 +35,8 @@ def ok(msg):
 # ── 1. Config vs Code defaults ──
 def check_config_vs_code():
     """检查 config.yaml 中的值与代码默认值是否一致。"""
-    from config.constants import _require_cfg
+    from data.repos import FactorRepo
+from config.constants import _require_cfg
 
     # 检查关键参数
     checks = {
@@ -151,7 +152,8 @@ def check_database():
 # ── 4. Key parameter sanity ──
 def check_parameters():
     """检查关键参数是否合理。"""
-    from config.constants import _require_cfg
+    from data.repos import FactorRepo
+from config.constants import _require_cfg
 
     max_pos = _require_cfg("risk.max_positions")
     stop_loss = _require_cfg("risk.stop_loss_pct")

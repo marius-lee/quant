@@ -165,12 +165,12 @@ def compute_factor_stats(
                     results.append((date_str, result, close_series, None))
                 except Exception as e:
                     results.append((date_str, {}, _pd.Series(dtype=float), str(e)))
-                    raise
+                    logger.warning(f"_thread_compute_chunk: {type(e).__name__} at {date_str}: {e}")
 
             _store.close()
             return results
         except Exception as e:
-            logger.exception(f"Thread worker fatal error: {type(e).__name__}: {e}")
+            logger.error(f"Thread worker fatal error in chunk {chunk_dates[0]}..{chunk_dates[-1]}: {type(e).__name__}: {e}")
             return [(d, {}, _pd.Series(dtype=float), f"{type(e).__name__}: {e}") for d in chunk_dates]
 
     n_chunks = min(_MAX_WORKERS, len(eval_date_strs))
@@ -198,7 +198,7 @@ def compute_factor_stats(
             pbar = None
 
         try:
-            for future in as_completed(futures, timeout=_WORKER_TIMEOUT_SEC):
+            for future in as_completed(futures):
                 chunk_results = future.result()
                 for date_str, fv_partial, close_series, err in chunk_results:
                     if err:
@@ -210,21 +210,16 @@ def compute_factor_stats(
                             close_by_date[date_str] = close_series
                 if pbar:
                     pbar.update(1)
-        except FuturesTimeoutError:
-            n_pending = sum(1 for f in futures if not f.done())
-            logger.error(
-                f"ThreadPoolExecutor timed out after {_WORKER_TIMEOUT_SEC}s — "
-                f"{n_pending} chunk(s) incomplete, canceling"
-            )
-            for f in futures:
-                f.cancel()
         finally:
             if pbar:
                 pbar.close()
     finally:
-        executor.shutdown(wait=False)
+        executor.shutdown(wait=True)
 
-    logger.info(f"factor compute complete: {len(eval_date_strs)}/{len(eval_date_strs)} dates")
+    completed_dates = set()
+    for name in factor_names:
+        completed_dates |= set(factor_values_by_date[name].keys())
+    logger.info(f"factor compute complete: {len(completed_dates)}/{len(eval_date_strs)} dates")
 
     # 4. 构建 forward returns
     close_parts = []
@@ -274,9 +269,9 @@ def compute_factor_stats(
     try:
         futures = {executor.submit(_compute_ic, name, factor_values_by_date[name],
                                    forward_1d, forward_5d, forward_20d): name
-                   for name in factor_names}
+        for name in factor_names}
         ic_completed = 0
-        for future in as_completed(futures, timeout=_WORKER_TIMEOUT_SEC):
+        for future in as_completed(futures):
             name, result = future.result()
             if result is not None:
                 ic_means[name], ic_irs[name], ic_series[name], ic_decay[name] = result
@@ -287,7 +282,7 @@ def compute_factor_stats(
                 logger.info(f"IC compute progress: {ic_completed}/{len(factor_names)} factors")
         logger.info(f"IC compute complete: {len(factor_names)} factors")
     finally:
-        executor.shutdown(wait=False)
+        executor.shutdown(wait=True)
 
     # 6. 计算因子相关性矩阵
     n = len(factor_names)
@@ -319,14 +314,14 @@ def compute_factor_stats(
         try:
             futures = {executor.submit(_compute_pair, i, j, ni, nj): (i, j)
                        for i, j, ni, nj in pairs}
-            for future in as_completed(futures, timeout=_WORKER_TIMEOUT_SEC):
+            for future in as_completed(futures):
                 i, j, avg, n_pairs = future.result()
                 corr_matrix[i][j] = avg
                 corr_matrix[j][i] = avg
                 corr_counts[i][j] = n_pairs
                 corr_counts[j][i] = n_pairs
         finally:
-            executor.shutdown(wait=False)
+            executor.shutdown(wait=True)
     logger.info(f"corr matrix: {n}x{n}, avg pairwise periods: {corr_counts.sum()/(n*(n-1)):.1f}" if n > 1 else "corr: single factor")
 
     # 7. 生成因子元信息
@@ -400,7 +395,6 @@ def compute_factor_stats(
             update_factor_evaluation(k, ic_val, ir_val)
     except Exception as e:
         logger.warning(f"factor_registry update failed: {e}")
-        raise
 
     return result
 
@@ -455,7 +449,6 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
                 logger.info(f"factor snapshot expired, age={age_sec/3600:.1f}h")
         except Exception as e:
             logger.warning(f"Factor snapshot read failed: {e}")
-            raise
 
     # 进程内重入保护
     if not _COMPUTE_LOCK.acquire(blocking=False):
@@ -486,7 +479,6 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
             logger.info("factor snapshot saved to factor_snapshot table")
         except Exception as e:
             logger.warning(f"Factor snapshot write failed: {e}")
-            raise
 
         return stats
     finally:
@@ -524,8 +516,8 @@ def _load_ic_from_db(filter_names=None, status_filter='using') -> dict:
         logger.info(f"IC weights loaded from DB: {len(ic_map)} factors")
         return ic_map
     except Exception as e:
-        logger.exception(f"factor_registry IC load failed — cannot proceed without IC weights")
-        raise
+        logger.error(f"factor_registry IC load failed — cannot proceed without IC weights: {e}")
+        return {}
 
 
 def load_ic_map_from_cache(factor_values: dict = None, status_filter='using') -> dict:

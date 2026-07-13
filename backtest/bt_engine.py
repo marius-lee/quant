@@ -19,6 +19,7 @@ import backtrader as bt
 from utils.logger import get_logger
 from config.constants import _require_cfg
 from backtest.naming import next_backtest_name
+from data.repos._base import DatabaseManager
 
 _log = get_logger("backtest.bt_engine")
 
@@ -46,8 +47,7 @@ class _DailyPandasData(bt.feeds.PandasData):
 
 def _load_symbol_data(symbol: str, from_date: str, to_date: str):
     """从 market.db 加载单只股票的 OHLCV 数据, 转回 backtrader feed."""
-    import sqlite3
-    conn = sqlite3.connect(MARKET_DB)
+    conn = DatabaseManager.get_instance().get_connection(MARKET_DB)
     df = pd.read_sql_query(
         "SELECT date, open, high, low, close, volume "
         "FROM daily WHERE symbol=? AND date>=? AND date<=? "
@@ -194,8 +194,7 @@ def run_backtest_bt(
     universe = store.get_universe(trading_days[0])
     universe_size = _require_cfg("backtest.universe_size")
     if len(universe) > universe_size:
-        import sqlite3
-        conn = sqlite3.connect(MARKET_DB)
+        conn = DatabaseManager.get_instance().get_connection(MARKET_DB)
         placeholders = ", ".join("?" * len(universe))
         rows = conn.execute(
             f"SELECT symbol, AVG(volume*close) as avg_amount FROM daily "

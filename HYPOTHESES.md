@@ -377,3 +377,27 @@ trace_id 可后期通过 Phase 间的 `evaluation_runs` DB 记录关联 (各 Pha
 
 **假设**: 1215 行 fundamental.py 不需要立即拆分，共享 infrastructure 的内聚性 > 文件行数限制。
 **状态**: Deferred。等膨胀到 1500+ 行或新增 >10 因子时采用 Facade + Registry 方案重新评估。
+
+---
+
+## 2026-07-13: 冒烟测试分层设计 — A/B/C 三档
+
+**背景**: 冒烟测试最初 14 天 × 800 股 × 120 天 IC 窗口 × 67 因子，单次耗时 ~80 分钟，失去"快速验证"意义。因子来源 `status_filter="backtesting"` 展开为 `('registered','candidate','retired')` — rejected 不参与回测，但当前 0 个 backtesting 状态因子，实际使用 67 个 rejected + 2 个 retired 因子。
+
+**三档分层**:
+
+| 档位 | 交易日 | 股票 | IC窗口 | 因子 | 耗时 | 用途 |
+|------|--------|------|--------|------|------|------|
+| A (冒烟) | ≥10 | 200-300 | 60天 | 首次全量/日常backtesting池 | 2-5分钟 | 管线不崩 |
+| B (快筛) | 60-120 | 500-1000 | 120天 | backtesting池 | 10-30分钟 | 因子方向性检查 |
+| C (正式) | 252+ | 全市场 | 全历史 | backtesting池 | 数小时 | CPCV+PBO认证 |
+
+**方案**:
+1. `backtest/loop.py` `run_backtest()` 新增 `universe_size`, `ic_lookback`, `factor_status_filter` 可选参数
+2. `scripts/smoke_test.py` 硬编码 A 档参数: 300股/60天IC/10交易日
+3. 因子池切换: 首次 `factor_status_filter=None`(全量) → 稳定后 `factor_status_filter="backtesting"`
+4. `config/config.yaml` 添加冒烟覆盖注释
+
+**状态**: 已落地 (2026-07-13)
+
+**关联**: `scripts/smoke_test.py`, `backtest/loop.py:run_backtest()`, `config/config.yaml:backtest.*`

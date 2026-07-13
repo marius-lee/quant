@@ -14,7 +14,7 @@ def _resolve_statuses(status_filter):
     if status_filter == 'using':
         return ('active', 'monitoring')
     if status_filter == 'backtesting':
-        return ('registered', 'candidate', 'retired', 'rejected')
+        return ('registered', 'candidate', 'retired')
     return (status_filter,)
 
 

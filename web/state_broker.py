@@ -60,7 +60,6 @@ class InProcessBroker:
                     mc.close()
             except Exception:
                 logging.getLogger("web.state_broker").warning("_init_state: stock close prices query failed", exc_info=True)
-                raise
 
             for p in raw_positions:
                 sym = p["symbol"]
@@ -117,13 +116,11 @@ class InProcessBroker:
                     mc.close()
             except Exception:
                 logging.getLogger("web.state_broker").warning("_init_state: stock close prices query failed", exc_info=True)
-                raise
 
             state["positions"] = positions
         except Exception:
             import logging
-            logging.getLogger("web.state_broker").exception("_init_state failed")
-            raise
+            logging.getLogger("web.state_broker").warning("_init_state failed", exc_info=True)
         return state
 
     def _quote_overlay(self, state: dict):
@@ -136,10 +133,7 @@ class InProcessBroker:
                 now = _time.time()
                 if self._quote_result is None or now - self._quote_ts > 5:
                     syms = [p["symbol"] for p in state["positions"]]
-                    try:
-                        self._quote_result = fetch_quotes(syms)
-                    except Exception:
-                        raise
+                    self._quote_result = fetch_quotes(syms)
                     self._quote_ts = now
                 quotes = self._quote_result or {}
                 if quotes:
@@ -166,7 +160,6 @@ class InProcessBroker:
                             state["metrics"]["total_return_pct"] = round(new_total_pnl / base * 100, 2) if base > 0 else 0
         except Exception:
             logging.getLogger("web.state_broker").warning("_quote_overlay: position value calc failed", exc_info=True)
-            raise
 
     # ═══════════════════════════════════════════
     # 公开接口
@@ -186,7 +179,7 @@ class InProcessBroker:
             from execution.calendar import get_trading_period
             state['status'] = get_trading_period()
         except Exception:
-            raise  # get_trading_period failed
+            state['status'] = 'unknown'
         self._quote_overlay(state)
         return state
 

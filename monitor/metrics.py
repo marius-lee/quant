@@ -6,6 +6,7 @@
 import threading
 import time
 import sqlite3
+from data.repos._base import DatabaseManager
 import os as _os
 
 _DB = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "metrics.db")

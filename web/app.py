@@ -113,32 +113,20 @@ def api_factors():
         stats = get_cached_factor_stats(force_refresh=force)
         # 补充 factor_registry 总/有效计数
         try:
-            import sqlite3, os
-            db = os.path.join(os.path.dirname(__file__), "..", "data", "market.db")
-            c = sqlite3.connect(db)
-            r = c.execute("""
-                SELECT COUNT(*),
-                       SUM(CASE WHEN status='active' THEN 1 ELSE 0 END),
-                       SUM(CASE WHEN status='candidate' THEN 1 ELSE 0 END),
-                       SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END),
-                       SUM(CASE WHEN status='retired' THEN 1 ELSE 0 END),
-                       SUM(CASE WHEN status='monitoring' THEN 1 ELSE 0 END)
-                FROM factor_registry
-            """).fetchone()
-            total = r[0] or 0
-            # registered = total - (active+candidate+rejected+retired+monitoring)
-            known_sum = sum(r[i] or 0 for i in range(1, 6))
-            stats["n_registered"] = total - known_sum
-            stats["n_total"] = total
-            stats["n_active"] = r[1] or 0
-            stats["n_candidate"] = r[2] or 0
-            stats["n_rejected"] = r[3] or 0
-            stats["n_retired"] = r[4] or 0
-            stats["n_monitoring"] = r[5] or 0
-            # 已评估: ic_mean IS NOT NULL (不受缓存快照影响)
-            er = c.execute("SELECT COUNT(*) FROM factor_registry WHERE ic_mean IS NOT NULL").fetchone()
-            stats["n_evaluated"] = er[0] if er else 0
-            c.close()
+            from data.repos import FactorRepo
+            repo = FactorRepo()
+            dist = repo.status_distribution()
+            stats["n_total"] = repo.count_total()
+            stats["n_active"] = dist.get("active", 0)
+            stats["n_candidate"] = dist.get("candidate", 0)
+            stats["n_rejected"] = dist.get("rejected", 0)
+            stats["n_retired"] = dist.get("retired", 0)
+            stats["n_monitoring"] = dist.get("monitoring", 0)
+            known = stats["n_active"] + stats["n_candidate"] + stats["n_rejected"] + stats["n_retired"] + stats["n_monitoring"]
+            stats["n_registered"] = stats["n_total"] - known
+            stats["n_evaluated"] = repo.count_with_ic()
+            # Use the same variable name for the except handler
+            c = None  # no longer needed
         except Exception:
             logger.warning("api_factors: factor_registry query failed", exc_info=True)
             stats["n_total"] = 0
@@ -190,7 +178,6 @@ def api_positions():
                         ).fetchone()
                         if cr and cr[0]:
                             close_map[sym] = cr[0]
-                mc.close()
         except Exception:
             logger.warning("api_positions: close price query failed", exc_info=True)
         for p in raw:
@@ -286,7 +273,6 @@ def api_record_trade():
         return _api_response(data={"ok": True, "pnl": round(pnl, 2), "pnl_pct": pnl_pct})
 
     else:
-        conn.close()
         return _api_response(error={"code": "INVALID_PARAMETER", "message": "side必须是buy或sell", "field": "side"}), 400
 
 
@@ -380,7 +366,6 @@ def api_risk():
                 "max_dd_pct": round(max_dd * 100, 1),
                 "days": len(rows),
             })
-        mc.close()
     except Exception as e:
         logger.warning(f"risk query failed: {e}")
         return _api_response(error={"code": "INTERNAL", "message": str(e)}), 500
@@ -455,7 +440,6 @@ def api_performance():
                 ).fetchone()
                 if cr and cr[0] and cr[0] > 0:
                     close_mv += cr[0] * shares_map[sym]
-            mc.close()
             if close_mv > 0:
                 position_market_value = round(close_mv, 2)
                 valuation_method = "latest_close"
@@ -534,7 +518,6 @@ def api_health():
         db = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "market.db")
         conn = market_conn("ro")
         conn.execute("SELECT 1").fetchone()
-        conn.close()
         status["checks"]["market_db"] = "ok"
     except Exception as e:
         status["checks"]["market_db"] = f"fail: {e}"

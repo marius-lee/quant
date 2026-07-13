@@ -141,3 +141,37 @@ Layer 2: DataCache (Redis/file, cross-process) — 已有，用于 stock_list、
 | 3-深层 | risk/atr.py 新建(ATR14/atr_stop_loss/atr_position_size)；var.py 补 historical_var/historical_cvar | 7544fad |
 | 1-深层 | execution/cost.py 加 market_impact() sqrt模型 | affc550 |
 | 4-深层 | preload_ztd_cache 接收 volume_data；pipeline.py 传入已加载 data | c1438d2 |
+
+---
+
+## 第三轮终极分析 (2026-07-13)
+
+### 1. 事件驱动回测 — 第三层
+- T+1 真实约束：sell-before-buy 执行顺序、同股同日不可买卖
+- 限价单/订单簿：缺 Level-2 数据 → 硬边界
+- 多资产组合执行：先卖后买释放现金
+
+### 2. 因子向量化 — 第三层
+- 共享中间计算图：所有滚动统计量一次算完，因子只做排序
+- Numba JIT：不兼容 MultiIndex → 硬边界
+- Apache Arrow 零拷贝
+
+### 3. 风险预算 — 第三层
+- 边际 VaR / 成分 VaR：∂VaR/∂w
+- 风险平价：w_i ∝ 1/σ_i
+- 波动率自适应头寸
+
+### 4. 数据管线 — 第三层
+- 物化派生序列：derived_daily 表存所有滚动统计
+- DuckDB 迁移：并发写冲突 → 硬边界
+- 增量数据加载
+
+### 实施记录
+
+| 项目 | 状态 |
+|------|------|
+| T+1 卖出优先执行 | pending |
+| 风险平价 | pending |
+| 边际 VaR | pending |
+| 共享中间计算图 | pending |
+| 物化派生序列 | pending |

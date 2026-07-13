@@ -115,9 +115,12 @@ def screen_factors(input_json: str = None, output_json: str = None,
         half_life_est = 0
         if ic_1d > 0.001 and ic_20d > 0:
             ratio_20 = ic_20d / ic_1d
-            if ratio_20 > 0:
+            if ratio_20 >= 1.0:
+                # IC 不衰减甚至增强 — 无半衰期问题，跳过检查
+                half_life_est = 999
+            elif ratio_20 > 0:
                 half_life_est = int(-20 / np.log(max(ratio_20, 0.01)))
-        if half_life_est < min_half_life and ic_1d >= min_abs_ic:
+        if 0 < half_life_est < min_half_life and ic_1d >= min_abs_ic:
             reasons.append(f"half-life={half_life_est}d<{min_half_life}")
 
         if not reasons:
@@ -149,6 +152,7 @@ def screen_factors(input_json: str = None, output_json: str = None,
         "failed": {k: list(v) for k, v in failed.items()},
         "ic_means": {k: float(v) for k, v in ic_means.items()},
         "ic_irs": {k: float(v) for k, v in ic_irs.items()},
+        "decay": {k: [float(x) for x in v] for k, v in decay.items()} if decay else {},
     }
 
     # 持久化到 evaluation_runs (纯 DB, 无临时文件, 不减 ic_series)

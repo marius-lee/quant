@@ -13,24 +13,17 @@ def _run(today: str):
     _log.info(f"[{today}] 09:30 — executing trades")
     t0 = _time.time()
 
-    from pipeline import execute_signals, generate_signals
-    # 不重算 — 直接读 08:30 产出 (Grinold & Kahn: 盘前 batch → 盘中执行)
-    from web.state_broker import broker
-    state = broker.get()
+    from pipeline import execute_signals
+    from data.trade_repo import TradeRepo
 
-    # ── 熔断检查 ──
-    if state.get("circuit_breaker"):
-        reason = state.get("cb_reason", "未知")
-        _log.error(f"[{today}] 熔断生效, 跳过执行: {reason}")
-        _m.inc("scheduler.execute.circuit_breaker")
-        return
-
-    targets = state.get("signals", [])
-    signals_time = state.get("when", {}).get("signals_generated", "未知")
-    _log.info(f"[{today}] read {len(targets)} targets from 08:30 signals (generated {signals_time})")
+    # 从 daily_signals 表读取今日信号 (持久化, 重启安全)
+    sig = TradeRepo().get_latest_signals()
+    targets = sig["targets"] if sig and sig["date"] == today else []
+    signals_date = sig["date"] if sig else "未知"
+    _log.info(f"[{today}] read {len(targets)} targets from daily_signals (generated {signals_date})")
 
     if not targets:
-        _log.error(f"[{today}] 08:30 未产出信号，拒绝执行 (no fallback)")
+        _log.error(f"[{today}] 今日无信号，拒绝执行 (no fallback)")
         _m.inc("scheduler.execute.no_targets")
         return
 

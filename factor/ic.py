@@ -16,7 +16,6 @@
 import pandas as pd
 import numpy as np
 from utils.logger import get_logger
-from config.loader import get as cfg
 
 _log = get_logger("factor.ic")
 
@@ -113,28 +112,41 @@ def compute_ic(*,
     factor_daily = {name: {} for name in factor_names}
     fwd_1d = {}
 
-    for ds in trading_days[lookback // 2:]:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    compute_days = trading_days[lookback // 2:]
+    max_workers = min(8, max(1, len(compute_days)))
+
+    def _compute_one_day(ds):
         try:
             data = store.get_daily(symbols, ds)
             if data is None or data.empty:
-                continue
+                return (ds, {}, None)
             close = data["close"]
             if not isinstance(close, pd.DataFrame):
-                continue
+                return (ds, {}, None)
             if len(close) < 2:
-                continue
+                return (ds, {}, None)
             fwd = (close.iloc[-1] / close.iloc[-2]) - 1
             fundamentals = store.get_fundamentals(symbols, ds)
             factor_vals = compute_all_factors(
                 data, ds, fundamentals=fundamentals,
                 factor_names=factor_names, status_filter=status_filter,
             )
+            return (ds, factor_vals, fwd)
+        except Exception:
+            raise
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_compute_one_day, ds): ds for ds in compute_days}
+        for future in as_completed(futures):
+            ds, factor_vals, fwd = future.result()
+            if factor_vals is None:
+                continue
             for name, series in factor_vals.items():
                 if isinstance(series, pd.Series):
                     factor_daily[name][ds] = series
-            fwd_1d[ds] = fwd
-        except Exception as e:
-            _log.debug("compute_ic: %s failed: %s", ds, e)
+            if fwd is not None:
+                fwd_1d[ds] = fwd
 
     # 转为 Mode B 格式 → 统一 IC 计算
     fv_dict = {}
@@ -170,6 +182,7 @@ def compute_ic(*,
         try:
             store.close()
         except Exception:
+            raise  # 错误不吞
             import logging; logging.getLogger("quant.factor.ic").warning("store.close() failed in merge_ic_to_registry", exc_info=True)
 
     return result

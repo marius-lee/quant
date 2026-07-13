@@ -85,6 +85,7 @@ def sync_single_stock(symbol: str, conn=None) -> int:
                       row.get('sell_amt'), row.get('hold_shares'), row.get('hold_ratio')))
                 n += 1
             except Exception as e_row:
+                raise  # 错误不吞
                 logger.debug(f"northbound row skip {symbol}: {e_row}")
         
         conn.commit()
@@ -92,6 +93,7 @@ def sync_single_stock(symbol: str, conn=None) -> int:
             logger.info(f"northbound: {symbol} — {n} rows synced")
         
     except Exception as e:
+        raise  # 错误不吞
         logger.warning(f"northbound sync failed for {symbol}: {e}")
     finally:
         if close_conn:

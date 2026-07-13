@@ -13,9 +13,9 @@ import numpy as np
 import pandas as pd
 from typing import Optional
 
-from config.loader import get as _cfg
-_RF_RATE = _cfg("attribution.risk_free_rate")       # from config
-_ANNUAL_PERIODS = _cfg("attribution.annual_periods")  # from config
+from config.constants import _require_cfg
+_RF_RATE = _require_cfg("attribution.risk_free_rate")       # from config
+_ANNUAL_PERIODS = _require_cfg("attribution.annual_periods")  # from config
 
 
 def brinson_attribution(

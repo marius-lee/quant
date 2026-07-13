@@ -107,6 +107,7 @@ def _run(today: str):
                         _log.warning(f"[{today}] {fname}: active → monitoring (IC degraded)")
                     except Exception:
                         _log.warning(f"[{today}] IC degrade update failed for {fname}", exc_info=True)
+                        raise
                 # monitoring → retired: 已经告警中，持续衰减 → 退役回回测池
                 try:
                     monitoring_rows = conn.execute(
@@ -124,12 +125,14 @@ def _run(today: str):
                             _m.inc("scheduler.attribution.retired", 1)
                 except Exception:
                     _log.warning(f"[{today}] retired transition check failed", exc_info=True)
+                    raise
                 conn.commit()
         conn.close()
         if rows:
             broker.update({"metrics": {"factor_ic_snapshot": json.dumps(today_weights)}})
     except Exception as e:
         _log.warning(f"[{today}] IC snapshot failed (non-fatal): {e}")
+        raise
 
     elapsed = _time.time() - t0
     _log.info(f"[SCHEDULER] {today} | TASK=attribution | STATUS=OK | elapsed={elapsed:.1f}s")

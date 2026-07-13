@@ -4,7 +4,7 @@
 
 from utils.logger import get_logger
 from execution.impact import estimate_impact_pct
-from config.loader import get as cfg
+from config.constants import _require_cfg
 logger = get_logger("execution.cost")
 
 from dataclasses import dataclass
@@ -28,10 +28,10 @@ class CostModel:
     @classmethod
     def from_config(cls) -> "CostModel":
         return cls(
-            commission_rate=cfg("execution.commission"),
-            min_commission=cfg("execution.min_commission"),
-            stamp_tax_rate=cfg("execution.stamp_tax"),
-            slippage_rate=cfg("execution.slippage"),
+            commission_rate=_require_cfg("execution.commission"),
+            min_commission=_require_cfg("execution.min_commission"),
+            stamp_tax_rate=_require_cfg("execution.stamp_tax"),
+            slippage_rate=_require_cfg("execution.slippage"),
         )
 
     def commission(self, trade_value: float) -> float:

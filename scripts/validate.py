@@ -39,14 +39,14 @@ def check_config_vs_code():
 
     # 检查关键参数
     checks = {
-        "risk.max_positions": (cfg("risk.max_positions"),
+        "risk.max_positions": (_require_cfg("risk.max_positions"),
             "PortfolioConstructor.__init__ default"),
-        "risk.stop_loss_pct": (cfg("risk.stop_loss_pct"),
+        "risk.stop_loss_pct": (_require_cfg("risk.stop_loss_pct"),
             "backtest.py stop_loss_pct default"),
     }
 
-    risk_max_pos = cfg("risk.max_positions")
-    alpha_method = cfg("alpha.method")
+    risk_max_pos = _require_cfg("risk.max_positions")
+    alpha_method = _require_cfg("alpha.method")
 
     if risk_max_pos is not None:
         ok(f"max_positions={risk_max_pos} (config)")

@@ -33,8 +33,8 @@ class TargetPortfolio:
         return self.total_value
 
 
-from config.loader import get as _cfg
-LOT_SIZE = _cfg("backtest.lot_size")  # A股每手 100 股, ① 交易所规则
+from config.constants import _require_cfg
+LOT_SIZE = _require_cfg("backtest.lot_size")  # A股每手 100 股, ① 交易所规则
 
 
 # ── risk_aversion 校准网格 ──
@@ -131,15 +131,15 @@ class PortfolioConstructor:
     def __init__(self, config: Optional[dict] = None):
         if config is None:
             config = {
-                "max_positions": _cfg("risk.max_positions"),
-                "max_single_position": _cfg("risk.max_single_position"),
-                "greedy_cap": _cfg("optimizer.greedy_cap"),
-                "weighted_cap": _cfg("optimizer.weighted_cap"),
+                "max_positions": _require_cfg("risk.max_positions"),
+                "max_single_position": _require_cfg("risk.max_single_position"),
+                "greedy_cap": _require_cfg("optimizer.greedy_cap"),
+                "weighted_cap": _require_cfg("optimizer.weighted_cap"),
             }
         self.max_positions = config.get("max_positions")
         self.max_single = config.get("max_single_position")
-        self.greedy_cap = config.get("greedy_cap", _cfg("optimizer.greedy_cap"))
-        self.weighted_cap = config.get("weighted_cap", _cfg("optimizer.weighted_cap"))
+        self.greedy_cap = config.get("greedy_cap", _require_cfg("optimizer.greedy_cap"))
+        self.weighted_cap = config.get("weighted_cap", _require_cfg("optimizer.weighted_cap"))
 
     def _tier(self, capital: float, avg_price: float) -> str:
         """根据资金量判定组合优化层级 (固定阈值, 来源 ARCHITECTURE.md v3.0)。

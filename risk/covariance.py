@@ -13,7 +13,6 @@ Ledoit-Wolf (2004) 收缩估计:
 
 import numpy as np
 import pandas as pd
-from config.loader import get as _cfg
 from config.constants import _require_cfg
 from typing import Optional
 

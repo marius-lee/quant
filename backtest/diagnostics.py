@@ -7,7 +7,7 @@
 """
 
 from utils.logger import get_logger
-from config.loader import get as _cfg
+from config.constants import _require_cfg
 import pandas as pd
 import numpy as np
 
@@ -108,9 +108,9 @@ def diagnose(ic_map: dict, tracker: FactorTracker, metrics: dict) -> dict:
         pnl = info["pnl_contrib"]
         n = info["n_trades"]
 
-        diag_min_icir = _cfg("factor.evaluation.diagnostics_min_icir")
-        diag_pnl_threshold = _cfg("factor.evaluation.diagnostics_pnl_threshold")
-        diag_review_threshold = _cfg("factor.evaluation.diagnostics_review_threshold")
+        diag_min_icir = _require_cfg("factor.evaluation.diagnostics_min_icir")
+        diag_pnl_threshold = _require_cfg("factor.evaluation.diagnostics_pnl_threshold")
+        diag_review_threshold = _require_cfg("factor.evaluation.diagnostics_review_threshold")
 
         if ic_ir < diag_min_icir and n < 5:
             info["recommendation"] = "drop"

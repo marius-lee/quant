@@ -17,7 +17,6 @@ import numpy as np
 from typing import Dict, List, Tuple
 from scipy import stats as scipy_stats
 
-from config.loader import get as _cfg
 from config.constants import _require_cfg
 
 

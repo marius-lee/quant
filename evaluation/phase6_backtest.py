@@ -80,6 +80,7 @@ def run_strategy_backtest(
         rid = save_phase("phase6", phase6_data)
         _log.info(f"Phase 6 saved: run_id={rid}")
     except Exception as e:
+        raise  # 错误不吞
         _log.warning(f"Phase 6: save failed (non-fatal): {e}")
 
     # Optional JSON output

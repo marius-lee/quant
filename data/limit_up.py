@@ -105,12 +105,14 @@ def sync_date(date_str: str, conn=None) -> int:
                       row.get('industry')))
                 n += 1
             except Exception as e_row:
+                raise  # 错误不吞
                 logger.debug(f"limit_up row skip {row.get("symbol", "?")} {date_str}: {e_row}")
         
         conn.commit()
         logger.info(f"limit_up: {date_str} — {n} stocks")
         
     except Exception as e:
+        raise  # 错误不吞
         logger.warning(f"limit_up sync failed for {date_str}: {e}")
     finally:
         if close_conn:

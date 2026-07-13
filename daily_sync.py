@@ -31,6 +31,7 @@ def step1_ohlcv(date_str: str):
         logger.info(f"[1] daily: {n} new rows")
         return n
     except Exception as e:
+        raise  # 错误不吞
         logger.warning(f"[1] daily failed: {e}")
         return 0
     finally:
@@ -58,6 +59,7 @@ def step3_limit_up(date_str: str):
         logger.info(f"[3] limit_up: {n} rows")
         return n
     except Exception as e:
+        raise  # 错误不吞
         logger.warning(f"[3] limit_up failed: {e}")
         return 0
 
@@ -70,6 +72,7 @@ def step4_lhb(date_str: str):
         logger.info(f"[4] lhb: {n} rows")
         return n
     except Exception as e:
+        raise  # 错误不吞
         logger.warning(f"[4] lhb failed: {e}")
         return 0
 
@@ -88,6 +91,7 @@ def step5_fundamentals():
         logger.info(f"[5] fundamentals: {n} stocks updated")
         return n
     except Exception as e:
+        raise  # 错误不吞
         logger.warning(f"[5] fundamentals failed: {e}")
         return 0
 

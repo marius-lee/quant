@@ -164,11 +164,13 @@ def compute_factor_stats(
                         close_series = _pd.Series(dtype=float)
                     results.append((date_str, result, close_series, None))
                 except Exception as e:
+                    raise  # 错误不吞
                     results.append((date_str, {}, _pd.Series(dtype=float), str(e)))
 
             _store.close()
             return results
         except Exception as e:
+            raise  # 错误不吞
             logger.exception(f"Thread worker fatal error: {type(e).__name__}: {e}")
             return [(d, {}, _pd.Series(dtype=float), f"{type(e).__name__}: {e}") for d in chunk_dates]
 
@@ -389,6 +391,7 @@ def compute_factor_stats(
             ir_val = ic_irs.get(k, 0.0)
             update_factor_evaluation(k, ic_val, ir_val)
     except Exception as e:
+        raise  # 错误不吞
         logger.warning(f"factor_registry update failed: {e}")
 
     return result
@@ -443,6 +446,7 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
                     return cached
                 logger.info(f"factor snapshot expired, age={age_sec/3600:.1f}h")
         except Exception as e:
+            raise  # 错误不吞
             logger.warning(f"Factor snapshot read failed: {e}")
 
     # 进程内重入保护
@@ -455,6 +459,7 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
             if row:
                 return json.loads(row[0])
         except Exception:
+            raise  # 错误不吞
             import logging; logging.getLogger("quant.factor.stats_cache").warning("load_latest failed", exc_info=True)
             return _empty_result()
 
@@ -473,6 +478,7 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
             conn.close()
             logger.info("factor snapshot saved to factor_snapshot table")
         except Exception as e:
+            raise  # 错误不吞
             logger.warning(f"Factor snapshot write failed: {e}")
 
         return stats
@@ -517,6 +523,7 @@ def _load_ic_from_db(filter_names=None, status_filter='using') -> dict:
         logger.info(f"IC weights loaded from DB: {len(ic_map)} factors")
         return ic_map
     except Exception as e:
+        raise  # 错误不吞
         logger.exception(f"factor_registry IC load failed — cannot proceed without IC weights")
         raise
 

@@ -33,6 +33,7 @@ def _init_cache():
         from config.loader import load as _load_config
         cfg = _load_config()
     except Exception as e:
+        raise  # 错误不吞
         logger.warning(f"config load failed, using empty config: {e}")
         cfg = {}
     backend = get_backend(cfg)
@@ -102,6 +103,7 @@ def _fetch_tushare_valuation_rows(date_str):
             fields="ts_code,trade_date,pe_ttm,pb,ps_ttm,total_mv,turnover_rate",
         )
     except Exception as e:
+        raise  # 错误不吞
         logger.warning(f"tushare daily_basic failed for {date_str}: {e}")
         return None
     if df is None or df.empty:
@@ -140,6 +142,7 @@ def sync_date(date_str, conn):
         q = query(valuation)
         df = get_fundamentals(q, date=date_str)
     except Exception as e:
+        raise  # 错误不吞
         logger.warning(f"JQData query failed for {date_str}: {e}")
         logout()
         return 0

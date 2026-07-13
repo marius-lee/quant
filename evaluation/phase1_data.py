@@ -54,6 +54,7 @@ def prepare_data(output_json: str = "/tmp/_eval_phase1.json") -> dict:
         save_phase("phase1", result)
         logger.info("Phase 1 saved to evaluation_runs")
     except Exception as _e:
+        raise  # 错误不吞
         logger.error("Phase 1 save_phase traceback: %s", _e, exc_info=True)
 
     logger.info(f"Phase 1 complete ({__import__('time').monotonic()-t0:.1f}s)")

@@ -3,12 +3,11 @@
 将原来散布在 pipeline.py Step 3 和 factor/synth.py 的 Alpha 逻辑
 统一封装为 AlphaModel 类, 使 pipeline.py 成为纯粹的编排器.
 
-遵循 config.yaml 单一真相源: 所有参数通过 cfg() 读取, 构造函数仅存实例快照.
+遵循 config.yaml 单一真相源: 所有参数通过 _require_cfg() 读取 , 构造函数仅存实例快照.
 """
 
 import pandas as pd
 from config.constants import _require_cfg
-from config.loader import get as _cfg
 from utils.logger import get_logger
 
 _log = get_logger("alpha.model")

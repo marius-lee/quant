@@ -110,6 +110,7 @@ class _SignalStrategy(bt.Strategy):
                 )
                 self.params.signals_cache[today] = signals
             except Exception as e:
+                raise  # 错误不吞
                 _log.warning(f"generate_signals({today}): {e}")
                 return
 
@@ -211,6 +212,7 @@ def run_backtest_bt(
             conn.close()
             universe = [r[0] for r in rows] if rows else universe[:universe_size]
         except Exception:
+            raise  # 错误不吞
             universe = universe[:universe_size]
 
     cerebro = bt.Cerebro()
@@ -234,6 +236,7 @@ def run_backtest_bt(
                 cerebro.adddata(data, name=sym)
                 feed_count += 1
             except Exception:
+                raise  # 错误不吞
                 pass
     _log.info(f"bt_engine: loaded {feed_count}/{len(universe)} data feeds")
 
@@ -245,6 +248,7 @@ def run_backtest_bt(
     try:
         results = cerebro.run()
     except Exception as e:
+        raise  # 错误不吞
         _log.error(f"bt_engine run traceback:\n{traceback.format_exc()}")
         return {"error": str(e)}
 
@@ -286,6 +290,7 @@ def run_backtest_bt(
             "cagr_pct": metrics.get("cagr_pct", 0),
         })
     except Exception as e:
+        raise  # 错误不吞
         _log.warning(f"diagnosis failed: {e}")
         diag = {"factor_report": {}, "adjustments": [], "summary": str(e)}
 
@@ -314,5 +319,6 @@ def _extract_equity_curve(cerebro, trading_days: list, initial_capital: float) -
             value = cerebro.broker.getvalue()
             equity_curve.append({"date": day, "equity": float(value)})
         except Exception:
+            raise  # 错误不吞
             equity_curve.append({"date": day, "equity": equity_curve[-1]["equity"]})
     return equity_curve

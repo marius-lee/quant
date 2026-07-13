@@ -58,4 +58,4 @@ def _next_scheduled_time(schedule: str) -> str:
             target += timedelta(days=1)
         return target.strftime("%Y-%m-%d %H:%M")
     except Exception:
-        return "—"
+        raise

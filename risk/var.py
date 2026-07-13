@@ -98,6 +98,7 @@ def stress_test(positions, weights):
         conn.close()
         return results
     except Exception as e:
+        raise  # 错误不吞
         _log.warning(f"stress_test: {e}")
         return {"error": str(e)}
 
@@ -196,5 +197,6 @@ def update_daily_risk(engine, strategy="quant"):
         store.close()
         return risk_report(positions, total_wealth, weights, cov)
     except Exception as e:
+        raise  # 错误不吞
         _log.warning(f"update_daily_risk: {e}")
         return {"available": False, "error": str(e)}

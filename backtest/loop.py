@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 import traceback
 from utils.logger import get_logger
 from backtest.diagnostics import FactorTracker, diagnose, compute_pre_backtest_ic
-from config.loader import get as _cfg
+from config.constants import _require_cfg
 from factor.ic import compute_ic as _compute_ic
 from alpha.model import AlphaModel
 
@@ -50,6 +50,7 @@ def _get_open_prices(symbols, date_str, store):
                     result[r[0]] = r[1]
         conn.close()
     except Exception as e:
+        raise  # 错误不吞
         _log.error(f"_get_open_prices({date_str}) traceback:\n{traceback.format_exc()}")
         _log.warning(f"_get_open_prices({date_str}): {e}")
     return result
@@ -75,6 +76,7 @@ def _get_close_prices(symbols, date_str, store):
                     result[r[0]] = r[1]
         conn.close()
     except Exception as e:
+        raise  # 错误不吞
         _log.error(f"_get_close_prices({date_str}) traceback:\n{traceback.format_exc()}")
         _log.warning(f"_get_close_prices({date_str}): {e}")
     return result
@@ -169,7 +171,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
         if is_trading_day(d.date()):
             trading_days.append(ds)
 
-    if len(trading_days) < _cfg("backtest.min_trading_days"):
+    if len(trading_days) < _require_cfg("backtest.min_trading_days"):
         _log.error(f"backtest: only {len(trading_days)} trading days — aborting")
         return {"error": f"Too few trading days: {len(trading_days)}"}
 
@@ -178,12 +180,12 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
     # ── Walk-forward IC ──
     from factor.compute import get_factor_names
     if retrain_freq is None:
-        retrain_freq = _cfg("alpha.retrain_freq")
-    ic_lookback = _cfg("backtest.diagnosis_ic_window")
+        retrain_freq = _require_cfg("alpha.retrain_freq")
+    ic_lookback = _require_cfg("backtest.diagnosis_ic_window")
     bt_factor_names = get_factor_names(status_filter="backtesting")
     _current_ic_map_raw = _compute_ic(
         factor_names=bt_factor_names, date=trading_days[0],
-        symbols=store.get_universe(trading_days[0])[:_cfg("factor.evaluation.n_symbols")],
+        symbols=store.get_universe(trading_days[0])[:_require_cfg("factor.evaluation.n_symbols")],
         lookback=ic_lookback, store=store, status_filter="backtesting"
     )
     _last_retrain_idx = 0
@@ -218,7 +220,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
                 "skip_pull": True,
                 "status_filter": "backtesting",
                 "suppress_push": True,
-                "universe_size": _cfg("backtest.universe_size"),
+                "universe_size": _require_cfg("backtest.universe_size"),
                 "db_path": BACKTEST_DB,
                 "store": store,
                 "exclude_symbols": cooloff_syms,
@@ -228,7 +230,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
                 _log.info("backtest: retraining IC at day %d (%s)", i, today)
                 _current_ic_map_raw = _compute_ic(
                     factor_names=bt_factor_names, date=today,
-                    symbols=store.get_universe(today)[:_cfg("factor.evaluation.n_symbols")],
+                    symbols=store.get_universe(today)[:_require_cfg("factor.evaluation.n_symbols")],
                     lookback=ic_lookback, store=store, status_filter="backtesting"
                 )
                 _last_retrain_idx = i
@@ -283,7 +285,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
             # ── Step 2.5: Update cooling-off from stop-loss events ──
             stopped = exec_result.get("stopped_out", [])
             if stopped:
-                cooloff_end = pd.Timestamp(next_day) + pd.Timedelta(days=_cfg("risk.stop_loss_cooloff_days"))
+                cooloff_end = pd.Timestamp(next_day) + pd.Timedelta(days=_require_cfg("risk.stop_loss_cooloff_days"))
                 for s in stopped:
                     _cooloff[s] = cooloff_end.strftime("%Y-%m-%d")
 
@@ -292,6 +294,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
             equity_curve.append({"date": next_day, "equity": wealth})
 
         except Exception as e:
+            raise  # 错误不吞
             errors += 1
             _log.error(f"backtest {today}: traceback:\n{traceback.format_exc()}")
             _log.warning(f"backtest {today}: error ({errors}): {e}")
@@ -299,7 +302,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
             equity_curve.append({"date": next_day, "equity": last_equity})
 
         # Progress log every 60 days
-        if (i + 1) % _cfg("backtest.progress_log_interval") == 0:
+        if (i + 1) % _require_cfg("backtest.progress_log_interval") == 0:
             elapsed = time.time() - t0
             pct_done = (i + 1) / len(trading_days) * 100
             _log.info(f"backtest: {i+1}/{len(trading_days)} days ({pct_done:.0f}%), "
@@ -347,6 +350,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
             })
             _log.info("diagnosis saved to evaluation_runs: %d passed", len(passed))
         except Exception as _se:
+            raise  # 错误不吞
             _log.error("diagnosis save_phase traceback:\n%s", traceback.format_exc())
 
         # 更新 factor_registry.status_reason (只改 backtesting 因子)
@@ -367,9 +371,11 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
             _conn.commit()
             _conn.close()
         except Exception as _fe:
+            raise  # 错误不吞
             _log.error("diagnosis factor_registry update traceback:\n%s", traceback.format_exc())
 
     except Exception as e:
+        raise  # 错误不吞
         _log.error("diagnosis traceback:\n%s", traceback.format_exc())
         _log.warning("diagnosis failed: %s", e)
         diag = {"factor_report": {}, "adjustments": [], "summary": str(e)}

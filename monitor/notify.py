@@ -50,6 +50,7 @@ def _telegram_send(text: str) -> bool:
         }, timeout=10)
         return resp.status_code == 200
     except Exception as e:
+        raise  # 错误不吞
         _log.warning(f"Telegram send failed: {e}")
         return False
 
@@ -66,6 +67,7 @@ def _wechat_send(text: str) -> bool:
         }, timeout=10)
         return resp.status_code == 200
     except Exception as e:
+        raise  # 错误不吞
         _log.warning(f"WeChat send failed: {e}")
         return False
 

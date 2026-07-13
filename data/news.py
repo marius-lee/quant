@@ -129,6 +129,7 @@ def sync_news_sentiment(start_date: str = None, end_date: str = None, max_per_da
                 )
                 total_new += 1
             except Exception:
+                raise  # 错误不吞
                 continue
         
         # Aggregate daily counts
@@ -143,6 +144,7 @@ def sync_news_sentiment(start_date: str = None, end_date: str = None, max_per_da
         conn.commit()
         logger.info(f"news_sentiment synced: {total_new} news items")
     except Exception as e:
+        raise  # 错误不吞
         logger.warning(f"news_sentiment sync failed: {e}")
     finally:
         conn.close()

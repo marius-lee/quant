@@ -40,6 +40,11 @@ def compute_kelly_fractions(
     if fraction is None:
         fraction = _require_cfg("optimizer.kelly_fraction")
 
+    # 展平嵌套 ic_map (兼容 compute_ic 产出格式)
+    if ic_map and isinstance(next(iter(ic_map.values())), dict):
+        ic_map = {k: v.get("ic_ir", 0) for k, v in ic_map.items()}
+        _log.debug("Flattened nested ic_map -> %d factors", len(ic_map))
+
     if ic_map is None or not ic_map:
         # 无 IC 信息 → 退化为 alpha 比例分配
         _log.debug("No IC map — falling back to alpha-proportional allocation")

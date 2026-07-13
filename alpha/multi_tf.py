@@ -118,5 +118,6 @@ class MultiTimeframeConfirmer:
 
             return adjusted
         except Exception as e:
+            raise  # 错误不吞
             _log.warning(f"MultiTimeframe.confirm({date}): {e}")
             return daily_signals

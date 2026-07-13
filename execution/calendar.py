@@ -12,8 +12,8 @@ A股交易时段:
 
 import json
 import os
-from config.loader import get as _cfg
-_MAX_LOOKUP = _cfg("calendar.max_lookup_days")  # 安全上限, 不是业务参数
+from config.constants import _require_cfg
+_MAX_LOOKUP = _require_cfg("calendar.max_lookup_days")  # 安全上限, 不是业务参数
 from datetime import date, datetime, time, timedelta
 from typing import Optional, Tuple
 
@@ -51,6 +51,7 @@ def _load_cache() -> set[str]:
                 data = json.load(f)
             return set(data.get("trading_days", []))
         except Exception:
+            raise  # 错误不吞
             logger.exception("failed to load trade calendar cache")
     return set()
 
@@ -65,6 +66,7 @@ def _save_cache(trading_days: set[str]):
                 "trading_days": sorted(trading_days),
             }, f, ensure_ascii=False)
     except Exception:
+        raise  # 错误不吞
         logger.exception("failed to save trade calendar cache")
 
 
@@ -79,6 +81,7 @@ def _fetch_from_akshare() -> Optional[set[str]]:
             logger.info(f"fetched {len(days)} trading days from akshare")
             return days
     except Exception:
+        raise  # 错误不吞
         logger.warning("akshare trade calendar unavailable, using local calendar")
     return None
 

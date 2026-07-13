@@ -52,6 +52,7 @@ def get_benchmark_return(date_str: str, index_code: str = "000300"):
             return None
         return today_close / yesterday_close - 1
     except Exception as e:
+        raise  # 错误不吞
         _log.warning(f"get_benchmark_return({date_str}): {e}")
         return None
 
@@ -85,6 +86,7 @@ def record_daily(date_str: str, strategy_equity: float,
         conn.close()
         _log.info(f"benchmark_tracking {date_str}: strat={strat_ret} bench={bench_ret} alpha={alpha_val}")
     except Exception as e:
+        raise  # 错误不吞
         _log.warning(f"record_daily({date_str}): {e}")
 
 
@@ -146,6 +148,7 @@ def compute_rolling_metrics(window: int = 60):
 
         _log.info(f"compute_rolling_metrics: updated {len(df) - window + 1} rows")
     except Exception as e:
+        raise  # 错误不吞
         _log.warning(f"compute_rolling_metrics: {e}")
 
 
@@ -214,6 +217,7 @@ def get_tracking_summary():
 
         return result
     except Exception as e:
+        raise  # 错误不吞
         _log.warning(f"get_tracking_summary: {e}")
         return {"available": False, "error": str(e)}
 

@@ -46,6 +46,7 @@ def sync_range(start_date: str = None, end_date: str = None, conn=None) -> int:
         # akshare 免费全市场质押比例 — 批拉约 2294 行, ~5s
         df = ak.stock_gpzy_pledge_ratio_em()
     except Exception as e:
+        raise  # 错误不吞
         logger.warning(f"pledge_stat akshare failed: {e}")
         if close_conn:
             conn.close()
@@ -86,6 +87,7 @@ def sync_range(start_date: str = None, end_date: str = None, conn=None) -> int:
             ))
             total += 1
         except Exception as e_row:
+            raise  # 错误不吞
             logger.debug(f"pledge row skip: {e_row}")
 
     conn.commit()

@@ -40,6 +40,7 @@ def _get_stock_pool(conn) -> list:
         rows = conn.execute("SELECT DISTINCT symbol FROM stocks").fetchall()
         return [r[0] for r in rows if r[0]]
     except Exception:
+        raise  # 错误不吞
         rows = conn.execute("SELECT DISTINCT symbol FROM daily").fetchall()
         return [r[0] for r in rows if r[0]]
 
@@ -66,6 +67,7 @@ def sync_range(start_date: str = None, end_date: str = None, conn=None) -> int:
         try:
             df = ak.stock_history_dividend_detail(symbol=sym, indicator='分红', date='')
         except Exception as e:
+            raise  # 错误不吞
             logger.debug(f"dividend {sym} fetch failed: {e}")
             continue
 
@@ -118,6 +120,7 @@ def sync_range(start_date: str = None, end_date: str = None, conn=None) -> int:
                 ))
                 total += 1
             except Exception as e_row:
+                raise  # 错误不吞
                 logger.debug(f"dividend row skip {sym}: {e_row}")
 
         # 进度

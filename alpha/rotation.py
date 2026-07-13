@@ -160,5 +160,6 @@ class SectorRotator:
             _log.info(f"SectorRotator({date}): quadrant={quadrant}, adjusted {len(result)} stocks")
             return result
         except Exception as e:
+            raise  # 错误不吞
             _log.warning(f"SectorRotator.overlay({date}): {e}")
             return alpha_scores

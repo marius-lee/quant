@@ -88,6 +88,7 @@ def fetch_quotes(symbols: list[str]) -> dict[str, dict]:
             with urllib.request.urlopen(req, timeout=_require_cfg("data.http_timeout.sina")) as resp:
                 text = resp.read().decode("gbk")
         except Exception as e:
+            raise  # 错误不吞
             logger.warning(f"quote fetch failed: {e}")
             return partial
         for line in text.strip().split("\n"):
@@ -113,6 +114,7 @@ def is_trading_time() -> bool:
         from execution.calendar import is_market_open
         return is_market_open()
     except Exception:
+        raise  # 错误不吞
         logger.warning("failed to check trading hours from calendar, using wall-clock fallback")
         now = datetime.now()
         t = now.time()

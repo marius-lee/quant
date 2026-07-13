@@ -183,7 +183,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
     bt_factor_names = get_factor_names(status_filter="backtesting")
     _current_ic_map_raw = _compute_ic(
         factor_names=bt_factor_names, date=trading_days[0],
-        symbols=store.get_universe(trading_days[0])[:_require_cfg("factor.evaluation.n_symbols")],
+        symbols=store.get_universe(trading_days[0])[:_cfg("factor.evaluation.n_symbols")],
         lookback=ic_lookback, store=store, status_filter="backtesting"
     )
     _last_retrain_idx = 0
@@ -228,7 +228,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
                 _log.info("backtest: retraining IC at day %d (%s)", i, today)
                 _current_ic_map_raw = _compute_ic(
                     factor_names=bt_factor_names, date=today,
-                    symbols=store.get_universe(today),
+                    symbols=store.get_universe(today)[:_cfg("factor.evaluation.n_symbols")],
                     lookback=ic_lookback, store=store, status_filter="backtesting"
                 )
                 _last_retrain_idx = i

@@ -120,9 +120,7 @@ def compute_ic(*,
     factor_daily = {name: {} for name in factor_names}
     fwd_1d = {}
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed
     compute_days = trading_days[lookback // 2:]
-    max_workers = min(8, max(1, len(compute_days)))
 
     def _compute_one_day(ds):
         """从预加载的 data 切片出截至 ds 的窗口，计算因子。（不调 SQLite）"""
@@ -146,20 +144,15 @@ def compute_ic(*,
         except Exception:
             raise
 
-    executor = ThreadPoolExecutor(max_workers=max_workers)
-    try:
-        futures = {executor.submit(_compute_one_day, ds): ds for ds in compute_days}
-        for future in as_completed(futures):
-            ds, factor_vals, fwd = future.result()
-            if factor_vals is None:
-                continue
-            for name, series in factor_vals.items():
-                if isinstance(series, pd.Series):
-                    factor_daily[name][ds] = series
-            if fwd is not None:
-                fwd_1d[ds] = fwd
-    finally:
-        executor.shutdown(wait=False)
+    for ds in compute_days:
+        _, factor_vals, fwd = _compute_one_day(ds)
+        if factor_vals is None:
+            continue
+        for name, series in factor_vals.items():
+            if isinstance(series, pd.Series):
+                factor_daily[name][ds] = series
+        if fwd is not None:
+            fwd_1d[ds] = fwd
 
     # 转为 Mode B 格式 → 统一 IC 计算
     fv_dict = {}

@@ -64,7 +64,7 @@ def validate() -> None:
     """启动时校验所有关键配置项的类型。不合规立即 raise TypeError。"""
     cfg = load()
     _check(cfg, 'web.port', int)
-    _check(cfg, 'web.sse.queue_timeout', (int, float))
+    _check_range(cfg, 'web.sse.queue_timeout', (int, float), min_val=1)
     _check(cfg, 'quant.scheduler.poll_interval', (int, float))
     _check(cfg, 'factor.evaluation.max_workers', int)
     _check(cfg, 'factor.evaluation.worker_timeout_sec', (int, float))
@@ -80,13 +80,13 @@ def validate() -> None:
     _check(cfg, 'data.fetch.max_lookback_days', int)
     _check(cfg, 'sync.daily_interval', (int, float))
     _check(cfg, 'execution.commission', (int, float))
-    _check(cfg, 'execution.slippage', (int, float))
+    _check_range(cfg, 'execution.slippage', (int, float), min_val=0)
     _check(cfg, 'execution.stamp_tax', (int, float))
     _check(cfg, 'execution.impact_eta', (int, float))
     _check(cfg, 'execution.default_daily_vol', (int, float))
     _check(cfg, 'execution.min_commission', (int, float))
     _check(cfg, 'execution.quote.max_batch_workers', int)
-    _check(cfg, 'risk.covariance.window', int)
+    _check_range(cfg, 'risk.covariance.window', int, min_val=20)
     _check(cfg, 'risk.covariance.min_periods', int)
     _check(cfg, 'risk.max_positions', int)
     _check(cfg, 'risk.max_single_position', (int, float))
@@ -102,11 +102,11 @@ def validate() -> None:
     _check(cfg, 'optimizer.kelly_fraction', (int, float))
     _check(cfg, 'factor.compute.zscore_min_count_dense', int)
     _check(cfg, 'factor.compute.zscore_min_count_sparse', int)
-    _check(cfg, 'factor.stats.ic_min_periods', int)
-    _check(cfg, 'factor.stats.min_valid_days', int)
-    _check(cfg, 'factor.evaluation.min_abs_ic', (int, float))
+    _check_range(cfg, 'factor.stats.ic_min_periods', int, min_val=10)
+    _check_range(cfg, 'factor.stats.min_valid_days', int, min_val=5)
+    _check_range(cfg, 'factor.evaluation.min_abs_ic', (int, float), min_val=0, max_val=1)
     _check(cfg, 'factor.evaluation.t_threshold', (int, float))
-    _check(cfg, 'factor.evaluation.min_icir', (int, float))
+    _check_range(cfg, 'factor.evaluation.min_icir', (int, float), min_val=0, max_val=5.0)
 
 
 def _check(cfg: dict, key: str, expected: type | tuple[type, ...]) -> None:
@@ -157,3 +157,41 @@ def get(key: str, default=None):
         if m:
             return os.environ.get(m.group(1), default)
     return cfg if cfg is not None else default
+def _get_nested(cfg: dict, key: str):
+    """Get nested dict value by dot-separated key."""
+    parts = key.split('.')
+    val = cfg
+    for p in parts:
+        if isinstance(val, dict):
+            val = val.get(p)
+        else:
+            return None
+    return val
+
+
+def _check_range(cfg: dict, key: str, expected: type | tuple[type, ...],
+                 min_val=None, max_val=None) -> None:
+    """Validate config key type AND numeric range. Raise if out of bounds."""
+    _check(cfg, key, expected)
+    val = _get_nested(cfg, key)
+    if val is None:
+        return  # already caught by _check
+    if min_val is not None and val < min_val:
+        raise ValueError(
+            f'config.yaml [{key}]={val} < min={min_val}')
+    if max_val is not None and val > max_val:
+        raise ValueError(
+            f'config.yaml [{key}]={val} > max={max_val}')
+
+
+
+# ── Module-level auto-validation: fires on first import.
+# Set QUANT_SKIP_CONFIG_VALIDATE=1 to bypass (e.g. CI without config.yaml).
+_VALIDATE_ON_IMPORT = os.environ.get("QUANT_SKIP_CONFIG_VALIDATE", "") != "1"
+if _VALIDATE_ON_IMPORT:
+    try:
+        validate()
+    except (KeyError, TypeError, ValueError) as _ve:
+        import sys
+        print(f"[config/loader] FATAL: config validation failed — {_ve}", file=sys.stderr)
+        raise

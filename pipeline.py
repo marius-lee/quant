@@ -96,10 +96,8 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         results["steps"]["data"] = {"new_rows": 0, "status": "skipped"}
 
     # ── Step 2: Load ──
-    conn = store._connect()
-    symbols = [r[0] for r in conn.execute(
-        "SELECT DISTINCT d.symbol FROM daily d JOIN stocks s ON d.symbol=s.symbol WHERE s.market!='BJ'"
-    ).fetchall()]
+    from data.repos import UniverseRepo
+    symbols = UniverseRepo().get_symbols(exclude_market='BJ')
     from factor.windows import max_factor_calendar_days
     _eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(None))
     hist_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")

@@ -118,7 +118,9 @@ def sleeve_compose(
             score_map[sym] = max(score_map.get(sym, -999), val)
 
     if not score_map:
-        _log.warning("sleeve_compose: 0 stocks selected from %d factors", len(factor_values))
+        # 诊断: 列出每个因子的有效值数量, 定位全 NaN 因子
+        diag = ", ".join(f"{name}({scores.dropna().count()}/{len(scores)})" for name, scores in list(factor_values.items())[:10])
+        _log.warning("sleeve_compose: 0 stocks selected from %d factors: %s", len(factor_values), diag)
         return pd.Series(dtype=float)
     _log.info("sleeve: %d factors → %d stocks (positions_per_factor=%d, score range %.2f~%.2f)",
               len(factor_values), len(score_map), positions_per_factor,

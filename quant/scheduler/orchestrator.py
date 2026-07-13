@@ -50,11 +50,7 @@ def _run():
             hhmm = time(now.hour, now.minute)
             if time(9, 35) <= hhmm <= time(14, 55):
                 update("monitor", status="running")
-                try:
-                    _run_continuous(current_day)
-                except Exception as e:
-                    raise  # 错误不吞
-                    update("monitor", status=f"error", last_error=str(e))
+                _run_continuous(current_day)
             else:
                 update("monitor", status="sleep (收市)")
             _monitor_stop.wait(timeout=POLL)
@@ -65,19 +61,12 @@ def _run():
         """执行单个任务 → 更新 scheduler 状态。"""
         update(name, status="running")
         t0 = _time.time()
-        try:
-            fn(task_today)
-            elapsed = _time.time() - t0
-            update(name, status="idle", last_run=datetime.now().isoformat(),
-                   last_duration=elapsed, last_error=None)
-            _log.info(f"[SCHEDULER] {task_today} | TASK={name} | STATUS=OK | elapsed={elapsed:.1f}s")
-            _m.inc(f"scheduler.{name}.ok")
-        except Exception as e:
-            raise  # 错误不吞
-            elapsed = _time.time() - t0
-            update(name, status="error", last_run=datetime.now().isoformat(),
-                   last_duration=elapsed, last_error=str(e))
-            _log.error(f"[{task_today}] {name} FAILED: {e}")
+        fn(task_today)
+        elapsed = _time.time() - t0
+        update(name, status="idle", last_run=datetime.now().isoformat(),
+               last_duration=elapsed, last_error=None)
+        _log.info(f"[SCHEDULER] {task_today} | TASK={name} | STATUS=OK | elapsed={elapsed:.1f}s")
+        _m.inc(f"scheduler.{name}.ok")
 
     while True:
         now = datetime.now()

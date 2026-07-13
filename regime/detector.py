@@ -57,29 +57,26 @@ class RegimeDetector:
             _log.warning(f"regime train: only {X.shape[0]} samples — insufficient")
             return self
 
-        try:
-            from hmmlearn import hmm
-            model = hmm.GaussianHMM(
-                n_components=n_states,
-                covariance_type="full",
-                n_iter=200,
-                random_state=42,
-            )
-            model.fit(X)
-            self._model = model
+        from hmmlearn import hmm
+        model = hmm.GaussianHMM(
+            n_components=n_states,
+            covariance_type="full",
+            n_iter=200,
+            random_state=42,
+        )
+        model.fit(X)
+        self._model = model
 
-            # Order states by mean: state 0 = highest drift (bull)
-            means = model.means_[:, 0]
-            order = np.argsort(means)[::-1]
-            self._model.means_ = model.means_[order]
-            self._model.covars_ = model.covars_[order]
-            self._model.startprob_ = model.startprob_[order]
-            self._model.transmat_ = model.transmat_[order][:, order]
+        # Order states by mean: state 0 = highest drift (bull)
+        means = model.means_[:, 0]
+        order = np.argsort(means)[::-1]
+        self._model.means_ = model.means_[order]
+        self._model.covars_ = model.covars_[order]
+        self._model.startprob_ = model.startprob_[order]
+        self._model.transmat_ = model.transmat_[order][:, order]
 
-            _log.info(f"regime HMM trained: means={model.means_[:, 0].round(5)} "
-                      f"n_samples={X.shape[0]}")
-        except ImportError:
-            _log.warning("hmmlearn not installed — regime detection disabled")
+        _log.info(f"regime HMM trained: means={model.means_[:, 0].round(5)} "
+                  f"n_samples={X.shape[0]}")
 
         return self
 
@@ -95,21 +92,15 @@ class RegimeDetector:
         if X.shape[0] < 10:
             return ("unknown", {})
 
-        try:
-            # Use the last observation only
-            last_obs = X[-1:].reshape(1, -1)
-            # Compute forward probabilities (filtering, not smoothing)
-            logprob, posteriors = self._model.score_samples(X[-60:])
-            if posteriors.shape[0] == 0:
-                return ("unknown", {})
-            probs = posteriors[-1]
-            regime_idx = int(np.argmax(probs))
-            prob_dict = {REGIME_LABELS[i]: float(p) for i, p in enumerate(probs)}
-            return (REGIME_LABELS[regime_idx], prob_dict)
-        except Exception as e:
-            raise  # 错误不吞
-            _log.warning(f"predict_proba: {e}")
+        last_obs = X[-1:].reshape(1, -1)
+        # Compute forward probabilities (filtering, not smoothing)
+        logprob, posteriors = self._model.score_samples(X[-60:])
+        if posteriors.shape[0] == 0:
             return ("unknown", {})
+        probs = posteriors[-1]
+        regime_idx = int(np.argmax(probs))
+        prob_dict = {REGIME_LABELS[i]: float(p) for i, p in enumerate(probs)}
+        return (REGIME_LABELS[regime_idx], prob_dict)
 
 
 # ── Module-level singleton ──
@@ -120,19 +111,14 @@ def get_current_regime():
     """Get current market regime using CSI 300 data. Called daily."""
     global _detector
 
-    try:
-        from data.benchmark import get_benchmark_returns
-        returns = get_benchmark_returns("000300", start="2024-01-01")
+    from data.benchmark import get_benchmark_returns
+    returns = get_benchmark_returns("000300", start="2024-01-01")
 
-        if _detector is None:
-            _detector = RegimeDetector()
-            _detector.train(returns)
+    if _detector is None:
+        _detector = RegimeDetector()
+        _detector.train(returns)
 
-        return _detector.predict_proba(returns)
-    except Exception as e:
-        raise  # 错误不吞
-        _log.warning(f"get_current_regime: {e}")
-        return ("unknown", {})
+    return _detector.predict_proba(returns)
 
 
 def get_regime_weights(factor_names, ic_map, regime_label, regime_probs):

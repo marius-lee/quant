@@ -20,12 +20,8 @@ def _run(today: str):
 
     # ── 持久化: 信号写入 DB (execute 从此读取) ──
     if targets:
-        try:
-            cap = TradeRepo().get_cash("quant")
-            TradeRepo().save_signals(today, targets, cap or 0.0)
-        except Exception as _e_db:
-            raise  # 错误不吞
-            _log.warning(f"[{today}] save_signals to DB failed: {_e_db}")
+        cap = TradeRepo().get_cash("quant")
+        TradeRepo().save_signals(today, targets, cap or 0.0)
 
     elapsed = _time.time() - t0
     _log.info(f"[{today}] signals done: {len(targets)} targets ({elapsed:.1f}s)")

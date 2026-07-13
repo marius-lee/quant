@@ -141,25 +141,20 @@ class SectorRotator:
         if len(alpha_scores) == 0:
             return alpha_scores
 
-        try:
-            quadrant = self._clock_quadrant(date)
-            ind_weights = self._industry_weights(quadrant)
-            industries = self._get_industries(list(alpha_scores.index))
+        quadrant = self._clock_quadrant(date)
+        ind_weights = self._industry_weights(quadrant)
+        industries = self._get_industries(list(alpha_scores.index))
 
-            if len(industries) == 0:
-                _log.debug(f"SectorRotator: no industry data for {date}")
-                return alpha_scores
-
-            # 对每只股票: alpha × 行业权重
-            result = alpha_scores.copy()
-            for sym in alpha_scores.index:
-                ind = industries.get(sym, None)
-                if ind in ind_weights:
-                    result[sym] *= ind_weights[ind]
-
-            _log.info(f"SectorRotator({date}): quadrant={quadrant}, adjusted {len(result)} stocks")
-            return result
-        except Exception as e:
-            raise  # 错误不吞
-            _log.warning(f"SectorRotator.overlay({date}): {e}")
+        if len(industries) == 0:
+            _log.debug(f"SectorRotator: no industry data for {date}")
             return alpha_scores
+
+        # 对每只股票: alpha × 行业权重
+        result = alpha_scores.copy()
+        for sym in alpha_scores.index:
+            ind = industries.get(sym, None)
+            if ind in ind_weights:
+                result[sym] *= ind_weights[ind]
+
+        _log.info(f"SectorRotator({date}): quadrant={quadrant}, adjusted {len(result)} stocks")
+        return result

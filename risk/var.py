@@ -73,34 +73,29 @@ def stress_test(positions, weights):
 
     Returns: dict[scenario_name] = estimated loss (RMB)
     """
-    try:
-        conn = sqlite3.connect(_MARKET_DB)
-        syms = [p["symbol"] for p in positions] if isinstance(positions, list) else positions
-        placeholders = ",".join("?" * len(syms))
-        results = {}
-        for name, (start_d, end_d, label) in STRESS_SCENARIOS.items():
-            rows = conn.execute(
-                f"SELECT symbol, MIN(close), MAX(close) FROM daily "
-                f"WHERE symbol IN ({placeholders}) AND date BETWEEN ? AND ? "
-                f"GROUP BY symbol",
-                syms + [start_d, end_d]
-            ).fetchall()
-            if not rows:
-                results[name] = {"label": label, "loss_est": None, "note": "no data for period"}
-                continue
-            total_loss = 0.0
-            for sym, min_c, max_c in rows:
-                if max_c and max_c > 0:
-                    pct = (min_c - max_c) / max_c
-                    position_val = weights.get(sym, 0) if isinstance(weights, dict) else 0
-                    total_loss += position_val * abs(pct) if pct < 0 else 0
-            results[name] = {"label": label, "loss_est": round(total_loss, 2)}
-        conn.close()
-        return results
-    except Exception as e:
-        raise  # 错误不吞
-        _log.warning(f"stress_test: {e}")
-        return {"error": str(e)}
+    conn = sqlite3.connect(_MARKET_DB)
+    syms = [p["symbol"] for p in positions] if isinstance(positions, list) else positions
+    placeholders = ",".join("?" * len(syms))
+    results = {}
+    for name, (start_d, end_d, label) in STRESS_SCENARIOS.items():
+        rows = conn.execute(
+            f"SELECT symbol, MIN(close), MAX(close) FROM daily "
+            f"WHERE symbol IN ({placeholders}) AND date BETWEEN ? AND ? "
+            f"GROUP BY symbol",
+            syms + [start_d, end_d]
+        ).fetchall()
+        if not rows:
+            results[name] = {"label": label, "loss_est": None, "note": "no data for period"}
+            continue
+        total_loss = 0.0
+        for sym, min_c, max_c in rows:
+            if max_c and max_c > 0:
+                pct = (min_c - max_c) / max_c
+                position_val = weights.get(sym, 0) if isinstance(weights, dict) else 0
+                total_loss += position_val * abs(pct) if pct < 0 else 0
+        results[name] = {"label": label, "loss_est": round(total_loss, 2)}
+    conn.close()
+    return results
 
 
 def correlation_breakdown(weights, individual_stds):
@@ -169,34 +164,29 @@ def update_daily_risk(engine, strategy="quant"):
 
     Returns risk_report dict (also posted to state broker).
     """
-    try:
-        from risk.covariance import covariance_matrix
-        from data.store import DataStore
+    from risk.covariance import covariance_matrix
+    from data.store import DataStore
 
-        positions = engine.get_positions(strategy)
-        if not positions:
-            return {"available": False, "message": "No positions"}
+    positions = engine.get_positions(strategy)
+    if not positions:
+        return {"available": False, "message": "No positions"}
 
-        total_wealth = engine.get_capital(strategy)
-        weights_dict = {}
-        for p in positions:
-            val = p.get("price", 0) * p.get("shares", 0)
-            weights_dict[p["symbol"]] = val / total_wealth if total_wealth > 0 else 0
-        weights = pd.Series(weights_dict)
+    total_wealth = engine.get_capital(strategy)
+    weights_dict = {}
+    for p in positions:
+        val = p.get("price", 0) * p.get("shares", 0)
+        weights_dict[p["symbol"]] = val / total_wealth if total_wealth > 0 else 0
+    weights = pd.Series(weights_dict)
 
-        # Compute covariance from recent market data
-        store = DataStore()
-        syms = list(weights_dict.keys())
-        recent_data = store.get_daily(syms, start="2026-01-01")
-        if recent_data is not None and not recent_data.empty:
-            log_ret = np.log(recent_data["close"]).diff().dropna(how="all")
-            cov = covariance_matrix(log_ret, method="ledoit_wolf")
-        else:
-            cov = None
+    # Compute covariance from recent market data
+    store = DataStore()
+    syms = list(weights_dict.keys())
+    recent_data = store.get_daily(syms, start="2026-01-01")
+    if recent_data is not None and not recent_data.empty:
+        log_ret = np.log(recent_data["close"]).diff().dropna(how="all")
+        cov = covariance_matrix(log_ret, method="ledoit_wolf")
+    else:
+        cov = None
 
-        store.close()
-        return risk_report(positions, total_wealth, weights, cov)
-    except Exception as e:
-        raise  # 错误不吞
-        _log.warning(f"update_daily_risk: {e}")
-        return {"available": False, "error": str(e)}
+    store.close()
+    return risk_report(positions, total_wealth, weights, cov)

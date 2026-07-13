@@ -312,45 +312,37 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
 
     # ── 两步架构 Step 1: 诊断结果持久化 ──
     # 写入 evaluation_runs (供 Step 2 正式评估做预筛)
-    try:
-        from evaluation.run_store import save_phase
-        passed = [name for name, info in diag.get("factor_report", {}).items()
-                  if info.get("recommendation") in ("keep", "boost")]
-        save_phase("diagnostics", {
-            "n_factors": len(diag.get("factor_report", {})),
-            "passed": passed,
-            "factor_report": diag.get("factor_report", {}),
-            "adjustments": diag.get("adjustments", []),
-            "backtest_strategy": strategy,
-            "backtest_period": f"{start_date}_{end_date}",
-            "sharpe": metrics.get("sharpe", 0),
-            "cagr_pct": metrics.get("cagr_pct", 0),
-        })
-        _log.info("diagnosis saved to evaluation_runs: %d passed", len(passed))
-    except Exception as _se:
-        raise  # 错误不吞
-        _log.error("diagnosis save_phase traceback:\n%s", traceback.format_exc())
+    from evaluation.run_store import save_phase
+    passed = [name for name, info in diag.get("factor_report", {}).items()
+              if info.get("recommendation") in ("keep", "boost")]
+    save_phase("diagnostics", {
+        "n_factors": len(diag.get("factor_report", {})),
+        "passed": passed,
+        "factor_report": diag.get("factor_report", {}),
+        "adjustments": diag.get("adjustments", []),
+        "backtest_strategy": strategy,
+        "backtest_period": f"{start_date}_{end_date}",
+        "sharpe": metrics.get("sharpe", 0),
+        "cagr_pct": metrics.get("cagr_pct", 0),
+    })
+    _log.info("diagnosis saved to evaluation_runs: %d passed", len(passed))
 
     # 更新 factor_registry.status_reason (只改 backtesting 因子)
-    try:
-        import sqlite3 as _sqlite
-        _conn = _sqlite.connect(os.path.join(_root, "data", "market.db"))
-        _today = datetime.now().strftime("%Y-%m-%d")
-        for name, info in diag.get("factor_report", {}).items():
-            rec = info.get("recommendation", "keep")
-            ir_val = info.get("ic_ir", 0)
-            pnl_val = info.get("pnl_contrib", 0)
-            reason = f"diag:{rec}(ICIR={ir_val:.2f},PnL={pnl_val:.3f},{_today})"
-            _conn.execute(
-                "UPDATE factor_registry SET status_reason=?, updated_at=datetime('now','localtime') "
-                "WHERE name=? AND status IN ('registered','candidate','retired')",
-                (reason, name)
-            )
-        _conn.commit()
-        _conn.close()
-    except Exception as _fe:
-        raise  # 错误不吞
-        _log.error("diagnosis factor_registry update traceback:\n%s", traceback.format_exc())
+    import sqlite3 as _sqlite
+    _conn = _sqlite.connect(os.path.join(_root, "data", "market.db"))
+    _today = datetime.now().strftime("%Y-%m-%d")
+    for name, info in diag.get("factor_report", {}).items():
+        rec = info.get("recommendation", "keep")
+        ir_val = info.get("ic_ir", 0)
+        pnl_val = info.get("pnl_contrib", 0)
+        reason = f"diag:{rec}(ICIR={ir_val:.2f},PnL={pnl_val:.3f},{_today})"
+        _conn.execute(
+            "UPDATE factor_registry SET status_reason=?, updated_at=datetime('now','localtime') "
+            "WHERE name=? AND status IN ('registered','candidate','retired')",
+            (reason, name)
+        )
+    _conn.commit()
+    _conn.close()
 
 
     avg_signals = sum(signal_counts) / max(len(signal_counts), 1)

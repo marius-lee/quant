@@ -54,56 +54,44 @@ def _get_trading_days(conn, start, end):
 def _to_float(v):
     if v is None:
         return None
-    try:
-        return float(v)
-    except (ValueError, TypeError):
-        return None
+    return float(v)
 
 
 def _sync_sse_raw(date_str: str, conn) -> int:
     """直接调上交所 JSON API, 返回插入行数。"""
     sse_date = date_str.replace('-', '')  # SSE API requires YYYYMMDD
-    try:
-        url = "https://query.sse.com.cn/marketdata/tradedata/queryMargin.do"
-        params = {
-            "isPagination": "true", "tabType": "mxtype", "detailsDate": sse_date,
-            "pageHelp.pageSize": "5000", "pageHelp.pageNo": "1",
-            "pageHelp.beginPage": "1", "pageHelp.endPage": "21"
-        }
-        r = requests.get(url, params=params, headers=SSE_HEADERS, timeout=_require_cfg("data.http_timeout.sse"))
-        data = r.json()
-        rows = data.get("result", [])
-        if not rows:
-            return 0
-
-        n = 0
-        for row in rows:
-            try:
-                sym = row.get("stockCode", "")
-                if not sym or len(sym) < 6:
-                    continue
-                conn.execute("""
-                    INSERT OR REPLACE INTO margin_detail
-                    (symbol, date, market, margin_buy, margin_balance, margin_repay,
-                     short_sell_vol, short_balance, margin_total)
-                    VALUES (?, ?, 'SH', ?, ?, ?, ?, ?, ?)
-                """, (sym, date_str,
-                      _to_float(row.get("rzmre")),
-                      _to_float(row.get("rzye")),
-                      _to_float(row.get("rzche")),
-                      _to_float(row.get("rqmcl")),
-                      _to_float(row.get("rqyl")),
-                      None))
-                n += 1
-            except Exception as e_row:
-                raise  # 错误不吞
-                logger.debug(f"margin SSE row skip {sym} {date_str}: {e_row}")
-        conn.commit()
-        return n
-    except Exception as e:
-        raise  # 错误不吞
-        logger.warning(f"margin SSE {date_str}: {type(e).__name__}: {str(e)[:60]}")
+    url = "https://query.sse.com.cn/marketdata/tradedata/queryMargin.do"
+    params = {
+        "isPagination": "true", "tabType": "mxtype", "detailsDate": sse_date,
+        "pageHelp.pageSize": "5000", "pageHelp.pageNo": "1",
+        "pageHelp.beginPage": "1", "pageHelp.endPage": "21"
+    }
+    r = requests.get(url, params=params, headers=SSE_HEADERS, timeout=_require_cfg("data.http_timeout.sse"))
+    data = r.json()
+    rows = data.get("result", [])
+    if not rows:
         return 0
+
+    n = 0
+    for row in rows:
+        sym = row.get("stockCode", "")
+        if not sym or len(sym) < 6:
+            continue
+        conn.execute("""
+            INSERT OR REPLACE INTO margin_detail
+            (symbol, date, market, margin_buy, margin_balance, margin_repay,
+             short_sell_vol, short_balance, margin_total)
+            VALUES (?, ?, 'SH', ?, ?, ?, ?, ?, ?)
+        """, (sym, date_str,
+              _to_float(row.get("rzmre")),
+              _to_float(row.get("rzye")),
+              _to_float(row.get("rzche")),
+              _to_float(row.get("rqmcl")),
+              _to_float(row.get("rqyl")),
+              None))
+        n += 1
+    conn.commit()
+    return n
 
 
 
@@ -120,59 +108,44 @@ def _sync_szse_wrapper(date_str: str, conn) -> int:
     import akshare as ak
 
     for attempt in range(3):
-        try:
-            df = ak.stock_margin_detail_szse(date=date_str.replace("-", ""))
-            if df is None or df.empty:
-                return 0
-
-            col_map = {
-                '证券代码': 'symbol', '证券简称': 'name',
-                '融资余额': 'margin_balance', '融资买入额': 'margin_buy',
-                '融券卖出量': 'short_sell_vol', '融券余量': 'short_balance',
-                '融券余额': 'short_total', '融资融券余额': 'margin_total',
-            }
-            df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
-            df['date'] = date_str
-            df['market'] = 'SZ'
-            if 'symbol' in df.columns:
-                df['symbol'] = df['symbol'].apply(
-                    lambda x: str(int(x)).zfill(6) if pd.notna(x) and isinstance(x, (int, float)) else str(x).zfill(6)
-                )
-
-            n = 0
-            for _, row in df.iterrows():
-                try:
-                    sym = str(row.get('symbol', '')).strip()
-                    if len(sym) < 6:
-                        continue
-                    conn.execute("""
-                        INSERT OR REPLACE INTO margin_detail
-                        (symbol, date, market, margin_buy, margin_balance, margin_repay,
-                         short_sell_vol, short_balance, margin_total)
-                        VALUES (?, ?, 'SZ', ?, ?, ?, ?, ?, ?)
-                    """, (sym, date_str,
-                          _to_float(row.get('margin_buy')),
-                          _to_float(row.get('margin_balance')),
-                          None,
-                          _to_float(row.get('short_sell_vol')),
-                          _to_float(row.get('short_balance')),
-                          _to_float(row.get('margin_total'))))
-                    n += 1
-                except Exception as e_row:
-                    raise  # 错误不吞
-                    logger.debug(f"margin SZSE row skip {sym} {date_str}: {e_row}")
-            conn.commit()
-            return n
-
-        except AttributeError:
+        df = ak.stock_margin_detail_szse(date=date_str.replace("-", ""))
+        if df is None or df.empty:
             return 0
-        except Exception as e:
-            raise  # 错误不吞
-            if attempt < 2:
-                time.sleep((attempt + 1) * 8)
-            else:
-                logger.warning(f"margin SZSE {date_str}: {type(e).__name__}")
-                return 0
+
+        col_map = {
+            '证券代码': 'symbol', '证券简称': 'name',
+            '融资余额': 'margin_balance', '融资买入额': 'margin_buy',
+            '融券卖出量': 'short_sell_vol', '融券余量': 'short_balance',
+            '融券余额': 'short_total', '融资融券余额': 'margin_total',
+        }
+        df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+        df['date'] = date_str
+        df['market'] = 'SZ'
+        if 'symbol' in df.columns:
+            df['symbol'] = df['symbol'].apply(
+                lambda x: str(int(x)).zfill(6) if pd.notna(x) and isinstance(x, (int, float)) else str(x).zfill(6)
+            )
+
+        n = 0
+        for _, row in df.iterrows():
+            sym = str(row.get('symbol', '')).strip()
+            if len(sym) < 6:
+                continue
+            conn.execute("""
+                INSERT OR REPLACE INTO margin_detail
+                (symbol, date, market, margin_buy, margin_balance, margin_repay,
+                 short_sell_vol, short_balance, margin_total)
+                VALUES (?, ?, 'SZ', ?, ?, ?, ?, ?, ?)
+            """, (sym, date_str,
+                  _to_float(row.get('margin_buy')),
+                  _to_float(row.get('margin_balance')),
+                  None,
+                  _to_float(row.get('short_sell_vol')),
+                  _to_float(row.get('short_balance')),
+                  _to_float(row.get('margin_total'))))
+            n += 1
+        conn.commit()
+        return n
     return 0
 
 def sync_range(start_date: str, end_date: str, conn=None):

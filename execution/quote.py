@@ -41,11 +41,8 @@ def _parse_sina_line(line: str) -> dict:
     if len(fields) < 32:
         return None
 
-    try:
-        price = float(fields[3]) if fields[3] else 0
-        prev_close = float(fields[2]) if fields[2] else 0
-    except ValueError:
-        return None
+    price = float(fields[3]) if fields[3] else 0
+    prev_close = float(fields[2]) if fields[2] else 0
 
     if price <= 0:
         return None
@@ -83,14 +80,9 @@ def fetch_quotes(symbols: list[str]) -> dict[str, dict]:
         sina_codes = ",".join(_symbol_to_sina(s) for s in batch)
         url = _SINA_URL + sina_codes
         partial = {}
-        try:
-            req = urllib.request.Request(url, headers=_HEADERS)
-            with urllib.request.urlopen(req, timeout=_require_cfg("data.http_timeout.sina")) as resp:
-                text = resp.read().decode("gbk")
-        except Exception as e:
-            raise  # 错误不吞
-            logger.warning(f"quote fetch failed: {e}")
-            return partial
+        req = urllib.request.Request(url, headers=_HEADERS)
+        with urllib.request.urlopen(req, timeout=_require_cfg("data.http_timeout.sina")) as resp:
+            text = resp.read().decode("gbk")
         for line in text.strip().split("\n"):
             parsed = _parse_sina_line(line)
             if parsed:
@@ -113,13 +105,5 @@ def fetch_quotes(symbols: list[str]) -> dict[str, dict]:
 
 def is_trading_time() -> bool:
     """当前是否在交易时段内 (9:30-15:00 交易日)"""
-    try:
-        from execution.calendar import is_market_open
-        return is_market_open()
-    except Exception:
-        raise  # 错误不吞
-        logger.warning("failed to check trading hours from calendar, using wall-clock fallback")
-        now = datetime.now()
-        t = now.time()
-        import datetime as _dt
-        return _dt.time(9, 30) <= t <= _dt.time(15, 0) and now.weekday() < 5
+    from execution.calendar import is_market_open
+    return is_market_open()

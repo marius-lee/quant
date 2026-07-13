@@ -35,33 +35,28 @@ def _compute_atr(symbol: str, period: int = 20) -> float:
         if now - ts < 120:
             return val
 
-    try:
-        conn = sqlite3.connect(_DB)
-        rows = conn.execute(
-            "SELECT high, low, close FROM daily WHERE symbol=? "
-            "ORDER BY date DESC LIMIT ?",
-            (symbol, period + 1)
-        ).fetchall()
-        conn.close()
+    conn = sqlite3.connect(_DB)
+    rows = conn.execute(
+        "SELECT high, low, close FROM daily WHERE symbol=? "
+        "ORDER BY date DESC LIMIT ?",
+        (symbol, period + 1)
+    ).fetchall()
+    conn.close()
 
-        if len(rows) < period:
-            return 0.0
-
-        rows.reverse()  # 从旧到新
-        tr_values = []
-        prev_close = rows[0][2]  # 前一天收盘
-        for high, low, close in rows[1:]:
-            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
-            tr_values.append(tr)
-            prev_close = close
-
-        atr = float(np.mean(tr_values)) if tr_values else 0.0
-        _CACHE[key] = (atr, now)
-        return atr
-    except Exception as e:
-        raise  # 错误不吞
-        _log.error(f"_compute_atr({symbol}): {e}")
+    if len(rows) < period:
         return 0.0
+
+    rows.reverse()  # 从旧到新
+    tr_values = []
+    prev_close = rows[0][2]  # 前一天收盘
+    for high, low, close in rows[1:]:
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        tr_values.append(tr)
+        prev_close = close
+
+    atr = float(np.mean(tr_values)) if tr_values else 0.0
+    _CACHE[key] = (atr, now)
+    return atr
 
 
 class RiskManager:
@@ -140,15 +135,10 @@ class RiskManager:
             # time stop
             buy_time = p.get("buy_time", "")
             if buy_time and pnl_pct < 0:
-                try:
-                    from datetime import datetime as _dt
-                    days = (_dt.strptime(today, "%Y-%m-%d") - _dt.strptime(buy_time[:10], "%Y-%m-%d")).days
-                    if days > self.max_hold_days:
-                        results.append({"symbol": sym, "action": "sell", "shares": shares,
-                                        "price": cur, "reason": "time_stop({}d)".format(days)})
-                except Exception:
-                    raise  # 错误不吞
-                    import traceback as _tb_ts
-                    _log.error("time_stop day parsing failed for %s (buy_time=%s): %s", sym, buy_time, _tb_ts.format_exc())
+                from datetime import datetime as _dt
+                days = (_dt.strptime(today, "%Y-%m-%d") - _dt.strptime(buy_time[:10], "%Y-%m-%d")).days
+                if days > self.max_hold_days:
+                    results.append({"symbol": sym, "action": "sell", "shares": shares,
+                                    "price": cur, "reason": "time_stop({}d)".format(days)})
 
         return results

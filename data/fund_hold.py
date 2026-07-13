@@ -43,52 +43,39 @@ def sync_quarter(report_date: str, conn=None) -> int:
 
     _ensure_table(conn)
 
-    try:
-        df = ak.stock_report_fund_hold(date=report_date)
-        if df is None or df.empty:
-            return 0
-
-        col_map = {
-            '股票代码': 'symbol', '股票简称': 'name',
-            '持有基金家数': 'fund_count', '持股总数': 'hold_shares',
-            '持股市值': 'hold_mv', '持股变化': 'change_type',
-            '持股变动数值': 'change_amount', '持股变动比例': 'change_ratio',
-        }
-        df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
-        df['report_date'] = report_date
-        if 'symbol' in df.columns:
-            df['symbol'] = df['symbol'].astype(str).str.zfill(6)
-
-        n = 0
-        for _, row in df.iterrows():
-            try:
-                sym = str(row.get('symbol', '')).strip()
-                if len(sym) < 6:
-                    continue
-                conn.execute("""
-                    INSERT OR REPLACE INTO fund_hold
-                    (symbol, report_date, fund_count, hold_shares, hold_mv, change_type, change_ratio)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (sym, report_date,
-                      row.get('fund_count'), row.get('hold_shares'),
-                      row.get('hold_mv'), row.get('change_type'),
-                      row.get('change_ratio')))
-                n += 1
-            except Exception as e_row:
-                raise  # 错误不吞
-                logger.debug(f"fund_hold row skip {sym} {report_date}: {e_row}")
-        conn.commit()
-
-        print(f"  {report_date}: {n} stocks")
-        return n
-
-    except Exception as e:
-        raise  # 错误不吞
-        logger.warning(f"fund_hold {report_date}: {e}")
+    df = ak.stock_report_fund_hold(date=report_date)
+    if df is None or df.empty:
         return 0
-    finally:
-        if close_conn:
-            conn.close()
+
+    col_map = {
+        '股票代码': 'symbol', '股票简称': 'name',
+        '持有基金家数': 'fund_count', '持股总数': 'hold_shares',
+        '持股市值': 'hold_mv', '持股变化': 'change_type',
+        '持股变动数值': 'change_amount', '持股变动比例': 'change_ratio',
+    }
+    df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+    df['report_date'] = report_date
+    if 'symbol' in df.columns:
+        df['symbol'] = df['symbol'].astype(str).str.zfill(6)
+
+    n = 0
+    for _, row in df.iterrows():
+        sym = str(row.get('symbol', '')).strip()
+        if len(sym) < 6:
+            continue
+        conn.execute("""
+            INSERT OR REPLACE INTO fund_hold
+            (symbol, report_date, fund_count, hold_shares, hold_mv, change_type, change_ratio)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (sym, report_date,
+              row.get('fund_count'), row.get('hold_shares'),
+              row.get('hold_mv'), row.get('change_type'),
+              row.get('change_ratio')))
+        n += 1
+    conn.commit()
+
+    print(f"  {report_date}: {n} stocks")
+    return n
 
 
 def sync_recent(conn=None):

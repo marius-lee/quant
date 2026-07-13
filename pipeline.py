@@ -146,14 +146,9 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         logger.info(f"[3/5] date adjusted: {date_str} -> {actual_date}")
 
     benchmark_ret = None
-    try:
-        bm = store.get_benchmark("000300", start=_require_cfg("benchmark.start_date"))
-        if not bm.empty:
-            benchmark_ret = bm[:pd.Timestamp(actual_date)]
-    except Exception:
-        raise  # 错误不吞
-        from utils.logger import get_logger as _glbm
-        _glbm("quant.pipeline").error("benchmark fetch failed: %s", traceback.format_exc())
+    bm = store.get_benchmark("000300", start=_require_cfg("benchmark.start_date"))
+    if not bm.empty:
+        benchmark_ret = bm[:pd.Timestamp(actual_date)]
 
     # ── ztd 预计算缓存: 确保 compute_ztd 在实盘 / 回测均能命中缓存 ──
     from factor.compute.price._alternative import preload_ztd_cache

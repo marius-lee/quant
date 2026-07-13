@@ -17,22 +17,13 @@ _log = get_logger("monitor.notify")
 
 # ── 配置读取 ──
 def _telegram_token():
-    try:
-        return _require_cfg("monitor.telegram_bot_token")
-    except KeyError:
-        return os.environ.get("TELEGRAM_BOT_TOKEN", None)
+    return _require_cfg("monitor.telegram_bot_token")
 
 def _telegram_chat_id():
-    try:
-        return _require_cfg("monitor.telegram_chat_id")
-    except KeyError:
-        return os.environ.get("TELEGRAM_CHAT_ID", None)
+    return _require_cfg("monitor.telegram_chat_id")
 
 def _wechat_webhook():
-    try:
-        return _require_cfg("monitor.wechat_webhook")
-    except KeyError:
-        return os.environ.get("WECHAT_WEBHOOK", None)
+    return _require_cfg("monitor.wechat_webhook")
 
 
 def _telegram_send(text: str) -> bool:
@@ -41,18 +32,13 @@ def _telegram_send(text: str) -> bool:
     chat_id = _telegram_chat_id()
     if not token or not chat_id:
         return False
-    try:
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        resp = requests.post(url, json={
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "Markdown",
-        }, timeout=10)
-        return resp.status_code == 200
-    except Exception as e:
-        raise  # 错误不吞
-        _log.warning(f"Telegram send failed: {e}")
-        return False
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    resp = requests.post(url, json={
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown",
+    }, timeout=10)
+    return resp.status_code == 200
 
 
 def _wechat_send(text: str) -> bool:
@@ -60,16 +46,11 @@ def _wechat_send(text: str) -> bool:
     webhook = _wechat_webhook()
     if not webhook:
         return False
-    try:
-        resp = requests.post(webhook, json={
-            "msgtype": "text",
-            "text": {"content": text}
-        }, timeout=10)
-        return resp.status_code == 200
-    except Exception as e:
-        raise  # 错误不吞
-        _log.warning(f"WeChat send failed: {e}")
-        return False
+    resp = requests.post(webhook, json={
+        "msgtype": "text",
+        "text": {"content": text}
+    }, timeout=10)
+    return resp.status_code == 200
 
 
 def send_alert(alert: dict) -> bool:

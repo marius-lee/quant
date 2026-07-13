@@ -47,57 +47,44 @@ def sync_single_stock(symbol: str, conn=None) -> int:
     _ensure_table(conn)
     
     n = 0
-    try:
-        df = ak.stock_hsgt_individual_em(symbol=symbol)
-        if df is None or df.empty:
-            return 0
-        
-        # Normalize columns
-        col_map = {
-            '持股日期': 'date', 'TRADE_DATE': 'date',
-            '当日收盘价': 'close',
-            '当日涨跌幅': 'change_pct',
-            '持股数量': 'hold_shares', 'HOLD_SHARES': 'hold_shares',
-            '持股市值': 'hold_value',
-            '持股比例': 'hold_ratio', 'HOLD_RATIO': 'hold_ratio',
-        }
-        # Compute net_buy from change in hold_shares * close (approximate)
-        # Ensure date column was mapped (skip if not found — e.g. 科创板)
-        if "date" not in df.columns:
-            return 0
-        df = df.sort_values("date")
-        if 'hold_shares' in df.columns and 'close' in df.columns:
-            df['hold_change'] = df['hold_shares'].diff()
-            df['net_buy'] = df['hold_change'] * df['close']
-        
-        # Filter to columns we have in table
-        cols = ['date', 'symbol', 'net_buy', 'buy_amt', 'sell_amt', 'hold_shares', 'hold_ratio']
-        df = df[[c for c in cols if c in df.columns]]
-        
-        n = 0
-        for _, row in df.iterrows():
-            try:
-                conn.execute("""
-                    INSERT OR REPLACE INTO northbound_flow 
-                    (date, symbol, net_buy, buy_amt, sell_amt, hold_shares, hold_ratio)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (row.get('date'), symbol, row.get('net_buy'), row.get('buy_amt'),
-                      row.get('sell_amt'), row.get('hold_shares'), row.get('hold_ratio')))
-                n += 1
-            except Exception as e_row:
-                raise  # 错误不吞
-                logger.debug(f"northbound row skip {symbol}: {e_row}")
-        
-        conn.commit()
-        if n > 0:
-            logger.info(f"northbound: {symbol} — {n} rows synced")
-        
-    except Exception as e:
-        raise  # 错误不吞
-        logger.warning(f"northbound sync failed for {symbol}: {e}")
-    finally:
-        if close_conn:
-            conn.close()
+    df = ak.stock_hsgt_individual_em(symbol=symbol)
+    if df is None or df.empty:
+        return 0
+
+    # Normalize columns
+    col_map = {
+        '持股日期': 'date', 'TRADE_DATE': 'date',
+        '当日收盘价': 'close',
+        '当日涨跌幅': 'change_pct',
+        '持股数量': 'hold_shares', 'HOLD_SHARES': 'hold_shares',
+        '持股市值': 'hold_value',
+        '持股比例': 'hold_ratio', 'HOLD_RATIO': 'hold_ratio',
+    }
+    # Compute net_buy from change in hold_shares * close (approximate)
+    # Ensure date column was mapped (skip if not found — e.g. 科创板)
+    if "date" not in df.columns:
+        return 0
+    df = df.sort_values("date")
+    if 'hold_shares' in df.columns and 'close' in df.columns:
+        df['hold_change'] = df['hold_shares'].diff()
+        df['net_buy'] = df['hold_change'] * df['close']
+
+    # Filter to columns we have in table
+    cols = ['date', 'symbol', 'net_buy', 'buy_amt', 'sell_amt', 'hold_shares', 'hold_ratio']
+    df = df[[c for c in cols if c in df.columns]]
+
+    n = 0
+    for _, row in df.iterrows():
+        conn.execute("""
+            INSERT OR REPLACE INTO northbound_flow 
+            (date, symbol, net_buy, buy_amt, sell_amt, hold_shares, hold_ratio)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (row.get('date'), symbol, row.get('net_buy'), row.get('buy_amt'),
+              row.get('sell_amt'), row.get('hold_shares'), row.get('hold_ratio')))
+        n += 1
+    conn.commit()
+    if n > 0:
+        logger.info(f"northbound: {symbol} — {n} rows synced")
     
     return n
 

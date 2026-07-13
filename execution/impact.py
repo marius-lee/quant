@@ -99,28 +99,22 @@ def get_stock_volume_snapshot(
     conn = sqlite3.connect(_MARKET_DB)
     result = {}
 
-    try:
-        chunk_size = 500
-        syms = list(symbols)
-        for i in range(0, len(syms), chunk_size):
-            chunk = syms[i:i + chunk_size]
-            placeholders = ", ".join("?" * len(chunk))
-            from_date = pd.Timestamp(date) - pd.Timedelta(days=lookback * 2)
-            from_str = from_date.strftime("%Y-%m-%d")
-            rows = conn.execute(
-                f"SELECT symbol, AVG(volume) FROM daily "
-                f"WHERE symbol IN ({placeholders}) AND date BETWEEN ? AND ? "
-                f"GROUP BY symbol",
-                chunk + [from_str, date]
-            ).fetchall()
-            for r in rows:
-                if r[1] and r[1] > 0:
-                    result[r[0]] = float(r[1])
-    except Exception as e:
-        raise  # 错误不吞
-        _log.warning(f"get_stock_volume_snapshot({date}): {e}")
-    finally:
-        conn.close()
+    chunk_size = 500
+    syms = list(symbols)
+    for i in range(0, len(syms), chunk_size):
+        chunk = syms[i:i + chunk_size]
+        placeholders = ", ".join("?" * len(chunk))
+        from_date = pd.Timestamp(date) - pd.Timedelta(days=lookback * 2)
+        from_str = from_date.strftime("%Y-%m-%d")
+        rows = conn.execute(
+            f"SELECT symbol, AVG(volume) FROM daily "
+            f"WHERE symbol IN ({placeholders}) AND date BETWEEN ? AND ? "
+            f"GROUP BY symbol",
+            chunk + [from_str, date]
+        ).fetchall()
+        for r in rows:
+            if r[1] and r[1] > 0:
+                result[r[0]] = float(r[1])
 
     return result
 
@@ -138,35 +132,29 @@ def get_stock_volatility_snapshot(
     conn = sqlite3.connect(_MARKET_DB)
     result = {}
 
-    try:
-        chunk_size = 500
-        syms = list(symbols)
-        for i in range(0, len(syms), chunk_size):
-            chunk = syms[i:i + chunk_size]
-            placeholders = ", ".join("?" * len(chunk))
-            from_date = pd.Timestamp(date) - pd.Timedelta(days=window * 3)
-            from_str = from_date.strftime("%Y-%m-%d")
-            rows = conn.execute(
-                f"SELECT symbol, close FROM daily "
-                f"WHERE symbol IN ({placeholders}) AND date BETWEEN ? AND ? "
-                f"ORDER BY symbol, date",
-                chunk + [from_str, date]
-            ).fetchall()
+    chunk_size = 500
+    syms = list(symbols)
+    for i in range(0, len(syms), chunk_size):
+        chunk = syms[i:i + chunk_size]
+        placeholders = ", ".join("?" * len(chunk))
+        from_date = pd.Timestamp(date) - pd.Timedelta(days=window * 3)
+        from_str = from_date.strftime("%Y-%m-%d")
+        rows = conn.execute(
+            f"SELECT symbol, close FROM daily "
+            f"WHERE symbol IN ({placeholders}) AND date BETWEEN ? AND ? "
+            f"ORDER BY symbol, date",
+            chunk + [from_str, date]
+        ).fetchall()
 
-            # Group by symbol, compute returns
-            data = {}
-            for sym, close in rows:
-                if close and close > 0:
-                    data.setdefault(sym, []).append(close)
+        # Group by symbol, compute returns
+        data = {}
+        for sym, close in rows:
+            if close and close > 0:
+                data.setdefault(sym, []).append(close)
 
-            for sym, closes in data.items():
-                if len(closes) >= window + 1:
-                    rets = np.diff(np.log(closes))
-                    result[sym] = float(np.std(rets))
-    except Exception as e:
-        raise  # 错误不吞
-        _log.warning(f"get_stock_volatility_snapshot({date}): {e}")
-    finally:
-        conn.close()
+        for sym, closes in data.items():
+            if len(closes) >= window + 1:
+                rets = np.diff(np.log(closes))
+                result[sym] = float(np.std(rets))
 
     return result

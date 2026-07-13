@@ -193,13 +193,9 @@ def with_fallback(*fetchers: Callable):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             for fetcher in fetchers:
-                try:
-                    result = fetcher(*args, **kwargs)
-                    if result is not None:
-                        return result
-                except Exception as e:
-                    raise  # 错误不吞
-                    logger.warning(f"fetcher {fetcher.__name__} failed: {e}")
+                result = fetcher(*args, **kwargs)
+                if result is not None:
+                    return result
             return None
         return wrapper
     return decorator

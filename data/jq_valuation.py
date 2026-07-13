@@ -29,13 +29,8 @@ def _init_cache():
     if _cache is not None:
         return
     # .venv-tushare 无 yaml, config.loader 不可用, 直接传空走 NoopBackend
-    try:
-        from config.loader import load as _load_config
-        cfg = _load_config()
-    except Exception as e:
-        raise  # 错误不吞
-        logger.warning(f"config load failed, using empty config: {e}")
-        cfg = {}
+    from config.loader import load as _load_config
+    cfg = _load_config()
     backend = get_backend(cfg)
     _cache = DataCache("jq_valuation", ttl_hours=4, backend=backend)
     _limiter = RateLimiter("jqdata", calls_per_minute=30, backend=backend)
@@ -93,19 +88,14 @@ def _fetch_tushare_valuation_rows(date_str):
         return None
     _init_cache()
     _tushare_limiter.wait()
-    try:
-        import tushare as ts
-        ts.set_token(token)
-        pro = ts.pro_api()
-        date_compact = date_str.replace("-", "")
-        df = pro.daily_basic(
-            trade_date=date_compact,
-            fields="ts_code,trade_date,pe_ttm,pb,ps_ttm,total_mv,turnover_rate",
-        )
-    except Exception as e:
-        raise  # 错误不吞
-        logger.warning(f"tushare daily_basic failed for {date_str}: {e}")
-        return None
+    import tushare as ts
+    ts.set_token(token)
+    pro = ts.pro_api()
+    date_compact = date_str.replace("-", "")
+    df = pro.daily_basic(
+        trade_date=date_compact,
+        fields="ts_code,trade_date,pe_ttm,pb,ps_ttm,total_mv,turnover_rate",
+    )
     if df is None or df.empty:
         return None
     rows = []
@@ -138,14 +128,8 @@ def sync_date(date_str, conn):
     _limiter.wait()
     from jqdatasdk import auth, get_fundamentals, query, valuation, logout
     auth(os.environ.get("JQDATA_USER", ""), os.environ.get("JQDATA_PASS", ""))
-    try:
-        q = query(valuation)
-        df = get_fundamentals(q, date=date_str)
-    except Exception as e:
-        raise  # 错误不吞
-        logger.warning(f"JQData query failed for {date_str}: {e}")
-        logout()
-        return 0
+    q = query(valuation)
+    df = get_fundamentals(q, date=date_str)
     if df is None or df.empty:
         logger.info(f"JQData returned empty for {date_str}, trying tushare...")
         logout()

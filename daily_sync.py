@@ -26,16 +26,9 @@ def step1_ohlcv(date_str: str):
     """日线增量更新: 自动检测缺口, 只拉缺失的。"""
     from data.store import DataStore
     store = DataStore()
-    try:
-        n = store.update_daily(start="2020-01-01")
-        logger.info(f"[1] daily: {n} new rows")
-        return n
-    except Exception as e:
-        raise  # 错误不吞
-        logger.warning(f"[1] daily failed: {e}")
-        return 0
-    finally:
-        store.close()
+    n = store.update_daily(start="2020-01-01")
+    logger.info(f"[1] daily: {n} new rows")
+    return n
 
 
 def step2_margin(date_str: str):
@@ -53,28 +46,18 @@ def step2_margin(date_str: str):
 
 def step3_limit_up(date_str: str):
     """涨停池: 单日同步。"""
-    try:
-        from data.limit_up import sync_date
-        n = sync_date(date_str)
-        logger.info(f"[3] limit_up: {n} rows")
-        return n
-    except Exception as e:
-        raise  # 错误不吞
-        logger.warning(f"[3] limit_up failed: {e}")
-        return 0
+    from data.limit_up import sync_date
+    n = sync_date(date_str)
+    logger.info(f"[3] limit_up: {n} rows")
+    return n
 
 
 def step4_lhb(date_str: str):
     """龙虎榜: 单日同步。"""
-    try:
-        from data.lhb import sync_date
-        n = sync_date(date_str)
-        logger.info(f"[4] lhb: {n} rows")
-        return n
-    except Exception as e:
-        raise  # 错误不吞
-        logger.warning(f"[4] lhb failed: {e}")
-        return 0
+    from data.lhb import sync_date
+    n = sync_date(date_str)
+    logger.info(f"[4] lhb: {n} rows")
+    return n
 
 
 def step5_fundamentals():
@@ -82,18 +65,13 @@ def step5_fundamentals():
     if datetime.now().weekday() != 0:
         logger.info("[5] fundamentals: skipped (not Monday)")
         return 0
-    try:
-        import sqlite3, os
-        conn = sqlite3.connect(os.path.join(os.path.dirname(__file__), "data", "market.db"), timeout=_require_cfg("data.sqlite.timeout"))
-        from data.fundamental import sync_all
-        n = sync_all(conn, max_fetch=500)
-        conn.close()
-        logger.info(f"[5] fundamentals: {n} stocks updated")
-        return n
-    except Exception as e:
-        raise  # 错误不吞
-        logger.warning(f"[5] fundamentals failed: {e}")
-        return 0
+    import sqlite3, os
+    conn = sqlite3.connect(os.path.join(os.path.dirname(__file__), "data", "market.db"), timeout=_require_cfg("data.sqlite.timeout"))
+    from data.fundamental import sync_all
+    n = sync_all(conn, max_fetch=500)
+    conn.close()
+    logger.info(f"[5] fundamentals: {n} stocks updated")
+    return n
 
 
 def run(date_str: str = None):

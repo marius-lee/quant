@@ -169,18 +169,10 @@ class DataStore:
     def close(self):
         """关闭所有线程局部连接 + 主连接。"""
         if self._conn is not None:
-            try:
-                self._conn.close()
-            except Exception:
-                raise  # 错误不吞
-                import logging; logging.getLogger("quant.data.store").warning("close conn failed", exc_info=True)
+            self._conn.close()
             self._conn = None
         if hasattr(self._local, 'conn') and self._local.conn is not None:
-            try:
-                self._local.conn.close()
-            except Exception:
-                raise  # 错误不吞
-                import logging; logging.getLogger("quant.data.store").warning("close local conn failed", exc_info=True)
+            self._local.conn.close()
             self._local.conn = None
 
     # ============================================================
@@ -215,68 +207,51 @@ class DataStore:
 
         # 尝试 tushare
         if self.token:
-            try:
-                import tushare as ts
-                ts.set_token(self.token)
-                pro = ts.pro_api()
-                _tushare_limiter.wait()
-                df = pro.stock_basic(exchange="", list_status="L",
-                    fields="ts_code,symbol,name,list_date,market")
-                if df is not None and not df.empty:
-                    # cache the raw response
-                    _stock_list_cache.put("symbols", df.to_dict(orient="records"))
-                    for _, row in df.iterrows():
-                        sym = row["symbol"]
-                        exchange = row.get("market", "")
-                        if exchange == "SHSE": market = "SH"
-                        elif exchange == "SZSE": market = "SZ"
-                        elif exchange == "BJSE": market = "BJ"
-                        else: market = "SH"
-                        if sym not in existing:
-                            conn.execute(
-                                "INSERT OR IGNORE INTO stocks(symbol,name,market,list_date) VALUES(?,?,?,?)",
-                                (sym, row["name"], market, row.get("list_date", "")))
-                    conn.commit()
-                    total = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
-                    logger.info(f"stock list (tushare): {total} total")
-                    return total
-            except Exception as e:
-                raise  # 错误不吞
-                logger.warning(f"stock list tushare failed: {e}, trying akshare")
-
-        # 回退 akshare
-        try:
-            import akshare as ak
-            df = ak.stock_info_a_code_name()
-            new_count = 0
-            for _, row in df.iterrows():
-                sym = str(row.get("code", row.get("item_code", ""))).zfill(6)
-                name = row.get("name", "")
-                if sym not in existing and len(sym) == 6:
-                    if sym.startswith(("4", "8", "92")):
-                        market = "BJ"
-                    elif sym.startswith(("6","9","68")):
-                        market = "SH"
-                    else:
-                        market = "SZ"
-                    conn.execute(
-                        "INSERT OR IGNORE INTO stocks(symbol,name,market,list_date) VALUES(?,?,?,?)",
-                        (sym, name, market, ""))
-                    new_count += 1
-            conn.commit()
-            total = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
-            logger.info(f"stock list (akshare): {total} total ({new_count} new)")
-            return new_count
-        except Exception as e:
-            raise  # 错误不吞
-            logger.warning(f"stock list akshare also failed: {e}")
-            return 0
-
-
-    # ============================================================
-    # Gap 4: Survivorship Bias — delisted stock tracking + PIT universe
-    # ============================================================
-
+            import tushare as ts
+            ts.set_token(self.token)
+            pro = ts.pro_api()
+            _tushare_limiter.wait()
+            df = pro.stock_basic(exchange="", list_status="L",
+                fields="ts_code,symbol,name,list_date,market")
+            if df is not None and not df.empty:
+                # cache the raw response
+                _stock_list_cache.put("symbols", df.to_dict(orient="records"))
+                for _, row in df.iterrows():
+                    sym = row["symbol"]
+                    exchange = row.get("market", "")
+                    if exchange == "SHSE": market = "SH"
+                    elif exchange == "SZSE": market = "SZ"
+                    elif exchange == "BJSE": market = "BJ"
+                    else: market = "SH"
+                    if sym not in existing:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO stocks(symbol,name,market,list_date) VALUES(?,?,?,?)",
+                            (sym, row["name"], market, row.get("list_date", "")))
+                conn.commit()
+                total = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
+                logger.info(f"stock list (tushare): {total} total")
+                return total
+        import akshare as ak
+        df = ak.stock_info_a_code_name()
+        new_count = 0
+        for _, row in df.iterrows():
+            sym = str(row.get("code", row.get("item_code", ""))).zfill(6)
+            name = row.get("name", "")
+            if sym not in existing and len(sym) == 6:
+                if sym.startswith(("4", "8", "92")):
+                    market = "BJ"
+                elif sym.startswith(("6","9","68")):
+                    market = "SH"
+                else:
+                    market = "SZ"
+                conn.execute(
+                    "INSERT OR IGNORE INTO stocks(symbol,name,market,list_date) VALUES(?,?,?,?)",
+                    (sym, name, market, ""))
+                new_count += 1
+        conn.commit()
+        total = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
+        logger.info(f"stock list (akshare): {total} total ({new_count} new)")
+        return new_count
     def sync_delisted_stocks(self) -> int:
         """Pull delisted stocks from akshare and add to stocks table.
 
@@ -290,50 +265,41 @@ class DataStore:
                 "SELECT symbol FROM stocks WHERE list_status='D'"
             ).fetchall()
         )
+        import akshare as ak
         try:
-            import akshare as ak
-            try:
-                df = ak.stock_info_a_delist()
-            except AttributeError:
-                import pandas as _pd2
-                df_sh = ak.stock_info_sh_delist()
-                df_sz = ak.stock_info_sz_delist()
-                df = _pd2.concat([df_sh, df_sz], ignore_index=True)
-            if df is None or df.empty:
-                return 0
-            new_count = 0
-            for _, row in df.iterrows():
-                sym = str(row.get("symbol", row.get("code", ""))).zfill(6)
-                name = row.get("name", "")
-                delist_d = str(row.get("delist_date", row.get("delisting_date", "")))[:10]
-                if len(sym) != 6 or sym in existing:
-                    continue
-                if sym.startswith(("6", "9", "68")):
-                    mkt = "SH"
-                elif sym.startswith(("4", "8", "92")):
-                    mkt = "BJ"
-                else:
-                    mkt = "SZ"
-                conn.execute(
-                    "INSERT OR REPLACE INTO stocks(symbol, name, market, "
-                    "list_status, delist_date) VALUES(?,?,?,?,?)",
-                    (sym, name, mkt, "D", delist_d))
-                new_count += 1
-            conn.commit()
-            total = conn.execute(
-                "SELECT COUNT(*) FROM stocks WHERE list_status='D'"
-            ).fetchone()[0]
-            logger.info(
-                f"delisted sync: {new_count} new ({total} total delisted)")
-            return new_count
-        except ImportError:
-            logger.warning("akshare not available — delisted sync skipped")
+            df = ak.stock_info_a_delist()
+        except AttributeError:
+            import pandas as _pd2
+            df_sh = ak.stock_info_sh_delist()
+            df_sz = ak.stock_info_sz_delist()
+            df = _pd2.concat([df_sh, df_sz], ignore_index=True)
+        if df is None or df.empty:
             return 0
-        except Exception as e:
-            raise  # 错误不吞
-            logger.warning(f"delisted sync failed: {e}")
-            return 0
-
+        new_count = 0
+        for _, row in df.iterrows():
+            sym = str(row.get("symbol", row.get("code", ""))).zfill(6)
+            name = row.get("name", "")
+            delist_d = str(row.get("delist_date", row.get("delisting_date", "")))[:10]
+            if len(sym) != 6 or sym in existing:
+                continue
+            if sym.startswith(("6", "9", "68")):
+                mkt = "SH"
+            elif sym.startswith(("4", "8", "92")):
+                mkt = "BJ"
+            else:
+                mkt = "SZ"
+            conn.execute(
+                "INSERT OR REPLACE INTO stocks(symbol, name, market, "
+                "list_status, delist_date) VALUES(?,?,?,?,?)",
+                (sym, name, mkt, "D", delist_d))
+            new_count += 1
+        conn.commit()
+        total = conn.execute(
+            "SELECT COUNT(*) FROM stocks WHERE list_status='D'"
+        ).fetchone()[0]
+        logger.info(
+            f"delisted sync: {new_count} new ({total} total delisted)")
+        return new_count
     def get_universe(self, date_str: str = None):
         """Get point-in-time stock universe for a given date.
 
@@ -395,59 +361,43 @@ class DataStore:
         except ImportError:
             logger.info("baostock library not installed (no wheel for Python 3.14), trying akshare...")
             return self._sync_industry_akshare(conn)
-        try:
-            bs.login()
-            rs = bs.query_stock_industry()
-            df = rs.get_data()
-            bs.logout()
-            if df.empty:
-                return 0
-            # build cache mapping: symbol -> industry
-            industry_map = {}
-            for _, row in df.iterrows():
-                code = str(row.get("code", ""))
-                sym = code.split(".")[-1] if "." in code else code
-                ind = str(row.get("industry", "")).strip()
-                if len(sym) == 6 and ind:
-                    industry_map[sym] = ind
-            _industry_cache.put("mapping", industry_map)
+        bs.login()
+        rs = bs.query_stock_industry()
+        df = rs.get_data()
+        bs.logout()
+        if df.empty:
+            return 0
+        # build cache mapping: symbol -> industry
+        industry_map = {}
+        for _, row in df.iterrows():
+            code = str(row.get("code", ""))
+            sym = code.split(".")[-1] if "." in code else code
+            ind = str(row.get("industry", "")).strip()
+            if len(sym) == 6 and ind:
+                industry_map[sym] = ind
+        _industry_cache.put("mapping", industry_map)
 
-            updated = 0
-            for _, row in df.iterrows():
-                code = str(row.get("code", ""))
-                ind = str(row.get("industry", "")).strip()
-                if not ind:
-                    continue
-                sym = code.split(".")[-1] if "." in code else code
-                if len(sym) != 6:
-                    continue
-                conn.execute(
-                    "UPDATE stocks SET industry=? WHERE symbol=? AND industry IS NULL",
-                    (ind, sym)
-                )
-                updated += 1
-            conn.commit()
-            classified = conn.execute(
-                "SELECT COUNT(*) FROM stocks WHERE industry IS NOT NULL"
-            ).fetchone()[0]
-            total = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
-            logger.info(f"industry sync done (baostock): {updated} updates, {classified}/{total}")
-            return updated
-        except Exception as e:
-            raise  # 错误不吞
-            try:
-                bs.logout()
-            except Exception:
-                raise  # 错误不吞
-                import logging; logging.getLogger("quant.data.store").warning("industry sync failed", exc_info=True)
-            logger.warning(f"baostock industry sync failed: {e}, trying akshare...")
-            return self._sync_industry_akshare(conn)
-
-
-    # ============================================================
-    # 日线数据 — 增量更新（tushare 优先，失败回退 akshare）
-    # ============================================================
-
+        updated = 0
+        for _, row in df.iterrows():
+            code = str(row.get("code", ""))
+            ind = str(row.get("industry", "")).strip()
+            if not ind:
+                continue
+            sym = code.split(".")[-1] if "." in code else code
+            if len(sym) != 6:
+                continue
+            conn.execute(
+                "UPDATE stocks SET industry=? WHERE symbol=? AND industry IS NULL",
+                (ind, sym)
+            )
+            updated += 1
+        conn.commit()
+        classified = conn.execute(
+            "SELECT COUNT(*) FROM stocks WHERE industry IS NOT NULL"
+        ).fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
+        logger.info(f"industry sync done (baostock): {updated} updates, {classified}/{total}")
+        return updated
     @staticmethod
     def _norm_row(sym: str, date: str, o: float, h: float, l: float, c: float,
                   vol: float, amt: float, turnover: float = 0.0) -> tuple:
@@ -472,16 +422,9 @@ class DataStore:
         """tushare 批量获取日线 (Token认证, 200call/min). 返回 None 表示不可用"""
         if not self.token:
             return None
-        try:
-            import tushare as ts
-            ts.set_token(self.token)
-            pro = ts.pro_api()
-        except Exception as e:
-            raise  # 错误不吞
-            logger.warning(f"tushare basic info fetch failed: {e}")
-            return None
-
-        # 6位代码 → tushare ts_code 格式 (000001.SZ,600519.SH)
+        import tushare as ts
+        ts.set_token(self.token)
+        pro = ts.pro_api()
         ts_codes_parts = []
         for s in symbols:
             if s.startswith(("6", "5", "9")):
@@ -496,17 +439,11 @@ class DataStore:
 
         _init_cache()
         _tushare_limiter.wait()
-        try:
-            df = pro.daily(
-                ts_code=code_str,
-                start_date=start_date,
-                end_date=to_compact(datetime.today()),
-            )
-        except Exception as e:
-            raise  # 错误不吞
-            logger.warning(f"[tushare] batch fetch failed: {e}")
-            return None
-
+        df = pro.daily(
+            ts_code=code_str,
+            start_date=start_date,
+            end_date=to_compact(datetime.today()),
+        )
         if df is None or df.empty:
             return None
         rows = []
@@ -529,15 +466,11 @@ class DataStore:
             elif sym.startswith(('6','9')): code = f"sh{sym}"  # 上海
             else: code = f"sz{sym}"                             # 深圳
             url = f"http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={code}&scale=240&datalen=2000"
-            try:
-                req = urllib.request.Request(url, headers={
-                    "User-Agent": "Mozilla/5.0",
-                    "Referer": "https://finance.sina.com.cn",
-                })
-                data = _json.loads(urllib.request.urlopen(req, timeout=_require_cfg("data.http_timeout.tushare")).read().decode("utf-8"))
-            except Exception:
-                raise  # 错误不吞
-                continue
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://finance.sina.com.cn",
+            })
+            data = _json.loads(urllib.request.urlopen(req, timeout=_require_cfg("data.http_timeout.tushare")).read().decode("utf-8"))
             for bar in data:
                 d = bar["day"]
                 if d < start_date:
@@ -556,32 +489,28 @@ class DataStore:
         max_days = _require_cfg("data.fetch.max_lookback_days")
         rows = []
         for sym in symbols:
-            try:
-                market = _tencent_market(sym)
-                url = (f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
-                       f"?param={market}{sym},day,,,{max_days},qfq")
-                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                resp = urllib.request.urlopen(req, timeout=_require_cfg("data.http_timeout.tencent"))
-                data = _json.loads(resp.read().decode("utf-8"))
-                kline = data.get("data", {}).get(f"{market}{sym}", {}).get("qfqday")
-                if not kline:
-                    continue
-                for row in kline:
-                    d = to_str(row[0])
-                    if to_compact(d) < to_compact(start_date):  # 腾讯API返回格式不定, compact归一化后字符串比较
-                        continue
-                    c = float(row[2])          # close
-                    vol_raw = float(row[5])     # 股
-                    amt_raw = c * vol_raw       # 元 (=close×volume)
-                    rows.append(self._norm_row(
-                        sym, d,  # d 已由 to_str() 归一化为 YYYY-MM-DD
-                        float(row[1]), float(row[3]), float(row[4]), c,
-                        vol_raw / 100,          # 股 → 手
-                        amt_raw / 1000,         # 元 → 千元
-                        0.0))
-            except Exception:
-                raise  # 错误不吞
+            market = _tencent_market(sym)
+            url = (f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+                   f"?param={market}{sym},day,,,{max_days},qfq")
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            resp = urllib.request.urlopen(req, timeout=_require_cfg("data.http_timeout.tencent"))
+            data = _json.loads(resp.read().decode("utf-8"))
+            kline = data.get("data", {}).get(f"{market}{sym}", {}).get("qfqday")
+            if not kline:
                 continue
+            for row in kline:
+                d = to_str(row[0])
+                if to_compact(d) < to_compact(start_date):  # 腾讯API返回格式不定, compact归一化后字符串比较
+                    continue
+                c = float(row[2])          # close
+                vol_raw = float(row[5])     # 股
+                amt_raw = c * vol_raw       # 元 (=close×volume)
+                rows.append(self._norm_row(
+                    sym, d,  # d 已由 to_str() 归一化为 YYYY-MM-DD
+                    float(row[1]), float(row[3]), float(row[4]), c,
+                    vol_raw / 100,          # 股 → 手
+                    amt_raw / 1000,         # 元 → 千元
+                    0.0))
         if rows:
             logger.info(f"[tencent] {len(symbols)} stocks: {len(rows)} rows (vol/100→手, amt/1000→千元)")
         return rows
@@ -597,25 +526,21 @@ class DataStore:
         rows = []
         end_date = to_compact(datetime.today())  # akshare API只接受YYYYMMDD
         for sym in symbols:
-            try:
-                df = ak.stock_zh_a_hist(
-                    symbol=sym, period="daily",
-                    start_date=start_date, end_date=end_date, adjust="qfq")
-                if df is None or df.empty:
-                    continue
-                for _, row in df.iterrows():
-                    rows.append(self._norm_row(
-                        str(row["股票代码"]),
-                        str(row["日期"]),  # _norm_row → to_str() 自动归一化
-                        float(row.get("开盘", 0) or 0), float(row.get("最高", 0) or 0),
-                        float(row.get("最低", 0) or 0), float(row.get("收盘", 0) or 0),
-                        float(row.get("成交量", 0) or 0),          # 手 ✅
-                        float(row.get("成交额", 0) or 0) / 1000,   # 元→千元
-                        float(row.get("换手率", 0) or 0)))
-                import time; time.sleep(_require_cfg("data.rate_limit.akshare_per_stock_sec"))
-            except Exception:
-                raise  # 错误不吞
+            df = ak.stock_zh_a_hist(
+                symbol=sym, period="daily",
+                start_date=start_date, end_date=end_date, adjust="qfq")
+            if df is None or df.empty:
                 continue
+            for _, row in df.iterrows():
+                rows.append(self._norm_row(
+                    str(row["股票代码"]),
+                    str(row["日期"]),  # _norm_row → to_str() 自动归一化
+                    float(row.get("开盘", 0) or 0), float(row.get("最高", 0) or 0),
+                    float(row.get("最低", 0) or 0), float(row.get("收盘", 0) or 0),
+                    float(row.get("成交量", 0) or 0),          # 手 ✅
+                    float(row.get("成交额", 0) or 0) / 1000,   # 元→千元
+                    float(row.get("换手率", 0) or 0)))
+            import time; time.sleep(_require_cfg("data.rate_limit.akshare_per_stock_sec"))
         if rows:
             logger.info(f"[akshare] {len(symbols)} stocks: {len(rows)} rows (vol=手✅, amt/1000→千元)")
         return rows
@@ -630,20 +555,16 @@ class DataStore:
         rows = []
         end_date = to_compact(datetime.today())  # akshare API只接受YYYYMMDD
         for sym in symbols:
-            try:
-                ts_code = _ts_code(sym)
-                df = api.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
-                if df is None or df.empty:
-                    continue
-                for _, row in df.iterrows():
-                    rows.append(self._norm_row(
-                        sym, str(row["trade_date"])[:10],  # _norm_row → to_str() 归一化
-                        float(row.get("open", 0) or 0), float(row.get("high", 0) or 0),
-                        float(row.get("low", 0) or 0), float(row.get("close", 0) or 0),
-                        float(row.get("vol", 0) or 0), float(row.get("amount", 0) or 0), 0.0))
-            except Exception:
-                raise  # 错误不吞
+            ts_code = _ts_code(sym)
+            df = api.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+            if df is None or df.empty:
                 continue
+            for _, row in df.iterrows():
+                rows.append(self._norm_row(
+                    sym, str(row["trade_date"])[:10],  # _norm_row → to_str() 归一化
+                    float(row.get("open", 0) or 0), float(row.get("high", 0) or 0),
+                    float(row.get("low", 0) or 0), float(row.get("close", 0) or 0),
+                    float(row.get("vol", 0) or 0), float(row.get("amount", 0) or 0), 0.0))
         if rows:
             logger.info(f"[zzshare] {len(symbols)} stocks: {len(rows)} rows (vol=手, amt=千元)")
         return rows
@@ -661,20 +582,7 @@ class DataStore:
             if s.startswith(('6','9','68')): return f"{s}.SH"  # 上海
             return f"{s}.SZ"                               # 深圳
         codes = [_tickflow_code(s) for s in symbols]
-        try:
-            dfs = tf.klines.batch(codes, period="1d", count=10000, as_dataframe=True, show_progress=False)
-        except Exception:
-            raise  # 错误不吞
-            # 回退到逐只
-            dfs = {}
-            for code in codes:
-                try:
-                    df = tf.klines.get(code, period="1d", count=10000, as_dataframe=True)
-                    if not df.empty:
-                        dfs[code] = df
-                except Exception:
-                    raise  # 错误不吞
-                    continue
+        dfs = tf.klines.batch(codes, period="1d", count=10000, as_dataframe=True, show_progress=False)
         for code, df in dfs.items():
             if df.empty:
                 continue
@@ -712,23 +620,11 @@ class DataStore:
         # socket pre-probe: avoid C extension connect() blocking indefinitely
         import socket as _socket
         _connect_timeout = _require_cfg("data.pytdx.connect_timeout")
-        try:
-            _sock = _socket.create_connection(("180.153.18.170", 7709), timeout=_connect_timeout)
-            _sock.close()
-        except Exception:
-            raise  # 错误不吞
-            logger.warning("pytdx: pre-probe timeout/fail (server unreachable)")
-            return []
-
+        _sock = _socket.create_connection(("180.153.18.170", 7709), timeout=_connect_timeout)
+        _sock.close()
         if not api.connect('180.153.18.170', 7709):
             logger.warning("pytdx: server unreachable")
-            try:
-                api.disconnect()
-            except Exception:
-                raise  # 错误不吞
-                import logging; logging.getLogger("quant.data.store").warning("get_daily_price failed", exc_info=True)
-                return []
-
+            api.disconnect()
         rows = []
         try:
             for sym in symbols:
@@ -739,14 +635,7 @@ class DataStore:
                     market = 1
 
                 # 1. 获取除权除息记录 (用于前复权计算)
-                try:
-                    xdxr = api.get_xdxr_info(market, sym)
-                except Exception:
-                    raise  # 错误不吞
-                    xdxr = []
-
-                # 2. 构建前复权因子表: {date_str: factor}
-                # 算法: 从远到近累积 (1+songzhuangu/10), 当日之前的日期 factor=CUM_PRODUCT
+                xdxr = api.get_xdxr_info(market, sym)
                 adj_map = {}
                 if xdxr:
                     events = []
@@ -767,12 +656,7 @@ class DataStore:
                         # Actually simpler: for each bar date, multiply by 1/ratio for each event after it
 
                 # 3. 获取日线
-                try:
-                    bars = api.get_security_bars(9, market, sym, 0, 2000)
-                except Exception:
-                    raise  # 错误不吞
-                    continue
-
+                bars = api.get_security_bars(9, market, sym, 0, 2000)
                 if not bars:
                     continue
 
@@ -848,25 +732,21 @@ class DataStore:
         filled = 0
         end_date = datetime.today().strftime("%Y%m%d")
         for sym in symbols:
-            try:
-                df = ak.stock_zh_a_hist(
-                    symbol=sym, period="daily",
-                    start_date="2020-01-01", end_date=end_date, adjust="qfq")
-                if df is None or df.empty:
-                    continue
-                for _, row in df.iterrows():
-                    t = float(row.get("换手率", 0) or 0)
-                    if t > 0:
-                        d = str(row["日期"])[:10]
-                        conn.execute(
-                            "UPDATE daily SET turnover=? WHERE symbol=? AND date=? AND (turnover=0 OR turnover IS NULL)",
-                            (round(t, 4), sym, d)
-                        )
-                        filled += 1
-                import time; time.sleep(_require_cfg("data.rate_limit.akshare_per_stock_sec"))
-            except Exception:
-                raise  # 错误不吞
+            df = ak.stock_zh_a_hist(
+                symbol=sym, period="daily",
+                start_date="2020-01-01", end_date=end_date, adjust="qfq")
+            if df is None or df.empty:
                 continue
+            for _, row in df.iterrows():
+                t = float(row.get("换手率", 0) or 0)
+                if t > 0:
+                    d = str(row["日期"])[:10]
+                    conn.execute(
+                        "UPDATE daily SET turnover=? WHERE symbol=? AND date=? AND (turnover=0 OR turnover IS NULL)",
+                        (round(t, 4), sym, d)
+                    )
+                    filled += 1
+            import time; time.sleep(_require_cfg("data.rate_limit.akshare_per_stock_sec"))
         conn.commit()
         logger.info(f"turnover backfill (akshare): {filled} rows updated for {len(symbols)} stocks")
         return filled
@@ -883,56 +763,38 @@ class DataStore:
         except ImportError:
             logger.warning("akshare not installed — industry sync skipped")
             return 0
-        try:
-            missing = [r[0] for r in conn.execute(
-                "SELECT symbol FROM stocks WHERE industry IS NULL"
-            ).fetchall()]
-            if not missing:
-                logger.info("industry sync: no unclassified stocks")
-                return 0
-            logger.info(f"industry sync: {len(missing)} unclassified stocks via akshare individual")
-            import time
-            updated = 0
-            for idx, sym in enumerate(missing):
-                try:
-                    info = ak.stock_individual_info_em(symbol=sym)
-                    if info is None or info.empty:
-                        continue
-                    # stock_individual_info_em 返回 行×列 格式, industry在'值'列中
-                    info_dict = dict(zip(info['item'], info['value']))
-                    industry = str(info_dict.get('行业', info_dict.get('industry', ''))).strip()
-                    if industry:
-                        conn.execute(
-                            "UPDATE stocks SET industry=? WHERE symbol=?",
-                            (industry, sym)
-                        )
-                        updated += 1
-                    if idx < 3:
-                        logger.info(f"stock {sym}: industry='{industry}', items={list(info_dict.keys())[:5]}")
-                except Exception as e:
-                    raise  # 错误不吞
-                    if idx < 3:
-                        logger.info(f"stock {sym} industry query failed: {e}")
-                    continue
-                time.sleep(_require_cfg("data.rate_limit.akshare_industry_sec"))  # akshare rate limit
-            conn.commit()
-            classified = conn.execute(
-                "SELECT COUNT(*) FROM stocks WHERE industry IS NOT NULL"
-            ).fetchone()[0]
-            total = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
-            logger.info(f"industry sync (akshare individual): {updated} updates, {classified}/{total}")
-            return updated
-        except Exception as e:
-            raise  # 错误不吞
-            logger.warning(f"akshare industry sync failed: {e}")
+        missing = [r[0] for r in conn.execute(
+            "SELECT symbol FROM stocks WHERE industry IS NULL"
+        ).fetchall()]
+        if not missing:
+            logger.info("industry sync: no unclassified stocks")
             return 0
-
-    def _analyze_daily_gaps(self, conn) -> dict:
-        """分析日线数据缺口: 每只股票的状态分类 (增量版 — PK 覆盖索引)。"""
-        from datetime import date, timedelta, datetime
-        from utils.date import to_str
-        # 以数据库全局最新日期为基准, 容忍3天缺口 (覆盖周末+单日假期)
-        max_db = conn.execute('SELECT MAX(date) FROM daily').fetchone()[0]
+        logger.info(f"industry sync: {len(missing)} unclassified stocks via akshare individual")
+        import time
+        updated = 0
+        for idx, sym in enumerate(missing):
+            info = ak.stock_individual_info_em(symbol=sym)
+            if info is None or info.empty:
+                continue
+            # stock_individual_info_em 返回 行×列 格式, industry在'值'列中
+            info_dict = dict(zip(info['item'], info['value']))
+            industry = str(info_dict.get('行业', info_dict.get('industry', ''))).strip()
+            if industry:
+                conn.execute(
+                    "UPDATE stocks SET industry=? WHERE symbol=?",
+                    (industry, sym)
+                )
+                updated += 1
+            if idx < 3:
+                logger.info(f"stock {sym}: industry='{industry}', items={list(info_dict.keys())[:5]}")
+            time.sleep(_require_cfg("data.rate_limit.akshare_industry_sec"))  # akshare rate limit
+        conn.commit()
+        classified = conn.execute(
+            "SELECT COUNT(*) FROM stocks WHERE industry IS NOT NULL"
+        ).fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
+        logger.info(f"industry sync (akshare individual): {updated} updates, {classified}/{total}")
+        return updated
         if max_db:
             cutoff = to_str(datetime.strptime(max_db, '%Y-%m-%d') - timedelta(days=3))
         else:
@@ -999,14 +861,9 @@ class DataStore:
         # 2. 初始化 tushare（有 token 时作为备源）
         pro = None
         if self.token:
-            try:
-                import tushare as ts
-                ts.set_token(self.token)
-                pro = ts.pro_api()
-            except Exception:
-                raise  # 错误不吞
-                import logging; logging.getLogger("quant.data.store").warning("stock list sync failed", exc_info=True)
-
+            import tushare as ts
+            ts.set_token(self.token)
+            pro = ts.pro_api()
         total_new = 0
         batch_size = _require_cfg("data.batch_size")  # 批量大小
         sources = {}     # source → count
@@ -1043,22 +900,16 @@ class DataStore:
             for src_name, fetch_fn in ordered:
                 if rows is not None:
                     break
-                try:
-                    t0 = __import__('time').time()
-                    result = fetch_fn()
-                    elapsed = __import__('time').time() - t0
-                    if result:
-                        rows = result
-                        source = src_name
-                        rps = len(result) / max(elapsed, 0.001)
-                        # 指数移动平均: 70%旧+30%新, 防单次波动
-                        old = self._source_speed.get(src_name, rps)
-                        self._source_speed[src_name] = old * 0.7 + rps * 0.3
-                except Exception:
-                    raise  # 错误不吞
-                    self._source_speed[src_name] = -1  # 失败排最后
-                    continue
-
+                t0 = __import__('time').time()
+                result = fetch_fn()
+                elapsed = __import__('time').time() - t0
+                if result:
+                    rows = result
+                    source = src_name
+                    rps = len(result) / max(elapsed, 0.001)
+                    # 指数移动平均: 70%旧+30%新, 防单次波动
+                    old = self._source_speed.get(src_name, rps)
+                    self._source_speed[src_name] = old * 0.7 + rps * 0.3
             if rows:
                 conn.executemany(
                     """INSERT OR IGNORE INTO daily
@@ -1183,13 +1034,7 @@ class DataStore:
         end = to_compact(datetime.today())
 
         logger.info(f"syncing LHB data: {start} → {end}")
-        try:
-            df = ak.stock_lhb_detail_em(start_date=start, end_date=end)
-        except Exception as e:
-            raise  # 错误不吞
-            logger.warning(f"LHB fetch failed: {e}")
-            return 0
-
+        df = ak.stock_lhb_detail_em(start_date=start, end_date=end)
         if df is None or df.empty:
             logger.info("no new LHB records")
             return 0
@@ -1197,30 +1042,25 @@ class DataStore:
         conn = self._connect()
         new_count = 0
         for _, row in df.iterrows():
-            try:
-                sym = str(row.get("代码", "")).zfill(6)
-                if len(sym) != 6:
-                    continue
-                conn.execute(
-                    """INSERT OR IGNORE INTO lhb_detail
-                       (symbol, trade_date, close, change_pct, turnover_rate,
-                        net_buy, buy_amt, sell_amt, reason)
-                       VALUES (?,?,?,?,?,?,?,?,?)""",
-                    (sym,
-                     to_str(row.get("上榜日", row.get("trade_date", row.get("日期", "")))),
-                     float(row.get("收盘价", 0) or 0),
-                     float(row.get("涨跌幅", 0) or 0),
-                     float(row.get("换手率", 0) or 0),
-                     float(row.get("龙虎榜净买额", 0) or 0),
-                     float(row.get("龙虎榜买入额", 0) or 0),
-                     float(row.get("龙虎榜卖出额", 0) or 0),
-                     str(row.get("上榜原因", "") or "")[:200])
-                )
-                new_count += 1
-            except Exception:
-                raise  # 错误不吞
+            sym = str(row.get("代码", "")).zfill(6)
+            if len(sym) != 6:
                 continue
-
+            conn.execute(
+                """INSERT OR IGNORE INTO lhb_detail
+                   (symbol, trade_date, close, change_pct, turnover_rate,
+                    net_buy, buy_amt, sell_amt, reason)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (sym,
+                 to_str(row.get("上榜日", row.get("trade_date", row.get("日期", "")))),
+                 float(row.get("收盘价", 0) or 0),
+                 float(row.get("涨跌幅", 0) or 0),
+                 float(row.get("换手率", 0) or 0),
+                 float(row.get("龙虎榜净买额", 0) or 0),
+                 float(row.get("龙虎榜买入额", 0) or 0),
+                 float(row.get("龙虎榜卖出额", 0) or 0),
+                 str(row.get("上榜原因", "") or "")[:200])
+            )
+            new_count += 1
         conn.commit()
         total = conn.execute("SELECT COUNT(*) FROM lhb_detail").fetchone()[0]
         logger.info(f"LHB sync done: {new_count} new, {total} total records")
@@ -1237,33 +1077,22 @@ class DataStore:
         import sqlite3, os
         bm_db = os.path.join(os.path.dirname(__file__), "market.db")
         if os.path.exists(bm_db):
-            try:
-                conn = sqlite3.connect(bm_db)
-                df = pd.read_sql_query(
-                    "SELECT date, close FROM benchmark_daily WHERE index_code=? AND date>=? ORDER BY date",
-                    conn, params=(code, start)
-                )
-                conn.close()
-                if not df.empty:
-                    df["date"] = pd.to_datetime(df["date"])
-                    df = df.set_index("date")["close"]
-                    return df.pct_change().dropna()
-            except Exception as e:
-                raise  # 错误不吞
-                logger.debug(f"benchmark local read failed: {e}")
-        # 回退: akshare 实时拉取
-        try:
-            from data.benchmark import get_benchmark_returns
-            # get_benchmark_returns 返回百分比, 转小数
-            bm_pct = get_benchmark_returns(code, start=start)
-            if bm_pct.empty:
-                return pd.Series(dtype=float, name=code)
-            return bm_pct / 100.0
-        except Exception as e:
-            raise  # 错误不吞
-            logger.warning(f"benchmark {code} fetch failed: {e}")
-            return pd.Series()
-
+            conn = sqlite3.connect(bm_db)
+            df = pd.read_sql_query(
+                "SELECT date, close FROM benchmark_daily WHERE index_code=? AND date>=? ORDER BY date",
+                conn, params=(code, start)
+            )
+            conn.close()
+            if not df.empty:
+                df["date"] = pd.to_datetime(df["date"])
+                df = df.set_index("date")["close"]
+                return df.pct_change().dropna()
+        from data.benchmark import get_benchmark_returns
+        # get_benchmark_returns 返回百分比, 转小数
+        bm_pct = get_benchmark_returns(code, start=start)
+        if bm_pct.empty:
+            return pd.Series(dtype=float, name=code)
+        return bm_pct / 100.0
     def get_stock_names(self, symbols: list) -> dict:
         if not symbols:
             return {}

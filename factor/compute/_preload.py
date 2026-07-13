@@ -134,6 +134,30 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
         pass
 
+    # lhb_detail: net_buy for lhb factors (compute_lhb_net_buy, compute_lhb_post_quality)
+    try:
+        df = pd.read_sql_query(
+            "SELECT symbol, net_buy, buy_amt, sell_amt, change_pct, close FROM lhb_detail "
+            "WHERE trade_date <= ? AND trade_date >= date(?, '-90 days') ORDER BY trade_date DESC",
+            conn, params=(date, date)
+        )
+        if not df.empty:
+            result["lhb"] = df.set_index("symbol")
+    except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
+        pass
+
+    # fund_flow: main_net_inflow for compute_main_flow_ratio
+    try:
+        df = pd.read_sql_query(
+            "SELECT symbol, main_net_inflow, super_large_net_inflow FROM fund_flow "
+            "WHERE date = (SELECT MAX(date) FROM fund_flow WHERE date <= ?)",
+            conn, params=(date,)
+        )
+        if not df.empty:
+            result["fund_flow"] = df.set_index("symbol")
+    except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
+        pass
+
     if own_conn:
         conn.close()
     return result

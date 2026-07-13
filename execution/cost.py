@@ -3,6 +3,7 @@
 """
 
 from utils.logger import get_logger
+from execution.impact import estimate_impact_pct
 from config.loader import get as cfg
 logger = get_logger("execution.cost")
 
@@ -27,10 +28,10 @@ class CostModel:
     @classmethod
     def from_config(cls) -> "CostModel":
         return cls(
-            commission_rate=cfg("execution.commission", 0.0003),
-            min_commission=cfg("execution.min_commission", 5.0),
-            stamp_tax_rate=cfg("execution.stamp_tax", 0.001),
-            slippage_rate=cfg("execution.slippage", 0.001),
+            commission_rate=cfg("execution.commission"),
+            min_commission=cfg("execution.min_commission"),
+            stamp_tax_rate=cfg("execution.stamp_tax"),
+            slippage_rate=cfg("execution.slippage"),
         )
 
     def commission(self, trade_value: float) -> float:
@@ -47,21 +48,42 @@ class CostModel:
         """滑点 = 成交额 × 滑点率。"""
         return trade_value * self.slippage_rate
 
-    def buy_cost(self, price: float, shares: int) -> float:
-        """买入总成本 = 成交额 + 佣金 + 滑点。"""
-        value = price * shares
-        logger.debug(f"[cost] buy {shares}@{price:.2f} = {value + self.commission(value) + self.slippage(value):.2f}")
-        return value + self.commission(value) + self.slippage(value)
 
-    def sell_proceeds(self, price: float, shares: int) -> float:
-        """卖出净收入 = 成交额 - 佣金 - 印花税 - 滑点。"""
-        value = price * shares
-        return value - self.commission(value) - self.stamp_tax(value, "sell") - self.slippage(value)
+    def slippage_with_impact(
+        self, trade_value: float, shares: int, daily_volume: float = None,
+        daily_volatility: float = None,
+    ) -> float:
+        """动态滑点: 有成交量数据时用 Almgren-Chriss 模型, 否则回退固定值.
 
-    def sell_cost(self, price: float, shares: int) -> float:
-        """卖出总成本 (佣金+印花税+滑点)。"""
+        Args:
+            trade_value: 成交额 (price × shares)
+            shares: 委托股数
+            daily_volume: 近 20 日均成交量, None → 用固定滑点
+            daily_volatility: 日波动率, None → 用 config 默认值
+        """
+        if daily_volume and daily_volume > 0:
+            impact_pct = estimate_impact_pct(shares, daily_volume, daily_volatility)
+            return trade_value * max(impact_pct, 0.0001)  # 最低 0.01% (比固定低一个量级)
+        return self.slippage(trade_value)
+
+    def buy_cost(self, price: float, shares: int, daily_volume: float = None, daily_vol: float = None) -> float:
+        """买入总成本 = 成交额 + 佣金 + 滑点 (支持动态冲击)。"""
         value = price * shares
-        return self.commission(value) + self.stamp_tax(value, "sell") + self.slippage(value)
+        impact = self.slippage_with_impact(value, shares, daily_volume, daily_vol)
+        logger.debug(f"[cost] buy {shares}@{price:.2f} impact={impact:.2f}")
+        return value + self.commission(value) + impact
+
+    def sell_proceeds(self, price: float, shares: int, daily_volume: float = None, daily_vol: float = None) -> float:
+        """卖出净收入 = 成交额 - 佣金 - 印花税 - 滑点 (支持动态冲击)。"""
+        value = price * shares
+        impact = self.slippage_with_impact(value, shares, daily_volume, daily_vol)
+        return value - self.commission(value) - self.stamp_tax(value, "sell") - impact
+
+    def sell_cost(self, price: float, shares: int, daily_volume: float = None, daily_vol: float = None) -> float:
+        """卖出总成本 (佣金+印花税+滑点, 支持动态冲击)。"""
+        value = price * shares
+        impact = self.slippage_with_impact(value, shares, daily_volume, daily_vol)
+        return self.commission(value) + self.stamp_tax(value, "sell") + impact
 
     def round_trip_cost_pct(self) -> float:
         """往返成本百分比 (买+卖)。"""

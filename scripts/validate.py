@@ -35,7 +35,7 @@ def ok(msg):
 # ── 1. Config vs Code defaults ──
 def check_config_vs_code():
     """检查 config.yaml 中的值与代码默认值是否一致。"""
-    from config.loader import get as cfg
+    from config.constants import _require_cfg
 
     # 检查关键参数
     checks = {
@@ -151,11 +151,11 @@ def check_database():
 # ── 4. Key parameter sanity ──
 def check_parameters():
     """检查关键参数是否合理。"""
-    from config.loader import get as cfg
+    from config.constants import _require_cfg
 
-    max_pos = cfg("risk.max_positions", 1)
-    stop_loss = cfg("risk.stop_loss_pct", 0.15)
-    alpha_method = cfg("alpha.method", "ic_weighted")
+    max_pos = _require_cfg("risk.max_positions")
+    stop_loss = _require_cfg("risk.stop_loss_pct")
+    alpha_method = _require_cfg("alpha.method")
 
     if max_pos < 1 or max_pos > 10:
         warn(f"max_positions={max_pos} seems extreme")

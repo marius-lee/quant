@@ -48,9 +48,17 @@ echo "Phase 2: 单因子检验 (IC / |t| / ICIR / half-life)"
 echo "============================================"
 # Ensure no stale DB locks from previous phases
 python3 -c "import sqlite3; c=sqlite3.connect('data/market.db'); c.execute('PRAGMA wal_checkpoint'); c.close()" 2>/dev/null || true
+# 两步架构: 默认用 diagnostics 预筛; --all 跳过预筛
+PREFILTER="True"
+for arg in "$@"; do
+    case $arg in
+        --all) PREFILTER="False" ;;
+    esac
+done
+
 PYTHONPATH=. .venv/bin/python3 -c "
 from evaluation.phase2_single import screen_factors
-screen_factors()
+screen_factors(prefilter_from_diagnostics=$PREFILTER)
 "
 
 # ────────────────────────────────────────────
@@ -85,6 +93,19 @@ echo "============================================"
 echo "五阶段评估完成"
 echo "============================================"
 
+# -- Phase 5b: 状态同步 (评估结果 -> factor_registry) --
+echo ""
+echo "============================================"
+echo "Phase 5b: 因子状态同步"
+echo "============================================"
+PYTHONPATH=. .venv/bin/python3 -c "
+from evaluation.phase5_monitor import sync_factor_status
+r = sync_factor_status()
+print(f'  rejected={len(r[\"rejected\"])} active={len(r[\"active\"])} unchanged={r[\"unchanged\"]}')
+for n in r['rejected']: print(f'    X {n}')
+for n in r['active']:   print(f'    V {n}')
+"
+
 if $RUN_PHASE5; then
     echo ""
     echo "============================================"
@@ -97,4 +118,31 @@ print(f'Report: {path}')
 "
 fi
 
-echo "下一步: 检查 Phase 2-3 结果, 更新 factor_registry status 和 notes"
+
+# Phase 6: 策略级全链路回测 (Gap 1 — 事件驱动 walk-forward)
+# 输入: Phase 3 通过的因子 (candidate + active)
+# 输出: equity curve, Sharpe, MDD, CAGR, benchmark delta
+RUN_PHASE6=false
+for arg in "$@"; do
+    case $arg in
+        --phase6) RUN_PHASE6=true ;;
+    esac
+done
+
+if $RUN_PHASE6; then
+    echo ""
+    echo "============================================"
+    echo "Phase 6: 策略级全链路回测 (walk-forward)"
+    echo "============================================"
+    PYTHONPATH=. .venv/bin/python3 -c "
+from evaluation.phase6_backtest import run_strategy_backtest
+import json
+result = run_strategy_backtest(
+    start_date='2023-01-01',
+    end_date='2025-12-31',
+    capital=5000,
+    output_json='/tmp/_eval_phase6.json',
+)
+print(json.dumps(result, indent=2, ensure_ascii=False))
+"
+fi

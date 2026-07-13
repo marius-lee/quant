@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import sqlite3
 import os as _os
+import atexit as _atexit
 from typing import Optional
 from config.constants import _require_cfg, _market_db_path
 
@@ -15,14 +16,32 @@ from config.constants import _require_cfg, _market_db_path
 _shared_limit_conn = None
 
 
-def _cs_zscore(series: pd.Series, min_count: int = None) -> pd.Series:
+def _close_shared():
+    global _shared_limit_conn
+    if _shared_limit_conn is not None:
+        try:
+            _shared_limit_conn.close()
+        except Exception:
+            pass
+        _shared_limit_conn = None
+
+
+_atexit.register(_close_shared)
+
+
+def _cs_zscore(series: pd.Series, min_count: int = None, sparse: bool = False) -> pd.Series:
     """截面 z-score 标准化: (x - cross_sectional_mean) / cross_sectional_std.
-    若截面有效值 < min_count, 返回全 NaN。"""
+    若截面有效值 < min_count, 返回全 NaN。
+    sparse=True 时使用 zscore_min_count_sparse (基本面因子), 否则使用 zscore_min_count_dense (价量因子)。"""
     if min_count is None:
-        min_count = _require_cfg("factor.compute.zscore_min_count")
+        key = "factor.compute.zscore_min_count_sparse" if sparse else "factor.compute.zscore_min_count_dense"
+        min_count = _require_cfg(key)
     if series.count() < min_count:
         return pd.Series(np.nan, index=series.index)
-    return (series - series.mean()) / series.std(ddof=1)
+    std = series.std(ddof=1)
+    if std == 0 or np.isnan(std):
+        return pd.Series(np.nan, index=series.index)
+    return (series - series.mean()) / std
 
 
 def _db_connect():

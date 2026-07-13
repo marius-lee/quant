@@ -1,3 +1,4 @@
+import traceback
 """量化选股 Pipeline — 串联 Layer 0-7, 每个交易日盘后自动运行。
 
 每个 Layer 独立 try/except — 单层异常不中断后续层。
@@ -30,7 +31,7 @@ from utils.logger import get_logger
 
 # ── HTTP state push (P69: 抽取到 web/state_pusher.py) ──
 import uuid as _uuid
-from web.state_pusher import post_state
+from web.state_broker import broker
 
 logger = get_logger("pipeline")
 
@@ -39,7 +40,9 @@ LOT_SIZE = _ecfg("backtest.lot_size")
 
 
 def generate_signals(date_str: str = None, capital: float = None, strategy: str = "quant",
-                     skip_pull: bool = False) -> dict:
+                     skip_pull: bool = False, store=None, status_filter: str = "active",
+                     suppress_push: bool = False, universe_size: int = None,
+                     db_path: str = None, exclude_symbols: list = None, ic_map: dict = None) -> dict:
     """Pipeline 阶段一: 盘前信号生成 (Steps 0-5, 不执行交易)。
 
     用 T-1 收盘数据计算因子 → alpha → 风险过滤 → 组合优化 → 输出目标持仓。
@@ -55,29 +58,33 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
 
     t0 = time.time()
     results = {"date": date_str, "steps": {}}
-    post_state({"status": "signals_started", "progress": "0/5", "date": date_str, "trace_id": tid})
+    if not suppress_push:
+        broker.update({"status": "signals_started", "progress": "0/5", "date": date_str, "trace_id": tid})
     logger.info(f"generate_signals started trace_id={tid} date={date_str}")
 
     # ── Step 0: Init ──
-    store = DataStore()
-    engine = ExecutionEngine()
+    _store_in = store
+    store = store or (DataStore() if db_path is None else DataStore(db_path=db_path))
+    engine = ExecutionEngine(db_path=db_path)
     cost_model = CostModel()
     constructor = PortfolioConstructor()
 
     if engine.is_initialized(strategy):
         total_capital = engine.get_cash(strategy)
     else:
-        seed = capital
+        from data.trade_repo import TradeRepo
+        seed = TradeRepo(db_path=db_path).get_initial_capital(strategy)
         engine.set_initial_capital(strategy, seed)
         total_capital = seed
 
     # ── Step 1: Data Update ──
     if not skip_pull:
         try:
-            n_new = store.update_daily(start="2020-01-01")
+            n_new = store.update_daily(start=_ecfg("data.start_date"))
             results["steps"]["data"] = {"new_rows": n_new, "status": "ok"}
             logger.info(f"[1/5] data: {n_new} new daily rows")
-            post_state({"status": "data_synced", "progress": "1/5", "new_rows": n_new, "trace_id": tid})
+            if not suppress_push:
+                broker.update({"status": "data_synced", "progress": "1/5", "new_rows": n_new, "trace_id": tid})
             _m.inc("data.sync.rows", n_new)
         except Exception as e:
             _m.inc("pipeline.errors")
@@ -92,21 +99,62 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         symbols = [r[0] for r in conn.execute(
             "SELECT DISTINCT d.symbol FROM daily d JOIN stocks s ON d.symbol=s.symbol WHERE s.market!='BJ'"
         ).fetchall()]
-        hist_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_ecfg("data.lookback_days", 365))).strftime("%Y-%m-%d")
+        hist_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_ecfg("data.lookback_days"))).strftime("%Y-%m-%d")
         data = store.get_daily(symbols, start=hist_start, end=date_str)
         fundamentals = store.get_fundamentals(symbols, date=date_str)
         results["steps"]["load"] = {"symbols": len(symbols), "status": "ok"}
         pe_cnt = int(fundamentals["pe"].notna().sum()) if "pe" in fundamentals.columns else 0
         pb_cnt = int(fundamentals["pb"].notna().sum()) if "pb" in fundamentals.columns else 0
         logger.info(f"[2/5] load: {len(symbols)} symbols, {data.shape[0]} days, PE/PB={pe_cnt}/{pb_cnt}")
-        post_state({"status": "data_loaded", "progress": "2/5", "symbols": len(symbols), "trace_id": tid})
+        if not suppress_push:
+            broker.update({"status": "data_loaded", "progress": "2/5", "symbols": len(symbols), "trace_id": tid})
     except Exception as e:
         _m.inc("pipeline.errors")
         results["steps"]["load"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[2/5] load failed: {e}")
-        store.close()
         return results
 
+    # ── Step 2.5: Universe size filter (backtest only) ──
+    if universe_size and len(symbols) > universe_size:
+        try:
+            # ── Step 2.5a: Affordability filter (remove stocks too expensive for 1 lot) ──
+            close_df = data["close"]
+            latest_date = close_df.index[-1]
+            latest_close = close_df.loc[latest_date].dropna()
+            candidate_syms = set(latest_close.index)
+            if _ecfg("backtest.universe_filter_affordable"):
+                affordable = latest_close[latest_close * LOT_SIZE <= total_capital]
+                if len(affordable) > 0:
+                    candidate_syms &= set(affordable.index)
+                # else: empty affordable pool → keep all (edge case for tiny capital)
+
+            # ── Step 2.5b: Rank by turnover, take top N ──
+            candidates = list(candidate_syms & set(symbols))
+            conn2 = store._connect()
+            turnover_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_ecfg("backtest.universe_turnover_days"))).strftime("%Y-%m-%d")
+            placeholders = ",".join("?" * len(candidates))
+            rows = conn2.execute(
+                f"SELECT symbol, AVG(amount) as avg_amt FROM daily "
+                f"WHERE date >= ? AND symbol IN ({placeholders}) GROUP BY symbol ORDER BY avg_amt DESC LIMIT ?",
+                [turnover_start] + candidates + [universe_size]
+            ).fetchall()
+            keep_syms = [r[0] for r in rows] if rows else candidates[:universe_size]
+            symbols = [s for s in symbols if s in keep_syms]
+            # data is wide-format MultiIndex columns (field, symbol) — filter 2nd level
+            data = data.loc[:, data.columns.get_level_values(1).isin(keep_syms)]
+            fundamentals = fundamentals[fundamentals.index.isin(keep_syms)]
+            results["steps"]["load"]["symbols"] = len(symbols)
+        except Exception:
+            from utils.logger import get_logger as _gl1
+            _gl1("quant.pipeline").warning("universe filter failed, using full universe: %s",
+                                          traceback.format_exc().splitlines()[-1])
+
+
+    # ── Step 2.6: Cooling-off exclude (backtest only) ──
+    if exclude_symbols:
+        symbols = [s for s in symbols if s not in exclude_symbols]
+        data = data.loc[:, data.columns.get_level_values(1).isin(symbols)] if symbols else data.iloc[:0]
+        fundamentals = fundamentals[fundamentals.index.isin(symbols)]
     # ── Step 3: Factor + Alpha ──
     try:
         actual_date = date_str
@@ -116,34 +164,36 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
 
         benchmark_ret = None
         try:
-            bm = store.get_benchmark("000300", start="2025-12-01")
+            bm = store.get_benchmark("000300", start=_ecfg("benchmark.start_date"))
             if not bm.empty:
                 benchmark_ret = bm[:pd.Timestamp(actual_date)]
         except Exception:
-            pass
+            from utils.logger import get_logger as _glbm
+            _glbm("quant.pipeline").error("benchmark fetch failed: %s", traceback.format_exc())
 
-        from utils.logger import get_logger
-        _flog = get_logger("factor.compute")
-        _flog.info(f"step 3 starting: computing factors for {len(symbols)} symbols on {actual_date}...")
+        logger.info(f"step 3 starting: computing factors for {len(symbols)} symbols on {actual_date}...")
         factor_values = compute_all_factors(data, actual_date,
                                             fundamentals=fundamentals,
+                                            status_filter=status_filter,
                                             benchmark_ret=benchmark_ret)
         n_valid = sum(1 for v in factor_values.values() if isinstance(v, pd.Series) and v.notna().sum() > 0)
 
         from alpha.model import AlphaModel
         am = AlphaModel()
-        ic_map = load_ic_map_from_cache(factor_values)
+        ic_map = ic_map or load_ic_map_from_cache(factor_values, status_filter=status_filter)
         alpha_raw = am.combine(factor_values, ic_map=ic_map)
         alpha = am.rank(alpha_raw)
 
+        results["_factor_values"] = {k: v for k, v in factor_values.items() if isinstance(v, pd.Series)}
+        results["_alpha_raw"] = alpha_raw
         results["steps"]["factor"] = {"factors": len(factor_values), "valid_stocks": alpha.dropna().count(), "status": "ok"}
-        post_state({"status": "factors_computed", "progress": "3/5", "n_factors": len(factor_values), "trace_id": tid})
+        if not suppress_push:
+            broker.update({"status": "factors_computed", "progress": "3/5", "n_factors": len(factor_values), "trace_id": tid})
         _m.gauge("factor.n_active", len(factor_values))
     except Exception as e:
         _m.inc("pipeline.errors")
         results["steps"]["factor"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[3/5] factor failed: {e}")
-        store.close()
         return results
 
     # ── Step 4: Risk ──
@@ -171,12 +221,12 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         filtered = apply_all_filters(candidates.reindex(prices.index))
         results["steps"]["risk"] = {"candidates": len(filtered), "status": "ok"}
         logger.info(f"[4/5] risk: {len(filtered)} candidates after filters")
-        post_state({"status": "risk_filtered", "progress": "4/5", "candidates": len(filtered), "trace_id": tid})
+        if not suppress_push:
+            broker.update({"status": "risk_filtered", "progress": "4/5", "candidates": len(filtered), "trace_id": tid})
     except Exception as e:
         _m.inc("pipeline.errors")
         results["steps"]["risk"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[4/5] risk failed: {e}")
-        store.close()
         return results
 
     # ── Step 5: Optimizer (generate target positions, do NOT execute) ──
@@ -184,7 +234,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         portfolio = constructor.construct(
             filtered["alpha"], filtered["close"],
             total_capital,
-            covariance=cov,
+            covariance=cov, ic_map=ic_map,
         )
         # Build target positions list for the scheduler to consume
         target_positions = []
@@ -209,28 +259,31 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
             "invested": round(portfolio.invested, 2), "status": "ok",
         }
         logger.info(f"[5/5] optimizer: {portfolio.method}, {portfolio.positions} pos, invested=Y{portfolio.invested:,.0f}")
-        post_state({"status": "signals_generated", "progress": "5/5",
-                      "n_positions": portfolio.positions, "invested": portfolio.invested, "trace_id": tid, "signals": target_positions}, async_mode=False)
+        if not suppress_push:
+            broker.update({"status": "signals_generated", "progress": "5/5",
+                        "n_positions": portfolio.positions, "invested": portfolio.invested, "trace_id": tid, "signals": target_positions})
     except Exception as e:
         _m.inc("pipeline.errors")
         results["steps"]["optimizer"] = {"error": str(e), "status": "failed"}
         logger.warning(f"[5/5] optimizer failed: {e}")
-        store.close()
         return results
 
-    store.close()
+    if _store_in is None:
+        store.close()
     elapsed = time.time() - t0
     results["elapsed_sec"] = round(elapsed, 1)
     logger.info(f"generate_signals done trace_id={tid} elapsed={elapsed:.1f}s date={date_str}")
     return results
 
 
-def execute_signals(target_positions: list[dict], date_str: str, strategy: str = "quant") -> dict:
+def execute_signals(target_positions: list[dict], date_str: str, strategy: str = "quant",
+                    prices: dict = None, db_path: str = None,
+                    suppress_push: bool = False) -> dict:
     """Pipeline 阶段二: 开盘执行 (Step 6)。
 
-    对比目标持仓 vs 当前实际持仓 → 计算 delta → 执行模拟交易。
-    传入的 target_positions 来自 generate_signals() 的输出。
-    返回: {date, strategy, steps: {execution, monitor}}
+    prices: 预提供的开盘价dict (回测用); None则由fetch_quotes获取实时报价.
+    db_path: 交易数据库路径 (回测用); None使用默认.
+    suppress_push: True→不调用 broker.update (回测用).
     """
     tid = _uuid.uuid4().hex[:12]
     from utils.logger import set_trace_id as _set_tid; _set_tid(tid)
@@ -241,7 +294,7 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
     results = {"date": date_str, "steps": {}}
     logger.info(f"execute_signals started trace_id={tid} date={date_str} strategy={strategy}")
 
-    engine = ExecutionEngine()
+    engine = ExecutionEngine(db_path=db_path)
     cost_model = CostModel()
 
     # Get current positions
@@ -260,32 +313,37 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
         target_lots[sym] = tp["shares"] // LOT_SIZE
 
     # Load prices — 直接用 Sina 实时开盘价, 不走 market.db 回退.
-    # 09:30 开盘后 open 价格已锁定, 用集合竞价确定的开盘价执行买入更接近真实成交.
-    # 拉不到报价 → 不执行 (用错价格比不交易危害大, 且永不 fallback 制造隐形 bug).
-    from execution.quote import fetch_quotes
-    symbols = list(set(list(current_lots.keys()) + list(target_lots.keys())))
-    quotes = fetch_quotes(symbols)
-    if not quotes:
-        logger.error(
-            f"execute: fetch_quotes returned empty for {len(symbols)} symbols — "
-            f"skipping execution to avoid trading at stale prices"
-        )
-        return results
+    if prices is not None:
+        # Backtest mode: use provided open prices directly
+        prices = pd.Series(prices)
+    else:
+        # Live mode: fetch from Sina
+        # 拉不到报价 → 不执行 (用错价格比不交易危害大, 且永不 fallback 制造隐形 bug).
+        from execution.quote import fetch_quotes
+        symbols = list(set(list(current_lots.keys()) + list(target_lots.keys())))
+        quotes = fetch_quotes(symbols)
+        if not quotes:
+            logger.error(
+                f"execute: fetch_quotes returned empty for {len(symbols)} symbols — "
+                f"skipping execution to avoid trading at stale prices"
+            )
+            return results
 
-    prices = {}
-    for sym, q in quotes.items():
-        open_px = q.get("open", 0)
-        if open_px > 0:
-            prices[sym] = open_px
-    # 报价未覆盖的持仓保留成本价 (仅用于估值, 不用于新买入)
-    for p in current_positions:
-        if p["symbol"] not in prices:
-            prices[p["symbol"]] = p.get("price", 0)
-    # 报价未覆盖的目标 (极罕见) 使用 sina price 而非昨日 close
-    for tp in target_positions:
-        if tp["symbol"] not in prices:
-            q = quotes.get(tp["symbol"], {})
-            prices[tp["symbol"]] = q.get("price", 0) or q.get("open", 0)
+        prices = {}
+        for sym, q in quotes.items():
+            open_px = q.get("open", 0)
+            if open_px > 0:
+                prices[sym] = open_px
+        # 报价未覆盖的持仓保留成本价 (仅用于估值, 不用于新买入)
+        for p in current_positions:
+            if p["symbol"] not in prices:
+                prices[p["symbol"]] = p.get("price", 0)
+        # 报价未覆盖的目标 (极罕见) 使用 sina price 而非昨日 close
+        for tp in target_positions:
+            if tp["symbol"] not in prices:
+                q = quotes.get(tp["symbol"], {})
+                prices[tp["symbol"]] = q.get("price", 0) or q.get("open", 0)
+        prices = pd.Series(prices)
     prices = pd.Series(prices)
 
     # Compute total capital
@@ -339,7 +397,8 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
             "status": "ok",
         }
         logger.info(f"execute: {len(orders)} orders ({results['steps']['execution']['buys']} buys, {results['steps']['execution']['sells']} sells)")
-        post_state({"status": "trades_executed", "progress": "6/7", "orders": len(orders), "trace_id": tid, "signals": target_positions}, async_mode=False)
+        if not suppress_push:
+            broker.update({"status": "trades_executed", "progress": "6/7", "orders": len(orders), "trace_id": tid, "signals": target_positions})
         _m.inc("pipeline.trades", len(orders))
     except Exception as e:
         _m.inc("pipeline.errors")
@@ -352,7 +411,8 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
         trades = engine.get_trades(strategy, limit=50)
         total_wealth = engine.get_capital(strategy)
         cash_balance = engine.get_cash(strategy)
-        from data.trade_repo import TradeRepo; seed = TradeRepo().get_initial_capital(strategy)
+        from data.trade_repo import TradeRepo
+        seed = TradeRepo(db_path=db_path).get_initial_capital(strategy)
         from monitor.report import generate_report, push_to_web
         report = generate_report(
             date_str, cash_balance, positions, trades,
@@ -369,6 +429,7 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
         logger.info(f"execute monitor: wealth=Y{cap['total_wealth']:,.2f} return={report['metrics']['total_return_pct']}%")
     except Exception as e:
         results["steps"]["monitor"] = {"error": str(e), "status": "failed"}
+        logger.error(f"execute: monitor traceback:\n{traceback.format_exc()}")
         logger.warning(f"execute: monitor failed: {e}")
 
     elapsed = time.time() - t0
@@ -395,6 +456,7 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
     # Merge steps
     signals["steps"].update(exec_result.get("steps", {}))
     signals["elapsed_sec"] = signals.get("elapsed_sec", 0) + exec_result.get("elapsed_sec", 0)
+    signals["stopped_out"] = exec_result.get("stopped_out", [])
     return signals
 
 

@@ -5,10 +5,12 @@
 """
 
 import sqlite3
+import traceback
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
-from config.loader import get as cfg
+from config.constants import _require_cfg
+from utils.logger import get_logger, set_trace_id
 
 
 def run_monitor(output_dir: str = "docs/reports") -> str:
@@ -18,10 +20,13 @@ def run_monitor(output_dir: str = "docs/reports") -> str:
     -------
     str : 报告文件路径
     """
+    import uuid; tid = uuid.uuid4().hex[:12]; set_trace_id(tid)
+    logger = get_logger("evaluation.phase5")
     import os
     os.makedirs(output_dir, exist_ok=True)
 
     today = datetime.today().strftime("%Y-%m-%d")
+    logger.info(f"Phase 5 [{tid}] start — monitoring report")
     report_path = os.path.join(output_dir, f"monitor_{today}.md")
 
     conn = sqlite3.connect("data/market.db")
@@ -64,7 +69,7 @@ def run_monitor(output_dir: str = "docs/reports") -> str:
     with open(report_path, 'w') as f:
         f.write(report)
 
-    print(f"Phase 5 report written: {report_path}")
+    logger.info(f"Phase 5 report written: {report_path}")
     return report_path
 
 
@@ -106,7 +111,7 @@ def _check_ic_decay(active_factors: list) -> str:
         return "无活跃因子.\n"
 
     from factor.stats_cache import compute_factor_stats
-    lookback = cfg("factor.evaluation.lookback", 120)
+    lookback = _require_cfg("factor.evaluation.lookback")
 
     try:
         stats = compute_factor_stats(
@@ -152,6 +157,8 @@ def _check_turnover(conn) -> str:
             ORDER BY date DESC
         """).fetchall()
     except Exception:
+        logger = get_logger("evaluation.phase5")
+        logger.error("Phase 5 _check_turnover traceback:\n" + __import__('traceback').format_exc())
         return "sim_trades 表不可用, 跳过换手率检查.\n"
 
     if not rows:
@@ -184,7 +191,7 @@ def _estimate_capacity(conn) -> str:
     avg_daily_amount = float(np.median([r[1] for r in rows if r[1]]))
     # 安全参与比例: 单只股票不超日均成交额的 1%
     safe_position_pct = 0.01
-    positions = cfg("alpha.sleeve.positions_per_factor", 20)
+    positions = _require_cfg("alpha.sleeve.positions_per_factor")
     n_factors = len([r for r in conn.execute(
         "SELECT 1 FROM factor_registry WHERE status IN ('active','monitoring')").fetchall()])
 
@@ -197,3 +204,103 @@ def _estimate_capacity(conn) -> str:
         f"- 估计策略容量: ¥{total_capacity:,.0f} "
         f"({positions} 票 × {n_factors} 因子)\n"
     )
+
+
+def sync_factor_status() -> dict:
+    """Phase 5b: 从 evaluation_runs 读评估结果, 同步到 factor_registry.status。
+
+    不碰已有 status='active' 的因子 (已认证的线上因子)。
+    只处理 backtesting 状态 (registered/candidate/retired/rejected) 的因子。
+
+    Returns dict: {rejected: [names], active: [names], unchanged: int}
+    """
+    import sqlite3
+    from evaluation.run_store import load_latest
+    from utils.logger import get_logger
+    logger = get_logger("evaluation.phase5")
+
+    p2 = load_latest("phase2")
+    p3 = load_latest("phase3")
+    p4 = load_latest("phase4")
+
+    if not p2:
+        logger.warning("sync_factor_status: no Phase 2 data — skipping")
+        return {"rejected": [], "active": [], "unchanged": 0}
+
+    # Phase 2: failed list
+    p2_failed = set(p2.get("failed", {}).keys()) if isinstance(p2.get("failed"), dict) else set(p2.get("failed", []))
+    p2_passed = set(p2.get("passed", []))
+
+    # Phase 3: kept list (passed CPCV+PBO)
+    p3_kept = set(p3.get("kept", [])) if p3 else set()
+
+    # Phase 4: final certified
+    p4_final = set(p4.get("final_factors", [])) if p4 else set()
+
+    # Factors that made it through all phases
+    certified = p2_passed & p3_kept & p4_final if p3 and p4 else set()
+
+    # Factors that failed at some phase
+    rejected_phase2 = p2_failed
+    rejected_phase3 = (p2_passed - p3_kept) if p3 else set()
+    rejected_phase4 = ((p2_passed & p3_kept) - p4_final) if p4 else set()
+
+    all_rejected = rejected_phase2 | rejected_phase3 | rejected_phase4
+
+    conn = sqlite3.connect("data/market.db")
+    # Get current active factors (don't touch these)
+    current_active = set(r[0] for r in conn.execute(
+        "SELECT name FROM factor_registry WHERE status='active'"
+    ).fetchall())
+
+    # Only act on non-active factors
+    rejected_to_update = all_rejected - current_active
+    active_to_update = certified - current_active
+
+    # Build reasons
+    reasons = {}
+    for name in rejected_to_update:
+        if name in rejected_phase2:
+            reasons[name] = "Phase 2: IC/ICIR/t/half-life thresholds not met"
+        elif name in rejected_phase3:
+            reasons[name] = "Phase 3: CPCV OOS_ICIR<0 or PBO>threshold"
+        elif name in rejected_phase4:
+            reasons[name] = "Phase 4: net-of-costs Sharpe too low"
+        else:
+            reasons[name] = "failed evaluation"
+    for name in active_to_update:
+        reasons[name] = "passed Phase 2+3+4 (full evaluation)"
+
+    # Update rejected
+    for name in rejected_to_update:
+        reason = reasons[name]
+        conn.execute(
+            "UPDATE factor_registry SET status='rejected', status_reason=?, "
+            "updated_at=datetime('now','localtime') WHERE name=?",
+            (reason, name)
+        )
+
+    # Update active
+    for name in active_to_update:
+        reason = reasons[name]
+        conn.execute(
+            "UPDATE factor_registry SET status='active', status_reason=?, "
+            "updated_at=datetime('now','localtime') WHERE name=?",
+            (reason, name)
+        )
+
+    conn.commit()
+    conn.close()
+
+    logger.info(f"sync_factor_status: {len(rejected_to_update)} rejected, "
+                f"{len(active_to_update)} active, {len(current_active)} unchanged")
+    for name in sorted(rejected_to_update):
+        logger.info(f"  rejected: {name} — {reasons[name]}")
+    for name in sorted(active_to_update):
+        logger.info(f"  active:   {name} — {reasons[name]}")
+
+    return {
+        "rejected": sorted(rejected_to_update),
+        "active": sorted(active_to_update),
+        "unchanged": len(current_active),
+    }

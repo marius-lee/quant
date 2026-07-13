@@ -58,7 +58,8 @@ def _compute_atr(symbol: str, period: int = 20) -> float:
         atr = float(np.mean(tr_values)) if tr_values else 0.0
         _CACHE[key] = (atr, now)
         return atr
-    except Exception:
+    except Exception as e:
+        _log.error(f"_compute_atr({symbol}): {e}")
         return 0.0
 
 
@@ -66,12 +67,12 @@ class RiskManager:
     """无状态 — 每次 check() 传入持仓快照."""
 
     def __init__(self):
-        self.atr_mult_sl = _cfg("risk.atr_mult_stop_loss", 2.0)
-        self.atr_mult_tp1 = _cfg("risk.atr_mult_take_profit_1", 2.0)
-        self.atr_mult_tp2 = _cfg("risk.atr_mult_take_profit_2", 3.0)
-        self.atr_mult_trail = _cfg("risk.atr_mult_trailing", 1.5)
-        self.max_hold_days = _cfg("risk.max_hold_days", 20)
-        self.atr_period = _cfg("risk.atr_period", 20)
+        self.atr_mult_sl = _cfg("risk.atr_mult_stop_loss")
+        self.atr_mult_tp1 = _cfg("risk.atr_mult_take_profit_1")
+        self.atr_mult_tp2 = _cfg("risk.atr_mult_take_profit_2")
+        self.atr_mult_trail = _cfg("risk.atr_mult_trailing")
+        self.max_hold_days = _cfg("risk.max_hold_days")
+        self.atr_period = _cfg("risk.atr_period")
 
     def check(self, positions: list, quotes: dict, today: str) -> list:
         """返回触发信号列表."""
@@ -145,6 +146,7 @@ class RiskManager:
                         results.append({"symbol": sym, "action": "sell", "shares": shares,
                                         "price": cur, "reason": "time_stop({}d)".format(days)})
                 except Exception:
-                    pass
+                    import traceback as _tb_ts
+                    _log.error("time_stop day parsing failed for %s (buy_time=%s): %s", sym, buy_time, _tb_ts.format_exc())
 
         return results

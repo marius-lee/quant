@@ -72,7 +72,8 @@ def _capital(strategy: str) -> float:
     repo = TradeRepo()
     cap = repo.get_initial_capital(strategy)
     if cap <= 0:
-        cap = 5000.0
+        from config.constants import _require_cfg as _rcf
+        cap = float(_rcf("live.default_capital"))
         repo.set_initial_capital(strategy, cap)
     return cap
 
@@ -137,6 +138,7 @@ def api_factors():
             stats["n_evaluated"] = er[0] if er else 0
             c.close()
         except Exception:
+            logger.warning("api_factors: factor_registry query failed", exc_info=True)
             stats["n_total"] = 0
             stats["n_registered"] = 0
             stats["n_active"] = 0
@@ -188,7 +190,7 @@ def api_positions():
                             close_map[sym] = cr[0]
                 mc.close()
         except Exception:
-            pass
+            logger.warning("api_positions: close price query failed", exc_info=True)
         for p in raw:
             px = p.get("price", 0)
             close_px = close_map.get(p["symbol"], px)
@@ -413,6 +415,7 @@ def api_performance():
     use_quotes = request.args.get("quotes", "").lower() == "true"
     position_market_value = position_cost  # 默认用成本
     valuation_method = "book_cost"
+    shares_map = {}
     if use_quotes:
         try:
             pos_symbols = [r[0] for r in tc.execute(
@@ -437,7 +440,7 @@ def api_performance():
                     position_market_value = round(mv, 2)
                     valuation_method = "market"
         except Exception:
-            pass  # 报价不可用时回退到账面成本
+            logger.warning("api_performance: market valuation failed", exc_info=True)
 
     # ── fallback to latest close (盘后/休市) ──
     if valuation_method == "book_cost" and position_cost > 0:
@@ -455,7 +458,7 @@ def api_performance():
                 position_market_value = round(close_mv, 2)
                 valuation_method = "latest_close"
         except Exception:
-            pass
+            logger.warning("api_performance: latest close valuation failed", exc_info=True)
 
     total_asset = round(capital + position_market_value, 2)
     total_pnl = round(total_asset - base, 2)
@@ -547,7 +550,6 @@ def api_health():
     status["alerts"] = check_alerts(state, _mm.snapshot())
     return _api_response(data=status)
 
-@app.route("/api/metrics")
 @app.route("/api/scheduler")
 def api_scheduler():
     """调度器状态 — 返回所有任务状态列表."""
@@ -555,6 +557,7 @@ def api_scheduler():
     return _api_response(data={"tasks": all_tasks()})
 
 
+@app.route("/api/metrics")
 def api_metrics():
     """模板9 T1: 指标快照 (Prometheus 本地等价)."""
     from monitor.metrics import metrics as _mm

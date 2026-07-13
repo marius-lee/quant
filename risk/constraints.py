@@ -10,7 +10,7 @@ import pandas as pd
 from typing import Optional
 from dataclasses import dataclass
 
-from config.loader import get as cfg
+from config.constants import _require_cfg
 
 
 @dataclass
@@ -42,12 +42,12 @@ class RiskLimits:
         类属性默认值仅作为配置文件缺失 key 时的最后 fallback。
         """
         return cls(
-            max_single_position=cfg("risk.max_single_position", cls.max_single_position),
-            max_positions=cfg("risk.max_positions", cls.max_positions),
-            min_daily_amount=cfg("risk.min_daily_amount", cls.min_daily_amount),
-            max_sector_exposure=cfg("risk.max_sector_exposure", cls.max_sector_exposure),
-            exclude_star_st=cfg("risk.exclude_star_st", cls.exclude_star_st),
-            min_price=cfg("risk.min_price", cls.min_price),
+            max_single_position=_require_cfg("risk.max_single_position"),
+            max_positions=_require_cfg("risk.max_positions"),
+            min_daily_amount=_require_cfg("risk.min_daily_amount"),
+            max_sector_exposure=_require_cfg("risk.max_sector_exposure"),
+            exclude_star_st=_require_cfg("risk.exclude_star_st"),
+            min_price=_require_cfg("risk.min_price"),
         )
 
 

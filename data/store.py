@@ -128,6 +128,16 @@ class DataStore:
             ("div_yield", "REAL"), ("turnover_rate", "REAL"),
             ("pe_ttm", "REAL"), ("cfps", "REAL"),
         ]
+        # ── Gap 4: survivorship bias — delisted stock tracking ──
+        try:
+            conn.execute("ALTER TABLE stocks ADD COLUMN delist_date TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE stocks ADD COLUMN list_status TEXT DEFAULT 'L'")
+        except sqlite3.OperationalError:
+            pass
+
         for col, typ in fund_cols:
             try:
                 conn.execute(f"ALTER TABLE stocks ADD COLUMN {col} {typ}")
@@ -163,13 +173,13 @@ class DataStore:
             try:
                 self._conn.close()
             except Exception:
-                pass
+                import logging; logging.getLogger("quant.data.store").warning("close conn failed", exc_info=True)
             self._conn = None
         if hasattr(self._local, 'conn') and self._local.conn is not None:
             try:
                 self._local.conn.close()
             except Exception:
-                pass
+                import logging; logging.getLogger("quant.data.store").warning("close local conn failed", exc_info=True)
             self._local.conn = None
 
     # ============================================================
@@ -259,6 +269,90 @@ class DataStore:
             logger.warning(f"stock list akshare also failed: {e}")
             return 0
 
+
+    # ============================================================
+    # Gap 4: Survivorship Bias — delisted stock tracking + PIT universe
+    # ============================================================
+
+    def sync_delisted_stocks(self) -> int:
+        """Pull delisted stocks from akshare and add to stocks table.
+
+        Sets list_status='D' and delist_date for historical stocks that
+        have been delisted. Their daily data (while listed) is pulled
+        by update_daily normally.
+        """
+        conn = self._connect()
+        existing = set(
+            r[0] for r in conn.execute(
+                "SELECT symbol FROM stocks WHERE list_status='D'"
+            ).fetchall()
+        )
+        try:
+            import akshare as ak
+            try:
+                df = ak.stock_info_a_delist()
+            except AttributeError:
+                import pandas as _pd2
+                df_sh = ak.stock_info_sh_delist()
+                df_sz = ak.stock_info_sz_delist()
+                df = _pd2.concat([df_sh, df_sz], ignore_index=True)
+            if df is None or df.empty:
+                return 0
+            new_count = 0
+            for _, row in df.iterrows():
+                sym = str(row.get("symbol", row.get("code", ""))).zfill(6)
+                name = row.get("name", "")
+                delist_d = str(row.get("delist_date", row.get("delisting_date", "")))[:10]
+                if len(sym) != 6 or sym in existing:
+                    continue
+                if sym.startswith(("6", "9", "68")):
+                    mkt = "SH"
+                elif sym.startswith(("4", "8", "92")):
+                    mkt = "BJ"
+                else:
+                    mkt = "SZ"
+                conn.execute(
+                    "INSERT OR REPLACE INTO stocks(symbol, name, market, "
+                    "list_status, delist_date) VALUES(?,?,?,?,?)",
+                    (sym, name, mkt, "D", delist_d))
+                new_count += 1
+            conn.commit()
+            total = conn.execute(
+                "SELECT COUNT(*) FROM stocks WHERE list_status='D'"
+            ).fetchone()[0]
+            logger.info(
+                f"delisted sync: {new_count} new ({total} total delisted)")
+            return new_count
+        except ImportError:
+            logger.warning("akshare not available — delisted sync skipped")
+            return 0
+        except Exception as e:
+            logger.warning(f"delisted sync failed: {e}")
+            return 0
+
+    def get_universe(self, date_str: str = None):
+        """Get point-in-time stock universe for a given date.
+
+        Only includes stocks that were:
+          - Listed on or before date_str
+          - Not yet delisted (delist_date is NULL or after date_str)
+          - Non-Beijing Exchange
+
+        This eliminates survivorship bias in backtesting.
+        """
+        conn = self._connect()
+        query = (
+            "SELECT symbol FROM stocks "
+            "WHERE list_date <= ? "
+            "  AND (delist_date IS NULL OR delist_date > ?) "
+            "  AND market != 'BJ'"
+        )
+        if date_str is None:
+            from datetime import date
+            date_str = date.today().strftime("%Y-%m-%d")
+        rows = conn.execute(query, (date_str, date_str)).fetchall()
+        return [r[0] for r in rows]
+
     def sync_industry(self):
         """拉取行业分类 — baostock 证监会行业分类 (需 Python ≤3.12; akshare 回退)。
 
@@ -339,7 +433,7 @@ class DataStore:
             try:
                 bs.logout()
             except Exception:
-                pass
+                import logging; logging.getLogger("quant.data.store").warning("industry sync failed", exc_info=True)
             logger.warning(f"baostock industry sync failed: {e}, trying akshare...")
             return self._sync_industry_akshare(conn)
 
@@ -450,7 +544,7 @@ class DataStore:
     def _fetch_tencent_daily(self, symbols: list, start_date: str) -> list:
         """腾讯财经逐只日线: vol=股→/100→手, amt用close×vol估算(元→/1000→千元)"""
         import urllib.request, json as _json
-        max_days = cfg("data.fetch.max_lookback_days", 2000)
+        max_days = _require_cfg("data.fetch.max_lookback_days")
         rows = []
         for sym in symbols:
             try:
@@ -508,7 +602,7 @@ class DataStore:
                         float(row.get("成交量", 0) or 0),          # 手 ✅
                         float(row.get("成交额", 0) or 0) / 1000,   # 元→千元
                         float(row.get("换手率", 0) or 0)))
-                import time; time.sleep(cfg("data.rate_limit.akshare_per_stock_sec", 1.5))
+                import time; time.sleep(_require_cfg("data.rate_limit.akshare_per_stock_sec"))
             except Exception:
                 continue
         if rows:
@@ -603,7 +697,7 @@ class DataStore:
         api = TdxHq_API()
         # socket pre-probe: avoid C extension connect() blocking indefinitely
         import socket as _socket
-        _connect_timeout = cfg("data.pytdx.connect_timeout", 5)
+        _connect_timeout = _require_cfg("data.pytdx.connect_timeout")
         try:
             _sock = _socket.create_connection(("180.153.18.170", 7709), timeout=_connect_timeout)
             _sock.close()
@@ -616,8 +710,8 @@ class DataStore:
             try:
                 api.disconnect()
             except Exception:
-                pass
-            return []
+                import logging; logging.getLogger("quant.data.store").warning("get_daily_price failed", exc_info=True)
+                return []
 
         rows = []
         try:
@@ -751,7 +845,7 @@ class DataStore:
                             (round(t, 4), sym, d)
                         )
                         filled += 1
-                import time; time.sleep(cfg("data.rate_limit.akshare_per_stock_sec", 1.5))
+                import time; time.sleep(_require_cfg("data.rate_limit.akshare_per_stock_sec"))
             except Exception:
                 continue
         conn.commit()
@@ -800,7 +894,7 @@ class DataStore:
                     if idx < 3:
                         logger.info(f"stock {sym} industry query failed: {e}")
                     continue
-                time.sleep(cfg("data.rate_limit.akshare_industry_sec", 0.8))  # akshare rate limit
+                time.sleep(_require_cfg("data.rate_limit.akshare_industry_sec"))  # akshare rate limit
             conn.commit()
             classified = conn.execute(
                 "SELECT COUNT(*) FROM stocks WHERE industry IS NOT NULL"
@@ -822,7 +916,7 @@ class DataStore:
             cutoff = to_str(datetime.strptime(max_db, '%Y-%m-%d') - timedelta(days=3))
         else:
             cutoff = to_str(date.today() - timedelta(days=2))
-        stale_days = cfg("data.stale_days", 250)  # 数据过期阈值
+        stale_days = _require_cfg("data.stale_days")  # 数据过期阈值
 
         # 单次查询: PK(symbol,date) 覆盖索引, GROUP BY symbol 只取首尾
         rows = conn.execute("""
@@ -862,7 +956,7 @@ class DataStore:
         返回: 新写入的行数
         """
         if start is None:
-            start = cfg("data.start_date", DEFAULT_START_DATE)
+            start = _require_cfg("data.start_date")
 
         conn = self._connect()
 
@@ -889,10 +983,10 @@ class DataStore:
                 ts.set_token(self.token)
                 pro = ts.pro_api()
             except Exception:
-                pass
+                import logging; logging.getLogger("quant.data.store").warning("stock list sync failed", exc_info=True)
 
         total_new = 0
-        batch_size = cfg("data.batch_size", 50)  # 批量大小
+        batch_size = _require_cfg("data.batch_size")  # 批量大小
         sources = {}     # source → count
 
         for i in range(0, len(symbols), batch_size):
@@ -963,7 +1057,7 @@ class DataStore:
             logger.info(f"daily [{source}] {done}/{len(symbols)} ({pct:.0f}%) {total_new}新行{sample_str}")
 
             if source == "tushare" and pro is not None:
-                time.sleep(cfg("data.rate_limit.tushare_batch_sec", 0.4))
+                time.sleep(_require_cfg("data.rate_limit.tushare_batch_sec"))
 
         conn.commit()
 
@@ -1113,7 +1207,7 @@ class DataStore:
         优先从本地 market.db benchmark_daily 表读取。
         """
         if start is None:
-            start = cfg("backtest.benchmark_start_date", "2020-01-01")
+            start = _require_cfg("data.benchmark_start_date")
         # 本地 market.db benchmark_daily 表
         import sqlite3, os
         bm_db = os.path.join(os.path.dirname(__file__), "market.db")
@@ -1250,7 +1344,7 @@ class DataStore:
         null_roe = df["roe"].isna() | (df["roe"] <= 0)
         if null_roe.any():
             derived = df["pb"] / df["pe"].replace(0, None)
-            derived = derived.where((derived > 0) & (derived < cfg("data.derived_ratio_max", 100)))
+            derived = derived.where((derived > 0) & (derived < _require_cfg("data.derived_ratio_max")))
             df.loc[null_roe, "roe"] = derived.loc[null_roe]
 
         # high52w: compute from daily table (MAX close over 252 trading days)

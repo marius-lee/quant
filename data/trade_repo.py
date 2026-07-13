@@ -49,13 +49,23 @@ class TradeRepo:
             );
         """)
         # ── 迁移: 兼容旧 schema ──
+        # 先查已有列, 只加缺失的 (避免 harmless 但 noisy 的 WARNING)
+        existing_cols = {r[1] for r in c.execute("PRAGMA table_info(strategy_config)").fetchall()}
         for col, typ in [('cash_balance', 'REAL'), ('initialized', 'INTEGER DEFAULT 0'), ('updated_at', 'TEXT')]:
-            try:
+            if col not in existing_cols:
                 c.execute(f"ALTER TABLE strategy_config ADD COLUMN {col} {typ}")
-            except Exception:
-                pass
         c.execute("UPDATE strategy_config SET cash_balance = initial_capital WHERE cash_balance IS NULL")
         c.execute("UPDATE strategy_config SET initialized = 1 WHERE initialized IS NULL")
+        # ── 每日信号持久化 ──
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS daily_signals (
+                date        TEXT PRIMARY KEY,
+                strategy    TEXT DEFAULT 'quant',
+                signals_json TEXT NOT NULL,
+                capital     REAL,
+                generated_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
         # ── 索引: 消除全表扫描 ──
         c.executescript("""
             CREATE INDEX IF NOT EXISTS idx_st_strategy_id
@@ -220,6 +230,32 @@ class TradeRepo:
         row = c.execute("SELECT MIN(date), MAX(date) FROM sim_trades WHERE strategy=?", (strategy,)).fetchone()
         c.close()
         return (row[0], row[1]) if row else (None, None)
+
+    # ── daily_signals 持久化 ──
+    def save_signals(self, date_str: str, targets: list, capital: float, strategy: str = "quant"):
+        """持久化每日信号 (JSON), execute 阶段从此表读取."""
+        import json as _json
+        c = self._conn()
+        c.execute(
+            "INSERT OR REPLACE INTO daily_signals (date, strategy, signals_json, capital) VALUES (?, ?, ?, ?)",
+            (date_str, strategy, _json.dumps(targets), capital)
+        )
+        c.commit()
+        c.close()
+        logger.info(f"[signals] saved {len(targets)} targets for {date_str} to daily_signals")
+
+    def get_latest_signals(self, strategy: str = "quant") -> dict | None:
+        """读取最近一天的信号 (用于手动补跑 execute)."""
+        import json as _json
+        c = self._conn()
+        row = c.execute(
+            "SELECT date, signals_json, capital FROM daily_signals WHERE strategy=? ORDER BY date DESC LIMIT 1",
+            (strategy,)
+        ).fetchone()
+        c.close()
+        if row:
+            return {"date": row[0], "targets": _json.loads(row[1]), "capital": row[2]}
+        return None
 
     def has_trades_today(self, strategy: str, date_str: str) -> bool:
         c = self._conn()

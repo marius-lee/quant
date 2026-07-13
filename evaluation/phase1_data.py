@@ -1,16 +1,17 @@
 """Stage 1: 数据准备 — 股票池 + 数据范围验证。"""
 
 import sqlite3
-import json
 from datetime import datetime
-from config.loader import get as cfg
-from utils.logger import get_logger
+from config.constants import _require_cfg
+import traceback
+from utils.logger import get_logger, set_trace_id
 
 
 def prepare_data(output_json: str = "/tmp/_eval_phase1.json") -> dict:
+    import uuid; tid = uuid.uuid4().hex[:12]; set_trace_id(tid)
     logger = get_logger("evaluation.phase1")
     t0 = __import__("time").monotonic()
-    logger.info("Phase 1 start — data preparation")
+    logger.info(f"Phase 1 [{tid}] start — data preparation")
     """验证股票池和数据范围, 写入 JSON, 返回结果 dict。
 
     Returns
@@ -28,8 +29,8 @@ def prepare_data(output_json: str = "/tmp/_eval_phase1.json") -> dict:
     logger.info(f"Phase 1 {len(symbols)} stocks in universe (全A, 上市≥60天)")
 
     # 有效评估区间
-    lookback = cfg("factor.evaluation.lookback", 120)
-    backtest_start = cfg("factor.evaluation.backtest_start_date", "2010-01-01")
+    lookback = _require_cfg("factor.evaluation.lookback")
+    backtest_start = _require_cfg("factor.evaluation.backtest_start_date")
     effective_start = max(
         backtest_start,
         (datetime.today() - __import__('datetime').timedelta(days=int(lookback * 1.5))).strftime("%Y-%m-%d")
@@ -43,8 +44,17 @@ def prepare_data(output_json: str = "/tmp/_eval_phase1.json") -> dict:
 
     conn.close()
 
-    result = {"symbols": symbols, "effective_start": effective_start, "db_max": db_max, "db_min": db_min}
-    with open(output_json, 'w') as f:
-        json.dump(result, f, default=str)
+    db_status = "ok" if db_min and db_max and db_max >= effective_start else "degraded"
+    result = {"db_status": db_status, "n_stocks": len(symbols),
+              "effective_start": effective_start, "db_max": db_max, "db_min": db_min}
+
+    # 写入 evaluation_runs (ADR 028: DB 替代临时文件)
+    try:
+        from evaluation.run_store import save_phase
+        save_phase("phase1", result)
+        logger.info("Phase 1 saved to evaluation_runs")
+    except Exception as _e:
+        logger.error("Phase 1 save_phase traceback: %s", _e, exc_info=True)
+
     logger.info(f"Phase 1 complete ({__import__('time').monotonic()-t0:.1f}s)")
     return result

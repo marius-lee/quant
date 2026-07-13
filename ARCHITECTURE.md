@@ -419,7 +419,7 @@ def generate_report(date: str, repo: TradeRepo) -> dict:
 ## 数据流
 
 ```
-scheduler.py (每个交易日的 15:30 触发)
+quant/scheduler/ (日频 orchestrator + 周频 weekly)
   │
   └─ pipeline.py.run(date)
       │
@@ -475,7 +475,7 @@ strategy_config (strategy PK, initial_capital)   -- 新增
 
 ## 调度系统
 
-### scheduler.py（新建）
+### quant/scheduler/（调度器包）
 
 管理 pipeline 的执行时机。非交易时间休眠，交易日 15:30 自动运行。
 
@@ -540,7 +540,7 @@ def run(date: str):
 | Optimizer | `optimizer/portfolio.py`, `rebalance.py` |
 | Execution | `execution/engine.py`, `cost.py` |
 | Monitor | `monitor/attribution.py`, `report.py` |
-| 编排 | `pipeline.py`, `scheduler.py` |
+| 编排 | `pipeline.py`, `quant/scheduler/` |
 
 ## 配置结构 (config.yaml)
 

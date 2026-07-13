@@ -4,6 +4,7 @@ from datetime import time
 from monitor.metrics import metrics as _m
 from utils.logger import get_logger
 from quant.scheduler._base import _timed_loop
+from factor.registry import _db_connect
 
 _log = get_logger("quant.scheduler.attribution")
 
@@ -77,12 +78,12 @@ def _run(today: str):
     # ── IC 衰减快照 ──
     try:
         from web.state_broker import broker
-        import sqlite3, json
-        conn = sqlite3.connect("data/market.db")
+        import json
+        from config.constants import _market_db_path, _require_cfg
+        conn = _db_connect()
         rows = conn.execute(
             "SELECT name, ic_mean FROM factor_registry WHERE status IN ('active','monitoring') AND ic_mean IS NOT NULL"
         ).fetchall()
-        conn.close()
         if rows:
             today_weights = {r[0]: round(r[1], 6) for r in rows}
             prev_raw = (broker.get().get("metrics") or {}).get("factor_ic_snapshot")
@@ -95,42 +96,37 @@ def _run(today: str):
             if degraded:
                 _log.warning(f"[{today}] IC degradation detected: {'; '.join(degraded)}")
                 _m.inc("scheduler.attribution.ic_degraded", len(degraded))
-                # Auto-degrade: IC 衰减 >30% → monitoring
+                # Auto-degrade: IC 衰减 >30% → monitoring (same conn, no race)
                 for entry in degraded:
                     fname = entry.split(":")[0]
                     try:
-                        import sqlite3
-                        dc = sqlite3.connect("data/market.db")
-                        dc.execute(
+                        conn.execute(
                             "UPDATE factor_registry SET status='monitoring', status_reason=? WHERE name=? AND status='active'",
                             (f"IC degraded: {entry}", fname)
                         )
-                        dc.commit()
-                        dc.close()
+                        _log.warning(f"[{today}] {fname}: active → monitoring (IC degraded)")
                     except Exception:
-                        pass
-            # monitoring → retired: 已经告警中，持续衰减 → 退役回回测池
-            try:
-                import sqlite3
-                dc2 = sqlite3.connect("data/market.db")
-                monitoring_rows = dc2.execute(
-                    "SELECT name FROM factor_registry WHERE status='monitoring'"
-                ).fetchall()
-                for mr in monitoring_rows:
-                    mname = mr[0]
-                    # 检查是否仍然在今日衰减列表中
-                    still_decaying = any(e.startswith(mname + ':') for e in degraded)
-                    if still_decaying:
-                        dc2.execute(
-                            "UPDATE factor_registry SET status='retired', status_reason=? WHERE name=? AND status='monitoring'",
-                            (f"持续衰减退役: {next(e for e in degraded if e.startswith(mname + ':'))}", mname)
-                        )
-                        _log.warning(f'[{today}] {mname}: monitoring → retired (持续IC衰减)')
-                        _m.inc("scheduler.attribution.retired", 1)
-                dc2.commit()
-                dc2.close()
-            except Exception:
-                pass
+                        _log.warning(f"[{today}] IC degrade update failed for {fname}", exc_info=True)
+                # monitoring → retired: 已经告警中，持续衰减 → 退役回回测池
+                try:
+                    monitoring_rows = conn.execute(
+                        "SELECT name FROM factor_registry WHERE status='monitoring'"
+                    ).fetchall()
+                    for mr in monitoring_rows:
+                        mname = mr[0]
+                        still_decaying = any(e.startswith(mname + ':') for e in degraded)
+                        if still_decaying:
+                            conn.execute(
+                                "UPDATE factor_registry SET status='retired', status_reason=? WHERE name=? AND status='monitoring'",
+                                (f"持续衰减退役: {next(e for e in degraded if e.startswith(mname + ':'))}", mname)
+                            )
+                            _log.warning(f'[{today}] {mname}: monitoring → retired (持续IC衰减)')
+                            _m.inc("scheduler.attribution.retired", 1)
+                except Exception:
+                    _log.warning(f"[{today}] retired transition check failed", exc_info=True)
+                conn.commit()
+        conn.close()
+        if rows:
             broker.update({"metrics": {"factor_ic_snapshot": json.dumps(today_weights)}})
     except Exception as e:
         _log.warning(f"[{today}] IC snapshot failed (non-fatal): {e}")
@@ -138,6 +134,16 @@ def _run(today: str):
     elapsed = _time.time() - t0
     _log.info(f"[SCHEDULER] {today} | TASK=attribution | STATUS=OK | elapsed={elapsed:.1f}s")
     _m.inc("scheduler.attribution.ok")
+
+    # ── Benchmark tracking (Gap 8) ──
+    try:
+        engine2 = ExecutionEngine()
+        total_wealth = engine2.get_capital(strategy="quant")
+        from benchmark.tracker import BenchmarkTracker
+        _bt = BenchmarkTracker()
+        _bt.record(today, total_wealth)
+    except Exception as e:
+        _log.warning(f"[{today}] benchmark tracking failed (non-fatal): {e}")
 
 
 def _loop():

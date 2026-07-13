@@ -55,7 +55,7 @@ quant/
 │   ├── static/            #   前端资源
 │   └── templates/         #   HTML 模板
 ├── pipeline.py            # 全流程编排
-├── scheduler.py           # 盘后调度
+├── quant/scheduler/       # 调度器 (orchestrator + weekly)
 ├── requirements.txt
 └── README.md
 ```
@@ -63,7 +63,7 @@ quant/
 ## 数据流
 
 ```
-交易日 15:30 → scheduler.py → pipeline.py.run()
+交易日 08:30-15:30 → quant/scheduler/ → pipeline.py
   Step 1: DataStore.update_daily()        # 增量同步日线
   Step 2: Factor.compute() → rank_ic()    # 因子计算 + IC评估
   Step 3: AlphaModel.predict()           # 因子合成 + 截面排名

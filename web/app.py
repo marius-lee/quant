@@ -6,6 +6,8 @@
 
 import json, os, sqlite3
 from config.constants import _require_cfg
+
+from utils.excepthook import setup; setup()  # crash → app.log
 from config.loader import get as cfg, validate; validate()  # 启动时校验 config.yaml 类型
 from data.store import market_conn  # P69: 统一连接层
 from datetime import date, datetime

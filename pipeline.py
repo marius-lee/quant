@@ -118,15 +118,9 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
 
         # ── Step 2.5b: Rank by turnover, take top N ──
         candidates = list(candidate_syms & set(symbols))
-        conn2 = store._connect()
-        turnover_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_require_cfg("backtest.universe_turnover_days"))).strftime("%Y-%m-%d")
-        placeholders = ",".join("?" * len(candidates))
-        rows = conn2.execute(
-            f"SELECT symbol, AVG(amount) as avg_amt FROM daily "
-            f"WHERE date >= ? AND symbol IN ({placeholders}) GROUP BY symbol ORDER BY avg_amt DESC LIMIT ?",
-            [turnover_start] + candidates + [universe_size]
-        ).fetchall()
-        keep_syms = [r[0] for r in rows] if rows else candidates[:universe_size]
+        keep_syms = store.rank_by_turnover(candidates, date_str,
+                            lookback_days=_require_cfg("backtest.universe_turnover_days"),
+                            top_n=universe_size)
         symbols = [s for s in symbols if s in keep_syms]
         # data is wide-format MultiIndex columns (field, symbol) — filter 2nd level
         data = data.loc[:, data.columns.get_level_values(1).isin(keep_syms)]

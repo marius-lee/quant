@@ -26,50 +26,21 @@ _log = get_logger("backtest.loop")
 _root = os.path.dirname(os.path.dirname(__file__))
 if _root not in sys.path:
     sys.path.insert(0, _root)
+def _get_prices(symbols, date_str, store, field="open"):
+    """Get prices from DataStore — reuses connection + LRU cache."""
+    syms = list(symbols)
+    if not syms:
+        return {}
+    df = store.get_daily(syms, start=date_str, end=date_str, columns=[field])
+    if df.empty or date_str not in df.index:
+        return {}
+    series = df.loc[date_str, field].dropna()
+    return {s: float(v) for s, v in series.items() if v and v > 0}
 
 BACKTEST_DB = os.path.join(_root, "data", "backtest_trades.db")
 
 
-def _get_open_prices(symbols, date_str, store):
-    """Get opening prices — chunked to avoid SQLite variable limit (max 999)."""
-    import sqlite3
-    result = {}
-    syms = list(symbols)
-    chunk_size = 500
-    conn = sqlite3.connect(os.path.join(_root, "data", "market.db"))
-    for i in range(0, len(syms), chunk_size):
-        chunk = syms[i:i + chunk_size]
-        placeholders = ",".join("?" * len(chunk))
-        rows = conn.execute(
-            f"SELECT symbol, open FROM daily WHERE date=? AND symbol IN ({placeholders})",
-            [date_str] + chunk
-        ).fetchall()
-        for r in rows:
-            if r[1] and r[1] > 0:
-                result[r[0]] = r[1]
-    conn.close()
-    return result
 
-
-def _get_close_prices(symbols, date_str, store):
-    """Get closing prices — chunked to avoid SQLite variable limit (max 999)."""
-    import sqlite3
-    result = {}
-    syms = list(symbols)
-    chunk_size = 500
-    conn = sqlite3.connect(os.path.join(_root, "data", "market.db"))
-    for i in range(0, len(syms), chunk_size):
-        chunk = syms[i:i + chunk_size]
-        placeholders = ",".join("?" * len(chunk))
-        rows = conn.execute(
-            f"SELECT symbol, close FROM daily WHERE date=? AND symbol IN ({placeholders})",
-            [date_str] + chunk
-        ).fetchall()
-        for r in rows:
-            if r[1] and r[1] > 0:
-                result[r[0]] = r[1]
-    conn.close()
-    return result
 
 
 def _compute_backtest_metrics(equity_curve):
@@ -232,7 +203,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
         ar = signals.get("_alpha_raw", pd.Series(dtype=float))
         # Get next-day returns for PnL tracking
         all_syms_track = list(set([tp["symbol"] for tp in targets]))
-        next_ret = _get_close_prices(all_syms_track, next_day, store) if all_syms_track and targets else {}
+        next_ret = _get_prices(all_syms_track, next_day, store, field="close") if all_syms_track and targets else {}
         if isinstance(next_ret, dict) and next_ret:
             ret_series = pd.Series(next_ret)
         else:
@@ -254,7 +225,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
         for p in current:
             all_syms.add(p["symbol"])
 
-        open_prices = _get_open_prices(list(all_syms), next_day, store)
+        open_prices = _get_prices(list(all_syms), next_day, store, field="open")
 
         if not open_prices:
             _log.warning(f"backtest {next_day}: no open prices available, skipping")

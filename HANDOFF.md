@@ -11,6 +11,62 @@
 **变更**: 5 个 Phase 文件, 每 Phase 入口函数生成 trace_id 并注入日志。
 
 **原因**: 正式评估管线各 Phase 是独立 Python 子进程, 日志无 trace_id 无法关联同一次评估执行。
+
+## 2026-07-13#22: 因子窗口驱动数据加载 + compute_ztd SQL fallback 移除
+
+### 背景
+- `_thread_compute_chunk` 硬编码 `days=365` 作为数据加载窗口，隐含假设 ztd 需要 250 交易日
+- `compute_ztd` 在 `_ztd_cache` 未命中时静默走 SQL 查询 — 隐性 fallback，掩盖调用方遗漏 preload_ztd_cache 的错误
+- `ic.py`、`evaluation/parallel.py`、`pipeline.py` 的数据加载窗口各自独立计算，与因子实际需求无显式关联
+
+### 变更
+
+**1. 新建 `factor/windows.py`** (25行)
+- `max_factor_calendar_days(factor_names)` — 从 `_PRICE_FN_MAP` 提取每个因子的声明 window，取最大值 × 1.5
+- 默认下限 60 交易日 (90 日历日)
+- `factor_names=None` → 取全部已注册因子
+
+**2. `compute_ztd` 移除 SQL fallback** (factor/compute/price/_alternative.py)
+- 删除 34 行 SQL 查询代码
+- 缓存未命中 → `raise RuntimeError("ztd cache miss for {date}: preload_ztd_cache() must be called before compute_ztd")`
+- 调用方忘掉预加载 → 立刻炸，fail-fast 立即可定位
+
+**3. 四处数据加载点统一为 `max(传入天数, 因子最小窗口)`**
+
+| 文件 | 旧值 | 新值 |
+|------|------|------|
+| `factor/stats_cache.py:140` | `365` 硬编码 | `max(max_factor_calendar_days(factor_names), lookback * 1.5)` |
+| `factor/ic.py:92` | `lookback * 2` | `max(lookback * 2, max_factor_calendar_days(factor_names))` |
+| `evaluation/parallel.py:51` | `lookback * 2` | `max(lookback * 2, max_factor_calendar_days(factor_names))` |
+| `pipeline.py:102` | `_ecfg("data.lookback_days")` | `max(_ecfg("data.lookback_days"), max_factor_calendar_days(None))` |
+
+**4. pipeline.py 实盘路径补 preload_ztd_cache** (pipeline.py:176-180)
+- `generate_signals` 在 Step 3 调用 `compute_all_factors` 前填充 ztd 缓存
+- 四入口全覆盖: backtest/loop.py, stats_cache.py, ic.py, pipeline.py
+
+**5. backtest/loop.py 缩进修复** (line 195-199)
+- 3 空格 → 4 空格，消除 IndentationError
+
+### 原因
+- 硬编码 365 在 ztd 退役后浪费加载，在新因子窗口更大时不够
+- 隐性 SQL fallback 违反"零 fallback"原则
+- 代码应显式声明约束：`max(传入天数, 因子需求)` → 读代码的人不需要跳转到其他文件理解"够不够"
+
+### 否决
+- 解析函数签名 `__defaults__` 取窗口 (脆弱：参数名不统一 `window`/`night_window`/`intraday_window`)
+- 保持 SQL fallback (否认：掩盖错误，调用方永远不知道自己忘了预加载)
+- 为 `_FUNDAMENTAL_FN_MAP` 补 window 字段 (否认：基本面因子不依赖日线窗口)
+
+### 验证
+- 全部 import 检查通过 (stats_cache, ic, pipeline, windows)
+- `max_factor_calendar_days(None)` → 378 (momentum_252d 驱动)
+- `max_factor_calendar_days(['ztd'])` → 375
+
+### 关联
+- HYPOTHESES: 因子窗口驱动数据加载设计讨论
+- HANDOFF 2026-07-13 上午: ztd 预计算缓存
+
+
 现每个 Phase 启动时生成 `tid = uuid.uuid4().hex[:12]`, 通过 `set_trace_id(tid)` 注入,
 所有后续 `logger.info/error/warning` 自动带 `[tid]` 前缀。
 

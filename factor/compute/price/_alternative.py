@@ -13,7 +13,7 @@ from factor.registry import _cs_zscore, _db_connect, _FIN_FACTORS, _shared_limit
 from factor.compute._shared import _market_db_path
 
 from utils.logger import get_logger as _get_logger
-from data.store import market_conn as _market_conn
+from data.repos._base import DatabaseManager
 
 _log = _get_logger("factor.compute")
 
@@ -37,7 +37,7 @@ def preload_ztd_cache(dates: list, all_symbols: list):
     earliest = pd.Timestamp(min(dates)) - pd.Timedelta(days=375)
     latest = pd.Timestamp(max(dates))
 
-    conn = _market_conn("ro")
+    conn = DatabaseManager.get_instance().get_connection("data/market.db")
     ph = ",".join(["?"] * len(all_symbols))
     rows = conn.execute(
         f"""SELECT date, symbol, volume
@@ -47,7 +47,6 @@ def preload_ztd_cache(dates: list, all_symbols: list):
             ORDER BY symbol, date""",
         [earliest.strftime("%Y-%m-%d"), latest.strftime("%Y-%m-%d")] + list(all_symbols)
     ).fetchall()
-    conn.close()
 
     if not rows:
         _log.warning("preload_ztd_cache: no rows for %d symbols x %d days",
@@ -175,14 +174,13 @@ def compute_str(data, date, window=20):
         return _cs_zscore(-raw).rename("str")
 
     # 市值中性化 (从 stocks 表取 total_mv)
-    conn2 = _market_conn("ro")
+    conn2 = DatabaseManager.get_instance().get_connection("data/market.db")
     _syms2 = raw.index.tolist()
     _ph2 = ",".join(["?"] * len(_syms2))
     rows = conn2.execute(
         f"SELECT symbol, total_mv FROM stocks WHERE symbol IN ({_ph2}) AND total_mv IS NOT NULL",
         _syms2
     ).fetchall()
-    conn2.close()
     mv_map = {r[0]: r[1] for r in rows}
     log_mv = pd.Series({s: np.log(mv_map[s]) for s in raw.index if s in mv_map})
     common = raw.index.intersection(log_mv.index)
@@ -217,13 +215,12 @@ def compute_abn_turnover(data, date, window=20):
 
     # 取市值 + 行业
     syms = close.columns.tolist()
-    conn = _market_conn("ro")
+    conn = DatabaseManager.get_instance().get_connection("data/market.db")
     _ph = ",".join(["?"] * len(syms))
     meta_rows = conn.execute(f"""
         SELECT symbol, total_mv, industry FROM stocks
         WHERE symbol IN ({_ph})
     """, syms).fetchall()
-    conn.close()
 
     mv_map = {r[0]: r[1] for r in meta_rows if r[1]}
     ind_map = {r[0]: r[2] for r in meta_rows if r[2]}
@@ -283,8 +280,6 @@ def _get_limit_pool(date_str: str, conn=None):
     df_down = pd.read_sql_query(
         "SELECT * FROM limit_down_pool WHERE date=?", conn, params=(date_str,)
     )
-    if own:
-        conn.close()
     return df_up, df_down
 
 
@@ -493,14 +488,13 @@ def compute_short_interest(data, date, window=20):
     import sqlite3, os as _os3
     symbols = list(data["close"].columns)
     result = pd.Series(np.nan, index=symbols)
-    conn = sqlite3.connect(_os.path.join(_os.path.dirname(__file__), "../../../data/market.db"))
+    conn = DatabaseManager.get_instance().get_connection("data/market.db")
     rows = conn.execute(
         "SELECT symbol, short_balance, margin_total FROM margin_detail "
         "WHERE date = (SELECT MAX(date) FROM margin_detail WHERE date <= ?) "
         "AND margin_total > 0",
         (str(date)[:10],)
     ).fetchall()
-    conn.close()
     for sym, sb, mt in rows:
         if sym in symbols and mt > 0:
             result[sym] = float(sb) / float(mt) if sb else 0
@@ -517,14 +511,13 @@ def compute_fund_flow_3m(data, date, window=60):
     import sqlite3, os as _os4
     symbols = list(data["close"].columns)
     result = pd.Series(0.0, index=symbols)
-    conn = sqlite3.connect(_os.path.join(_os.path.dirname(__file__), "../../../data/market.db"))
+    conn = DatabaseManager.get_instance().get_connection("data/market.db")
     rows = conn.execute(
         "SELECT symbol, change_ratio FROM fund_hold "
         "WHERE report_date >= date(?, '-{} days') AND change_ratio IS NOT NULL "
         "ORDER BY symbol, report_date DESC".format(window),
         (str(date)[:10],)
     ).fetchall()
-    conn.close()
     if rows:
         import pandas as _pd4
         df = _pd4.DataFrame(rows, columns=["symbol", "change_ratio"])

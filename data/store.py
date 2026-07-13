@@ -17,6 +17,7 @@ logger = get_logger("data.store")
 from data.cache import get_backend, DataCache, RateLimiter
 from config.loader import load as _load_config
 from config.constants import _require_cfg
+from data.repos._base import DatabaseManager
 
 # ── Module-level cache (lazy init) ──
 _backend = None
@@ -1109,12 +1110,11 @@ class DataStore:
         import sqlite3, os
         bm_db = os.path.join(os.path.dirname(__file__), "market.db")
         if os.path.exists(bm_db):
-            conn = sqlite3.connect(bm_db)
+            conn = DatabaseManager.get_instance().get_connection(bm_db)
             df = pd.read_sql_query(
                 "SELECT date, close FROM benchmark_daily WHERE index_code=? AND date>=? ORDER BY date",
                 conn, params=(code, start)
             )
-            conn.close()
             if not df.empty:
                 df["date"] = pd.to_datetime(df["date"])
                 df = df.set_index("date")["close"]
@@ -1272,7 +1272,7 @@ def market_conn(mode='ro'):
     mode: 'ro' = read-only (附加 read_uncommitted), 'rw' = read-write.
     """
     _db = os.path.join(os.path.dirname(__file__), "market.db")
-    _c = sqlite3.connect(_db)
+    _c = DatabaseManager.get_instance().get_connection(_db)
     _c.execute("PRAGMA journal_mode=WAL")
     _c.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
     if mode == 'ro':

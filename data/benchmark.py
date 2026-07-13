@@ -6,7 +6,8 @@
   bm_returns = get_benchmark_returns("2026-01-01", "2026-06-30")  # pd.Series
 """
 
-import sqlite3, os
+import sqlite3
+from data.repos._base import DatabaseManager, os
 from datetime import datetime
 import pandas as pd
 from utils.logger import get_logger

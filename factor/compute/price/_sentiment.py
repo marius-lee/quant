@@ -57,9 +57,7 @@ def _get_news_series(symbols: list, date: str, window: int = 1) -> "pd.Series":
                 counts[sym] = total_c
     except sqlite3.OperationalError:
         _log.warning("news_daily_count table not found — run data/news.py sync first")
-    finally:
-        conn.close()
-    
+
     return sentiment, counts
 
 
@@ -133,8 +131,6 @@ def compute_news_abnormal_20d(data: "pd.DataFrame", date: str, window: int = 0) 
                 result[sym] = (cur - base) / base
     except sqlite3.OperationalError:
         _log.warning("news_daily_count table not found")
-    finally:
-        conn.close()
-    
+
     result = _cs_zscore(result, sparse=True)
     return result.rename("news_abnormal_20d")

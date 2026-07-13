@@ -15,7 +15,8 @@
 
 集成: quant/scheduler/monitor.py 盘中循环调用
 """
-import sqlite3, os
+import sqlite3
+from data.repos._base import DatabaseManager, os
 import numpy as np
 from config.constants import _require_cfg
 from utils.logger import get_logger
@@ -35,7 +36,7 @@ def _compute_atr(symbol: str, period: int = 20) -> float:
         if now - ts < 120:
             return val
 
-    conn = sqlite3.connect(_DB)
+    conn = DatabaseManager.get_instance().get_connection(_DB)
     rows = conn.execute(
         "SELECT high, low, close FROM daily WHERE symbol=? "
         "ORDER BY date DESC LIMIT ?",

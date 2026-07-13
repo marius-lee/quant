@@ -10,6 +10,7 @@ backward compatibility with standalone factor computation).
 
 import pandas as pd
 import sqlite3
+from data.repos._base import DatabaseManager
 import os
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
@@ -43,9 +44,8 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
 
     Factor functions check `aux.get("margin")` instead of doing their own query.
     """
-    own_conn = conn is None
-    if own_conn:
-        conn = sqlite3.connect(_DB)
+    if conn is None:
+        conn = DatabaseManager.get_instance().get_connection(_DB)
 
     result = {}
     ph = ",".join("?" * len(symbols))
@@ -158,6 +158,4 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
         pass
 
-    if own_conn:
-        conn.close()
     return result

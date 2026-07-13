@@ -4,7 +4,8 @@
 
 from utils.logger import get_logger
 logger = get_logger("data.trade_repo")
-import sqlite3, os
+import sqlite3
+from data.repos._base import DatabaseManager, os
 
 TRADE_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "trades.db")
 

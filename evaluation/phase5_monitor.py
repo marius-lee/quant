@@ -11,6 +11,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from config.constants import _require_cfg
 from utils.logger import get_logger, set_trace_id
+from data.repos._base import DatabaseManager
 
 
 def run_monitor(output_dir: str = "docs/reports") -> str:
@@ -29,7 +30,7 @@ def run_monitor(output_dir: str = "docs/reports") -> str:
     logger.info(f"Phase 5 [{tid}] start — monitoring report")
     report_path = os.path.join(output_dir, f"monitor_{today}.md")
 
-    conn = sqlite3.connect("data/market.db")
+    conn = DatabaseManager.get_instance().get_connection("data/market.db")
 
     # ── 1. 因子拥挤度 (pairwise correlation) ──
     active = [r[0] for r in conn.execute(
@@ -216,6 +217,24 @@ def sync_factor_status() -> dict:
         logger.warning("sync_factor_status: no Phase 2 data — skipping")
         return {"rejected": [], "active": [], "unchanged": 0}
 
+    # ── 探伤断点: 全零 IC 守卫 ──
+    # 如果 Phase 2 所有因子 IC 均为 0.0000 且 0 passed，说明 IC 计算本身可能
+    # 出了问题（超时/数据缺失/bug），不是因子真的无效。拒绝同步，保留因子原状态。
+    p2_ic_means = p2.get("ic_means", {})
+    p2_n_factors = p2.get("n_factors", 0)
+    p2_n_passed = len(p2.get("passed", []))
+    if (p2_n_factors > 4
+            and p2_n_passed == 0
+            and p2_ic_means
+            and all(abs(v) < 1e-10 for v in p2_ic_means.values())):
+        logger.critical(
+            "sync_factor_status: CIRCUIT BREAKER — all %d factors have IC≈0.0000, "
+            "Phase 2 IC computation likely broken. Refusing to sync. "
+            "Fix Phase 2 and re-run evaluation.",
+            p2_n_factors
+        )
+        return {"rejected": [], "active": [], "unchanged": 0, "circuit_breaker": True}
+
     # Phase 2: failed list
     p2_failed = set(p2.get("failed", {}).keys()) if isinstance(p2.get("failed"), dict) else set(p2.get("failed", []))
     p2_passed = set(p2.get("passed", []))
@@ -236,7 +255,7 @@ def sync_factor_status() -> dict:
 
     all_rejected = rejected_phase2 | rejected_phase3 | rejected_phase4
 
-    conn = sqlite3.connect("data/market.db")
+    conn = DatabaseManager.get_instance().get_connection("data/market.db")
     # Get current active factors (don't touch these)
     current_active = set(r[0] for r in conn.execute(
         "SELECT name FROM factor_registry WHERE status='active'"

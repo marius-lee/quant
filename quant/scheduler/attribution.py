@@ -31,7 +31,6 @@ def _run(today: str):
                 "SELECT symbol, close, sector, date FROM daily WHERE symbol IN (" + ph + ") AND date <= ? ORDER BY date",
                 syms + [today]
             ).fetchall()
-            conn.close()
             if rows:
                 df = pd.DataFrame(rows, columns=["symbol", "close", "sector", "date"])
                 df["sector"] = df["sector"].fillna("其他")

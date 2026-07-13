@@ -6,6 +6,7 @@
 
 import os
 import sqlite3
+from data.repos._base import DatabaseManager
 import time
 from config.constants import _require_cfg
 from datetime import datetime, timedelta

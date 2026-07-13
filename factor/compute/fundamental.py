@@ -60,7 +60,7 @@ from typing import Optional
 from config.constants import *
 from factor.registry import _cs_zscore, _db_connect, _FIN_FACTORS
 from factor.compute._shared import _market_db_path
-from data.store import market_conn as _market_conn
+from data.repos._base import DatabaseManager
 
 def compute_high52w_dist(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
     """接近52周高点→高分。dist = 1 - close_latest/high_52w, 取负号。
@@ -148,7 +148,6 @@ def compute_margin_buy_ratio(fundamentals: "pd.DataFrame", date: str, aux=None) 
         "WHERE date = (SELECT MAX(date) FROM margin_detail WHERE date <= ?)",
         (date,)
     ).fetchall()
-    conn.close()
     if not rows:
         return pd.Series(dtype=float, name="margin_buy_ratio")
     s = pd.Series({r[0]: r[1] / r[2] if r[2] and r[2] > 0 else np.nan
@@ -176,7 +175,6 @@ def compute_analyst_consensus(fundamentals: "pd.DataFrame", date: str, aux=None)
         "WHERE sync_date = (SELECT MAX(sync_date) FROM analyst_forecast WHERE sync_date <= ?)",
         (date,)
     ).fetchall()
-    conn.close()
     if not rows:
         return pd.Series(dtype=float, name="analyst_consensus")
     s = pd.Series({r[0]: r[1] / r[2] if r[2] and r[2] > 0 else np.nan
@@ -205,7 +203,6 @@ def _get_financial_historical(table: str, date: str, forward_days: int = 90) -> 
         f"SELECT * FROM {table} WHERE stat_date <= ? ORDER BY stat_date",
         conn, params=(max_stat,),
     )
-    conn.close()
     return df
 
 
@@ -413,7 +410,6 @@ def compute_ihn(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
         "WHERE report_date = (SELECT MAX(report_date) FROM fund_hold WHERE report_date <= ?)",
         (date,)
     ).fetchall()
-    conn.close()
     if not rows:
         return pd.Series(dtype=float, name="ihn")
     s = pd.Series({r[0]: np.log1p(r[1]) if r[1] is not None and r[1] > 0 else np.nan for r in rows})
@@ -430,7 +426,6 @@ def compute_insider_increase(fundamentals: "pd.DataFrame", date: str) -> "pd.Ser
         "AND direction = 'in' AND change_vol > 0 GROUP BY symbol",
         (lookback_start, date)
     ).fetchall()
-    conn.close()
     if not rows:
         return pd.Series(dtype=float, name="insider_increase")
 
@@ -441,7 +436,6 @@ def compute_insider_increase(fundamentals: "pd.DataFrame", date: str) -> "pd.Ser
     else:
         conn2 = _db_connect()
         mv_df = pd.read_sql("SELECT symbol, total_mv FROM stocks WHERE total_mv > 0", conn2)
-        conn2.close()
         market_cap = mv_df.set_index("symbol")["total_mv"] if not mv_df.empty else pd.Series(dtype=float)
 
     aligned = increase_vol.index.intersection(market_cap.index)
@@ -461,7 +455,6 @@ def compute_earnings_revision(fundamentals: "pd.DataFrame", date: str) -> "pd.Se
         "WHERE sync_date = (SELECT MAX(sync_date) FROM analyst_forecast WHERE sync_date <= ?)",
         (date,)
     ).fetchall()
-    conn.close()
     if not rows:
         return pd.Series(dtype=float, name="earnings_revision")
     records = {}
@@ -494,7 +487,6 @@ def _load_daily_valuation_pe(lookback_start: str, date: str) -> "pd.DataFrame":
             "ORDER BY date",
             conn, params=(lookback_start, date),
         )
-        conn.close()
         _DV_CACHE[cache_key] = df
         # Keep at most 3 cache entries to limit memory per worker.
         if len(_DV_CACHE) > 3:
@@ -665,7 +657,6 @@ def compute_asset_growth(fundamentals, date, financials=None):
     若去年同期数据缺失, 返回 NaN.
     """
     import sqlite3, os
-    from data.store import market_conn
     fin = financials
     if fin is None:
         from data.store import DataStore
@@ -679,7 +670,7 @@ def compute_asset_growth(fundamentals, date, financials=None):
     # 当前季度: fin 已有最新 total_assets
     # 需要去年同期: 查询 financial_balance
     db = _market_db_path()
-    conn = _market_conn("ro")
+    conn = DatabaseManager.get_instance().get_connection("data/market.db")
 
     # 获取每个 symbol 的最新 stat_date
     _syms = fundamentals.index.tolist()
@@ -690,7 +681,6 @@ def compute_asset_growth(fundamentals, date, financials=None):
         WHERE symbol IN ({_ph})
         ORDER BY stat_date DESC
     """, _syms).fetchall()
-    conn.close()
 
     # 按 symbol 分组, 取最新和去年同期
     import pandas as pd
@@ -778,7 +768,7 @@ def compute_sue(fundamentals, date, financials=None):
     import sqlite3, pandas as pd, numpy as np
 
     db = _market_db_path()
-    conn = _market_conn("ro")
+    conn = DatabaseManager.get_instance().get_connection("data/market.db")
 
     _syms = fundamentals.index.tolist()
     _ph = ",".join(["?"] * len(_syms))
@@ -795,7 +785,6 @@ def compute_sue(fundamentals, date, financials=None):
           AND fi.net_profit IS NOT NULL
         ORDER BY fi.symbol, fi.stat_date DESC
     """, [date] + _syms).fetchall()
-    conn.close()
 
     if not rows:
         return pd.Series(np.nan, index=fundamentals.index, name="sue")
@@ -857,10 +846,9 @@ def compute_holder_reduction(fundamentals, date, financials=None):
     若表为空则返回 NaN.
     """
     import sqlite3, pandas as pd
-    from data.store import market_conn
 
     db = _market_db_path()
-    conn = _market_conn("ro")
+    conn = DatabaseManager.get_instance().get_connection("data/market.db")
 
     _syms = fundamentals.index.tolist()
     _ph = ",".join(["?"] * len(_syms))
@@ -874,7 +862,6 @@ def compute_holder_reduction(fundamentals, date, financials=None):
           AND symbol IN ({_ph})
         GROUP BY symbol
     """, [start_date.strftime("%Y-%m-%d"), date] + _syms).fetchall()
-    conn.close()
 
     vals = {r[0]: r[1] for r in rows if r[1] is not None}
     result = pd.Series(vals, name="holder_reduction")
@@ -899,10 +886,9 @@ def compute_pledge_ratio(fundamentals, date, financials=None):
     数据源: pledge_stat (需先运行 data/pledge.py sync).
     """
     import sqlite3, pandas as pd
-    from data.store import market_conn
 
     db = _market_db_path()
-    conn = _market_conn("ro")
+    conn = DatabaseManager.get_instance().get_connection("data/market.db")
 
     _syms = fundamentals.index.tolist()
     _ph = ",".join(["?"] * len(_syms))
@@ -916,7 +902,6 @@ def compute_pledge_ratio(fundamentals, date, financials=None):
         GROUP BY symbol
         HAVING end_date = MAX(end_date)
     """, _syms + [date]).fetchall()
-    conn.close()
 
     vals = {}
     for r in rows:
@@ -943,10 +928,9 @@ def compute_dividend_yield(fundamentals, date, financials=None):
     数据源: dividend (需先运行 data/dividend.py sync) + stocks.total_mv/close.
     """
     import sqlite3, pandas as pd
-    from data.store import market_conn
 
     db = _market_db_path()
-    conn = _market_conn("ro")
+    conn = DatabaseManager.get_instance().get_connection("data/market.db")
 
     _syms = fundamentals.index.tolist()
     _ph = ",".join(["?"] * len(_syms))
@@ -968,7 +952,6 @@ def compute_dividend_yield(fundamentals, date, financials=None):
     price_rows = conn.execute(f"""
         SELECT symbol, pe, total_mv FROM stocks WHERE symbol IN ({_ph})
     """, _syms).fetchall()
-    conn.close()
 
     div_map = {r[0]: r[1] for r in div_rows if r[1] and r[1] > 0}
     # 用 total_mv / total_shares 估股价 (更稳健)
@@ -1028,7 +1011,7 @@ def compute_ocfp(fundamentals, date, financials=None):
 
     # TTM经营现金流: 直接查 financial_cash_flow 表最近4个季度
     ocfp_vals = {}
-    _conn = _market_conn("ro")
+    _conn = DatabaseManager.get_instance().get_connection("data/market.db")
     placeholders = ",".join("?" for _ in valid_syms)
     cf_df = pd.read_sql_query(
         f"""SELECT symbol, stat_date, net_operate_cash_flow
@@ -1038,7 +1021,6 @@ def compute_ocfp(fundamentals, date, financials=None):
             ORDER BY symbol, stat_date""",
         _conn, params=[date] + valid_syms
     )
-    _conn.close()
     if not cf_df.empty:
         for sym in valid_syms:
             sym_cf = cf_df[cf_df['symbol'] == sym]
@@ -1121,13 +1103,12 @@ def compute_insider_cluster(data, date, window=60):
     import sqlite3, os as _os5
     symbols = list(data.index)
     result = pd.Series(0.0, index=symbols)
-    conn = sqlite3.connect(_os.path.join(_os.path.dirname(__file__), "../../data/market.db"))
+    conn = DatabaseManager.get_instance().get_connection("data/market.db")
     rows = conn.execute(
         "SELECT symbol, holder_type, direction, change_ratio FROM holder_trade "
         "WHERE ann_date >= date(?, '-{} days') AND direction IN ('增加','增持','买入')".format(window),
         (str(date)[:10],)
     ).fetchall()
-    conn.close()
     if rows:
         import pandas as _pd5
         df = _pd5.DataFrame(rows, columns=["symbol", "holder_type", "direction", "change_ratio"])
@@ -1152,7 +1133,7 @@ def compute_earnings_upgrade(data, date, window=90):
     import sqlite3, os as _os6
     symbols = list(data.index)
     result = pd.Series(0.0, index=symbols)
-    conn = sqlite3.connect(_os.path.join(_os.path.dirname(__file__), "../../data/market.db"))
+    conn = DatabaseManager.get_instance().get_connection("data/market.db")
     # Get latest analyst forecast for each stock
     rows = conn.execute(
         "SELECT symbol, buy_count, overweight_count, neutral_count, "
@@ -1160,7 +1141,6 @@ def compute_earnings_upgrade(data, date, window=90):
         "WHERE sync_date <= ? ORDER BY sync_date DESC",
         (str(date)[:10],)
     ).fetchall()
-    conn.close()
     if rows:
         import pandas as _pd6
         df = _pd6.DataFrame(rows, columns=[
@@ -1187,8 +1167,7 @@ def compute_earnings_upgrade(data, date, window=90):
 def _get_macro_value(indicator: str, date: str) -> float:
     """读取 macro_indicator 表中最近可用的宏观指标值."""
     import sqlite3
-    db = _os.path.join(_os.path.dirname(__file__), "../../data/market.db")
-    conn = sqlite3.connect(db)
+    conn = DatabaseManager.get_instance().get_connection("data/market.db")
     row = conn.execute(
         "SELECT value FROM macro_indicator WHERE indicator=? AND date <= ? ORDER BY date DESC LIMIT 1",
         (indicator, date)

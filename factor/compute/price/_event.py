@@ -46,7 +46,6 @@ def compute_limit_up_proximity(data: "pd.DataFrame", date: str, window: int = 5)
         f"SELECT symbol, market FROM stocks WHERE symbol IN ({placeholders})",
         symbols_sample
     ).fetchall()
-    conn.close()
     market_map = {r[0]: r[1] for r in market_rows}
     
     def _limit_pct(sym):
@@ -260,7 +259,6 @@ def compute_lhb_net_buy(data: "pd.DataFrame", date: str, window: int = _LHB_WIND
     all_dates = sorted(data.index)
     date_str = date.strftime("%Y-%m-%d") if hasattr(date, "strftime") else str(date)[:10]
     if date_str not in all_dates:
-        conn.close()
         return pd.Series(np.nan, index=symbols, name=f"lhb_net_buy_{window}d")
 
     pos = all_dates.index(date_str)
@@ -278,7 +276,6 @@ def compute_lhb_net_buy(data: "pd.DataFrame", date: str, window: int = _LHB_WIND
         WHERE trade_date BETWEEN ? AND ?
         GROUP BY symbol
     """, (start_date, date_str)).fetchall()
-    conn.close()
 
     if not rows:
         return pd.Series(0.0, index=symbols, name=f"lhb_net_buy_{window}d")
@@ -318,14 +315,12 @@ def compute_lhb_post_quality(data: "pd.DataFrame", date: str, window: int = 90) 
     all_dates = [str(d)[:10] for d in sorted(data.index)]
     date_str = str(date)[:10]
     if date_str not in all_dates:
-        conn.close()
         return pd.Series(0.0, index=symbols, name="lhb_post_quality")
 
     idx = all_dates.index(date_str)
     start_idx = max(0, idx - window)
     end_idx = max(0, idx - 5)  # 排除最近5天 (post_5d 尚未实现)
     if end_idx <= start_idx:
-        conn.close()
         return pd.Series(0.0, index=symbols, name="lhb_post_quality")
 
     start_date = all_dates[start_idx]
@@ -338,7 +333,6 @@ def compute_lhb_post_quality(data: "pd.DataFrame", date: str, window: int = 90) 
         GROUP BY symbol
         HAVING n >= 2
     """, (start_date, end_date)).fetchall()
-    conn.close()
 
     scores = {}
     for sym, avg_p5, n in rows:
@@ -374,7 +368,6 @@ def compute_margin_balance_chg(data: "pd.DataFrame", date: str, window: int = 5)
             idx = i
             break
     if idx is None or idx < window:
-        conn.close()
         return pd.Series(0.0, index=symbols, name="margin_balance_chg")
 
     prev_date = str(all_dates[idx - window])[:10]
@@ -382,7 +375,6 @@ def compute_margin_balance_chg(data: "pd.DataFrame", date: str, window: int = 5)
     rows = conn.execute("""
         SELECT symbol, margin_balance FROM margin_detail WHERE date IN (?, ?)
     """, (date_str, prev_date)).fetchall()
-    conn.close()
 
     today = {}
     prev = {}
@@ -398,7 +390,6 @@ def compute_margin_balance_chg(data: "pd.DataFrame", date: str, window: int = 5)
     prev_rows = conn2.execute(
         "SELECT symbol, margin_balance FROM margin_detail WHERE date=?", (prev_date,)
     ).fetchall()
-    conn2.close()
 
     today_map = {r[0]: r[1] for r in today_rows if r[1] and r[1] > 0}
     prev_map = {r[0]: r[1] for r in prev_rows if r[1] and r[1] > 0}
@@ -436,7 +427,6 @@ def compute_margin_buy_ratio_price(data: "pd.DataFrame", date: str, window: int 
         if str(d)[:10] < date_str:
             dates.append(str(d)[:10])
     if len(dates) < window:
-        conn.close()
         return pd.Series(0.0, index=symbols, name="margin_buy_ratio_5d")
     lookback_dates = dates[-window:]
 
@@ -447,7 +437,6 @@ def compute_margin_buy_ratio_price(data: "pd.DataFrame", date: str, window: int 
         WHERE date IN ({placeholders}) AND margin_buy IS NOT NULL AND margin_balance > 0
         GROUP BY symbol
     """, lookback_dates).fetchall()
-    conn.close()
 
     scores = {r[0]: r[1] for r in rows if r[1] is not None}
     result = pd.Series(scores, dtype=float)
@@ -473,7 +462,6 @@ def compute_main_flow_ratio(data: "pd.DataFrame", date: str, window: int = 5, au
         if str(d)[:10] < date_str:
             dates.append(str(d)[:10])
     if len(dates) < window:
-        conn.close()
         return pd.Series(0.0, index=symbols, name="main_flow_ratio")
     lookback_dates = dates[-window:]
 
@@ -484,7 +472,6 @@ def compute_main_flow_ratio(data: "pd.DataFrame", date: str, window: int = 5, au
         WHERE date IN ({placeholders}) AND main_net_ratio IS NOT NULL
         GROUP BY symbol
     """, lookback_dates).fetchall()
-    conn.close()
 
     scores = {r[0]: r[1] for r in rows if r[1] is not None}
     result = pd.Series(scores, dtype=float)
@@ -514,7 +501,6 @@ def compute_fund_change(data: "pd.DataFrame", date: str, window: int = 0) -> "pd
         SELECT symbol, change_ratio FROM fund_hold
         WHERE report_date = (SELECT MAX(report_date) FROM fund_hold WHERE report_date <= ?)
     """, (date_str,)).fetchall()
-    conn.close()
 
     scores = {}
     for sym, ratio in rows:
@@ -546,7 +532,6 @@ def compute_analyst_buy(data: "pd.DataFrame", date: str, window: int = 0, aux=No
         FROM analyst_forecast
         WHERE sync_date = (SELECT MAX(sync_date) FROM analyst_forecast WHERE sync_date <= ?)
     """, (date_str,)).fetchall()
-    conn.close()
 
     scores = {}
     for sym, buy, over, neutral, under in rows:

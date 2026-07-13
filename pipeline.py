@@ -155,7 +155,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     # ── ztd 预计算缓存: 确保 compute_ztd 在实盘 / 回测均能命中缓存 ──
     from factor.compute.price._alternative import preload_ztd_cache
     _ztd_dates = pd.date_range(start=pd.Timestamp(hist_start), end=pd.Timestamp(date_str), freq="B")
-    preload_ztd_cache([d.strftime("%Y-%m-%d") for d in _ztd_dates], symbols, volume_data=data)
+    preload_ztd_cache([d.strftime("%Y-%m-%d") for d in _ztd_dates], symbols)
 
     logger.info(f"step 3 starting: computing factors for {len(symbols)} symbols on {actual_date}...")
     factor_values = compute_all_factors(data, actual_date,

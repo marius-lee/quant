@@ -141,8 +141,9 @@ def compute_ic(*,
                 factor_names=factor_names, status_filter=status_filter,
             )
             return (ds, factor_vals, fwd)
-        except Exception:
-            raise
+        except Exception as e:
+            _log.warning(f"_compute_one_day failed at {ds}: {type(e).__name__}: {e}")
+            return (ds, {}, None)
 
     for ds in compute_days:
         _, factor_vals, fwd = _compute_one_day(ds)

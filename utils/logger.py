@@ -10,6 +10,7 @@
 
 import logging
 import os
+import sys
 import threading
 import contextvars
 import json
@@ -56,7 +57,12 @@ def _init():
         "[%(asctime)s] %(levelname)-5s %(name)s | %(trace_id)s%(message)s",
         datefmt="%m-%d %H:%M:%S", defaults={"trace_id": ""}
     )
-    _is_backtest = lambda r: r.name.startswith("quant.backtest.") or r.name.startswith("backtest.")
+    _is_backtest = lambda r: (
+    r.name.startswith("quant.backtest.") or
+    r.name.startswith("backtest.") or
+    r.name.startswith("quant.evaluation.") or
+    r.name.startswith("evaluation.")
+)
 
     # app.log: 非回测 (web, pipeline, scheduler, factor...)
     _app_handler = TimedRotatingFileHandler(
@@ -85,6 +91,13 @@ def _init():
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(_JsonFormatter())
     root.addHandler(file_handler)
+
+    # ── 未捕获异常自动写入日志 ──
+    def _log_uncaught(t, v, tb):
+        import traceback
+        root.critical("未捕获异常: %s: %s\n%s", t.__name__, v, "".join(traceback.format_tb(tb)))
+    if sys.excepthook is sys.__excepthook__:  # 不覆盖 excepthook.setup() 的 hook
+        sys.excepthook = _log_uncaught
 
 
 class _JsonFormatter(logging.Formatter):

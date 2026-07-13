@@ -3,7 +3,8 @@
 进度: 每 50 只输出一行 (已完成/总数 + 百分比)
 """
 
-import sqlite3, sys, os, time
+import sqlite3
+from data.repos._base import DatabaseManager, sys, os, time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 

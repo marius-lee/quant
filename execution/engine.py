@@ -77,7 +77,6 @@ class ExecutionEngine:
             "SELECT close FROM daily WHERE symbol=? AND date < ? ORDER BY date DESC LIMIT 1",
             (symbol, date)
         ).fetchone()
-        mc.close()
         if row and row[0]:
             prev_close = float(row[0])
             gap = abs(order_price / prev_close - 1)

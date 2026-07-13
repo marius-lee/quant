@@ -5,6 +5,7 @@ Stores daily tracking in trades.db, computes rolling alpha/IR/beta/up-down captu
 
 import os
 import sqlite3
+from data.repos._base import DatabaseManager
 import numpy as np
 import pandas as pd
 from utils.logger import get_logger

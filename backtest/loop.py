@@ -90,7 +90,8 @@ def _compute_backtest_metrics(equity_curve):
     }
 
 
-def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq=None):
+def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq=None,
+                   universe_size=None, ic_lookback=None, factor_status_filter="backtesting"):
     """Run a full walk-forward backtest.
 
     Args:
@@ -98,6 +99,10 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
         end_date: YYYY-MM-DD
         capital: initial capital in RMB
         strategy: strategy name (uses separate DB to not pollute real trades)
+        universe_size: override backtest.universe_size (None=use config)
+        ic_lookback: override backtest.diagnosis_ic_window (None=use config)
+        factor_status_filter: status filter for get_factor_names (default "backtesting";
+            None=all factors)
 
     Returns:
         dict with keys: equity_curve, metrics, signals_per_day, errors
@@ -146,12 +151,12 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
     from factor.compute import get_factor_names
     if retrain_freq is None:
         retrain_freq = _require_cfg("alpha.retrain_freq")
-    ic_lookback = _require_cfg("backtest.diagnosis_ic_window")
-    bt_factor_names = get_factor_names(status_filter="backtesting")
+    ic_lookback = ic_lookback if ic_lookback is not None else _require_cfg("backtest.diagnosis_ic_window")
+    bt_factor_names = get_factor_names(status_filter=factor_status_filter)
     _current_ic_map_raw = _compute_ic(
         factor_names=bt_factor_names, date=trading_days[0],
         symbols=store.get_universe(trading_days[0])[:_require_cfg("factor.evaluation.n_symbols")],
-        lookback=ic_lookback, store=store, status_filter="backtesting"
+        lookback=ic_lookback, store=store, status_filter=factor_status_filter or "backtesting"
     )
     _last_retrain_idx = 0
     _current_ic_map = _current_ic_map_raw["ic_map"]
@@ -172,6 +177,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
 
     for i, today in enumerate(trading_days[:-1]):
         next_day = trading_days[i + 1]
+        _day_t0 = time.time()
 
         from pipeline import generate_signals
         # Filter out cooling-off symbols
@@ -181,9 +187,9 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
             "capital": engine.get_capital(strategy),
             "strategy": strategy,
             "skip_pull": True,
-            "status_filter": "backtesting",
+            "status_filter": factor_status_filter or "backtesting",
             "suppress_push": True,
-            "universe_size": _require_cfg("backtest.universe_size"),
+            "universe_size": universe_size if universe_size is not None else _require_cfg("backtest.universe_size"),
             "db_path": BACKTEST_DB,
             "store": store,
             "exclude_symbols": cooloff_syms,
@@ -194,7 +200,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
             _current_ic_map_raw = _compute_ic(
                 factor_names=bt_factor_names, date=today,
                 symbols=store.get_universe(today)[:_require_cfg("factor.evaluation.n_symbols")],
-                lookback=ic_lookback, store=store, status_filter="backtesting"
+                lookback=ic_lookback, store=store, status_filter=factor_status_filter or "backtesting"
             )
             _last_retrain_idx = i
         kwargs["ic_map"] = _current_ic_map
@@ -235,7 +241,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
             for s in stopped:
                 _cooloff[s] = cooloff_end.strftime("%Y-%m-%d")
 
-        bt_tracker.phases.append(PhaseResult(name=f"day_{date_str}", started=_day_t0, finished=time.time(), status="ok", extra={"signals": len(signals.get("target_positions",[])) if signals else 0}))
+        bt_tracker.phases.append(PhaseResult(name=f"day_{today}", started=_day_t0, finished=time.time(), status="ok", extra={"signals": len(signals.get("target_positions",[])) if signals else 0}))
         # ── Step 3: Record equity ──
         equity_curve.append({"date": next_day, "equity": exec_result.get("wealth", broker.get_capital(strategy))})
 

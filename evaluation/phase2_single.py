@@ -54,9 +54,8 @@ def screen_factors(input_json: str = None, output_json: str = None,
           f"ICIR≥{min_icir}, half-life≥{min_half_life}d")
 
     # 获取 backtesting 因子 (两步架构: 可选诊断预筛)
-    from data.repos import FactorRepo; repo = FactorRepo()
-    all_backtesting = [r["name"] for r in repo.get_factors_by_status(
-        "SELECT name FROM factor_registry WHERE status IN ('registered','candidate','retired')").fetchall()]
+    from factor.compute import get_factor_names
+    all_backtesting = get_factor_names(status_filter="backtesting")
 
     if prefilter_from_diagnostics:
         from evaluation.run_store import load_latest
@@ -73,7 +72,6 @@ def screen_factors(input_json: str = None, output_json: str = None,
     else:
         active_names = all_backtesting
         logger.info(f"Phase 2: --all mode — evaluating all {len(active_names)} backtesting factors")
-    conn.close()
 
     # 计算因子统计
     n_symbols = _require_cfg("factor.evaluation.n_symbols")

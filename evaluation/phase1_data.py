@@ -1,6 +1,7 @@
 """Stage 1: 数据准备 — 股票池 + 数据范围验证。"""
 
 import sqlite3
+from data.repos._base import DatabaseManager
 from datetime import datetime
 from config.constants import _require_cfg
 import traceback

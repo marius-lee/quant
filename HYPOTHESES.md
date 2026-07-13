@@ -2,6 +2,47 @@
 
 ## 2026-07-12: 两级因子筛选架构 — 诊断快筛 → 正式评估的闭环
 
+
+## 2026-07-13: 因子窗口驱动数据加载 — max(传入天数, 因子需求) 模式
+
+**背景**: 系统有四处数据加载点各自决定加载天数，与因子实际窗口需求无显式关联。`_thread_compute_chunk` 硬编码 365，`ic.py` 用 `lookback*2`，`pipeline.py` 用 `data.lookback_days`。
+
+**核心原则** (用户提出): 如果传入的参数天数 < 因子自身的逻辑要求（如 ztd=250 交易日），取因子要求；如果传入天数 ≥ 因子要求，取传入天数。代码里显式写 `max(传入天数, 因子最小需求)`，好读易懂。
+
+**方案**: 
+1. `factor/windows.py`: `max_factor_calendar_days(factor_names)` 从 `_PRICE_FN_MAP` 提取各因子 window，取最大值 × 1.5
+2. 四处调用点统一为 `max(传入天数, max_factor_calendar_days(factor_names))`
+3. `compute_ztd` 删除 SQL 回退，缓存未命中 → RuntimeError（fail-fast）
+
+**设计取舍**:
+- 选择从 `_PRICE_FN_MAP` 取 window 而非解析函数签名：window 在注册表已有声明，是单一真相源
+- 不处理 `_FUNDAMENTAL_FN_MAP`：基本面因子不依赖日线窗口
+- `compute_ztd` 不再有数据库连接能力：职责从"想办法搞到数据"收窄为"从缓存取值并 z-score"
+- `pipeline.py` 使用 `factor_names=None`（全量已注册因子）：实盘路径一次数据加载，不增加 DB 查询
+
+**状态**: 已落地 (2026-07-13)
+
+**关联**: HANDOFF 2026-07-13#22
+
+---
+
+## 2026-07-13: ztd 预计算缓存四入口全覆盖
+
+**背景**: `backtest/loop.py` 调用 `preload_ztd_cache`，但 `stats_cache.py`、`ic.py`、`pipeline.py` 没有。`compute_ztd` 的 SQL 回退路径掩盖了这个遗漏。
+
+**方案**: 四个 `compute_ztd` 调用入口全部在调用前显式 `preload_ztd_cache`：
+- `backtest/loop.py:202` — 回测主循环前
+- `factor/stats_cache.py:181` — ThreadPoolExecutor 前
+- `factor/ic.py:110` — per-day 循环前
+- `pipeline.py:176-180` — 实盘信号生成 Step 3 前
+
+**验证方法**: 若任一入口遗漏 → `compute_ztd` raise RuntimeError → fail-fast 立即可定位。
+
+**状态**: 已落地 (2026-07-13)
+
+**关联**: HANDOFF 2026-07-13#22
+
+
 **背景**: 当前系统存在两套独立的因子 IC 评估路径, 互不相连:
 1. backtest/diagnostics.py — 回测前 120 天 IC 快照, 秒级, 每次回测自动跑
 2. evaluation/ 五阶段正式评估 — 全量历史 CPCV+PBO, 数小时, 手动触发

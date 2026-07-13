@@ -20,6 +20,7 @@ from risk.neutralize import neutralize
 from factor.stats_cache import load_ic_map_from_cache
 from risk.covariance import covariance_matrix
 from risk.constraints import RiskLimits, apply_all_filters
+from risk.var import compute_var
 from optimizer.portfolio import PortfolioConstructor
 from optimizer.rebalance import compute_trades, validate_orders
 from execution.cost import CostModel
@@ -193,6 +194,20 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     filtered = apply_all_filters(candidates.reindex(prices.index))
     results["steps"]["risk"] = {"candidates": len(filtered), "status": "ok"}
     logger.info(f"[4/5] risk: {len(filtered)} candidates after filters")
+
+    # VaR risk budget check: warn if portfolio VaR exceeds ~3% of exposure
+    try:
+        if cov is not None and len(filtered) > 0 and "close" in candidates.columns:
+            _v = candidates["close"].dropna().iloc[:min(10, len(filtered))]
+            _exposure = float(_v.sum()) * LOT_SIZE if len(_v) > 0 else 0
+            if _exposure > 0:
+                _w = pd.Series(1.0 / max(len(_v), 1), index=_v.index)
+                _var = compute_var(_exposure, _w, cov, confidence=0.95)
+                if _var and abs(_var / _exposure) > 0.03:
+                    logger.warning("[4/5] VaR warning: daily VaR=%.1f (%.1f%% of exposure)",
+                                   abs(_var), abs(_var / _exposure) * 100)
+    except Exception:
+        pass
     if not suppress_push:
         broker.update({"status": "risk_filtered", "progress": "4/5", "candidates": len(filtered), "trace_id": tid})
 

@@ -277,6 +277,20 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
         _backtest_symbols = list(sym_set)
     ic_map_pre = _current_ic_map  # reuse walk-forward IC (was: compute_pre_backtest_ic)
     diag = diagnose(ic_map_pre, tracker, metrics)
+
+    # Stress test on final portfolio holdings
+    try:
+        from risk.var import stress_test
+        _fp = engine.get_positions(strategy)
+        if _fp:
+            _fw_val = engine.get_capital(strategy)
+            _fw = {}
+            for _p in _fp:
+                _pv = _p.get("price", 0) * _p.get("shares", 0)
+                _fw[_p["symbol"]] = _pv / max(_fw_val, 1)
+            diag["stress_test"] = stress_test(_fp, _fw)
+    except Exception:
+        pass
     _log.info("diagnosis: %s", diag["summary"])
     for adj in diag["adjustments"]:
         _log.info("  adjust: %s", adj)

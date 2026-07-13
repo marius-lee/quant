@@ -89,7 +89,9 @@ def compute_ic(*,
     from factor.compute import compute_all_factors
 
     end_dt = pd.Timestamp(date)
-    start_dt = end_dt - pd.Timedelta(days=lookback * 2)
+    from factor.windows import max_factor_calendar_days
+    _ic_factor_min = max_factor_calendar_days(factor_names)
+    start_dt = end_dt - pd.Timedelta(days=max(lookback * 2, _ic_factor_min))
     all_dates = pd.bdate_range(start=start_dt, end=end_dt)
     trading_days = []
     for d in reversed(all_dates):

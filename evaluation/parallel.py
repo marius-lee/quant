@@ -48,7 +48,9 @@ def _evaluate_batch(args):
             date_str = _date.today().strftime("%Y-%m-%d")
 
         symbols = store.get_universe(date_str)[:n_symbols]
-        hist_start = (pd.Timestamp(date_str) - pd.Timedelta(days=lookback * 2)).strftime("%Y-%m-%d")
+        from factor.windows import max_factor_calendar_days
+        _eff_days = max(lookback * 2, max_factor_calendar_days(factor_names))
+        hist_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
         data = store.get_daily(symbols, start=hist_start, end=date_str)
         fundamentals = store.get_fundamentals(symbols, date=date_str)
 

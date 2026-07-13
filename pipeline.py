@@ -27,6 +27,7 @@ from execution.cost import CostModel
 from execution.engine import ExecutionEngine, Order
 from monitor.report import generate_report, push_to_web
 from config.constants import _require_cfg
+from core.phase_tracker import PhaseTracker, PhaseResult
 from utils.logger import get_logger
 
 # ── HTTP state push (P69: 抽取到 web/state_pusher.py) ──
@@ -58,6 +59,10 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
 
     t0 = time.time()
     results = {"date": date_str, "steps": {}}
+    tracker = PhaseTracker("generate_signals")
+    import time as _time_ph
+    _ph_t0 = _time_ph.time()
+    _ph_start = _time_ph.time()
     if not suppress_push:
         broker.update({"status": "signals_started", "progress": "0/5", "date": date_str, "trace_id": tid})
     logger.info(f"generate_signals started trace_id={tid} date={date_str}")
@@ -82,6 +87,8 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         n_new = store.update_daily(start=_require_cfg("data.start_date"))
         results["steps"]["data"] = {"new_rows": n_new, "status": "ok"}
         logger.info(f"[1/5] data: {n_new} new daily rows")
+        tracker.phases.append(PhaseResult(name="sync", started=_ph_start, finished=_time_ph.time(), status="ok"))
+        _ph_start = _time_ph.time()
         if not suppress_push:
             broker.update({"status": "data_synced", "progress": "1/5", "new_rows": n_new, "trace_id": tid})
         _m.inc("data.sync.rows", n_new)
@@ -102,6 +109,8 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     pe_cnt = int(fundamentals["pe"].notna().sum()) if "pe" in fundamentals.columns else 0
     pb_cnt = int(fundamentals["pb"].notna().sum()) if "pb" in fundamentals.columns else 0
     logger.info(f"[2/5] load: {len(symbols)} symbols, {data.shape[0]} days, PE/PB={pe_cnt}/{pb_cnt}")
+    tracker.phases.append(PhaseResult(name="load", started=_ph_start, finished=_time_ph.time(), status="ok"))
+    _ph_start = _time_ph.time()
     if not suppress_push:
         broker.update({"status": "data_loaded", "progress": "2/5", "symbols": len(symbols), "trace_id": tid})
 
@@ -169,6 +178,8 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     if not suppress_push:
         broker.update({"status": "factors_computed", "progress": "3/5", "n_factors": len(factor_values), "trace_id": tid})
     _m.gauge("factor.n_active", len(factor_values))
+    tracker.phases.append(PhaseResult(name="factor", started=_ph_start, finished=_time_ph.time(), status="ok"))
+    _ph_start = _time_ph.time()
 
     # ── Step 4: Risk ──
     cov = None  # 协方差矩阵, Step 4 内计算, 供 Step 5 的 construct() 使用
@@ -194,6 +205,8 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     filtered = apply_all_filters(candidates.reindex(prices.index))
     results["steps"]["risk"] = {"candidates": len(filtered), "status": "ok"}
     logger.info(f"[4/5] risk: {len(filtered)} candidates after filters")
+    tracker.phases.append(PhaseResult(name="risk", started=_ph_start, finished=_time_ph.time(), status="ok"))
+    _ph_start = _time_ph.time()
 
     # VaR risk budget check: warn if portfolio VaR exceeds ~3% of exposure
     try:
@@ -255,7 +268,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         logger.info(f"[pipeline] saved {len(targets)} targets to daily_signals for {date_str}")
 
     results["elapsed_sec"] = round(elapsed, 1)
-    logger.info(f"generate_signals done trace_id={tid} elapsed={elapsed:.1f}s date={date_str}")
+    logger.info(f"generate_signals done trace_id={tid} elapsed={elapsed:.1f}s phases=[{tracker.summary()}] date={date_str}")
     return results
 
 
@@ -275,6 +288,10 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
 
     t0 = time.time()
     results = {"date": date_str, "steps": {}}
+    tracker = PhaseTracker("generate_signals")
+    import time as _time_ph
+    _ph_t0 = _time_ph.time()
+    _ph_start = _time_ph.time()
     logger.info(f"execute_signals started trace_id={tid} date={date_str} strategy={strategy}")
 
     engine = ExecutionEngine(db_path=db_path)

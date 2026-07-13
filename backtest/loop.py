@@ -9,6 +9,7 @@ Usage:
     print(result["metrics"])
 """
 
+from core.phase_tracker import PhaseTracker, PhaseResult
 import os, sys, time
 import numpy as np
 import pandas as pd
@@ -112,6 +113,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
 
     _log.info(f"backtest: {start_date} → {end_date}, capital=Y{capital:,}, strategy={strategy}")
     _log.info("=" * 70)
+    bt_tracker = PhaseTracker(f"backtest:{strategy}")
     _log.info(f"  BACKTEST START: {strategy} | {start_date} → {end_date} | capital=Y{capital:,}")
 
     # ── Setup: initialize strategy in backtest DB ──
@@ -233,6 +235,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
             for s in stopped:
                 _cooloff[s] = cooloff_end.strftime("%Y-%m-%d")
 
+        bt_tracker.phases.append(PhaseResult(name=f"day_{date_str}", started=_day_t0, finished=time.time(), status="ok", extra={"signals": len(signals.get("target_positions",[])) if signals else 0}))
         # ── Step 3: Record equity ──
         equity_curve.append({"date": next_day, "equity": exec_result.get("wealth", broker.get_capital(strategy))})
 

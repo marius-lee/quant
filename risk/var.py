@@ -98,6 +98,31 @@ def compute_cvar(portfolio_value, weights, cov_matrix, confidence=0.95):
     return portfolio_value * port_sigma * cvar
 
 
+
+
+def marginal_var(weights, cov_matrix, confidence=0.95):
+    import numpy as np
+    from scipy.stats import norm
+    w = weights.values if hasattr(weights,'values') else np.array(list(weights.values()))
+    S = cov_matrix.values if hasattr(cov_matrix,'values') else np.array(cov_matrix)
+    n = min(len(w), S.shape[0])
+    w, S = w[:n], S[:n,:n]
+    pv = w.T @ S @ w
+    if pv <= 0:
+        import pandas as pd
+        return pd.Series(0.0, index=weights.index[:n])
+    z = norm.ppf(confidence)
+    mvar = z * (S @ w) / np.sqrt(pv)
+    import pandas as pd
+    return pd.Series(mvar, index=weights.index[:n])
+
+
+def component_var(weights, cov_matrix, confidence=0.95):
+    mvar = marginal_var(weights, cov_matrix, confidence)
+    w = weights.loc[mvar.index]
+    return mvar * w
+
+
 def stress_test(positions, weights):
     """Historical scenario replay: what if a historical crash happened today?
 

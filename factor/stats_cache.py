@@ -137,7 +137,10 @@ def compute_factor_stats(
             _store = DataStore()
             min_date = chunk_dates[0]
             max_date = chunk_dates[-1]
-            data_start = (_pd.Timestamp(min_date) - _pd.Timedelta(days=365)).strftime("%Y-%m-%d")
+            from factor.windows import max_factor_calendar_days
+            _factor_min = max_factor_calendar_days(factor_names)
+            _eff_days = max(_factor_min, lookback * 1.5)
+            data_start = (_pd.Timestamp(min_date) - _pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
             future_end = (_pd.Timestamp(max_date) + _pd.Timedelta(days=40)).strftime("%Y-%m-%d")
             data = _store.get_daily(symbols, start=data_start, end=future_end)
 

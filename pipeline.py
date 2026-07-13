@@ -99,7 +99,9 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         symbols = [r[0] for r in conn.execute(
             "SELECT DISTINCT d.symbol FROM daily d JOIN stocks s ON d.symbol=s.symbol WHERE s.market!='BJ'"
         ).fetchall()]
-        hist_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_ecfg("data.lookback_days"))).strftime("%Y-%m-%d")
+        from factor.windows import max_factor_calendar_days
+        _eff_days = max(_ecfg("data.lookback_days"), max_factor_calendar_days(None))
+        hist_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
         data = store.get_daily(symbols, start=hist_start, end=date_str)
         fundamentals = store.get_fundamentals(symbols, date=date_str)
         results["steps"]["load"] = {"symbols": len(symbols), "status": "ok"}

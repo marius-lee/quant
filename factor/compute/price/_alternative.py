@@ -95,40 +95,10 @@ def compute_ztd(data, date, window=250):
         result.name = "ztd"
         return result
 
-    # ── 缓存未命中: 走原始 SQL 路径 ──
-    db = _market_db_path()
-    conn = _market_conn("ro")
 
-    # 取过去 window 个日历日在 daily 表中的数据
-    _ph = ",".join(["?"] * len(_syms))
+    # ── 缓存未命中: fail-fast, 调用方忘记 preload_ztd_cache ──
+    raise RuntimeError(f"ztd cache miss for {date}: preload_ztd_cache() must be called before compute_ztd")
 
-    # 计算截止日期: date 往前推 window 个日历日
-    end_date = pd.Timestamp(date)
-    start_date = end_date - pd.Timedelta(days=int(window * 1.5))  # 日历日覆盖交易日
-
-    rows = conn.execute(f"""
-        SELECT date, symbol, volume
-        FROM daily
-        WHERE date BETWEEN ? AND ?
-          AND symbol IN ({_ph})
-        ORDER BY date
-    """, [start_date.strftime("%Y-%m-%d"), date] + _syms).fetchall()
-    conn.close()
-
-    if not rows:
-        ztd = pd.Series(np.nan, index=close.columns, name="ztd")
-        return _cs_zscore(-ztd).rename("ztd")
-
-    df = pd.DataFrame(rows, columns=['date', 'symbol', 'volume'])
-    # Sort by symbol asc, date desc — then groupby.head(window) gets N most recent per symbol
-    df = df.sort_values(['symbol', 'date'], ascending=[True, False])
-    recent = df.groupby('symbol', sort=False).head(window)
-    zero = recent.groupby('symbol')['volume'].apply(lambda x: (x == 0).sum())
-    total = recent.groupby('symbol').size()
-    ztd = (zero / total).reindex(close.columns)
-    ztd.name = "ztd"
-    # 高停牌→低流动性→折价: 取负号
-    return _cs_zscore(-ztd).rename("ztd")
 
 
 # ═══════════════════════════════════════════════════════════

@@ -6,8 +6,10 @@
 import sys
 sys.path.insert(0, '/Users/mariusto/project/quant')
 from backtest.loop import run_backtest
+from backtest.naming import next_smoke_name
 
-name = "smoke_check"
+name = next_smoke_name()  # smoke_1, smoke_2, ...
+print(f"[smoke] strategy={name}")
 r = run_backtest("2026-06-20", "2026-07-10", capital=5000, strategy=name)
 if "error" in r:
     print(f"ERROR: {r['error']}")

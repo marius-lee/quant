@@ -191,11 +191,16 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
     _log.info("backtest: initial IC: %d factors, retrain every %dd", len(_current_ic_map), retrain_freq)
 
     
-    # ── Diagnostics: factor tracker ──
-    tracker = FactorTracker()
-    _last_signals = None
-    # ── Cooling-off: prevent rebuy after stop-loss ──
-    _cooloff = {}  # {symbol: end_date}
+   # ── Diagnostics: factor tracker ──
+   tracker = FactorTracker()
+   _last_signals = None
+   # ── Cooling-off: prevent rebuy after stop-loss ──
+   _cooloff = {}  # {symbol: end_date}
+
+    # ── Precompute ztd for all trading days (avoid 14x redundant SQLite queries) ──
+    from factor.compute.price._alternative import preload_ztd_cache
+    preload_ztd_cache(trading_days, store.get_universe(trading_days[0]))
+    _log.info("backtest: ztd precomputed for %d days", len(trading_days))
     
     # ── Main loop ──
     equity_curve = [{"date": trading_days[0], "equity": float(capital)}]

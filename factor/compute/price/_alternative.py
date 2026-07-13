@@ -17,6 +17,61 @@ from data.store import market_conn as _market_conn
 
 _log = _get_logger("factor.compute")
 
+# ── ztd 预计算缓存: 消除每交易日重复 SQLite 查询 ──
+# key: date_str → value: Series(index=symbol, value=ztd_ratio)
+_ztd_cache: dict = {}
+
+
+def preload_ztd_cache(dates: list, all_symbols: list):
+    """一次性预计算所有日期的 ztd, 消除每日重复 SQLite 查询.
+
+    dates: 回测窗口内所有交易日 (YYYY-MM-DD)
+    all_symbols: 全量股票代码列表
+    """
+    global _ztd_cache
+    _ztd_cache.clear()
+    if not dates or not all_symbols:
+        return
+
+    import pandas as pd
+    earliest = pd.Timestamp(min(dates)) - pd.Timedelta(days=375)
+    latest = pd.Timestamp(max(dates))
+
+    conn = _market_conn("ro")
+    ph = ",".join(["?"] * len(all_symbols))
+    rows = conn.execute(
+        f"""SELECT date, symbol, volume
+            FROM daily
+            WHERE date BETWEEN ? AND ?
+              AND symbol IN ({ph})
+            ORDER BY symbol, date""",
+        [earliest.strftime("%Y-%m-%d"), latest.strftime("%Y-%m-%d")] + list(all_symbols)
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        _log.warning("preload_ztd_cache: no rows for %d symbols x %d days",
+                    len(all_symbols), len(dates))
+        return
+
+    df = pd.DataFrame(rows, columns=['date', 'symbol', 'volume'])
+    df['date'] = pd.to_datetime(df['date'])
+
+    for d in dates:
+        cutoff = pd.Timestamp(d)
+        sub = df[df['date'] <= cutoff]
+        if sub.empty:
+            continue
+        sub = sub.sort_values(['symbol', 'date'], ascending=[True, False])
+        recent = sub.groupby('symbol', sort=False).head(250)
+        zero = recent.groupby('symbol')['volume'].apply(lambda x: (x == 0).sum())
+        total = recent.groupby('symbol').size()
+        _ztd_cache[d] = (zero / total)
+
+    _log.info("preload_ztd_cache: precomputed %d dates for %d symbols",
+             len(_ztd_cache), len(all_symbols))
+
+
 def compute_ztd(data, date, window=250):
     """停牌比率: 过去 window 交易日中零成交天数占比, 取负号.
 
@@ -28,11 +83,23 @@ def compute_ztd(data, date, window=250):
     import sqlite3, pandas as pd
 
     close = data["close"]
+    _syms = close.columns.tolist()
+
+    # ── 优先使用预计算缓存 ──
+    if date in _ztd_cache:
+        import numpy as np
+        ztd = _ztd_cache[date].reindex(_syms)
+        ztd.name = "ztd"
+        ztd = ztd.where(ztd.notna(), other=np.nan)
+        result = _cs_zscore(-ztd)
+        result.name = "ztd"
+        return result
+
+    # ── 缓存未命中: 走原始 SQL 路径 ──
     db = _market_db_path()
     conn = _market_conn("ro")
 
     # 取过去 window 个日历日在 daily 表中的数据
-    _syms = close.columns.tolist()
     _ph = ",".join(["?"] * len(_syms))
 
     # 计算截止日期: date 往前推 window 个日历日

@@ -37,43 +37,37 @@ def _evaluate_batch(args):
     from factor.compute import compute_all_factors, _PRICE_FN_MAP, _FUNDAMENTAL_FN_MAP
 
     store = DataStore()
-    try:
-        n_symbols = kwargs.get("n_symbols", 500)
-        lookback = kwargs.get("lookback", 120)
-        date_str = kwargs.get("date_str")
+    n_symbols = kwargs.get("n_symbols", 500)
+    lookback = kwargs.get("lookback", 120)
+    date_str = kwargs.get("date_str")
 
-        # Load data for evaluation
-        if date_str is None:
-            from datetime import date as _date
-            date_str = _date.today().strftime("%Y-%m-%d")
+    # Load data for evaluation
+    if date_str is None:
+        from datetime import date as _date
+        date_str = _date.today().strftime("%Y-%m-%d")
 
-        symbols = store.get_universe(date_str)[:n_symbols]
-        from factor.windows import max_factor_calendar_days
-        _eff_days = max(lookback * 2, max_factor_calendar_days(factor_names))
-        hist_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
-        data = store.get_daily(symbols, start=hist_start, end=date_str)
-        fundamentals = store.get_fundamentals(symbols, date=date_str)
+    symbols = store.get_universe(date_str)[:n_symbols]
+    from factor.windows import max_factor_calendar_days
+    _eff_days = max(lookback * 2, max_factor_calendar_days(factor_names))
+    hist_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
+    data = store.get_daily(symbols, start=hist_start, end=date_str)
+    fundamentals = store.get_fundamentals(symbols, date=date_str)
 
-        if data is None or data.empty:
-            return results
+    if data is None or data.empty:
+        return results
 
-        # Compute all factors for this date
-        all_factors = compute_all_factors(data, date_str, fundamentals=fundamentals)
+    # Compute all factors for this date
+    all_factors = compute_all_factors(data, date_str, fundamentals=fundamentals)
 
-        # Filter to only our batch
-        for name in factor_names:
-            if name in all_factors:
-                series = all_factors[name]
-                results[name] = {
-                    "valid_count": int(series.notna().sum()),
-                    "mean": float(series.mean()) if series.notna().any() else 0,
-                    "std": float(series.std()) if series.notna().any() else 0,
-                }
-    except Exception as e:
-        raise  # 错误不吞
-        _log.warning(f"batch_evaluate error: {e}")
-    finally:
-        store.close()
+    # Filter to only our batch
+    for name in factor_names:
+        if name in all_factors:
+            series = all_factors[name]
+            results[name] = {
+                "valid_count": int(series.notna().sum()),
+                "mean": float(series.mean()) if series.notna().any() else 0,
+                "std": float(series.std()) if series.notna().any() else 0,
+            }
 
     return results
 

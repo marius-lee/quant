@@ -129,49 +129,45 @@ def compute_factor_stats(
         """Thread worker: each thread opens its own DataStore, loads data, computes factors."""
         import logging as _log
         _log.captureWarnings(True)
-        try:
-            from data.store import DataStore
-            from factor.compute import compute_all_factors
-            import pandas as _pd
+        from data.store import DataStore
+        from factor.compute import compute_all_factors
+        import pandas as _pd
 
-            _store = DataStore()
-            min_date = chunk_dates[0]
-            max_date = chunk_dates[-1]
-            from factor.windows import max_factor_calendar_days
-            _factor_min = max_factor_calendar_days(factor_names)
-            _eff_days = max(_factor_min, lookback * 1.5)
-            data_start = (_pd.Timestamp(min_date) - _pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
-            future_end = (_pd.Timestamp(max_date) + _pd.Timedelta(days=40)).strftime("%Y-%m-%d")
-            data = _store.get_daily(symbols, start=data_start, end=future_end)
+        _store = DataStore()
+        min_date = chunk_dates[0]
+        max_date = chunk_dates[-1]
+        from factor.windows import max_factor_calendar_days
+        _factor_min = max_factor_calendar_days(factor_names)
+        _eff_days = max(_factor_min, lookback * 1.5)
+        data_start = (_pd.Timestamp(min_date) - _pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
+        future_end = (_pd.Timestamp(max_date) + _pd.Timedelta(days=40)).strftime("%Y-%m-%d")
+        data = _store.get_daily(symbols, start=data_start, end=future_end)
 
-            results = []
-            for date_str in chunk_dates:
+        results = []
+        for date_str in chunk_dates:
+            try:
+                fundamentals = _store.get_fundamentals(symbols, date=date_str)
+                fin = _store.get_financials(symbols, date=date_str)
+                preloaded_fin = {date_str: fin} if fin is not None and not fin.empty else None
+                fv = compute_all_factors(data, date_str,
+                                         fundamentals=fundamentals,
+                                         factor_names=factor_names,
+                                         preloaded_financials=preloaded_fin)
+                result = {}
+                for name in factor_names:
+                    if name in fv and not fv[name].dropna().empty:
+                        result[name] = fv[name]
                 try:
-                    fundamentals = _store.get_fundamentals(symbols, date=date_str)
-                    fin = _store.get_financials(symbols, date=date_str)
-                    preloaded_fin = {date_str: fin} if fin is not None and not fin.empty else None
-                    fv = compute_all_factors(data, date_str,
-                                             fundamentals=fundamentals,
-                                             factor_names=factor_names,
-                                             preloaded_financials=preloaded_fin)
-                    result = {}
-                    for name in factor_names:
-                        if name in fv and not fv[name].dropna().empty:
-                            result[name] = fv[name]
-                    try:
-                        close_series = data["close"].loc[date_str]
-                    except KeyError:
-                        close_series = _pd.Series(dtype=float)
-                    results.append((date_str, result, close_series, None))
-                except Exception as e:
-                    results.append((date_str, {}, _pd.Series(dtype=float), str(e)))
-                    raise
+                    close_series = data["close"].loc[date_str]
+                except KeyError:
+                    close_series = _pd.Series(dtype=float)
+                results.append((date_str, result, close_series, None))
+            except Exception as e:
+                results.append((date_str, {}, _pd.Series(dtype=float), str(e)))
+                raise
 
-            _store.close()
-            return results
-        except Exception as e:
-            logger.exception(f"Thread worker fatal error: {type(e).__name__}: {e}")
-            return [(d, {}, _pd.Series(dtype=float), f"{type(e).__name__}: {e}") for d in chunk_dates]
+        _store.close()
+        return results
 
     n_chunks = min(_MAX_WORKERS, len(eval_date_strs))
     chunk_size = max(1, len(eval_date_strs) // n_chunks)
@@ -191,36 +187,21 @@ def compute_factor_stats(
 
         logger.info(f"parallel compute: {len(futures)} chunks x {n_chunks} threads")
 
-        try:
-            from tqdm import tqdm
-            pbar = tqdm(total=len(futures), desc="Computing factors (parallel)")
-        except ImportError:
-            pbar = None
+        from tqdm import tqdm
+        pbar = tqdm(total=len(futures), desc="Computing factors (parallel)")
 
-        try:
-            for future in as_completed(futures, timeout=_WORKER_TIMEOUT_SEC):
-                chunk_results = future.result()
-                for date_str, fv_partial, close_series, err in chunk_results:
-                    if err:
-                        logger.warning(f"Factor compute failed at {date_str}: {err}")
-                    else:
-                        for name, series in fv_partial.items():
-                            factor_values_by_date[name][date_str] = series
-                        if close_series is not None and not close_series.empty:
-                            close_by_date[date_str] = close_series
-                if pbar:
-                    pbar.update(1)
-        except FuturesTimeoutError:
-            n_pending = sum(1 for f in futures if not f.done())
-            logger.error(
-                f"ThreadPoolExecutor timed out after {_WORKER_TIMEOUT_SEC}s — "
-                f"{n_pending} chunk(s) incomplete, canceling"
-            )
-            for f in futures:
-                f.cancel()
-        finally:
+        for future in as_completed(futures, timeout=_WORKER_TIMEOUT_SEC):
+            chunk_results = future.result()
+            for date_str, fv_partial, close_series, err in chunk_results:
+                if err:
+                    logger.warning(f"Factor compute failed at {date_str}: {err}")
+                else:
+                    for name, series in fv_partial.items():
+                        factor_values_by_date[name][date_str] = series
+                    if close_series is not None and not close_series.empty:
+                        close_by_date[date_str] = close_series
             if pbar:
-                pbar.close()
+                pbar.update(1)
     finally:
         executor.shutdown(wait=False)
 
@@ -393,14 +374,10 @@ def compute_factor_stats(
         "cached_at": datetime.now().isoformat(),
     }
     # 同步写入 factor_registry
-    try:
-        from factor.compute import update_factor_evaluation
-        for k, ic_val in ic_means.items():
-            ir_val = ic_irs.get(k, 0.0)
-            update_factor_evaluation(k, ic_val, ir_val)
-    except Exception as e:
-        logger.warning(f"factor_registry update failed: {e}")
-        raise
+    from factor.compute import update_factor_evaluation
+    for k, ic_val in ic_means.items():
+        ir_val = ic_irs.get(k, 0.0)
+        update_factor_evaluation(k, ic_val, ir_val)
 
     return result
 
@@ -439,54 +416,42 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
         n_symbols = _require_cfg("factor.evaluation.n_symbols")
     import sqlite3 as _sql
     if not force_refresh:
-        try:
-            conn = _sql.connect(_DB_PATH)
-            row = conn.execute(
-                "SELECT data, created_at FROM factor_snapshot WHERE id=1"
-            ).fetchone()
-            conn.close()
-            if row:
-                cached = json.loads(row[0])
-                cached_at = datetime.fromisoformat(cached.get("cached_at", "2000-01-01"))
-                age_sec = (datetime.now() - cached_at).total_seconds()
-                if age_sec < _SNAPSHOT_TTL_SEC:
-                    logger.info(f"factor snapshot hit, age={age_sec/60:.0f}min")
-                    return cached
-                logger.info(f"factor snapshot expired, age={age_sec/3600:.1f}h")
-        except Exception as e:
-            logger.warning(f"Factor snapshot read failed: {e}")
-            raise
+        conn = _sql.connect(_DB_PATH)
+        row = conn.execute(
+            "SELECT data, created_at FROM factor_snapshot WHERE id=1"
+        ).fetchone()
+        conn.close()
+        if row:
+            cached = json.loads(row[0])
+            cached_at = datetime.fromisoformat(cached.get("cached_at", "2000-01-01"))
+            age_sec = (datetime.now() - cached_at).total_seconds()
+            if age_sec < _SNAPSHOT_TTL_SEC:
+                logger.info(f"factor snapshot hit, age={age_sec/60:.0f}min")
+                return cached
+            logger.info(f"factor snapshot expired, age={age_sec/3600:.1f}h")
 
     # 进程内重入保护
     if not _COMPUTE_LOCK.acquire(blocking=False):
         logger.warning("factor stats: in-process lock held by another thread, returning stale cache")
-        try:
-            conn = _sql.connect(_DB_PATH)
-            row = conn.execute("SELECT data FROM factor_snapshot WHERE id=1").fetchone()
-            conn.close()
-            if row:
-                return json.loads(row[0])
-        except Exception:
-            import logging; logging.getLogger("quant.factor.stats_cache").warning("load_latest failed", exc_info=True)
-            return _empty_result()
+        conn = _sql.connect(_DB_PATH)
+        row = conn.execute("SELECT data FROM factor_snapshot WHERE id=1").fetchone()
+        conn.close()
+        if row:
+            return json.loads(row[0])
 
     try:
         logger.info("computing factor stats (this may take ~30s)...")
         lookback_val = _require_cfg("factor.evaluation.lookback")
         stats = compute_factor_stats(n_symbols=n_symbols, lookback=lookback_val, status_filter=status_filter)
 
-        try:
-            conn = _sql.connect(_DB_PATH)
-            conn.execute(
-                "INSERT OR REPLACE INTO factor_snapshot (id, data, created_at, n_symbols, lookback) VALUES (1,?,datetime('now','localtime'),?,?)",
-                (json.dumps(stats, ensure_ascii=False), n_symbols, lookback_val)
-            )
-            conn.commit()
-            conn.close()
-            logger.info("factor snapshot saved to factor_snapshot table")
-        except Exception as e:
-            logger.warning(f"Factor snapshot write failed: {e}")
-            raise
+        conn = _sql.connect(_DB_PATH)
+        conn.execute(
+            "INSERT OR REPLACE INTO factor_snapshot (id, data, created_at, n_symbols, lookback) VALUES (1,?,datetime('now','localtime'),?,?)",
+            (json.dumps(stats, ensure_ascii=False), n_symbols, lookback_val)
+        )
+        conn.commit()
+        conn.close()
+        logger.info("factor snapshot saved to factor_snapshot table")
 
         return stats
     finally:
@@ -507,31 +472,27 @@ def _load_ic_from_db(filter_names=None, status_filter='using') -> dict:
     else:
         statuses = (status_filter,)
 
-    try:
-        import sqlite3 as _sql
-        db = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
-        conn = _sql.connect(db, timeout=30)
-        ph = ",".join("?" * len(statuses))
-        rows = conn.execute(
-            f"SELECT name, ic_mean FROM factor_registry WHERE status IN ({ph})",
-            list(statuses)
-        ).fetchall()
-        conn.close()
-        if not rows:
-            return {}
-        ic_map = {}
-        for name, ic in rows:
-            ic_map[name] = ic if isinstance(ic, (int, float)) else 0.0
-        if filter_names and ic_map:
-            ic_map = {k: v for k, v in ic_map.items() if k in filter_names}
-        total = sum(abs(v) for v in ic_map.values())
-        if total > 0:
-            ic_map = {k: v / total for k, v in ic_map.items()}
-        logger.info(f"IC weights loaded from DB: {len(ic_map)} factors")
-        return ic_map
-    except Exception as e:
-        logger.exception(f"factor_registry IC load failed — cannot proceed without IC weights")
-        raise
+    import sqlite3 as _sql
+    db = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
+    conn = _sql.connect(db, timeout=30)
+    ph = ",".join("?" * len(statuses))
+    rows = conn.execute(
+        f"SELECT name, ic_mean FROM factor_registry WHERE status IN ({ph})",
+        list(statuses)
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return {}
+    ic_map = {}
+    for name, ic in rows:
+        ic_map[name] = ic if isinstance(ic, (int, float)) else 0.0
+    if filter_names and ic_map:
+        ic_map = {k: v for k, v in ic_map.items() if k in filter_names}
+    total = sum(abs(v) for v in ic_map.values())
+    if total > 0:
+        ic_map = {k: v / total for k, v in ic_map.items()}
+    logger.info(f"IC weights loaded from DB: {len(ic_map)} factors")
+    return ic_map
 
 
 def load_ic_map_from_cache(factor_values: dict = None, status_filter='using') -> dict:

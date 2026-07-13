@@ -174,6 +174,10 @@ def compute_factor_stats(
     date_chunks = [eval_date_strs[i:i + chunk_size] for i in range(0, len(eval_date_strs), chunk_size)]
     logger.info(f"partitioned {len(eval_date_strs)} dates into {len(date_chunks)} chunks (max {chunk_size}/chunk)")
 
+    # ── ztd 预计算缓存: 消除评估管线每交易日重复 SQL 查询 ──
+    from factor.compute.price._alternative import preload_ztd_cache as _preload_ztd
+    _preload_ztd(eval_date_strs, symbols)
+
     with ThreadPoolExecutor(max_workers=n_chunks) as executor:
         futures = {executor.submit(_thread_compute_chunk, chunk_dates): ci
                    for ci, chunk_dates in enumerate(date_chunks)}

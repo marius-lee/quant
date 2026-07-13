@@ -124,21 +124,25 @@ def compute_ic(*,
 
     def _compute_one_day(ds):
         """从预加载的 data 切片出截至 ds 的窗口，计算因子。（不调 SQLite）"""
-        ds_data = data.loc[:ds]
-        if ds_data is None or ds_data.empty:
-            return (ds, {}, None)
-        close = ds_data["close"]
-        if not isinstance(close, pd.DataFrame):
-            return (ds, {}, None)
-        if len(close) < 2:
-            return (ds, {}, None)
-        fwd = (close.iloc[-1] / close.iloc[-2]) - 1
-        fundamentals = store.get_fundamentals(symbols, ds)
-        factor_vals = compute_all_factors(
-            ds_data, ds, fundamentals=fundamentals,
-            factor_names=factor_names, status_filter=status_filter,
-        )
-        return (ds, factor_vals, fwd)
+        try:
+            # 切片: 只保留 <= ds 的数据（模拟"截至 ds 已知的数据"）
+            ds_data = data.loc[:ds]
+            if ds_data is None or ds_data.empty:
+                return (ds, {}, None)
+            close = ds_data["close"]
+            if not isinstance(close, pd.DataFrame):
+                return (ds, {}, None)
+            if len(close) < 2:
+                return (ds, {}, None)
+            fwd = (close.iloc[-1] / close.iloc[-2]) - 1
+            fundamentals = store.get_fundamentals(symbols, ds)
+            factor_vals = compute_all_factors(
+                ds_data, ds, fundamentals=fundamentals,
+                factor_names=factor_names, status_filter=status_filter,
+            )
+            return (ds, factor_vals, fwd)
+        except Exception:
+            raise
 
     for ds in compute_days:
         _, factor_vals, fwd = _compute_one_day(ds)

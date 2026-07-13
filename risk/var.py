@@ -189,4 +189,23 @@ def update_daily_risk(engine, strategy="quant"):
         cov = None
 
     store.close()
-    return risk_report(positions, total_wealth, weights, cov)
+    rpt = risk_report(positions, total_wealth, weights, cov)
+
+    # Persist to daily_risk table for backtest audit trail
+    _db = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "trades.db")
+    _conn = sqlite3.connect(_db)
+    _conn.execute("""CREATE TABLE IF NOT EXISTS daily_risk (
+        date TEXT PRIMARY KEY,
+        var_95 REAL, var_95_pct REAL, cvar_95 REAL, cvar_95_pct REAL,
+        portfolio_value REAL, n_positions INTEGER
+    )""")
+    _conn.execute(
+        "INSERT OR REPLACE INTO daily_risk(date, var_95, var_95_pct, cvar_95, cvar_95_pct, portfolio_value, n_positions) "
+        "VALUES (date('now','localtime'), ?, ?, ?, ?, ?, ?)",
+        (rpt.get("var", {}).get("var_95"), rpt.get("var", {}).get("var_95_pct"),
+         rpt.get("cvar", {}).get("cvar_95"), rpt.get("cvar", {}).get("cvar_95_pct"),
+         portfolio_value, len(positions))
+    )
+    _conn.commit()
+    _conn.close()
+    return rpt

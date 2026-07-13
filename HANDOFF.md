@@ -977,3 +977,26 @@ factor/compute/fundamental/
 - 将 `from utils.logger import get_logger` 提升到模块顶部 (行 6)
 - 删除函数体内所有冗余 inline import (行 41/50/57/58/84/85)
 - 结果: `get_logger` 是模块级变量, 永不未绑定
+
+## 2026-07-13 09:42 — 信号持久化入库 + 数据流修复 + 日志分离
+
+### 问题根因
+- signals._run 产出写入模块变量 _last_signals, execute._run 从 state_broker 读取 → 数据流中断
+- state_broker 是纯内存字典, 进程重启后信号数据丢失
+- web 重启后 execute 永远拿到 0 targets
+
+### 修复内容
+- data/trade_repo.py: 新增 daily_signals 表 + save_signals/get_latest_signals CRUD
+- quant/scheduler/signals.py: 信号生成后写入 daily_signals 表
+- quant/scheduler/execute.py: 从 daily_signals 表读取信号 (不再依赖 broker)
+- scripts/run_task.py: 手动任务执行器 (signals/execute/cleanup)
+- web/app.py: _capital() 硬编码→live.default_cfg; 4 处 pass→logger.warning; api_metrics 路由修复
+- config/config.yaml: live.default_capital=5000; backtest.default_capital=5000; execution.impact_eta/default_daily_vol
+- utils/logger.py: 日志按模块名分离 app.log vs backtest.log
+- pipeline.py: 删除函数体内 get_logger 阴影导入; DataStore(db_path=None) 修复
+- restart.sh: 重建 (之前被误删)
+
+### 手动任务命令
+  PYTHONPATH=. .venv/bin/python3 scripts/run_task.py signals  [YYYY-MM-DD]
+  PYTHONPATH=. .venv/bin/python3 scripts/run_task.py execute  [YYYY-MM-DD]
+  PYTHONPATH=. .venv/bin/python3 scripts/run_task.py cleanup  [YYYY-MM-DD]

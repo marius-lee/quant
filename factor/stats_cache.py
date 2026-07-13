@@ -164,13 +164,12 @@ def compute_factor_stats(
                         close_series = _pd.Series(dtype=float)
                     results.append((date_str, result, close_series, None))
                 except Exception as e:
-                    raise  # 错误不吞
                     results.append((date_str, {}, _pd.Series(dtype=float), str(e)))
+                    raise
 
             _store.close()
             return results
         except Exception as e:
-            raise  # 错误不吞
             logger.exception(f"Thread worker fatal error: {type(e).__name__}: {e}")
             return [(d, {}, _pd.Series(dtype=float), f"{type(e).__name__}: {e}") for d in chunk_dates]
 
@@ -183,7 +182,8 @@ def compute_factor_stats(
     from factor.compute.price._alternative import preload_ztd_cache as _preload_ztd
     _preload_ztd(eval_date_strs, symbols)
 
-    with ThreadPoolExecutor(max_workers=n_chunks) as executor:
+    executor = ThreadPoolExecutor(max_workers=n_chunks)
+    try:
         futures = {executor.submit(_thread_compute_chunk, chunk_dates): ci
                    for ci, chunk_dates in enumerate(date_chunks)}
         for ci, chunk_dates in enumerate(date_chunks):
@@ -221,6 +221,8 @@ def compute_factor_stats(
         finally:
             if pbar:
                 pbar.close()
+    finally:
+        executor.shutdown(wait=False)
 
     logger.info(f"factor compute complete: {len(eval_date_strs)}/{len(eval_date_strs)} dates")
 
@@ -268,7 +270,8 @@ def compute_factor_stats(
 
     logger.info(f"IC compute start: {len(factor_names)} factors")
 
-    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
+    executor = ThreadPoolExecutor(max_workers=_MAX_WORKERS)
+    try:
         futures = {executor.submit(_compute_ic, name, factor_values_by_date[name],
                                    forward_1d, forward_5d, forward_20d): name
                    for name in factor_names}
@@ -283,6 +286,8 @@ def compute_factor_stats(
             if ic_completed % 10 == 0:
                 logger.info(f"IC compute progress: {ic_completed}/{len(factor_names)} factors")
         logger.info(f"IC compute complete: {len(factor_names)} factors")
+    finally:
+        executor.shutdown(wait=False)
 
     # 6. 计算因子相关性矩阵
     n = len(factor_names)
@@ -310,7 +315,8 @@ def compute_factor_stats(
     corr_matrix = np.eye(n)
     corr_counts = np.zeros((n, n))
     if pairs:
-        with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
+        executor = ThreadPoolExecutor(max_workers=_MAX_WORKERS)
+        try:
             futures = {executor.submit(_compute_pair, i, j, ni, nj): (i, j)
                        for i, j, ni, nj in pairs}
             for future in as_completed(futures, timeout=_WORKER_TIMEOUT_SEC):
@@ -319,6 +325,8 @@ def compute_factor_stats(
                 corr_matrix[j][i] = avg
                 corr_counts[i][j] = n_pairs
                 corr_counts[j][i] = n_pairs
+        finally:
+            executor.shutdown(wait=False)
     logger.info(f"corr matrix: {n}x{n}, avg pairwise periods: {corr_counts.sum()/(n*(n-1)):.1f}" if n > 1 else "corr: single factor")
 
     # 7. 生成因子元信息
@@ -391,8 +399,8 @@ def compute_factor_stats(
             ir_val = ic_irs.get(k, 0.0)
             update_factor_evaluation(k, ic_val, ir_val)
     except Exception as e:
-        raise  # 错误不吞
         logger.warning(f"factor_registry update failed: {e}")
+        raise
 
     return result
 
@@ -446,8 +454,8 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
                     return cached
                 logger.info(f"factor snapshot expired, age={age_sec/3600:.1f}h")
         except Exception as e:
-            raise  # 错误不吞
             logger.warning(f"Factor snapshot read failed: {e}")
+            raise
 
     # 进程内重入保护
     if not _COMPUTE_LOCK.acquire(blocking=False):
@@ -459,7 +467,6 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
             if row:
                 return json.loads(row[0])
         except Exception:
-            raise  # 错误不吞
             import logging; logging.getLogger("quant.factor.stats_cache").warning("load_latest failed", exc_info=True)
             return _empty_result()
 
@@ -478,8 +485,8 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
             conn.close()
             logger.info("factor snapshot saved to factor_snapshot table")
         except Exception as e:
-            raise  # 错误不吞
             logger.warning(f"Factor snapshot write failed: {e}")
+            raise
 
         return stats
     finally:
@@ -523,7 +530,6 @@ def _load_ic_from_db(filter_names=None, status_filter='using') -> dict:
         logger.info(f"IC weights loaded from DB: {len(ic_map)} factors")
         return ic_map
     except Exception as e:
-        raise  # 错误不吞
         logger.exception(f"factor_registry IC load failed — cannot proceed without IC weights")
         raise
 

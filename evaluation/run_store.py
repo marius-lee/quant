@@ -16,31 +16,21 @@ _DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "mar
 
 def save_phase(phase: str, data: dict) -> int:
     """Save a phase result to evaluation_runs. Returns row id."""
+    from data.repos import EvaluationRepo
     data_json = json.dumps(data, ensure_ascii=False, default=str)
     n_factors = data.get("n_factors") or len(data.get("factors", []))
     n_passed = len(data.get("passed", []))
-    conn = sqlite3.connect(_DB_PATH, timeout=_require_cfg("data.sqlite.timeout"))
-    conn.execute(
-        """INSERT INTO evaluation_runs (run_ts, phase, data_json, n_factors, n_passed)
-           VALUES (datetime('now','localtime'), ?, ?, ?, ?)""",
-        (phase, data_json, n_factors, n_passed)
-    )
-    conn.commit()
-    rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-    conn.close()
-    return rid
+    repo = EvaluationRepo()
+    return repo.save_evaluation(phase, data_json, n_factors, n_passed)
 
 
 def load_latest(phase: str) -> dict | None:
     """Load the most recent result for a given phase. Returns None if no rows."""
-    conn = sqlite3.connect(_DB_PATH, timeout=_require_cfg("data.sqlite.timeout"))
-    row = conn.execute(
-        "SELECT data_json FROM evaluation_runs WHERE phase=? ORDER BY run_ts DESC LIMIT 1",
-        (phase,)
-    ).fetchone()
-    conn.close()
-    if row:
-        return json.loads(row[0])
+    from data.repos import EvaluationRepo
+    repo = EvaluationRepo()
+    row = repo.get_latest(phase)
+    if row and row.get("data_json"):
+        return json.loads(row["data_json"])
     return None
 
 

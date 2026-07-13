@@ -30,12 +30,8 @@ def validate_oos(input_json: str = "/tmp/_eval_phase2.json",
 
     # ADR 028: read from evaluation_runs DB first, fallback to JSON file
     p2 = None
-    try:
-        from evaluation.run_store import load_latest
-        p2 = load_latest("phase2")
-    except Exception:
-        raise  # 错误不吞
-        logger.error("Phase 3 load_latest(phase2) traceback:\n" + __import__('traceback').format_exc())
+    from evaluation.run_store import load_latest
+    p2 = load_latest("phase2")
     if p2 is None:
         logger.error("Phase 3: no Phase 2 data in evaluation_runs — aborting (no temp file fallback)")
         return {"kept": [], "oos_irs": [], "pbo_result": {}, "n_folds": 0}
@@ -70,23 +66,18 @@ def validate_oos(input_json: str = "/tmp/_eval_phase2.json",
 
     if not ic_series_dict:
         logger.info("Phase 3: re-computing IC series for %d candidates...", len(candidates))
-        try:
-            from factor.stats_cache import compute_factor_stats
-            stats = compute_factor_stats(
-                factor_names=candidates,
-                n_symbols=None,
-                lookback=lookback,
-            )
-            for name in candidates:
-                ic_data = stats.get("ic_series", {}).get(name, {})
-                if ic_data:
-                    s = pd.Series(ic_data)
-                    s.index = pd.to_datetime(list(ic_data.keys()))
-                    ic_series_dict[name] = s
-        except Exception as _e:
-            raise  # 错误不吞
-            logger.error("Phase 3 IC series recompute traceback:\n" + __import__('traceback').format_exc())
-            return {"kept": [], "oos_irs": [], "pbo_result": {}, "n_folds": 0}
+        from factor.stats_cache import compute_factor_stats
+        stats = compute_factor_stats(
+            factor_names=candidates,
+            n_symbols=None,
+            lookback=lookback,
+        )
+        for name in candidates:
+            ic_data = stats.get("ic_series", {}).get(name, {})
+            if ic_data:
+                s = pd.Series(ic_data)
+                s.index = pd.to_datetime(list(ic_data.keys()))
+                ic_series_dict[name] = s
 
     # ── CPCV 折叠 ──
     pvf = PurgedWalkForward(n_groups=n_groups, embargo_days=embargo_days)
@@ -163,13 +154,9 @@ def validate_oos(input_json: str = "/tmp/_eval_phase2.json",
     }
 
     # 持久化到 evaluation_runs (ADR 028: DB 替代临时文件)
-    try:
-        from evaluation.run_store import save_phase
-        result["n_factors"] = len(candidates)
-        save_phase("phase3", result)
-        logger.info("Phase 3 saved to evaluation_runs")
-    except Exception as _e:
-        raise  # 错误不吞
-        logger.error("Phase 3 save_phase traceback:\n" + __import__('traceback').format_exc())
+    from evaluation.run_store import save_phase
+    result["n_factors"] = len(candidates)
+    save_phase("phase3", result)
+    logger.info("Phase 3 saved to evaluation_runs")
 
     return result

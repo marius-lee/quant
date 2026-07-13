@@ -175,27 +175,23 @@ def compute_str(data, date, window=20):
         return _cs_zscore(-raw).rename("str")
 
     # 市值中性化 (从 stocks 表取 total_mv)
-    try:
-        conn2 = _market_conn("ro")
-        _syms2 = raw.index.tolist()
-        _ph2 = ",".join(["?"] * len(_syms2))
-        rows = conn2.execute(
-            f"SELECT symbol, total_mv FROM stocks WHERE symbol IN ({_ph2}) AND total_mv IS NOT NULL",
-            _syms2
-        ).fetchall()
-        conn2.close()
-        mv_map = {r[0]: r[1] for r in rows}
-        log_mv = pd.Series({s: np.log(mv_map[s]) for s in raw.index if s in mv_map})
-        common = raw.index.intersection(log_mv.index)
-        if len(common) >= 30:
-            from sklearn.linear_model import LinearRegression
-            X = log_mv.loc[common].values.reshape(-1, 1)
-            y = raw.loc[common].values
-            resid = y - LinearRegression().fit(X, y).predict(X)
-            raw = pd.Series(resid, index=common)
-    except Exception:
-        _log.error("STR residual failed: %s", traceback.format_exc())
-        raise
+    conn2 = _market_conn("ro")
+    _syms2 = raw.index.tolist()
+    _ph2 = ",".join(["?"] * len(_syms2))
+    rows = conn2.execute(
+        f"SELECT symbol, total_mv FROM stocks WHERE symbol IN ({_ph2}) AND total_mv IS NOT NULL",
+        _syms2
+    ).fetchall()
+    conn2.close()
+    mv_map = {r[0]: r[1] for r in rows}
+    log_mv = pd.Series({s: np.log(mv_map[s]) for s in raw.index if s in mv_map})
+    common = raw.index.intersection(log_mv.index)
+    if len(common) >= 30:
+        from sklearn.linear_model import LinearRegression
+        X = log_mv.loc[common].values.reshape(-1, 1)
+        y = raw.loc[common].values
+        resid = y - LinearRegression().fit(X, y).predict(X)
+        raw = pd.Series(resid, index=common)
 
     # 取负: 低波动→高分
     return _cs_zscore(-raw).rename("str")
@@ -262,12 +258,8 @@ def compute_abn_turnover(data, date, window=20):
     else:
         X = log_mv.reshape(-1, 1)
 
-    try:
-        resid = y - LinearRegression().fit(X, y).predict(X)
-        raw = pd.Series(resid, index=common)
-    except Exception:
-        _log.error("ABN_TURN residual failed, using raw turnover: %s", traceback.format_exc())
-        raise
+    resid = y - LinearRegression().fit(X, y).predict(X)
+    raw = pd.Series(resid, index=common)
 
     # 取负: 异常高换手→低分
     return _cs_zscore(-raw).rename("abn_turnover")
@@ -288,14 +280,9 @@ def _get_limit_pool(date_str: str, conn=None):
     df_up = pd.read_sql_query(
         "SELECT * FROM limit_up_pool WHERE date=?", conn, params=(date_str,)
     )
-    try:
-        df_down = pd.read_sql_query(
-            "SELECT * FROM limit_down_pool WHERE date=?", conn, params=(date_str,)
-        )
-    except Exception:
-        raise  # 错误不吞
-        _log.error("limit_down_pool query failed: %s", traceback.format_exc())
-        df_down = pd.DataFrame()
+    df_down = pd.read_sql_query(
+        "SELECT * FROM limit_down_pool WHERE date=?", conn, params=(date_str,)
+    )
     if own:
         conn.close()
     return df_up, df_down
@@ -445,19 +432,14 @@ def compute_trcf(data: "pd.DataFrame", date: str, window: int = 120) -> "pd.Seri
     result = pd.Series(0.0, index=symbols_all)
 
     for sym in symbols_all:
-        try:
-            if sym not in turnover.columns:
-                continue
-            ts = turnover[sym].dropna()
-            if len(ts) < 120:
-                continue
-            mas = [ts.tail(w).mean() for w in windows]
-            std_ma = np.std(mas)
-            result[sym] = -np.log(1 + std_ma)
-        except Exception:
-            raise  # 错误不吞
-            _log.error("TRCF per-symbol %s failed: %s", sym, traceback.format_exc())
+        if sym not in turnover.columns:
             continue
+        ts = turnover[sym].dropna()
+        if len(ts) < 120:
+            continue
+        mas = [ts.tail(w).mean() for w in windows]
+        std_ma = np.std(mas)
+        result[sym] = -np.log(1 + std_ma)
 
     return _cs_zscore(result).rename("trcf")
 
@@ -475,23 +457,18 @@ def compute_ideal_amplitude(data: "pd.DataFrame", date: str, window: int = 20) -
     result = pd.Series(0.0, index=symbols_all)
 
     for sym in symbols_all:
-        try:
-            if sym not in data["high"].columns or sym not in data["low"].columns:
-                continue
-            high = data["high"][sym].dropna()
-            low = data["low"][sym].dropna()
-            ampl = (high - low) / low
-            ampl = ampl.dropna()
-            if len(ampl) < window:
-                continue
-            recent = ampl.tail(window)
-            high_q = recent.nlargest(max(int(len(recent) * 0.25), 1)).mean()
-            low_q = recent.nsmallest(max(int(len(recent) * 0.25), 1)).mean()
-            result[sym] = -(high_q - low_q)
-        except Exception:
-            raise  # 错误不吞
-            _log.error("ideal_amplitude per-symbol %s failed: %s", sym, traceback.format_exc())
+        if sym not in data["high"].columns or sym not in data["low"].columns:
             continue
+        high = data["high"][sym].dropna()
+        low = data["low"][sym].dropna()
+        ampl = (high - low) / low
+        ampl = ampl.dropna()
+        if len(ampl) < window:
+            continue
+        recent = ampl.tail(window)
+        high_q = recent.nlargest(max(int(len(recent) * 0.25), 1)).mean()
+        low_q = recent.nsmallest(max(int(len(recent) * 0.25), 1)).mean()
+        result[sym] = -(high_q - low_q)
 
     return _cs_zscore(result).rename("ideal_amplitude")
 
@@ -516,21 +493,17 @@ def compute_short_interest(data, date, window=20):
     import sqlite3, os as _os3
     symbols = list(data["close"].columns)
     result = pd.Series(np.nan, index=symbols)
-    try:
-        conn = sqlite3.connect(_os.path.join(_os.path.dirname(__file__), "../../../data/market.db"))
-        rows = conn.execute(
-            "SELECT symbol, short_balance, margin_total FROM margin_detail "
-            "WHERE date = (SELECT MAX(date) FROM margin_detail WHERE date <= ?) "
-            "AND margin_total > 0",
-            (str(date)[:10],)
-        ).fetchall()
-        conn.close()
-        for sym, sb, mt in rows:
-            if sym in symbols and mt > 0:
-                result[sym] = float(sb) / float(mt) if sb else 0
-    except Exception:
-        raise  # 错误不吞
-        _log.error("short_interest failed: %s", traceback.format_exc())
+    conn = sqlite3.connect(_os.path.join(_os.path.dirname(__file__), "../../../data/market.db"))
+    rows = conn.execute(
+        "SELECT symbol, short_balance, margin_total FROM margin_detail "
+        "WHERE date = (SELECT MAX(date) FROM margin_detail WHERE date <= ?) "
+        "AND margin_total > 0",
+        (str(date)[:10],)
+    ).fetchall()
+    conn.close()
+    for sym, sb, mt in rows:
+        if sym in symbols and mt > 0:
+            result[sym] = float(sb) / float(mt) if sb else 0
     # High short interest → negative signal
     return _cs_zscore(-result).rename("short_interest")
 
@@ -544,25 +517,21 @@ def compute_fund_flow_3m(data, date, window=60):
     import sqlite3, os as _os4
     symbols = list(data["close"].columns)
     result = pd.Series(0.0, index=symbols)
-    try:
-        conn = sqlite3.connect(_os.path.join(_os.path.dirname(__file__), "../../../data/market.db"))
-        rows = conn.execute(
-            "SELECT symbol, change_ratio FROM fund_hold "
-            "WHERE report_date >= date(?, '-{} days') AND change_ratio IS NOT NULL "
-            "ORDER BY symbol, report_date DESC".format(window),
-            (str(date)[:10],)
-        ).fetchall()
-        conn.close()
-        if rows:
-            import pandas as _pd4
-            df = _pd4.DataFrame(rows, columns=["symbol", "change_ratio"])
-            for sym in symbols:
-                sym_data = df[df["symbol"] == sym]
-                if len(sym_data) > 0:
-                    result[sym] = sym_data["change_ratio"].mean()
-    except Exception:
-        raise  # 错误不吞
-        _log.error("fund_flow_3m failed: %s", traceback.format_exc())
+    conn = sqlite3.connect(_os.path.join(_os.path.dirname(__file__), "../../../data/market.db"))
+    rows = conn.execute(
+        "SELECT symbol, change_ratio FROM fund_hold "
+        "WHERE report_date >= date(?, '-{} days') AND change_ratio IS NOT NULL "
+        "ORDER BY symbol, report_date DESC".format(window),
+        (str(date)[:10],)
+    ).fetchall()
+    conn.close()
+    if rows:
+        import pandas as _pd4
+        df = _pd4.DataFrame(rows, columns=["symbol", "change_ratio"])
+        for sym in symbols:
+            sym_data = df[df["symbol"] == sym]
+            if len(sym_data) > 0:
+                result[sym] = sym_data["change_ratio"].mean()
     return _cs_zscore(result).rename("fund_flow_3m")
 
 

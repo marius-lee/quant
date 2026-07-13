@@ -96,23 +96,18 @@ class _SignalStrategy(bt.Strategy):
         signals = self.params.signals_cache.get(today)
         if signals is None:
             from pipeline import generate_signals
-            try:
-                signals = generate_signals(
-                    date_str=today,
-                    capital=self.broker.getcash(),
-                    strategy=self.params.strategy_name,
-                    skip_pull=True,
-                    status_filter="backtesting",
-                    suppress_push=True,
-                    universe_size=_require_cfg("backtest.universe_size"),
-                    db_path=BACKTEST_DB,
-                    store=self.params.store,
-                )
-                self.params.signals_cache[today] = signals
-            except Exception as e:
-                raise  # 错误不吞
-                _log.warning(f"generate_signals({today}): {e}")
-                return
+            signals = generate_signals(
+                date_str=today,
+                capital=self.broker.getcash(),
+                strategy=self.params.strategy_name,
+                skip_pull=True,
+                status_filter="backtesting",
+                suppress_push=True,
+                universe_size=_require_cfg("backtest.universe_size"),
+                db_path=BACKTEST_DB,
+                store=self.params.store,
+            )
+            self.params.signals_cache[today] = signals
 
         targets = signals.get("target_positions", [])
         if not targets:
@@ -199,21 +194,17 @@ def run_backtest_bt(
     universe = store.get_universe(trading_days[0])
     universe_size = _require_cfg("backtest.universe_size")
     if len(universe) > universe_size:
-        try:
-            import sqlite3
-            conn = sqlite3.connect(MARKET_DB)
-            placeholders = ", ".join("?" * len(universe))
-            rows = conn.execute(
-                f"SELECT symbol, AVG(volume*close) as avg_amount FROM daily "
-                f"WHERE symbol IN ({placeholders}) AND date BETWEEN ? AND ? "
-                f"GROUP BY symbol ORDER BY avg_amount DESC LIMIT ?",
-                universe + [trading_days[0], start_date, universe_size]
-            ).fetchall()
-            conn.close()
-            universe = [r[0] for r in rows] if rows else universe[:universe_size]
-        except Exception:
-            raise  # 错误不吞
-            universe = universe[:universe_size]
+        import sqlite3
+        conn = sqlite3.connect(MARKET_DB)
+        placeholders = ", ".join("?" * len(universe))
+        rows = conn.execute(
+            f"SELECT symbol, AVG(volume*close) as avg_amount FROM daily "
+            f"WHERE symbol IN ({placeholders}) AND date BETWEEN ? AND ? "
+            f"GROUP BY symbol ORDER BY avg_amount DESC LIMIT ?",
+            universe + [trading_days[0], start_date, universe_size]
+        ).fetchall()
+        conn.close()
+        universe = [r[0] for r in rows] if rows else universe[:universe_size]
 
     cerebro = bt.Cerebro()
     cerebro.broker.setcash(capital)
@@ -232,12 +223,8 @@ def run_backtest_bt(
     for sym in universe:
         data = _load_symbol_data(sym, start_date, end_date)
         if data is not None:
-            try:
-                cerebro.adddata(data, name=sym)
-                feed_count += 1
-            except Exception:
-                raise  # 错误不吞
-                pass
+            cerebro.adddata(data, name=sym)
+            feed_count += 1
     _log.info(f"bt_engine: loaded {feed_count}/{len(universe)} data feeds")
 
     if feed_count == 0:
@@ -245,12 +232,7 @@ def run_backtest_bt(
 
     start_value = cerebro.broker.getvalue()
 
-    try:
-        results = cerebro.run()
-    except Exception as e:
-        raise  # 错误不吞
-        _log.error(f"bt_engine run traceback:\n{traceback.format_exc()}")
-        return {"error": str(e)}
+    results = cerebro.run()
 
     end_value = cerebro.broker.getvalue()
     elapsed = time.time() - t0
@@ -260,39 +242,34 @@ def run_backtest_bt(
     from backtest.loop import _compute_backtest_metrics
     metrics = _compute_backtest_metrics(equity_curve)
 
-    try:
-        from backtest.diagnostics import FactorTracker, diagnose
-        from factor.ic import compute_ic as _compute_ic
-        from factor.compute import get_factor_names
+    from backtest.diagnostics import FactorTracker, diagnose
+    from factor.ic import compute_ic as _compute_ic
+    from factor.compute import get_factor_names
 
-        bt_factor_names = get_factor_names(status_filter="backtesting")
-        ic_lookback = _require_cfg("backtest.diagnosis_ic_window")
-        ic_map_raw = _compute_ic(
-            factor_names=bt_factor_names, date=trading_days[0],
-            symbols=universe, lookback=ic_lookback, store=store, status_filter="backtesting"
-        )
-        tracker = FactorTracker()
-        diag = diagnose(ic_map_raw["ic_map"], tracker, metrics)
-        _log.info("diagnosis: %s", diag.get("summary", "no diagnosis"))
+    bt_factor_names = get_factor_names(status_filter="backtesting")
+    ic_lookback = _require_cfg("backtest.diagnosis_ic_window")
+    ic_map_raw = _compute_ic(
+        factor_names=bt_factor_names, date=trading_days[0],
+        symbols=universe, lookback=ic_lookback, store=store, status_filter="backtesting"
+    )
+    tracker = FactorTracker()
+    diag = diagnose(ic_map_raw["ic_map"], tracker, metrics)
+    _log.info("diagnosis: %s", diag.get("summary", "no diagnosis"))
 
-        from evaluation.run_store import save_phase
-        passed = [name for name, info in diag.get("factor_report", {}).items()
-                  if info.get("recommendation") in ("keep", "boost")]
-        save_phase("diagnostics", {
-            "engine": "backtrader",
-            "n_factors": len(diag.get("factor_report", {})),
-            "passed": passed,
-            "factor_report": diag.get("factor_report", {}),
-            "adjustments": diag.get("adjustments", []),
-            "backtest_strategy": strategy,
-            "backtest_period": f"{start_date}_{end_date}",
-            "sharpe": metrics.get("sharpe", 0),
-            "cagr_pct": metrics.get("cagr_pct", 0),
-        })
-    except Exception as e:
-        raise  # 错误不吞
-        _log.warning(f"diagnosis failed: {e}")
-        diag = {"factor_report": {}, "adjustments": [], "summary": str(e)}
+    from evaluation.run_store import save_phase
+    passed = [name for name, info in diag.get("factor_report", {}).items()
+              if info.get("recommendation") in ("keep", "boost")]
+    save_phase("diagnostics", {
+        "engine": "backtrader",
+        "n_factors": len(diag.get("factor_report", {})),
+        "passed": passed,
+        "factor_report": diag.get("factor_report", {}),
+        "adjustments": diag.get("adjustments", []),
+        "backtest_strategy": strategy,
+        "backtest_period": f"{start_date}_{end_date}",
+        "sharpe": metrics.get("sharpe", 0),
+        "cagr_pct": metrics.get("cagr_pct", 0),
+    })
 
     store.close()
 
@@ -315,10 +292,6 @@ def _extract_equity_curve(cerebro, trading_days: list, initial_capital: float) -
     """从 backtrader analyzers 提取 equity curve."""
     equity_curve = [{"date": trading_days[0], "equity": float(initial_capital)}]
     for day in trading_days[1:]:
-        try:
-            value = cerebro.broker.getvalue()
-            equity_curve.append({"date": day, "equity": float(value)})
-        except Exception:
-            raise  # 错误不吞
-            equity_curve.append({"date": day, "equity": equity_curve[-1]["equity"]})
+        value = cerebro.broker.getvalue()
+        equity_curve.append({"date": day, "equity": float(value)})
     return equity_curve

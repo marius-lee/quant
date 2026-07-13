@@ -37,16 +37,11 @@ def compute_all_factors(data: pd.DataFrame, date: str,
     import time as _time
     _t0 = _time.time()
     for name, (cat, win, fn) in price_factors.items():
-        try:
-            _plog.info(f"  computing {name}...")
-            if 'idio_vol' in name and benchmark_ret is not None:
-                results[name] = fn(data, date, win, benchmark_ret=benchmark_ret)
-            else:
-                results[name] = fn(data, date, win)
-        except Exception as e:
-            import traceback; _plog.error(f"traceback: {traceback.format_exc()}")
-            raise
-            results[name] = pd.Series(dtype=float)
+        _plog.info(f"  computing {name}...")
+        if 'idio_vol' in name and benchmark_ret is not None:
+            results[name] = fn(data, date, win, benchmark_ret=benchmark_ret)
+        else:
+            results[name] = fn(data, date, win)
         done_pf += 1
         if done_pf % 5 == 0 or done_pf == total_pf:
             _plog.info(f"  price factors: {done_pf}/{total_pf} ({done_pf*100//total_pf}%, {_time.time()-_t0:.0f}s)")
@@ -67,16 +62,11 @@ def compute_all_factors(data: pd.DataFrame, date: str,
         import time as _time2
         _t1 = _time2.time()
         for name, (cat, fn) in fund_factors.items():
-            try:
-                _plog.info(f"  computing {name}...")
-                if name in _FIN_FACTORS and financials is not None:
-                    results[name] = fn(fundamentals, date, financials=financials)
-                else:
-                    results[name] = fn(fundamentals, date)
-            except Exception as e:
-                import traceback; _plog.error(f"traceback: {traceback.format_exc()}")
-                raise
-                results[name] = pd.Series(dtype=float)
+            _plog.info(f"  computing {name}...")
+            if name in _FIN_FACTORS and financials is not None:
+                results[name] = fn(fundamentals, date, financials=financials)
+            else:
+                results[name] = fn(fundamentals, date)
             done_ff += 1
             if done_ff % 5 == 0 or done_ff == total_ff:
                 _plog.info(f"  fundamental factors: {done_ff}/{total_ff} ({done_ff*100//total_ff}%, {_time2.time()-_t1:.0f}s)")

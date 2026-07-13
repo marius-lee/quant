@@ -54,8 +54,8 @@ def screen_factors(input_json: str = None, output_json: str = None,
           f"ICIR≥{min_icir}, half-life≥{min_half_life}d")
 
     # 获取 backtesting 因子 (两步架构: 可选诊断预筛)
-    conn = sqlite3.connect("data/market.db")
-    all_backtesting = [r[0] for r in conn.execute(
+    from data.repos import FactorRepo; repo = FactorRepo()
+    all_backtesting = [r["name"] for r in repo.get_factors_by_status(
         "SELECT name FROM factor_registry WHERE status IN ('registered','candidate','retired')").fetchall()]
 
     if prefilter_from_diagnostics:

@@ -508,20 +508,14 @@ def _load_ic_from_db(filter_names=None, status_filter='using') -> dict:
         statuses = (status_filter,)
 
     try:
-        import sqlite3 as _sql
-        db = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
-        conn = _sql.connect(db, timeout=30)
-        ph = ",".join("?" * len(statuses))
-        rows = conn.execute(
-            f"SELECT name, ic_mean FROM factor_registry WHERE status IN ({ph})",
-            list(statuses)
-        ).fetchall()
-        conn.close()
+        from data.repos import FactorRepo
+        repo = FactorRepo()
+        rows = repo.get_factors_with_ic(statuses)
         if not rows:
             return {}
         ic_map = {}
-        for name, ic in rows:
-            ic_map[name] = ic if isinstance(ic, (int, float)) else 0.0
+        for r in rows:
+            ic_map[r["name"]] = r["ic_mean"] if isinstance(r["ic_mean"], (int, float)) else 0.0
         if filter_names and ic_map:
             ic_map = {k: v for k, v in ic_map.items() if k in filter_names}
         total = sum(abs(v) for v in ic_map.values())

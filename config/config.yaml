@@ -139,7 +139,7 @@ factor:
     max: 1
     min: -1
   stats:
-    ic_min_periods: 20
+    ic_min_periods: 20  # min trading days w/ valid IC (diff from min_obs=30: min stocks per cross-section)
     lookback_amplification: 1.5
     min_valid_days: 30
     snapshot_ttl_sec: 86400

@@ -30,6 +30,8 @@ def _spearman_ic(fv_series, fwd_series, min_obs=30):
         return None
     common = fv_series.dropna().index.intersection(fwd_series.dropna().index)
     if len(common) < min_obs:
+        # min_obs=30: n>=30 时 Spearman 近似 t 分布 (df=28),
+        # CLT 保证估计量近似正态 (Grinold & Kahn 1999 Ch.6)
         return None
     from scipy import stats as _stats
     rho, _ = _stats.spearmanr(fv_series.loc[common], fwd_series.loc[common])

@@ -13,6 +13,9 @@ from quant.config.loader import get as cfg, validate; validate()  # 启动时校
 from quant.data.store import market_conn  # P69: 统一连接层
 from datetime import date, datetime
 from flask import Flask, jsonify, render_template
+
+# 前端版本标识 — 修改此处触发浏览器刷新认知
+VERSION = "test-v38"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 def _log_exit(reason: str = ""):
@@ -74,7 +77,7 @@ from web.shared import get_state, update_state  # deprecated, kept for compat
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", version=VERSION)
 
 
 @app.route("/api/state")

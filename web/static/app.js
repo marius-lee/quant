@@ -5,7 +5,6 @@
 
 const API = '/api';
 const POLL_MS = 5000;
-const VERSION = 'test-v37';
 const PLOTLY_CONFIG = { responsive: true, displayModeBar: false };
 
 function plotlyFont() {
@@ -481,7 +480,7 @@ function connectSSE() {
 // ── Init ──
 document.addEventListener('DOMContentLoaded', async () => {
   initTheme();
-  (function(){ var ve = document.getElementById('sidebar-version'); if (ve) ve.textContent = VERSION; })();
+  // version already rendered by server-side template — no JS needed
   document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
   connectSSE();
   await pollOverview();

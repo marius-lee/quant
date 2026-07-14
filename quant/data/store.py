@@ -486,35 +486,46 @@ class DataStore:
         return rows
 
     def _fetch_tencent_daily(self, symbols: list, start_date: str) -> list:
-        """腾讯财经逐只日线: vol=股→/100→手, amt用close×vol估算(元→/1000→千元)"""
-        import urllib.request, json as _json
-        max_days = _require_cfg("data.fetch.max_lookback_days")
+        """东方财富 K线 (82子域): vol=手, amt=元→/1000→千元. 腾讯源DNS不可用时替代."""
+        import requests as _req, json as _json
         rows = []
+        end_date = str(datetime.today().strftime("%Y-%m-%d"))
         for sym in symbols:
-            market = _tencent_market(sym)
-            url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
-                   f"?param={market}{sym},day,,,{max_days},qfq")
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            resp = urllib.request.urlopen(req, timeout=_require_cfg("data.http_timeout.tencent"))
-            data = _json.loads(resp.read().decode("utf-8"))
-            kline = data.get("data", {}).get(f"{market}{sym}", {}).get("qfqday")
-            if not kline:
-                continue
-            for row in kline:
-                d = to_str(row[0])
-                if to_compact(d) < to_compact(start_date):  # 腾讯API返回格式不定, compact归一化后字符串比较
+            code = f"1.{sym}" if sym.startswith("6") else f"0.{sym}"
+            try:
+                r = _req.get(
+                    "https://82.push2his.eastmoney.com/api/qt/stock/kline/get",
+                    params={
+                        "fields1": "f1,f2,f3,f4,f5,f6",
+                        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f116",
+                        "ut": "7eea3edcaed734bea9cbfc24409ed989",
+                        "klt": "101", "fqt": "1", "secid": code,
+                        "beg": start_date.replace("-", ""), "end": end_date.replace("-", ""),
+                    },
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    timeout=_require_cfg("data.http_timeout.tencent")
+                )
+                if r.status_code != 200:
                     continue
-                c = float(row[2])          # close
-                vol_raw = float(row[5])     # 股
-                amt_raw = c * vol_raw       # 元 (=close×volume)
-                rows.append(self._norm_row(
-                    sym, d,  # d 已由 to_str() 归一化为 YYYY-MM-DD
-                    float(row[1]), float(row[3]), float(row[4]), c,
-                    vol_raw / 100,          # 股 → 手
-                    amt_raw / 1000,         # 元 → 千元
-                    0.0))
+                data = r.json().get("data", {})
+                klines = data.get("klines")
+                if not klines:
+                    continue
+                for k_str in klines:
+                    p = k_str.split(",")
+                    d = p[0]
+                    if d < start_date:
+                        continue
+                    rows.append(self._norm_row(
+                        sym, d,
+                        float(p[1]), float(p[3]), float(p[4]), float(p[2]),
+                        float(p[5]),      # vol (手, eastmoney 直接就是手)
+                        float(p[6]) / 1000 if len(p) > 6 and p[6] else 0.0,  # amt 元→千元
+                        0.0))
+            except Exception:
+                continue
         if rows:
-            logger.info(f"[tencent] {len(symbols)} stocks: {len(rows)} rows (vol/100→手, amt/1000→千元)")
+            logger.info(f"[tencent/em82] {len(symbols)} stocks: {len(rows)} rows")
         return rows
 
     def _fetch_akshare_daily(self, symbols: list, start_date: str) -> list:

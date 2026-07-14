@@ -133,6 +133,10 @@ class RateLimiter:
             time.sleep(1.0)
         return False
 
+    def wait(self):
+        """阻塞等待直到允许调用（wait_if_needed 的简写别名）。"""
+        self.wait_if_needed()
+
     def __enter__(self):
         if not self.is_allowed():
             self.wait_if_needed()

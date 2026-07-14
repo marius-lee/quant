@@ -40,11 +40,7 @@ def verify_costs(input_json: str = None) -> dict:
     p3 = load_latest("phase3")
     if p3 is None:
         logger.error("Phase 4: no Phase 3 data in evaluation_runs — aborting")
-        result = {"final_factors": [], "dropped": [], "net_verdict": "no_input", "n_factors": 0}
-        from evaluation.run_store import save_phase
-        save_phase("phase4", result)
-        logger.info("Phase 4 saved to evaluation_runs (empty — no Phase 3 input)")
-        return result
+        return {"final_factors": [], "dropped": [], "net_verdict": "no_input"}
 
     kept = p3.get("kept", [])
     oos_irs = p3.get("oos_irs", [])

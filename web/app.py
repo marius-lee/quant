@@ -5,18 +5,18 @@
 """
 
 import json, os, sqlite3
-from config.constants import _require_cfg
+from quant.config.constants import _require_cfg
 
-from utils.excepthook import setup; setup()  # crash → app.log
-from config.loader import get as cfg, validate; validate()  # 启动时校验 config.yaml 类型
-from data.store import market_conn  # P69: 统一连接层
+from quant.utils.excepthook import setup; setup()  # crash → app.log
+from quant.config.loader import get as cfg, validate; validate()  # 启动时校验 config.yaml 类型
+from quant.data.store import market_conn  # P69: 统一连接层
 from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 def _log_exit(reason: str = ""):
     try:
-        from utils.logger import get_logger
+        from quant.utils.logger import get_logger
         get_logger("web.app").warning(
             f"EXIT | reason={reason or 'unknown'} | pid={os.getpid()} | "
             f"thread={_thr.current_thread().name}")
@@ -32,7 +32,7 @@ _atexit.register(_log_exit, "atexit")
 _signal.signal(_signal.SIGTERM, lambda s, f: _clean_exit("SIGTERM"))
 _signal.signal(_signal.SIGINT,  lambda s, f: _clean_exit("SIGINT"))
 
-from utils.logger import get_logger
+from quant.utils.logger import get_logger
 
 logger = get_logger("web.app")
 app = Flask(__name__)
@@ -55,11 +55,11 @@ TRADE_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "tra
 
 def _capital(strategy: str) -> float:
     """从 strategy_config 表读本金。无记录时默认 5000 并自动写入。"""
-    from data.trade_repo import TradeRepo
+    from quant.data.trade_repo import TradeRepo
     repo = TradeRepo()
     cap = repo.get_initial_capital(strategy)
     if cap <= 0:
-        from config.constants import _require_cfg as _rcf
+        from quant.config.constants import _require_cfg as _rcf
         cap = float(_rcf("live.default_capital"))
         repo.set_initial_capital(strategy, cap)
     return cap
@@ -92,13 +92,13 @@ def api_factors():
     ?refresh=true 强制重新计算。
     """
     from flask import request
-    from factor.stats_cache import get_cached_factor_stats
+    from quant.factor.stats_cache import get_cached_factor_stats
     force = request.args.get("refresh", "false").lower() == "true"
     try:
         stats = get_cached_factor_stats(force_refresh=force)
         # 补充 factor_registry 总/有效计数
         try:
-            from data.repos import FactorRepo
+            from quant.data.repos import FactorRepo
             repo = FactorRepo()
             dist = repo.status_distribution()
             stats["n_total"] = repo.count_total()
@@ -124,7 +124,7 @@ def api_factors():
             stats["n_evaluated"] = 0
         return _api_response(data=stats)
     except Exception as e:
-        from utils.logger import get_logger
+        from quant.utils.logger import get_logger
         get_logger("web.app").warning(f"Factor stats failed: {e}")
         return _api_response(error={"code": "FACTOR_ERROR", "message": str(e)})
 
@@ -138,7 +138,7 @@ def api_positions():
     offset = int(request.args.get("offset", 0))
     positions = []
     try:
-        from data.trade_repo import TradeRepo
+        from quant.data.trade_repo import TradeRepo
         repo = TradeRepo(TRADE_DB)
         raw = repo.get_positions(strategy)
         # ── stock name + latest close lookup ──
@@ -194,7 +194,7 @@ def api_trades():
     trades = []
     positions = []
     try:
-        from data.trade_repo import TradeRepo
+        from quant.data.trade_repo import TradeRepo
         repo = TradeRepo(TRADE_DB)
         if strategy:
             raw_trades = repo.get_trades(strategy, limit=10000)  # 前端展示上限, 防止浏览器卡死, 非业务参数
@@ -242,7 +242,7 @@ def api_record_trade():
         return _api_response(error={"code": "INVALID_PARAMETER", "message": "side 必须是 buy 或 sell", "field": "side"}), 400
 
     today = date.today().isoformat()
-    from data.trade_repo import TradeRepo
+    from quant.data.trade_repo import TradeRepo
     repo = TradeRepo()
 
     if side == "buy":
@@ -281,7 +281,7 @@ def api_quotes():
     止盈止损已移到 monitor.py 盘中风控统一管理。
     """
     from flask import request
-    from execution.quote import fetch_quotes, is_trading_time
+    from quant.execution.quote import fetch_quotes, is_trading_time
     syms_str = request.args.get("symbols", "")
     if not syms_str:
         return _api_response(data={"quotes": {}})
@@ -377,7 +377,7 @@ def api_performance():
     total_sells = len(sells)
     win_rate = round(win_trades / total_sells * 100, 1) if total_sells > 0 else 0
     buys = tc.execute("SELECT COUNT(*) FROM sim_trades WHERE side='buy' AND strategy=?", (strategy,)).fetchone()[0]
-    from data.trade_repo import TradeRepo; base = TradeRepo().get_initial_capital(strategy)
+    from quant.data.trade_repo import TradeRepo; base = TradeRepo().get_initial_capital(strategy)
     capital = TradeRepo().get_cash(strategy) or base
     position_cost = tc.execute(
         "SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)",
@@ -393,7 +393,7 @@ def api_performance():
             pos_symbols = [r[0] for r in tc.execute(
                 "SELECT symbol FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)",
                 (strategy, strategy)).fetchall()]
-            from execution.quote import fetch_quotes
+            from quant.execution.quote import fetch_quotes
             quotes = fetch_quotes(pos_symbols)
             shares_map = dict(tc.execute(
                 "SELECT symbol, SUM(shares) FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?) GROUP BY symbol",
@@ -475,7 +475,7 @@ def api_stream():
     import json, queue
     from flask import Response
     q = broker.subscribe()
-    from execution.calendar import get_trading_period as _sp
+    from quant.execution.calendar import get_trading_period as _sp
     def generate():
         try:
             # 先发当前状态
@@ -513,10 +513,10 @@ def api_health():
         "last_progress": state.get("progress", ""),
         "last_trace_id": state.get("trace_id", ""),
     }
-    from monitor.metrics import metrics as _mm
+    from quant.monitor.metrics import metrics as _mm
     status["metrics"] = _mm.snapshot()
     # 告警检查
-    from monitor.alerts import check_alerts
+    from quant.monitor.alerts import check_alerts
     status["alerts"] = check_alerts(state, _mm.snapshot())
     return _api_response(data=status)
 
@@ -530,7 +530,7 @@ def api_scheduler():
 @app.route("/api/metrics")
 def api_metrics():
     """模板9 T1: 指标快照 (Prometheus 本地等价)."""
-    from monitor.metrics import metrics as _mm
+    from quant.monitor.metrics import metrics as _mm
     return _api_response(data=_mm.snapshot())
 
 if __name__ == "__main__":

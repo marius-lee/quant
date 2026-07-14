@@ -1,8 +1,8 @@
 """交易执行调度器 — 每日 09:30."""
 import time as _time, uuid as _uuid
 from datetime import time, datetime
-from monitor.metrics import metrics as _m
-from utils.logger import get_logger
+from quant.monitor.metrics import metrics as _m
+from quant.utils.logger import get_logger
 from quant.scheduler._base import _timed_loop
 
 _log = get_logger("quant.scheduler.execute")
@@ -13,8 +13,8 @@ def _run(today: str):
     _log.info(f"[{today}] 09:30 — executing trades")
     t0 = _time.time()
 
-    from pipeline import execute_signals
-    from data.trade_repo import TradeRepo
+    from quant.pipeline import execute_signals
+    from quant.data.trade_repo import TradeRepo
 
     # 从 daily_signals 表读取今日信号 (持久化, 重启安全)
     sig = TradeRepo().get_latest_signals()

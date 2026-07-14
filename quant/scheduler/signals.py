@@ -1,8 +1,8 @@
 """信号生成调度器 — 每日 08:30."""
 import time as _time, uuid as _uuid
 from datetime import time
-from monitor.metrics import metrics as _m
-from utils.logger import get_logger
+from quant.monitor.metrics import metrics as _m
+from quant.utils.logger import get_logger
 from quant.scheduler._base import _timed_loop
 
 _log = get_logger("quant.scheduler.signals")
@@ -13,7 +13,7 @@ def _run(today: str):
     _log.info(f"[{today}] 08:30 — generating signals")
     t0 = _time.time()
 
-    from pipeline import generate_signals
+    from quant.pipeline import generate_signals
     result = generate_signals(date_str=today, skip_pull=True)
     targets = result.get("target_positions", [])
 

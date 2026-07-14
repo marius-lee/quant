@@ -16,8 +16,8 @@ import threading
 import requests
 import numpy as np
 
-from config.constants import _require_cfg
-from utils.logger import get_logger
+from quant.config.constants import _require_cfg
+from quant.utils.logger import get_logger
 
 
 # ── Suppression toggle (for backtest mode) ──

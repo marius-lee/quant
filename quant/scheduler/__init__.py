@@ -4,7 +4,7 @@
 周频: weekly 独立线程 (周六 06:00 force_refresh_cache)
 """
 import threading
-from utils.logger import get_logger
+from quant.utils.logger import get_logger
 
 _log = get_logger("quant.scheduler")
 

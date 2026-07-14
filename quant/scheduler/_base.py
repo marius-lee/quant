@@ -1,8 +1,8 @@
 """调度器基类 — 提供定时循环逻辑 + 状态上报。"""
 import time as _time
 from datetime import datetime, time
-from config.constants import _require_cfg
-from utils.logger import get_logger
+from quant.config.constants import _require_cfg
+from quant.utils.logger import get_logger
 
 
 def _timed_loop(name: str, target_time: time, run_fn, skip_deadline: time = None,
@@ -20,7 +20,7 @@ def _timed_loop(name: str, target_time: time, run_fn, skip_deadline: time = None
     log = get_logger(f"quant.scheduler.{name}")
     log.info(f"scheduler started — daily at {schedule_str}")
 
-    from execution.calendar import is_trading_day
+    from quant.execution.calendar import is_trading_day
 
     today = None
     ran = False

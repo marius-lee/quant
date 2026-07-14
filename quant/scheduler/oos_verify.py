@@ -8,8 +8,8 @@
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
-from config.constants import _require_cfg
-from utils.logger import get_logger
+from quant.config.constants import _require_cfg
+from quant.utils.logger import get_logger
 
 _log = get_logger("quant.scheduler.oos_verify")
 
@@ -19,10 +19,10 @@ def run_oos_check(today: str) -> dict:
 
     Returns: {n_factors, oos_sharpe, is_sharpe, decay_ratio, alert, details}
     """
-    from data.store import DataStore
-    from data.repos import UniverseRepo, FactorRepo
-    from factor.compute._registry import get_factor_names
-    from factor.ic import compute_ic
+    from quant.data.store import DataStore
+    from quant.data.repos import UniverseRepo, FactorRepo
+    from quant.factor.compute._registry import get_factor_names
+    from quant.factor.ic import compute_ic
 
     active_names = get_factor_names(status_filter="using")
     if not active_names:
@@ -39,7 +39,7 @@ def run_oos_check(today: str) -> dict:
 
     store = DataStore()
     symbols = UniverseRepo().get_symbols(exclude_market='BJ')
-    from factor.windows import max_factor_calendar_days
+    from quant.factor.windows import max_factor_calendar_days
     eff_days = max(TRAIN_DAYS + TEST_DAYS, max_factor_calendar_days(active_names))
     hist_start = (today_dt - timedelta(days=eff_days)).strftime("%Y-%m-%d")
 

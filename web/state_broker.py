@@ -38,7 +38,7 @@ class InProcessBroker:
                  'mood': {}, 'signals': [], 'sectors': [],
                  'summary': {}, 'timestamp': '', 'trace_id': ''}
         try:
-            from data.trade_repo import TradeRepo
+            from quant.data.trade_repo import TradeRepo
             db = _os.path.join(_root, "data", "trades.db")
             repo = TradeRepo(db)
             capital = repo.get_cash("quant")
@@ -127,8 +127,8 @@ class InProcessBroker:
         """盘中实时报价覆盖持仓市值/总资产/PnL。"""
         import time as _time
         try:
-            from execution.quote import fetch_quotes
-            from execution.calendar import is_market_open
+            from quant.execution.quote import fetch_quotes
+            from quant.execution.calendar import is_market_open
             if is_market_open() and state.get("positions"):
                 now = _time.time()
                 if self._quote_result is None or now - self._quote_ts > 5:
@@ -176,7 +176,7 @@ class InProcessBroker:
                 state[k] = cached[k]
         # Dynamically inject trading period status
         try:
-            from execution.calendar import get_trading_period
+            from quant.execution.calendar import get_trading_period
             state['status'] = get_trading_period()
         except Exception:
             state['status'] = 'unknown'

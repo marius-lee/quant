@@ -5,8 +5,8 @@
 """
 import time as _time, uuid as _uuid
 from datetime import time
-from monitor.metrics import metrics as _m
-from utils.logger import get_logger
+from quant.monitor.metrics import metrics as _m
+from quant.utils.logger import get_logger
 from quant.scheduler._base import _weekly_loop
 
 _log = get_logger("quant.scheduler.weekly")
@@ -17,7 +17,7 @@ def _run(today: str):
     _log.info(f"[{today}] weekly factor evaluation starting")
     t0 = _time.time()
 
-    from factor.stats_cache import force_refresh_cache
+    from quant.factor.stats_cache import force_refresh_cache
     stats = force_refresh_cache()
     n_factors = len(stats.get("factors", []))
 

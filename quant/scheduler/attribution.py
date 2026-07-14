@@ -8,10 +8,10 @@ P5: Brinson 基准从等权改为市值加权
 import time as _time, uuid as _uuid
 import numpy as np
 from datetime import time
-from monitor.metrics import metrics as _m
-from utils.logger import get_logger
+from quant.monitor.metrics import metrics as _m
+from quant.utils.logger import get_logger
 from quant.scheduler._base import _timed_loop
-from factor.registry import _db_connect
+from quant.factor.registry import _db_connect
 
 _log = get_logger("quant.scheduler.attribution")
 
@@ -21,8 +21,8 @@ def _run(today: str):
     _log.info(f"[{today}] 15:30 — attribution")
     t0 = _time.time()
 
-    from monitor.attribution import brinson_attribution
-    from execution.engine import ExecutionEngine
+    from quant.monitor.attribution import brinson_attribution
+    from quant.execution.engine import ExecutionEngine
     engine = ExecutionEngine()
     positions = engine.get_positions(strategy="quant")
 
@@ -30,7 +30,7 @@ def _run(today: str):
         # ── P5: Brinson 归因 — 市值加权基准 ──
         try:
             import pandas as pd
-            from data.store import market_conn
+            from quant.data.store import market_conn
             conn = market_conn("ro")
             syms = [p["symbol"] for p in positions]
             ph = ",".join("?" * len(syms))
@@ -101,8 +101,8 @@ def _run(today: str):
     # ═══════════════════════════════════════════════════════
     try:
         import json
-        from config.constants import _market_db_path, _require_cfg
-        from data.repos import FactorRepo
+        from quant.config.constants import _market_db_path, _require_cfg
+        from quant.data.repos import FactorRepo
         repo = FactorRepo()
         rows = repo.get_factors_with_ic(('active', 'monitoring'))
         rows = [(r["name"], r["ic_mean"]) for r in rows]
@@ -252,7 +252,7 @@ def _run(today: str):
     # G3: DSR / MinTRL 计算
     # ═══════════════════════════════════════════════════════
     try:
-        from evaluation.deflated_sharpe import compute_dsr_for_strategy
+        from quant.evaluation.deflated_sharpe import compute_dsr_for_strategy
         trades = engine.get_trades(strategy="quant", limit=500)
         if trades:
             daily_returns = []
@@ -261,7 +261,7 @@ def _run(today: str):
                 if pnl != 0:
                     daily_returns.append(float(pnl))
             if len(daily_returns) >= 20:
-                from data.repos import FactorRepo
+                from quant.data.repos import FactorRepo
                 n_active = len(FactorRepo().get_factors_by_status(('active',), []))
                 dsr_result = compute_dsr_for_strategy(daily_returns, n_factors=max(n_active, 1),
                                                        skewness=-0.5, kurtosis=8.0)
@@ -279,7 +279,7 @@ def _run(today: str):
     # ═══════════════════════════════════════════════════════
     try:
         if positions:
-            from monitor.factor_attribution import factor_pnl_attribution
+            from quant.monitor.factor_attribution import factor_pnl_attribution
             factor_attr = factor_pnl_attribution(positions, today)
             if factor_attr:
                 top_contributors = sorted(factor_attr.items(),
@@ -326,7 +326,7 @@ def _run(today: str):
     # R4: 信号衰减归因 — 信号 alpha vs 执行价滑点
     # ═══════════════════════════════════════════════════════
     try:
-        from data.trade_repo import TradeRepo
+        from quant.data.trade_repo import TradeRepo
         sig_data = TradeRepo().get_latest_signals()
         if sig_data and sig_data.get("date") == today:
             targets_by_sym = {t["symbol"]: t for t in sig_data.get("targets", [])}
@@ -364,7 +364,7 @@ def _run(today: str):
     try:
         engine2 = ExecutionEngine()
         total_wealth = engine2.get_capital(strategy="quant")
-        from benchmark.tracker import BenchmarkTracker
+        from quant.benchmark.tracker import BenchmarkTracker
         _bt = BenchmarkTracker()
         _bt.record(today, total_wealth)
     except Exception as e:

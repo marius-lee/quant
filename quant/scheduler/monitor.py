@@ -11,9 +11,9 @@ Grinold & Kahn 标准: 盘中独立风控 daemon, 与执行引擎解耦。
 import time as _time
 import os
 from datetime import datetime, time
-from config.constants import _require_cfg
-from utils.logger import get_logger
-from monitor.metrics import metrics as _m
+from quant.config.constants import _require_cfg
+from quant.utils.logger import get_logger
+from quant.monitor.metrics import metrics as _m
 
 _log = get_logger("quant.scheduler.monitor")
 
@@ -28,7 +28,7 @@ def _run_continuous(today: str):
     """盘中持续风控循环 — 09:35 到 14:55 每 30s 检查一次."""
     from quant.scheduler.status import register, update
     from web.state_broker import broker
-    from execution.calendar import is_market_open
+    from quant.execution.calendar import is_market_open
 
     register("monitor", "09:35-14:55", has_multiprocess=False)
 
@@ -81,7 +81,7 @@ def _run_continuous(today: str):
                 last_quote_ts = now_ts
                 syms = [p["symbol"] for p in positions]
                 quotes = {}
-                from execution.quote import fetch_quotes
+                from quant.execution.quote import fetch_quotes
                 quotes = fetch_quotes(syms) or {}
                 # ── P6-b: 单票+单行业集中度 ──
                 if positions and total > 0:
@@ -124,7 +124,7 @@ def _run_continuous(today: str):
                                     if len(common_syms) > 1:
                                         w_sub = w[common_syms]
                                         cov = rets[common_syms].cov()
-                                        from risk.var import compute_var
+                                        from quant.risk.var import compute_var
                                         var_val = compute_var(total, w_sub, cov, confidence=var_conf)
                                         if var_val is not None and var_val > 0:
                                             var_pct = var_val / total * 100
@@ -151,7 +151,7 @@ def _run_continuous(today: str):
                 try:
                     max_trades = _require_cfg("monitor.max_trades_per_day")
                     max_daily_turnover = _require_cfg("monitor.max_daily_turnover_pct")
-                    from execution.engine import ExecutionEngine
+                    from quant.execution.engine import ExecutionEngine
                     eng = ExecutionEngine()
                     today_trades = eng.get_trades(strategy="quant", limit=200)
                     today_cnt = sum(1 for t in today_trades if t.get("date") == today)
@@ -170,7 +170,7 @@ def _run_continuous(today: str):
                 except Exception as e:
                     _log.debug(f"Trade frequency check skipped (non-fatal): {type(e).__name__}")
 
-                from execution.stop_loss import RiskManager as _RM
+                from quant.execution.stop_loss import RiskManager as _RM
                 rm = _RM()
                 signals = rm.check(positions, quotes, today)
                 for sig in signals:
@@ -216,7 +216,7 @@ def _run_continuous(today: str):
 def _execute_sell(today: str, symbol: str, shares: int, price: float,
                   reason: str, pnl_pct: float):
     """执行卖出订单 + 写入 trades DB."""
-    from execution.engine import ExecutionEngine, Order
+    from quant.execution.engine import ExecutionEngine, Order
     engine = ExecutionEngine()
     engine.execute(
         [Order(symbol=symbol, side="sell", shares=shares,
@@ -229,7 +229,7 @@ def _execute_sell(today: str, symbol: str, shares: int, price: float,
 
 def _outer_loop():
     """外层循环: 每天等待到 09:35 后启动 _run_continuous."""
-    from execution.calendar import is_trading_day
+    from quant.execution.calendar import is_trading_day
 
     today = None
     started = False

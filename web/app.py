@@ -58,12 +58,6 @@ def _warm_factor_cache():
         logger.info("factor cache warmup complete")
     except Exception as e:
         logger.warning(f"factor cache warmup skipped: {e}")
-    # 启动三阶段调度器
-    try:
-        from quant.scheduler import start_all
-        start_all()
-    except Exception as e:
-        logger.warning(f"scheduler start skipped: {e}")
 threading.Thread(target=_warm_factor_cache, daemon=True).start()
 
 TRADE_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "trades.db")

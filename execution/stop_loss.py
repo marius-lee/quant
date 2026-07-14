@@ -42,7 +42,6 @@ def _compute_atr(symbol: str, period: int = 20) -> float:
         "ORDER BY date DESC LIMIT ?",
         (symbol, period + 1)
     ).fetchall()
-    conn.close()
 
     if len(rows) < period:
         return 0.0

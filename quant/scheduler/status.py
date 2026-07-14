@@ -49,13 +49,13 @@ def all_tasks() -> list[dict]:
 
 def _next_scheduled_time(schedule: str) -> str:
     """计算下次执行时间 (北京时间)."""
-    try:
-        h, m = map(int, schedule.split(":"))
-        now = datetime.now()
-        target = now.replace(hour=h, minute=m, second=0, microsecond=0)
-        if target <= now:
-            from datetime import timedelta
-            target += timedelta(days=1)
-        return target.strftime("%Y-%m-%d %H:%M")
-    except Exception:
-        raise
+    # 时间范围格式 "09:35-14:55" → 取起始时间 "09:35"
+    if "-" in schedule:
+        schedule = schedule.split("-")[0]
+    h, m = map(int, schedule.split(":"))
+    now = datetime.now()
+    target = now.replace(hour=h, minute=m, second=0, microsecond=0)
+    if target <= now:
+        from datetime import timedelta
+        target += timedelta(days=1)
+    return target.strftime("%Y-%m-%d %H:%M")

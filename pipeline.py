@@ -271,7 +271,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
 
 
 def execute_signals(target_positions: list[dict], date_str: str, strategy: str = "quant",
-                    prices: dict = None, db_path: str = None,
+                    prices: dict = None, db_path: str = "data/trades.db",
                     suppress_push: bool = False) -> dict:
     """Pipeline 阶段二: 开盘执行 (Step 6)。
 

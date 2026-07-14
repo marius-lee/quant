@@ -8,7 +8,7 @@ n_symbols=1000: ~5-8 分钟 (更广覆盖)
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from factor.stats_cache import force_refresh_cache
+from quant.factor.stats_cache import force_refresh_cache
 
 print("Rebuilding factor_cache.json with 800 stocks...")
 stats = force_refresh_cache(n_symbols=800)

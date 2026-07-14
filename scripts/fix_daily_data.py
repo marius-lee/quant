@@ -4,7 +4,7 @@
 """
 
 import sqlite3
-from data.repos._base import DatabaseManager, sys, os, time
+from quant.data.repos._base import DatabaseManager, sys, os, time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -36,7 +36,7 @@ conn.close()
 print(f"Repulling qfq data for {total_symbols} stocks (tencent/akshare/pytdx)...")
 print(f"Progress: 每 50 只一行, ~{total_symbols//50} 批\n")
 
-from data.store import DataStore
+from quant.data.store import DataStore
 s = DataStore()
 
 # 分批调用 update_daily, 手动控制进度输出

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """P43: 激活 bp_ratio / size / gap_5d 候选因子."""
 import sqlite3
-from data.repos._base import DatabaseManager, sys, os
+from quant.data.repos._base import DatabaseManager, sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 db = sqlite3.connect('data/market.db')

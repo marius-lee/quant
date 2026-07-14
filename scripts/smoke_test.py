@@ -21,9 +21,9 @@
 """
 import sys
 sys.path.insert(0, '/Users/mariusto/project/quant')
-from backtest.loop import run_backtest
-from backtest.naming import next_smoke_name
-from utils.excepthook import setup; setup()  # crash → app.log (after logger init)
+from quant.backtest.loop import run_backtest
+from quant.backtest.naming import next_smoke_name
+from quant.utils.excepthook import setup; setup()  # crash → app.log (after logger init)
 
 name = next_smoke_name()  # smoke_1, smoke_2, ...
 print(f"[smoke] strategy={name}")

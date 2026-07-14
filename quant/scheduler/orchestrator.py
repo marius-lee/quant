@@ -15,16 +15,16 @@ weekly 因子评估保持独立线程 (周六 06:00，不依赖交易日)。
 """
 import time as _time, threading as _thr
 from datetime import datetime, time
-from config.constants import _require_cfg
-from monitor.metrics import metrics as _m
-from utils.logger import get_logger
+from quant.config.constants import _require_cfg
+from quant.monitor.metrics import metrics as _m
+from quant.utils.logger import get_logger
 
 _log = get_logger("quant.scheduler.orchestrator")
 
 def _run():
     """编排器主循环 — 单线程，按时间顺序串行执行日频任务。"""
     from quant.scheduler.status import register, update
-    from execution.calendar import is_trading_day
+    from quant.execution.calendar import is_trading_day
 
     # 注册所有日频任务 (供前端调度Tab展示)
     register("signals",    "08:30", has_multiprocess=True)

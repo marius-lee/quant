@@ -3,7 +3,7 @@ Kakushadze & Serur (2018) Ch.3.1: 形成期 T ∈ {3, 6, 9, 12} 个月 = {63, 12
 窗口参数由 factor/compute.py _PRICE_FN_MAP 管理, 此处只写 factor_registry 元数据.
 """
 import sqlite3
-from data.repos._base import DatabaseManager, os
+from quant.data.repos._base import DatabaseManager, os
 
 DB = os.path.join(os.path.dirname(__file__), "..", "data", "market.db")
 conn = sqlite3.connect(DB)

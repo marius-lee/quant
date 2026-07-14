@@ -8,8 +8,8 @@
 import os, sys, sqlite3, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data.cache import get_backend, reset_backend, NoopBackend
-from config.loader import reload
+from quant.data.cache import get_backend, reset_backend, NoopBackend
+from quant.config.loader import reload
 
 passed = 0
 failed = 0
@@ -37,7 +37,7 @@ check("ping", backend.ping())
 
 # ── jq_valuation cache integration ──
 print("\n--- jq_valuation ---")
-from data.jq_valuation import _init_cache as jq_init, _insert_valuation_rows
+from quant.data.jq_valuation import _init_cache as jq_init, _insert_valuation_rows
 jq_init()
 
 # test _insert_valuation_rows with dummy data
@@ -68,7 +68,7 @@ os.unlink(db_path)
 
 # ── store.py: cache init & limiter instances ──
 print("\n--- store.py ---")
-import data.store as store_mod
+import quant.data.store as store_mod as store_mod
 reset_backend()  # reset to get fresh backend
 store_mod._init_cache()
 

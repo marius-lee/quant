@@ -1,33 +1,44 @@
-"""手动任务执行器 — 与定时调度器等价, 可独立运行.
-用法:
-  PYTHONPATH=. .venv/bin/python3 scripts/run_task.py signals  [YYYY-MM-DD]
-  PYTHONPATH=. .venv/bin/python3 scripts/run_task.py execute  [YYYY-MM-DD]
-  PYTHONPATH=. .venv/bin/python3 scripts/run_task.py cleanup  [YYYY-MM-DD]
-"""
+"""手动任务执行器 — signals / execute / cleanup."""
 import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from datetime import date as _date
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "quant"))
+from quant.utils.excepthook import setup; setup()
 
-today = sys.argv[2] if len(sys.argv) > 2 else _date.today().strftime("%Y-%m-%d")
+from quant.utils.logger import get_logger
 
-if len(sys.argv) < 2:
-    print("Usage: run_task.py <signals|execute|cleanup> [date]")
-    sys.exit(1)
+_log = get_logger("scripts.run_task")
 
-task = sys.argv[1]
+def main():
+    if len(sys.argv) < 2:
+        _log.error("Usage: scripts/run_task.py <signals|execute|cleanup> [YYYY-MM-DD]")
+        sys.exit(1)
 
-if task == "signals":
-    from quant.scheduler.signals import _run
-    _run(today)
+    task = sys.argv[1]
+    date = sys.argv[2] if len(sys.argv) > 2 else None
 
-elif task == "execute":
-    from quant.scheduler.execute import _run
-    _run(today)
+    if task == "signals":
+        from quant.pipeline import generate_signals
+        result = generate_signals(date_str=date, skip_pull=True)
+        _log.info(f"signals done: {len(result.get('target_positions', []))} targets")
+    elif task == "execute":
+        from quant.pipeline import execute_signals
+        from quant.data.trade_repo import TradeRepo
+        sig = TradeRepo().get_latest_signals()
+        targets = sig["targets"] if sig else []
+        _log.info(f"read {len(targets)} targets from daily_signals")
+        if not targets:
+            _log.error("No signals to execute (no fallback)")
+            sys.exit(1)
+        result = execute_signals(targets, date_str=date or sig["date"])
+        _log.info(f"execute done: {result.get('steps', {}).get('execution', {}).get('orders', 0)} orders")
+    elif task == "cleanup":
+        from quant.data.store import DataStore
+        store = DataStore()
+        n = store.cleanup_old_data()
+        _log.info(f"cleanup: {n} old rows removed")
+        store.close()
+    else:
+        _log.error(f"Unknown task: {task}")
+        sys.exit(1)
 
-elif task == "cleanup":
-    from quant.scheduler.attribution import _run
-    _run(today)
-
-else:
-    print(f"Unknown task: {task}. Choose: signals, execute, cleanup")
-    sys.exit(1)
+if __name__ == "__main__":
+    main()

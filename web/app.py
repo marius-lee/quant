@@ -49,16 +49,7 @@ app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
 # 启动时异步预热因子评估缓存 (首次 /api/factors 请求免等待)
 import threading
-def _warm_factor_cache():
-    try:
-        from factor.stats_cache import get_cached_factor_stats
-        logger.info("warming factor cache (background)...")
-        # 不强制重算: 若 24h 缓存有效则直接返回, 否则自动计算
-        get_cached_factor_stats(force_refresh=False)
-        logger.info("factor cache warmup complete")
-    except Exception as e:
-        logger.warning(f"factor cache warmup skipped: {e}")
-threading.Thread(target=_warm_factor_cache, daemon=True).start()
+# 缓存预热已移除 — web 启动不应触发因子计算, 首次 API 请求时懒加载
 
 TRADE_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "trades.db")
 

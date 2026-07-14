@@ -1384,3 +1384,55 @@ registered → candidate → retired → Phase 2/3/4 → active  (通过)
                                                   ↓
                                                retired (重新入池)
 ```
+
+---
+
+## 2026-07-15#32: 数据库路径统一 + 多个 NameError/JS 语法错误修复
+
+### 触发
+项目根 `data/trades.db` 和 `quant/data/trades.db` 双目录并存，路径解析三套逻辑各自为政。
+
+### R1: 创建全局路径常量
+
+**文件**: [`quant/config/paths.py`](/Users/mariusto/project/quant/quant/config/paths.py)
+
+```python
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DATA_DIR = os.path.join(_PROJECT_ROOT, "quant", "data")
+TRADE_DB = os.path.join(DATA_DIR, "trades.db")
+MARKET_DB = os.path.join(DATA_DIR, "market.db")
+BACKTEST_DB = os.path.join(DATA_DIR, "backtest_trades.db")
+METRICS_DB = os.path.join(DATA_DIR, "metrics.db")
+```
+
+### R2: 统一所有路径引用
+
+**影响 14 文件**: 所有 `"data/trades.db"` / `"data/market.db"` 字符串 → `"quant/data/..."`；所有 `os.path.join(..., "data", ...)` → 导入 `quant.config.paths` 常量。
+
+**关键修复**:
+- [`quant/data/repos/_base.py`](/Users/mariusto/project/quant/quant/data/repos/_base.py): `_PROJECT_ROOT` 从 3 层 `dirname` 改为 4 层（指向项目根）；恢复误删的 `import threading`
+- [`quant/data/trade_repo.py`](/Users/mariusto/project/quant/quant/data/trade_repo.py): `TRADE_DB` 从文件末尾移回类定义前（否则 `__init__` 默认参数引用时 NameError）
+- [`web/state_broker.py`](/Users/mariusto/project/quant/web/state_broker.py): `_os.path.join(_root, "data", ...)` → `"quant", "data"` (三处)
+- [`web/app.py`](/Users/mariusto/project/quant/web/app.py): `TRADES_DB` → `TRADE_DB` 命名统一；三处 `os.path.join` 替换为常量
+- 删除 `data/` 目录
+
+### R3: 前端竞态条件 + 语法错误
+
+**文件**: [`web/static/app.js`](/Users/mariusto/project/quant/web/static/app.js)
+
+1. **竞态条件**: `DOMContentLoaded` 回调中 `pollOverview()` 未 `await`，`checkPlotly` 100ms 后触发时 `window._perfData` 常为 `undefined` → 图表永远不渲染。修复: `await pollOverview()` 完成后再 `checkPlotly`。
+
+2. **语法错误**: 第 307 行 `[1,'var(--up)')]` 多了一个 `)` → 整个 JS 解析失败。修复: 去掉多余的 `)`。
+
+### R4: 因子页全零
+
+**文件**: [`quant/data/repos/factor_repo.py`](/Users/mariusto/project/quant/quant/data/repos/factor_repo.py)
+
+`count_total()` 和 `count_with_ic()` 使用 `query_scalar()`，但第 9 行 import 只有 `query_all, query_row`。补充 `query_scalar`。
+
+### 验证
+
+- Flask test client: 所有 5 个 API (state/performance/trades/positions/factors) 返回 200
+- `factor_repo.count_total()` → 70（2 active, 64 rejected, 4 retired）
+- `broker.get()` → capital=5000, total_asset=5000, PnL=0
+- `node -c app.js` → syntax OK

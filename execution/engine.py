@@ -32,9 +32,9 @@ class Order:
 class ExecutionEngine:
     """模拟执行引擎: 订单执行 → trades.db, 更新 capital_after。"""
 
-    def __init__(self, db_path: str = None, cost_model: CostModel = None):
-        self.db_path = db_path or TRADE_DB_DEFAULT
-        self.cost_model = cost_model or CostModel()
+    def __init__(self, db_path: str = TRADE_DB_DEFAULT, cost_model: CostModel = CostModel()):
+        self.db_path = db_path
+        self.cost_model = cost_model
         # 统一 schema 管理 → TradeRepo
         TradeRepo(self.db_path)._ensure_tables()
 

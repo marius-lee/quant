@@ -135,40 +135,42 @@ def compute_factor_stats(
             import pandas as _pd
 
             _store = DataStore()
-            min_date = chunk_dates[0]
-            max_date = chunk_dates[-1]
-            from factor.windows import max_factor_calendar_days
-            _factor_min = max_factor_calendar_days(factor_names)
-            _eff_days = max(_factor_min, lookback * 1.5)
-            data_start = (_pd.Timestamp(min_date) - _pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
-            future_end = (_pd.Timestamp(max_date) + _pd.Timedelta(days=40)).strftime("%Y-%m-%d")
-            data = _store.get_daily(symbols, start=data_start, end=future_end)
+            try:
+                min_date = chunk_dates[0]
+                max_date = chunk_dates[-1]
+                from factor.windows import max_factor_calendar_days
+                _factor_min = max_factor_calendar_days(factor_names)
+                _eff_days = max(_factor_min, lookback * 1.5)
+                data_start = (_pd.Timestamp(min_date) - _pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
+                future_end = (_pd.Timestamp(max_date) + _pd.Timedelta(days=40)).strftime("%Y-%m-%d")
+                data = _store.get_daily(symbols, start=data_start, end=future_end)
 
-            results = []
-            for date_str in chunk_dates:
-                try:
-                    fundamentals = _store.get_fundamentals(symbols, date=date_str)
-                    fin = _store.get_financials(symbols, date=date_str)
-                    preloaded_fin = {date_str: fin} if fin is not None and not fin.empty else None
-                    fv = compute_all_factors(data, date_str,
-                                             fundamentals=fundamentals,
-                                             factor_names=factor_names,
-                                             preloaded_financials=preloaded_fin)
-                    result = {}
-                    for name in factor_names:
-                        if name in fv and not fv[name].dropna().empty:
-                            result[name] = fv[name]
+                results = []
+                for date_str in chunk_dates:
                     try:
-                        close_series = data["close"].loc[date_str]
-                    except KeyError:
-                        close_series = _pd.Series(dtype=float)
-                    results.append((date_str, result, close_series, None))
-                except Exception as e:
-                    results.append((date_str, {}, _pd.Series(dtype=float), str(e)))
-                    logger.warning(f"_thread_compute_chunk: {type(e).__name__} at {date_str}: {e}")
+                        fundamentals = _store.get_fundamentals(symbols, date=date_str)
+                        fin = _store.get_financials(symbols, date=date_str)
+                        preloaded_fin = {date_str: fin} if fin is not None and not fin.empty else None
+                        fv = compute_all_factors(data, date_str,
+                                                 fundamentals=fundamentals,
+                                                 factor_names=factor_names,
+                                                 preloaded_financials=preloaded_fin)
+                        result = {}
+                        for name in factor_names:
+                            if name in fv and not fv[name].dropna().empty:
+                                result[name] = fv[name]
+                        try:
+                            close_series = data["close"].loc[date_str]
+                        except KeyError:
+                            close_series = _pd.Series(dtype=float)
+                        results.append((date_str, result, close_series, None))
+                    except Exception as e:
+                        results.append((date_str, {}, _pd.Series(dtype=float), str(e)))
+                        logger.warning(f"_thread_compute_chunk: {type(e).__name__} at {date_str}: {e}")
 
-            _store.close()
-            return results
+                return results
+            finally:
+                _store.close()
         except Exception as e:
             logger.error(f"Thread worker fatal error in chunk {chunk_dates[0]}..{chunk_dates[-1]}: {type(e).__name__}: {e}")
             return [(d, {}, _pd.Series(dtype=float), f"{type(e).__name__}: {e}") for d in chunk_dates]

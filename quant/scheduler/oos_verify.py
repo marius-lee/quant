@@ -47,8 +47,9 @@ def run_oos_check(today: str) -> dict:
         ic_result = compute_ic(
             factor_names=active_names,
             symbols=symbols[:200],
-            start=train_start,
-            end=today,
+            date=today,
+            lookback=TRAIN_DAYS,
+            store=store,
         )
         ic_series = ic_result.get("ic_series", {})
 

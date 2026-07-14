@@ -44,7 +44,6 @@ def screen_factors(input_json: str = None, output_json: str = None,
             return {"passed": [], "failed": {}, "ic_means": {}, "ic_irs": {}, "ic_series": {}, "n_factors": 0}
 
     # ── 阈值来源: config.yaml ──
-    t_threshold = _require_cfg("factor.evaluation.t_threshold")
     min_abs_ic = _require_cfg("factor.evaluation.min_abs_ic")
     min_icir = _require_cfg("factor.evaluation.min_icir")
     min_half_life = _require_cfg("factor.evaluation.min_half_life")

@@ -245,7 +245,7 @@ def _compute_ic_from_values(factor_values_by_date, forward_1d, forward_5d=None,
                 fr = fwd_df.loc[date_str].dropna()
                 if isinstance(fr, pd.DataFrame):
                     fr = fr.iloc[0]
-                rho = _spearman_ic(fv_series, fr, min_obs=20)
+                rho = _spearman_ic(fv_series, fr, min_obs=30)  # unified with 1d IC above
                 if rho is not None:
                     h_ics.append(rho)
             decay[horizon] = float(np.mean(h_ics)) if h_ics else 0.0

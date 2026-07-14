@@ -43,7 +43,7 @@ LOT_SIZE = _require_cfg("backtest.lot_size")
 def generate_signals(date_str: str = None, capital: float = None, strategy: str = "quant",
                      skip_pull: bool = False, store=None, status_filter: str = "active",
                      suppress_push: bool = False, universe_size: int = None,
-                     db_path: str = None, exclude_symbols: list = None, ic_map: dict = None) -> dict:
+                     db_path: str = "data/trades.db", exclude_symbols: list = None, ic_map: dict = None) -> dict:
     """Pipeline 阶段一: 盘前信号生成 (Steps 0-5, 不执行交易)。
 
     用 T-1 收盘数据计算因子 → alpha → 风险过滤 → 组合优化 → 输出目标持仓。

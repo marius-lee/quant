@@ -118,8 +118,9 @@ def screen_factors(input_json: str = None, output_json: str = None,
             if ratio_20 >= 1.0:
                 # IC 不衰减甚至增强 — 无半衰期问题，跳过检查
                 half_life_est = 999
-            elif ratio_20 > 0:
-                half_life_est = int(-20 / np.log(max(ratio_20, 0.01)))
+            elif 0 < ratio_20 < 1.0:
+                # log(ratio) < 0 → half-life > 0; guard: ratio strictly < 1
+                half_life_est = int(-20 / np.log(ratio_20))
         if 0 < half_life_est < min_half_life and ic_1d >= min_abs_ic:
             reasons.append(f"half-life={half_life_est}d<{min_half_life}")
 
@@ -171,6 +172,14 @@ def screen_factors(input_json: str = None, output_json: str = None,
     # 持久化到 evaluation_runs (纯 DB, 无临时文件, 不减 ic_series)
 
     # 持久化到 evaluation_runs (精简: 不含 ic_series — Phase 3 自行重算)
+    # 诊断: 确认 decay 数据在保存前存在
+    n_decay_keys = len(decay) if decay else 0
+    n_meta_keys = len(meta) if meta else 0
+    logger.info(f"Phase 2 pre-save: decay_keys={n_decay_keys}, meta_keys={n_meta_keys}, "
+                f"ic_means={len(ic_means)}, factor_names={len(factor_names)}")
+    if n_decay_keys > 0:
+        sample_key = list(decay.keys())[0]
+        logger.info(f"Phase 2 decay sample: {sample_key} = {decay[sample_key]}")
     from evaluation.run_store import save_phase
     slim = dict(result)
     slim.pop("ic_series", None)

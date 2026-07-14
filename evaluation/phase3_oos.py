@@ -39,7 +39,11 @@ def validate_oos(input_json: str = "/tmp/_eval_phase2.json",
     candidates = p2.get('passed', [])
     if not candidates:
         logger.warning("No candidates from Phase 2. Stopping.")
-        return {"kept": [], "oos_irs": [], "pbo_result": {}, "n_folds": 0}
+        result = {"kept": [], "oos_irs": [], "pbo_result": {}, "n_folds": 0, "n_factors": 0}
+        from evaluation.run_store import save_phase
+        save_phase("phase3", result)
+        logger.info("Phase 3 saved to evaluation_runs (empty — no candidates)")
+        return result
 
     # ── CPCV 参数 ──
     n_groups = _require_cfg("factor.evaluation.cpcv_groups")

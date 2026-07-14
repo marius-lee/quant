@@ -797,6 +797,12 @@ class DataStore:
         total = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
         logger.info(f"industry sync (akshare individual): {updated} updates, {classified}/{total}")
         return updated
+
+    def _analyze_daily_gaps(self, conn) -> dict:
+        """分析日线数据缺口 — missing（从未有数据） vs stale（超 250 天未更新） vs full（完整）。
+        
+        用于增量更新前的精准拉取决策, 只拉缺口 + 过期数据, 不浪费 API 配额。
+        """
         if max_db:
             cutoff = to_str(datetime.strptime(max_db, '%Y-%m-%d') - timedelta(days=3))
         else:
@@ -827,6 +833,7 @@ class DataStore:
             "missing": missing, "stale": stale, "full": full,
             "total": len(all_symbols),
         }
+
 
     def update_daily(self, symbols: list = None,
                      start: str = None) -> int:

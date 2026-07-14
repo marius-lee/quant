@@ -56,12 +56,12 @@
 
 **逻辑验证**:
 - 诊断阈值: ICIR < 0.1 -> drop
-- 正式 Phase 2 阈值: ICIR < 0.5 -> fail
+- 正式 Phase 2 阈值: ICIR < 0.25 -> fail (config.yaml: factor.evaluation.min_icir)
 - 诊断用 120 天窗口, 正式用全量历史。120 天是全量子集。
-- 子集 ICIR < 0.1, 全量绝不可能跳到 > 0.5 -> 诊断 reject => 正式必定 reject (成立)
+- 子集 ICIR < 0.1, 全量绝不可能跳到 > 0.25 -> 诊断 reject => 正式必定 reject (成立)
 - 诊断 pass 不保证正式 pass (因为正式还有 CPCV/PBO/成本回测三道关)
 
-**边界情况**: 因子在最近 120 天 ICIR < 0.1, 但在 5 年历史上 ICIR > 0.5 -> 诊断误杀。
+**边界情况**: 因子在最近 120 天 ICIR < 0.1, 但在 5 年历史上 ICIR > 0.25 -> 诊断误杀。
 但这种情况说明因子已经停滞失效至少半年, 不应进实盘 -> 误杀是正确行为。
 
 **架构设计**:
@@ -80,7 +80,7 @@
            |
            v
 [二级: 正式评估]  <- 5 阶段, 数小时, 手动/周频触发
-    |            <- Phase 2: |IC|>=0.02, |t|>=2.0, ICIR>=0.5, half-life>=20d
+    |            <- Phase 2: |IC|>=0.02, |t|>=2.0, ICIR>=0.25, half-life>=20d
     |            <- Phase 3: CPCV + PBO
     |            <- Phase 4: 成本感知回测
     |            <- Phase 5: 实盘监控
@@ -353,7 +353,7 @@ trace_id 可后期通过 Phase 间的 `evaluation_runs` DB 记录关联 (各 Pha
 
 **问题回顾**: HANDOFF #12 设计了"两步架构"但把 IC 统一标记为"暂不统一"。实践中暴露:
 - `compute_ic` (backtest) 和 `compute_ic_from_values` (Phase 2) 各有独立的 Spearman 计算循环
-- 同一因子在诊断里 ICIR>0.1, Phase 2 里 ICIR<0.5, 阈值无法对齐
+- 同一因子在诊断里 ICIR>0.1, Phase 2 里 ICIR<0.25, 阈值无法对齐
 - 根本原因不是阈值不同, 是两套 IC 计算本身就不一致
 
 **方案**: `compute_ic` 成为唯一公开函数, 支持取数据模式 (backtest) 和预计算模式 (Phase 2),

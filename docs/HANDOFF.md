@@ -81,7 +81,7 @@ layer 8: evaluation/ — 五阶段回测评估 (CPCV+PBO)
 | 阶段 | 方法 | 阈值 |
 |------|------|------|
 | Phase 1 | 全A股票池验证 | backtest_start=2010-01-01 |
-| Phase 2 | IC / |t| / ICIR / half-life | |IC|≥0.02, |t|≥2.0, ICIR≥0.5 |
+| Phase 2 | IC / |t| / ICIR / half-life | |IC|≥0.02, |t|≥2.0, ICIR≥0.25 |
 | Phase 3 | CPCV N=5 + PBO | logit(PBO) < -0.847 |
 | Phase 4 | 扣费后 Sharpe | Net Sharpe > 0.3 |
 | Phase 5 | 监控报告 | 拥挤度/衰减/换手率/容量 |

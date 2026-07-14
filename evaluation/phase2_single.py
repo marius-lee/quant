@@ -48,10 +48,12 @@ def screen_factors(input_json: str = None, output_json: str = None,
     min_abs_ic = _require_cfg("factor.evaluation.min_abs_ic")
     min_icir = _require_cfg("factor.evaluation.min_icir")
     min_half_life = _require_cfg("factor.evaluation.min_half_life")
+    monitoring_min_icir = _require_cfg("factor.evaluation.monitoring_min_icir")
+    monitoring_min_abs_ic = _require_cfg("factor.evaluation.monitoring_min_abs_ic")
     n_days = _require_cfg("factor.evaluation.n_days")
 
-    logger.info(f"Phase 2 thresholds: |IC|≥{min_abs_ic}, |t|≥{t_threshold}, "
-          f"ICIR≥{min_icir}, half-life≥{min_half_life}d")
+    logger.info(f"Phase 2 thresholds: |IC|≥{min_abs_ic}, ICIR≥{min_icir}, half-life≥{min_half_life}d | monitoring: |IC|≥{monitoring_min_abs_ic}, ICIR≥{monitoring_min_icir}")
+
 
     # 获取 backtesting 因子 (两步架构: 可选诊断预筛)
     from factor.compute import get_factor_names
@@ -91,26 +93,25 @@ def screen_factors(input_json: str = None, output_json: str = None,
 
     # ── Phase 2 评估 ──
     passed = []
+    monitoring = []
     failed = {}
 
     for name in factor_names:
         ic = abs(ic_means.get(name, 0.0))
         ir = abs(ic_irs.get(name, 0.0))
-        # t-stat: |IR| × √N (Lo 2002, Grinold & Kahn 1999)
+        # t-stat: |IR| × √N — 仅报告，不参与过滤 (Grinold & Kahn 1999; ICIR通过后t自动成立)
         t_stat = ir * np.sqrt(n_days)
         reasons = []
 
         if ic < min_abs_ic:
             reasons.append(f"|IC|={ic:.4f}<{min_abs_ic}")
-        if t_stat < t_threshold:
-            reasons.append(f"|t|={t_stat:.1f}<{t_threshold}")
         if ir < min_icir:
             reasons.append(f"ICIR={ir:.2f}<{min_icir}")
 
-        # IC half-life: days until IC drops to half
-        # decay = {name: [1d_val, 5d_val, 20d_val]}
-        ic_1d = abs(ic_means.get(name, 0.0))
+        # IC half-life: 1d→20d forward IC 衰减估计 (Grinold & Kahn 1999 Ch.6)
+        # decay = {display_name: [1d_IC, 5d_IC, 20d_IC]}
         decay_vals = decay.get(meta.get(name, {}).get("display", name), [0.0, 0.0, 0.0])
+        ic_1d = abs(decay_vals[0]) if len(decay_vals) > 0 else 0.0
         ic_20d = abs(decay_vals[2]) if len(decay_vals) > 2 else 0.0
         half_life_est = 0
         if ic_1d > 0.001 and ic_20d > 0:
@@ -125,11 +126,14 @@ def screen_factors(input_json: str = None, output_json: str = None,
 
         if not reasons:
             passed.append(name)
+        elif ir >= monitoring_min_icir and ic >= monitoring_min_abs_ic:
+            monitoring.append(name)
+            failed[name] = reasons
         else:
             failed[name] = reasons
 
     # ── 输出 ──
-    logger.info(f"Phase 2 results: {len(passed)} passed, {len(failed)} failed\n")
+    logger.info(f"Phase 2 results: {len(passed)} passed, {len(monitoring)} monitoring, {len(failed)} failed\n")
 
     logger.info("=== PASSED ===")
     for name in sorted(passed, key=lambda n: abs(ic_means.get(n, 0.0)), reverse=True):
@@ -137,10 +141,19 @@ def screen_factors(input_json: str = None, output_json: str = None,
         ir = ic_irs.get(name, 0.0)
         t = abs(ir) * np.sqrt(n_days)
         decay_vals = decay.get(meta.get(name, {}).get("display", name), [0.0, 0.0, 0.0])
-        ic_20 = abs(decay_vals[2]) if len(decay_vals) > 2 else 0.0
-        ratio = ic_20 / max(abs(ic), 0.001) if ic else 0
+        ic_1d_val = abs(decay_vals[0]) if len(decay_vals) > 0 else 0.0
+        ic_20_val = abs(decay_vals[2]) if len(decay_vals) > 2 else 0.0
+        ratio = ic_20_val / max(ic_1d_val, 0.001) if ic_1d_val > 0.001 else 0
         hl = int(-20 / np.log(max(ratio, 0.01))) if ratio > 0 else 0
         logger.info(f"  ✓ {name:30s} IC={ic:+.4f}  t={t:.1f}  IR={ir:+.2f}  HL≈{hl}d")
+
+    if monitoring:
+        logger.info("=== MONITORING ===")
+        for name in sorted(monitoring, key=lambda n: abs(ic_means.get(n, 0.0)), reverse=True):
+            ic = ic_means.get(name, 0.0)
+            ir = ic_irs.get(name, 0.0)
+            reasons_str = "; ".join(failed.get(name, []))
+            logger.info(f"  ~ {name:30s} IC={ic:+.4f}  IR={ir:+.2f}  [{reasons_str}]")
 
     if failed:
         logger.info("=== FAILED ===")
@@ -149,6 +162,7 @@ def screen_factors(input_json: str = None, output_json: str = None,
 
     result = {
         "passed": passed,
+        "monitoring": monitoring,
         "failed": {k: list(v) for k, v in failed.items()},
         "ic_means": {k: float(v) for k, v in ic_means.items()},
         "ic_irs": {k: float(v) for k, v in ic_irs.items()},

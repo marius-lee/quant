@@ -2,7 +2,7 @@
 import time as _time, uuid as _uuid
 from datetime import time, datetime
 from quant.monitor.metrics import metrics as _m
-from quant.utils.logger import get_logger
+from quant.utils.logger import get_logger, set_trace_id
 from quant.scheduler._base import _timed_loop
 
 _log = get_logger("quant.scheduler.execute")
@@ -10,6 +10,7 @@ _log = get_logger("quant.scheduler.execute")
 
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
+    set_trace_id(tid)
     _log.info(f"[{today}] 09:30 — executing trades")
     t0 = _time.time()
 

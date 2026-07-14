@@ -1,0 +1,10 @@
+{
+  "name": "insider_increase",
+  "display_name": "insider_increase",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.0057,
+  "icir_12m": 0.0377,
+  "last_evaluated": "auto",
+  "n_obs": 115
+}

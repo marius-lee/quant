@@ -12,18 +12,19 @@ Usage:
 import os, requests
 from utils.logger import get_logger
 from config.constants import _require_cfg
+from config.loader import get as cfg
 
 _log = get_logger("monitor.notify")
 
 # ── 配置读取 ──
 def _telegram_token():
-    return _require_cfg("monitor.telegram_bot_token")
+    return ""  # optional, set monitor.telegram_bot_token in config.yaml to enable
 
 def _telegram_chat_id():
-    return _require_cfg("monitor.telegram_chat_id")
+    return cfg("monitor.telegram_chat_id") or ""
 
 def _wechat_webhook():
-    return _require_cfg("monitor.wechat_webhook")
+    return cfg("monitor.wechat_webhook") or ""
 
 
 def _telegram_send(text: str) -> bool:

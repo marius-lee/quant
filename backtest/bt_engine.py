@@ -207,7 +207,7 @@ def run_backtest_bt(
 
     cerebro = bt.Cerebro()
     cerebro.broker.setcash(capital)
-    cerebro.broker.setcommission(commission=_require_cfg("cost.commission_rate"))
+    cerebro.broker.setcommission(commission=_require_cfg("execution.commission"))
     cerebro.addstrategy(
         _SignalStrategy,
         store=store,

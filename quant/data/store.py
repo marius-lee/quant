@@ -492,7 +492,7 @@ class DataStore:
         rows = []
         for sym in symbols:
             market = _tencent_market(sym)
-            url = (f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+            url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
                    f"?param={market}{sym},day,,,{max_days},qfq")
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             resp = urllib.request.urlopen(req, timeout=_require_cfg("data.http_timeout.tencent"))

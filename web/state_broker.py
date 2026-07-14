@@ -39,15 +39,20 @@ class InProcessBroker:
                  'summary': {}, 'timestamp': '', 'trace_id': ''}
         try:
             from quant.data.trade_repo import TradeRepo
-            db = _os.path.join(_root, "data", "trades.db")
+            db = _os.path.join(_root, "quant", "data", "trades.db")
             repo = TradeRepo(db)
+            # 首次启动自动播种策略资金
+            if repo.get_initial_capital("quant") <= 0:
+                from quant.config.constants import _require_cfg
+                seed = float(_require_cfg("live.default_capital"))
+                repo.set_initial_capital("quant", seed)
             capital = repo.get_cash("quant")
             raw_positions = repo.get_positions("quant")
             positions = []
             close_map = {}
             import sqlite3 as _sql2
             try:
-                market_db = _os.path.join(_root, "data", "market.db")
+                market_db = _os.path.join(_root, "quant", "data", "market.db")
                 if _os.path.exists(market_db):
                     mc = _sql2.connect(market_db)
                     for rp in raw_positions:
@@ -99,7 +104,7 @@ class InProcessBroker:
 
             import sqlite3 as _sql3
             try:
-                market_db = _os.path.join(_root, "data", "market.db")
+                market_db = _os.path.join(_root, "quant", "data", "market.db")
                 if _os.path.exists(market_db):
                     mc = _sql3.connect(market_db)
                     syms = [p["symbol"] for p in positions]

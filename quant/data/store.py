@@ -59,7 +59,7 @@ def _tencent_market(sym: str) -> str:
 class DataStore:
     """全A股 SQLite 数据仓库 — 单连接复用，任务结束时关闭。"""
 
-    def __init__(self, db_path: str = "data/market.db",
+    def __init__(self, db_path: str = "quant/data/market.db",
                  tushare_token: str = None):
         self.db_path = db_path
         self.token = tushare_token if tushare_token is not None else os.environ.get("TUSHARE_TOKEN", "")

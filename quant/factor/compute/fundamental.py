@@ -670,7 +670,7 @@ def compute_asset_growth(fundamentals, date, financials=None):
     # 当前季度: fin 已有最新 total_assets
     # 需要去年同期: 查询 financial_balance
     db = _market_db_path()
-    conn = DatabaseManager.get_instance().get_connection("data/market.db")
+    conn = DatabaseManager.get_instance().get_connection("quant/data/market.db")
 
     # 获取每个 symbol 的最新 stat_date
     _syms = fundamentals.index.tolist()
@@ -768,7 +768,7 @@ def compute_sue(fundamentals, date, financials=None):
     import sqlite3, pandas as pd, numpy as np
 
     db = _market_db_path()
-    conn = DatabaseManager.get_instance().get_connection("data/market.db")
+    conn = DatabaseManager.get_instance().get_connection("quant/data/market.db")
 
     _syms = fundamentals.index.tolist()
     _ph = ",".join(["?"] * len(_syms))
@@ -848,7 +848,7 @@ def compute_holder_reduction(fundamentals, date, financials=None):
     import sqlite3, pandas as pd
 
     db = _market_db_path()
-    conn = DatabaseManager.get_instance().get_connection("data/market.db")
+    conn = DatabaseManager.get_instance().get_connection("quant/data/market.db")
 
     _syms = fundamentals.index.tolist()
     _ph = ",".join(["?"] * len(_syms))
@@ -888,7 +888,7 @@ def compute_pledge_ratio(fundamentals, date, financials=None):
     import sqlite3, pandas as pd
 
     db = _market_db_path()
-    conn = DatabaseManager.get_instance().get_connection("data/market.db")
+    conn = DatabaseManager.get_instance().get_connection("quant/data/market.db")
 
     _syms = fundamentals.index.tolist()
     _ph = ",".join(["?"] * len(_syms))
@@ -930,7 +930,7 @@ def compute_dividend_yield(fundamentals, date, financials=None):
     import sqlite3, pandas as pd
 
     db = _market_db_path()
-    conn = DatabaseManager.get_instance().get_connection("data/market.db")
+    conn = DatabaseManager.get_instance().get_connection("quant/data/market.db")
 
     _syms = fundamentals.index.tolist()
     _ph = ",".join(["?"] * len(_syms))
@@ -1011,7 +1011,7 @@ def compute_ocfp(fundamentals, date, financials=None):
 
     # TTM经营现金流: 直接查 financial_cash_flow 表最近4个季度
     ocfp_vals = {}
-    _conn = DatabaseManager.get_instance().get_connection("data/market.db")
+    _conn = DatabaseManager.get_instance().get_connection("quant/data/market.db")
     placeholders = ",".join("?" for _ in valid_syms)
     cf_df = pd.read_sql_query(
         f"""SELECT symbol, stat_date, net_operate_cash_flow
@@ -1103,7 +1103,7 @@ def compute_insider_cluster(data, date, window=60):
     import sqlite3, os as _os5
     symbols = list(data.index)
     result = pd.Series(0.0, index=symbols)
-    conn = DatabaseManager.get_instance().get_connection("data/market.db")
+    conn = DatabaseManager.get_instance().get_connection("quant/data/market.db")
     rows = conn.execute(
         "SELECT symbol, holder_type, direction, change_ratio FROM holder_trade "
         "WHERE ann_date >= date(?, '-{} days') AND direction IN ('增加','增持','买入')".format(window),
@@ -1133,7 +1133,7 @@ def compute_earnings_upgrade(data, date, window=90):
     import sqlite3, os as _os6
     symbols = list(data.index)
     result = pd.Series(0.0, index=symbols)
-    conn = DatabaseManager.get_instance().get_connection("data/market.db")
+    conn = DatabaseManager.get_instance().get_connection("quant/data/market.db")
     # Get latest analyst forecast for each stock
     rows = conn.execute(
         "SELECT symbol, buy_count, overweight_count, neutral_count, "
@@ -1167,7 +1167,7 @@ def compute_earnings_upgrade(data, date, window=90):
 def _get_macro_value(indicator: str, date: str) -> float:
     """读取 macro_indicator 表中最近可用的宏观指标值."""
     import sqlite3
-    conn = DatabaseManager.get_instance().get_connection("data/market.db")
+    conn = DatabaseManager.get_instance().get_connection("quant/data/market.db")
     row = conn.execute(
         "SELECT value FROM macro_indicator WHERE indicator=? AND date <= ? ORDER BY date DESC LIMIT 1",
         (indicator, date)

@@ -101,7 +101,7 @@ def run_optimization(n_trials=200, study_name="quant_hyperopt"):
             n_startup_trials=20,
             n_warmup_steps=10,
         ),
-        storage=f"sqlite:///data/optuna_{study_name}.db",
+        storage=f"sqlite:///quant/data/optuna_{study_name}.db",
         load_if_exists=True,
     )
 

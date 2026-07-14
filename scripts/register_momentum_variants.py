@@ -1,3 +1,4 @@
+from quant.config.paths import MARKET_DB
 """注册动量窗口变体 (ADR 022 Tier 2.1)
 Kakushadze & Serur (2018) Ch.3.1: 形成期 T ∈ {3, 6, 9, 12} 个月 = {63, 126, 189, 252} 天
 窗口参数由 factor/compute.py _PRICE_FN_MAP 管理, 此处只写 factor_registry 元数据.
@@ -5,7 +6,7 @@ Kakushadze & Serur (2018) Ch.3.1: 形成期 T ∈ {3, 6, 9, 12} 个月 = {63, 12
 import sqlite3
 from quant.data.repos._base import DatabaseManager, os
 
-DB = os.path.join(os.path.dirname(__file__), "..", "data", "market.db")
+DB = MARKET_DB
 conn = sqlite3.connect(DB)
 
 existing = {r[0] for r in conn.execute("SELECT name FROM factor_registry").fetchall()}

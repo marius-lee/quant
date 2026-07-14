@@ -16,7 +16,7 @@ class TradeRepo:
     """Operations for trade-related tables (trades.db or backtest_trades.db)."""
 
     def __init__(self, db_manager: Optional[DatabaseManager] = None,
-                 db_path: str = "data/trades.db"):
+                 db_path: str = "quant/data/trades.db"):
         self.db = db_manager or DatabaseManager.get_instance()
         self.db_path = db_path
 

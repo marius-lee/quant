@@ -37,7 +37,7 @@ def preload_ztd_cache(dates: list, all_symbols: list):
     earliest = pd.Timestamp(min(dates)) - pd.Timedelta(days=375)
     latest = pd.Timestamp(max(dates))
 
-    conn = DatabaseManager.get_instance().get_connection("data/market.db")
+    conn = DatabaseManager.get_instance().get_connection("quant/data/market.db")
     ph = ",".join(["?"] * len(all_symbols))
     rows = conn.execute(
         f"""SELECT date, symbol, volume
@@ -174,7 +174,7 @@ def compute_str(data, date, window=20):
         return _cs_zscore(-raw).rename("str")
 
     # 市值中性化 (从 stocks 表取 total_mv)
-    conn2 = DatabaseManager.get_instance().get_connection("data/market.db")
+    conn2 = DatabaseManager.get_instance().get_connection("quant/data/market.db")
     _syms2 = raw.index.tolist()
     _ph2 = ",".join(["?"] * len(_syms2))
     rows = conn2.execute(
@@ -215,7 +215,7 @@ def compute_abn_turnover(data, date, window=20):
 
     # 取市值 + 行业
     syms = close.columns.tolist()
-    conn = DatabaseManager.get_instance().get_connection("data/market.db")
+    conn = DatabaseManager.get_instance().get_connection("quant/data/market.db")
     _ph = ",".join(["?"] * len(syms))
     meta_rows = conn.execute(f"""
         SELECT symbol, total_mv, industry FROM stocks
@@ -488,7 +488,7 @@ def compute_short_interest(data, date, window=20):
     import sqlite3, os as _os3
     symbols = list(data["close"].columns)
     result = pd.Series(np.nan, index=symbols)
-    conn = DatabaseManager.get_instance().get_connection("data/market.db")
+    conn = DatabaseManager.get_instance().get_connection("quant/data/market.db")
     rows = conn.execute(
         "SELECT symbol, short_balance, margin_total FROM margin_detail "
         "WHERE date = (SELECT MAX(date) FROM margin_detail WHERE date <= ?) "
@@ -511,7 +511,7 @@ def compute_fund_flow_3m(data, date, window=60):
     import sqlite3, os as _os4
     symbols = list(data["close"].columns)
     result = pd.Series(0.0, index=symbols)
-    conn = DatabaseManager.get_instance().get_connection("data/market.db")
+    conn = DatabaseManager.get_instance().get_connection("quant/data/market.db")
     rows = conn.execute(
         "SELECT symbol, change_ratio FROM fund_hold "
         "WHERE report_date >= date(?, '-{} days') AND change_ratio IS NOT NULL "

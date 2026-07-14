@@ -18,7 +18,7 @@ class FactorRepo:
     """CRUD operations for factor_registry table."""
 
     def __init__(self, db_manager: Optional[DatabaseManager] = None,
-                 db_path: str = "data/market.db"):
+                 db_path: str = "quant/data/market.db"):
         self.db = db_manager or DatabaseManager.get_instance()
         self.db_path = db_path
 
@@ -188,3 +188,4 @@ class FactorRepo:
         deleted = conn.total_changes
         conn.commit()
         return deleted
+from quant.data.repos._base import DatabaseManager, query_all, query_row, query_scalar

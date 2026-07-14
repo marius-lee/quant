@@ -1,3 +1,4 @@
+from quant.config.paths import MARKET_DB
 """P0-1: 删除未复权日线 + 重拉 qfq 数据。
 
 进度: 每 50 只输出一行 (已完成/总数 + 百分比)
@@ -8,7 +9,7 @@ from quant.data.repos._base import DatabaseManager, sys, os, time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
+DB = MARKET_DB
 CUTOFF = "2025-06-01"
 
 # ── Step 1: Delete ──

@@ -53,7 +53,7 @@ class FactorRepo:
             raise ValueError(f"Invalid factor status: {status}")
         conn = self._conn()
         conn.execute(
-            "UPDATE factor_registry SET status=?, status_reason=? WHERE name=?",
+            "UPDATE factor_registry SET status=?, status_reason=?, updated_at=datetime('now','localtime') WHERE name=?",
             (status, reason, name))
         conn.commit()
         return conn.total_changes > 0
@@ -66,7 +66,7 @@ class FactorRepo:
             return 0
         conn = self._conn()
         conn.executemany(
-            "UPDATE factor_registry SET status=?, status_reason=? WHERE name=?",
+            "UPDATE factor_registry SET status=?, status_reason=?, updated_at=datetime('now','localtime') WHERE name=?",
             [(status, reason, n) for n in names])
         conn.commit()
         return conn.total_changes
@@ -145,3 +145,46 @@ class FactorRepo:
         conn = self._conn()
         rows = query_all(conn, "SELECT name FROM factor_registry")
         return [r["name"] for r in rows]
+
+    # ── IC snapshot persistence (attribution degradation detection) ──
+
+    def save_ic_snapshot(self, date_str: str, weights_json: str) -> None:
+        """Save today's IC weights snapshot to DB. Replaces broker-memory baseline."""
+        conn = self._conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO factor_ic_snapshot (date, data_json, created_at) "
+            "VALUES (?, ?, datetime('now','localtime'))",
+            (date_str, weights_json))
+        conn.commit()
+
+    def get_recent_ic_snapshots(self, n_days: int = 5) -> dict:
+        """Return recent N days of IC snapshots as {date: {factor: ic_mean}}."""
+        import json
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT date, data_json FROM factor_ic_snapshot "
+            "ORDER BY date DESC LIMIT ?", (n_days,)).fetchall()
+        result = {}
+        for date_str, data_json_str in reversed(rows):
+            try:
+                result[date_str] = json.loads(data_json_str)
+            except Exception:
+                pass
+        return result
+
+    def get_factor_updated_at(self, name: str) -> str | None:
+        """Get updated_at timestamp for a factor (used for monitoring buffer check)."""
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT updated_at FROM factor_registry WHERE name=?", (name,)).fetchone()
+        return row[0] if row else None
+
+    def delete_old_ic_snapshots(self, keep_days: int = 90) -> int:
+        """Clean up old IC snapshots beyond keep_days. Returns deleted count."""
+        conn = self._conn()
+        conn.execute(
+            "DELETE FROM factor_ic_snapshot "
+            "WHERE date < date('now', ? || ' days')", (f"-{keep_days}",))
+        deleted = conn.total_changes
+        conn.commit()
+        return deleted

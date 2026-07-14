@@ -107,7 +107,7 @@ class TradeRepo:
 
 ## Layer 2: 因子层 (factor/)
 
-**职责**: 计算时序/横截面因子，评估因子的预测能力（IC/IR/相关性/衰减），合成复合因子。因子上报 Alpha 层。
+**职责**: 计算时序/横截面因子，评估因子的预测能力（IC/IR/相关性/衰减），合成复合因子。因子状态由 factor_registry 管理：active 参与实盘交易 (P1: using=active only), monitoring 仅 15:30 归因观察不交易, retired 永不再用。因子上报 Alpha 层。
 
 
 
@@ -128,9 +128,9 @@ class TradeRepo:
 
 
 
-| `factor/base.py` | Factor 抽象基类 | `Factor.compute(data) → pd.Series` |
-| `factor/compute.py` | 35因子计算（26 price + 9 fundamental，纯函数、向量化） | `compute_momentum(close, window) → Series` 等 |
-| `factor/evaluate.py` | 截面 Rank IC + 衰减分析 + 相关性矩阵 | `rank_ic(factor, fwd) → float` |
+| `factor/registry.py` | 因子状态机 + 共享连接 + z-score 标准化 | `get_factor_names(status_filter)` |
+| `factor/compute.py` | 57因子计算（41 price + 16 fundamental，纯函数、向量化） | `compute_momentum(close, window) → Series` 等 |
+| `factor/ic.py` | 统一 IC 计算（Spearman Rank IC + IR + 衰减分析） | `compute_ic(factor_names=) → ic_means, ic_irs` |
 | `factor/synth.py` | 因子合成（等权 / IC加权） | `equal_weight(factors) → Series` |
 
 ### 核心接口协议

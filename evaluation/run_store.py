@@ -21,7 +21,34 @@ def save_phase(phase: str, data: dict) -> int:
     n_factors = data.get("n_factors") or len(data.get("factors", []))
     n_passed = len(data.get("passed", []))
     repo = EvaluationRepo()
-    return repo.save_evaluation(phase, data_json, n_factors, n_passed)
+    row_id = repo.save_evaluation(phase, data_json, n_factors, n_passed)
+
+    # ── Record Experiment in Trace (non-blocking) ──
+    import logging as _log_eval
+    try:
+        from core.trace import get_trace, make_experiment, Hypothesis, ExperimentFeedback
+        trace = get_trace()
+        parent = trace.last_of(f"eval_{phase}")
+        exp = make_experiment(
+            action=f"eval_{phase}",
+            hypothesis=Hypothesis(
+                hypothesis=f"Phase {phase}: {n_factors} factors evaluated",
+                reason=f"Standard evaluation pipeline phase {phase}",
+                source=f"evaluation/save_phase({phase})",
+            ),
+            parent_id=parent.experiment_id if parent else None,
+        )
+        exp.sub_results = data
+        exp.feedback = ExperimentFeedback(
+            decision=n_passed > 0,
+            reason=f"Phase {phase}: {n_passed}/{n_factors} factors passed",
+            metrics={"n_factors": n_factors, "n_passed": n_passed},
+        )
+        trace.record(exp)
+    except Exception as _e:
+        _log_eval.warning(f"Trace recording failed (non-blocking): {_e}")
+
+    return row_id
 
 
 def load_latest(phase: str) -> dict | None:

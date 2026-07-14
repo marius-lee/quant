@@ -1,4 +1,14 @@
 -- 北极星量化 · 数据库Schema
+
+-- ═══ factor_ic_snapshot — IC 衰减快照 (quant/scheduler/attribution.py) ═══
+
+CREATE TABLE IF NOT EXISTS factor_ic_snapshot (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL UNIQUE,
+    data_json TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
+
 -- 排除: market.db (日线数据, 多GB, 不跟踪)
 -- 跟踪: 所有应用层表结构 (存档/回溯/审计)
 

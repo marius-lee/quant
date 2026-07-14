@@ -14,6 +14,17 @@ alpha:
 attribution:
   annual_periods: 252
   risk_free_rate: 0.02
+  ic_degradation_threshold: 0.3   # IC 衰减检测阈值; 来源: 当日IC与滚动均值偏离>30%时标记退化
+  ic_rolling_window: 20           # P4: IC 滚动窗口 (交易日); 来源: 一个月交易日, 减少误判 (5→20)
+  monitoring_buffer_days: 10      # monitoring→retired 缓冲天数; 来源: 两交易周, 防单日噪声误杀
+  promotion_stability_days: 5     # P2: monitoring→active 连续稳定天数; 来源: 一周交易日, 确认IC恢复非噪声
+  oos_warn_threshold: 0.5         # P3: OOS/IS IC比率告警阈值; 来源: OOS衰减>50%→告警 (明汯标准)
+  snapshot_keep_days: 90
+# ── G1: 在线 Walk-Forward OOS 验证 ──
+oos_verify:
+  train_window_days: 60        # 训练窗口 (交易日); 来源: 一个季度, IS 估计
+  test_window_days: 10         # 测试窗口 (交易日); 来源: 两周, OOS 验证
+  decay_warn_threshold: 0.5    # OOS/IS 衰减告警阈值; 来源: 明汯标准, 衰减>50%→警告          # IC 快照保留天数; 来源: 一个季度, 足够回看且不膨胀DB
 backtest:
   benchmark: '000300'
   default_capital: 5000
@@ -208,6 +219,14 @@ monitor:
   telegram_bot_token: ""     # Telegram Bot Token (可选, 留空禁用)
   telegram_chat_id: ""       # Telegram Chat ID (可选)
   wechat_webhook: ""         # 企业微信 Webhook URL (可选)
+  # ── P6: 盘中监控补充 ──
+  max_single_concentration: 0.15    # 单票集中度上限 (仓位价值/总资产); 来源: 分散化要求, 不超过15%
+  max_sector_concentration: 0.40    # 单行业集中度上限; 来源: 与 risk.max_sector_exposure 一致
+  min_daily_turnover_amount: 30000000  # 流动性下限 (日均成交额); 来源: A股小票流动性阈值 3000万
+  var_confidence: 0.95              # VaR 置信水平; 来源: 业界标准 95%
+  max_trades_per_day: 50          # R2: 单日最大交易笔数; 来源: 小资金账户, 50笔以内
+  max_daily_turnover_pct: 0.50    # R2: 单日最大换手率; 来源: >50%换手→成本侵蚀收益
+  # ── R2: 交易频率/换手监控 ──
   alert:
     drawdown_critical: 0.20   # 累计回撤 ≥20% → critical 告警
     drawdown_warning: 0.10    # 累计回撤 ≥10% → warning 告警

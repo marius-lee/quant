@@ -20,7 +20,7 @@ PYTHONPATH=. python3 web/app.py
 PYTHONPATH=. python3 pipeline.py
 
 # 因子评估
-PYTHONPATH=. python3 -c "from factor.evaluate import factor_report; print(factor_report())"
+PYTHONPATH=. python3 -c "from factor.ic import compute_ic; print(compute_ic(factor_names=get_factor_names()))"
 
 # 运行测试
 PYTHONPATH=. python3 -m pytest tests/ -v
@@ -43,10 +43,10 @@ PYTHONPATH=. python3 -m pytest tests/ -v
 - `store.py` — **DataStore**: 多源日线增量同步（tickflow→新浪→腾讯→tushare→akshare），速度自适应轮转
 - `trade_repo.py` — **TradeRepo**: `sim_trades` 统一读写，消除重复 SQL
 
-### Layer 2: Factor (`factor/`) — 55因子注册 (39 price + 16 fundamental), 31 active / 24 deprecated。状态由 factor_registry 管理
+### Layer 2: Factor (`factor/`) — 57因子计算函数 (41 price + 16 fundamental)。运行时状态由 factor_registry 管理。实盘交易用 using (= active + monitoring)；回测评估用 backtesting；全量评估用 None。
 - `base.py` — **Factor** 抽象基类: `compute(data) → Series`, `evaluate(values, returns) → dict`
-- `compute.py` — 因子计算: 纯函数、向量化。active 因子由 factor_registry.status 决定，evaluate 阶段自动过滤 deprecated。新增: day_night(OIR), str(STR), abn_turnover, ocfp, seal_turnover_ratio, seal_time, limit_touch_no_seal, net_limit_ratio, epa, trcf, ideal_amplitude
-- `evaluate.py` — 截面 Rank IC + IC_IR + 衰减分析 + 相关性矩阵
+- `compute/` — 因子计算子包: price/ (动量/反转/波动率/流动性/事件/情绪/另类) + fundamental.py (估值/质量/增长)。纯函数、向量化。
+- `ic.py` — 统一 IC 计算模块（双模式: Mode A 取数据算因子, Mode B 预计算因子值）。截面 Spearman Rank IC + ICIR + 衰减分析
 - `synth.py` — 因子合成：`equal_weight()` / `ic_weighted()`
 
 ### Layer 3: Alpha (`alpha/`)
@@ -68,16 +68,16 @@ PYTHONPATH=. python3 -m pytest tests/ -v
 - `calendar.py` — 交易日历
 
 ### Layer 7: Monitor (`monitor/`)
-- `attribution.py` — Brinson 归因: 总收益 = 因子收益 + 选股收益
+- `attribution.py` — Brinson 归因 + IC 衰减自动检测: active→monitoring (衰减>30%), monitoring→retired (持续≥10天)
 - `report.py` — `generate_report()`: 日报 → JSON → Web 推送
 
 ## Data flow
 
 ```
-quant/scheduler/ (单线程编排器: 08:30 信号 → 09:30 执行 → 15:30 归因)
+quant/scheduler/ (单线程编排器: 08:30 信号 → 09:30 执行 → 09:35-14:55 盘中风控 → 15:30 归因+IC衰减检测)
   └─ pipeline.py.run(date)
        ├─ Step 1: DataStore.update_daily()
-       ├─ Step 2: factor/evaluate.py → IC/IR report
+       ├─ Step 2: factor/ic.py → IC/IR report
        ├─ Step 3: alpha/model.py → predict → cross_sectional_rank
        ├─ Step 4: risk/neutralize.py + risk/constraints.py → filter
        ├─ Step 5: optimizer/portfolio.py → construct → TargetPortfolio
@@ -115,7 +115,7 @@ logger = get_logger("module.name")
 ## Factor evaluation commands
 
 ```bash
-# L1+L2 快速评估 — 当前 24 active 因子
+# L1+L2 快速评估 — active 因子
 PYTHONPATH=. bash scripts/eval_layer12.sh
 # L1+L2+L3 完整评估 (读写 factor_registry.status)
 PYTHONPATH=. bash scripts/eval_stepwise.sh

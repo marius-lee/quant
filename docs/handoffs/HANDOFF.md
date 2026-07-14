@@ -6,6 +6,230 @@
 
 
 
+## 2026-07-14#28: R1-R4 交易执行与归因深度改进
+
+### 触发
+报告第三节 (3.2-3.4) 的 4 项遗留缺口.
+
+### R1: compute_trades() 组合层面约束优化
+
+**文件**: `optimizer/rebalance.py` (~40 行新增/修改)
+
+**变更**:
+- 函数签名新增 `alpha_scores` 和 `max_trades_per_day` 参数
+- 换手率超限时, 不再均匀缩放 → 改为按 alpha 得分优先级保留/丢弃:
+  - 买入: 高 alpha 优先保留, 低 alpha 先丢弃
+  - 卖出: 低 alpha 优先保留, 高 alpha 先丢弃
+- 现金不足时, 买单按成本从低到高排序 (已有逻辑优化)
+- 新增单日交易笔数限制: >max_trades_per_day → 保留交易金额最大的 N 笔
+
+**原则**: 约束触发时, 保留最有 alpha 贡献的交易 → 组合整体质量最高
+
+### R2: 交易频率监控
+
+**文件**: `quant/scheduler/monitor.py` (P6-e, ~25 行新增)
+
+**变更**: 盘中 30s 循环新增:
+- 当日交易笔数 > `max_trades_per_day` → 告警
+- 当日换手率 (成交额/总资产) > `max_daily_turnover_pct` → 告警
+
+### R3: 换手率归因
+
+**文件**: `quant/scheduler/attribution.py` (~30 行新增)
+
+**变更**: 15:30 归因流程新增:
+- 计算当日换手率 = buy/sell 总成交额 / 组合资产
+- 换手效率 = PnL(bps) / 换手率(%)
+- 换手率 > 50% → 高换手告警 (建议加长调仓间隔)
+
+### R4: 信号衰减归因
+
+**文件**: `quant/scheduler/attribution.py` (~30 行新增)
+
+**变更**: 15:30 归因流程新增:
+- 对比 `daily_signals` 中的信号价格 vs 实际执行价
+- 计算平均滑点 (avg execution slip %)
+- 滑点 > 1% → 告警 (执行时机或报价质量问题)
+
+### 新增 config.yaml 键
+- `monitor.max_trades_per_day: 50` (R2)
+- `monitor.max_daily_turnover_pct: 0.50` (R2)
+
+### 修改文件
+- `optimizer/rebalance.py` (R1: compute_trades 签名+优先级逻辑)
+- `quant/scheduler/monitor.py` (R2: P6-e 交易频率监控)
+- `quant/scheduler/attribution.py` (R3+R4: 换手率归因+信号衰减归因)
+- `config/config.yaml` (R2: 2 个键)
+
+### 15:30 归因日志新增
+- `R3 turnover: X% turnover, PnL=+Y (Zbps), efficiency=W bps/1% turnover`
+- `R4 signal decay: avg execution slip +X% across N buys`
+
+### 验证
+- 4 个文件 Python 语法检查全部通过
+- config.yaml YAML 解析 + 新键值读取通过
+
+## 2026-07-14#27: G1-G4 实盘交易流程改进 — 业界标准全覆盖
+
+### 触发
+2026-07-14#26 的 P1-P6 落地后, 报告第二节 2.3 关键差距 G1-G4 待实现.
+
+### G1: 在线 Walk-Forward OOS 验证
+
+**新文件**: `quant/scheduler/oos_verify.py` (~110 行)
+
+**逻辑**: 每日 15:30 归因流程中执行:
+- 用最近 60 日 IS + 10 日 OOS 做 expanding-window IC 对比
+- IS day [T-70, T-10] 计算因子 IC, OOS day [T-9, T] 验证
+- 各因子 IS_IC → OOS_IC 衰减 > 50% (明汯标准) → 告警
+- 不降级, 仅人工审查
+
+**对标**: 明汯 rolling OOS IC 跟踪
+
+### G2: 因子拥挤度检测 — 截面相关性矩阵
+
+**修改**: `evaluation/phase5_monitor.py` — `_check_crowding()` 完全重写 (~60 行)
+
+**变更**: 从 IC 符号一致性代理 → 真正的 pairwise Pearson 相关性矩阵:
+- 加载最近交易日所有 using 因子的截面因子值 (500 只股票)
+- 计算 N×N Pearson 相关性矩阵
+- 标记 |r| > 0.7 的高相关对
+- 统计各因子的高相关邻居数 → 拥挤风险排名 (低/中/高)
+
+**来源**: MSCI (2018) "Crowd Control"; Lee (2025) 双曲线衰减模型
+
+### G3: DSR / MinTRL 数学模块
+
+**新文件**: `evaluation/deflated_sharpe.py` (~170 行)
+
+**函数**:
+- `probabilistic_sharpe_ratio()` — De Prado Eq.7.2: PSR 概率
+- `expected_max_sr()` — De Prado Eq.7.1: 多重试验下的期望最大 SR
+- `deflated_sharpe_ratio()` — Bailey & Lopez de Prado (2014): DSR
+- `min_track_record_length()` — De Prado Eq.7.3: 最小回测长度
+- `compute_dsr_for_strategy()` — 便捷函数, 从日收益序列计算 DSR+MinTRL
+
+**参数**: A股典型 skewness=-0.5, kurtosis=8.0
+
+### G4: 因子 PnL 归因
+
+**新文件**: `monitor/factor_attribution.py` (~160 行)
+
+**方法**: 因子暴露 × IC (因子收益率) = 因子边际 PnL 贡献
+- `factor_pnl_attribution(positions, date)` → 持仓的因子暴露 + IC → 贡献 bps
+- 方向标注: long winner / long loser / short winner / short loser / neutral
+- `factor_attribution_summary()` → Markdown 格式化输出
+
+**来源**: Grinold & Kahn (1999) Ch.7; Barra Risk Model Handbook
+
+### 集成点
+
+`quant/scheduler/attribution.py` 15:30 流程新增三个调用块:
+- G1: `run_oos_check(today)` — OOS walk-forward 告警
+- G3: `compute_dsr_for_strategy()` — DSR/MinTRL 日志
+- G4: `factor_pnl_attribution(positions, today)` — 因子 PnL 日志
+
+### 新增 config.yaml 键
+- `oos_verify.train_window_days: 60` (G1)
+- `oos_verify.test_window_days: 10` (G1)
+- `oos_verify.decay_warn_threshold: 0.5` (G1)
+
+### 修改文件
+- `quant/scheduler/oos_verify.py` (新增, G1)
+- `evaluation/deflated_sharpe.py` (新增, G3)
+- `monitor/factor_attribution.py` (新增, G4)
+- `evaluation/phase5_monitor.py` (G2: _check_crowding 重写)
+- `quant/scheduler/attribution.py` (G1+G3+G4 集成 ~50 行)
+- `config/config.yaml` (G1: oos_verify 段)
+
+### 关键行为变化
+- 15:30 归因日志出现 "G1 OOS walk-forward"、"G3 DSR"、"G4 factor PnL" 行
+- 因子拥挤度报告从 IC 符号比例 → 真正的截面相关性矩阵
+- 首次计算 DSR (Deflated Sharpe Ratio) 和 MinTRL
+
+### 验证
+- 7 个文件 Python 语法检查全部通过
+- config.yaml YAML 解析 + 新键值读取验证通过
+
+## 2026-07-14#26: P1-P6 实盘模拟交易流程改进 — 业界标准对齐
+
+### 触发
+docs/reports/实盘模拟交易操作流程分析_2026-07-14.md — 全量代码审计, 6 项改进建议.
+
+### P1: monitoring 因子不参与实盘交易
+
+**变更**: `factor/compute/_registry.py:15` — `_resolve_statuses("using")` 返回值从 `('active', 'monitoring')` 改为 `('active',)`
+
+**原因**: monitoring 因子是已被判定为 IC 衰减的因子（质量存疑）。业界头部机构（明汯、衍复）明确区分 production（参与交易）和 observation（仅观察）。monitoring 期内应停止交易、仅做观察，确认 IC 恢复后通过 P2 升回逻辑重新启用。
+
+**影响**: 08:30 信号生成仅加载 active 因子。monitoring 因子仅在 15:30 归因中被观察。盘前信号不再被衰减因子污染。
+
+### P2: 因子自动升回机制 (monitoring→active)
+
+**变更**: `quant/scheduler/attribution.py` — 新增 ~40 行升回逻辑
+
+**逻辑**:
+- 每日 15:30, 对 monitoring 因子检查: 若当日未触发 IC 衰减, 检查快照历史中连续稳定天数
+- 连续 `promotion_stability_days`(5) 天 IC 稳定（与滚动均值偏差 < 30%）
+- → 自动升级回 active
+
+**原因**: 原有代码只有降级路径 (active→monitoring→retired), 无升回机制。monitoring 因子即使 IC 恢复也永远回不到 active, 与因子生命周期设计意图矛盾。
+
+### P3: 轻量级在线 OOS IC 验证
+
+**变更**: `quant/scheduler/attribution.py` — 新增 ~15 行 OOS 检查
+
+**逻辑**: 对比当日 IC (OOS) vs 滚动窗口均值 (IS), 衰减率 < `oos_warn_threshold`(0.5) → 告警日志, 不自动降级
+
+**原因**: 离线评估有完整 CPCV+PBO (Phase 3), 但实盘无在线 OOS。业界头部机构每日盘后做 forward performance tracking。此轻量级方案对标明汯做法 (rolling OOS).
+
+### P4: IC 衰减窗口 5→20 天
+
+**变更**: `config/config.yaml` — `attribution.ic_rolling_window: 5` → `20`
+
+**原因**: A 股日频因子 IC 波动大 (中位数波动率 ~0.05), 5 日窗口误判率较高。业界 (明汯 20-60 日, 华泰 24 期) 建议 20 日窗口。
+
+### P5: Brinson 归因基准从等权改为市值加权
+
+**变更**: `quant/scheduler/attribution.py` — 基准权重从 `1/N` 改为按 `daily_valuation.market_cap` 按行业汇总的市值权重。市值数据缺失时退化为等权 (非业务逻辑 fallback, 仅数据不完整时的归因退路).
+
+**原因**: Brinson (1985) 原始论文用市值加权基准, 业界应用 (沪深 300 行业权重) 均为市值加权。
+
+### P6: 盘中监控补充 — 集中度 + VaR + 流动性
+
+**变更**: `quant/scheduler/monitor.py` — 在盘中 30s 循环中新增三项检查:
+
+- **P6-b 单票+单行业集中度**: 单票仓位 > 15% 或行业 > 40% → 告警
+- **P6-c VaR 实时估算**: 用最近 60 日日线计算 parametric VaR (95% 置信), >3% → 告警
+- **P6-d 流动性过滤器**: 20 日均成交额 < 3000 万 → 告警
+
+**原因**: 原有盘中监控仅有回撤/熔断/止盈止损。业界标准 (Grinold & Kahn) 要求独立风控 daemon 覆盖集中度、VaR、流动性三项。
+
+### 新增 config.yaml 键
+- `attribution.promotion_stability_days: 5` (P2)
+- `attribution.oos_warn_threshold: 0.5` (P3)
+- `attribution.ic_rolling_window: 20` (P4, 从 5 修改)
+- `monitor.max_single_concentration: 0.15` (P6)
+- `monitor.max_sector_concentration: 0.40` (P6)
+- `monitor.min_daily_turnover_amount: 30000000` (P6)
+- `monitor.var_confidence: 0.95` (P6)
+
+### 修改文件
+- `factor/compute/_registry.py` (P1: 1 行变更, using→active only)
+- `quant/scheduler/attribution.py` (P2+P3+P5: ~70 行新增逻辑, Brinson 市值加权重写)
+- `quant/scheduler/monitor.py` (P6: ~80 行新增集中度+VaR+流动性检查)
+- `config/config.yaml` (P2+P3+P4+P6: 7 个键新增/修改)
+
+### 验证
+- 4 个文件 Python 语法检查全部通过
+- P1 `_resolve_statuses("using")` 返回值验证通过
+- config.yaml YAML 解析 + 新键值读取验证通过
+
+### 关联
+- docs/reports/实盘模拟交易操作流程分析_2026-07-14.md (全量分析报告)
+- ADR 026 (五阶段评估标准)
+- HANDOFF #2026-07-12#20 (因子状态同步闭环)
+
 ## 2026-07-12#15: 评估管线加 trace_id
 
 **变更**: 5 个 Phase 文件, 每 Phase 入口函数生成 trace_id 并注入日志。

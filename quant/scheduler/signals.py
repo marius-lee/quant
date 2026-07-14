@@ -14,7 +14,7 @@ def _run(today: str):
     t0 = _time.time()
 
     from pipeline import generate_signals
-    result = generate_signals(date_str=today)
+    result = generate_signals(date_str=today, skip_pull=True)
     targets = result.get("target_positions", [])
 
     # signals already persisted by pipeline.generate_signals() → daily_signals table

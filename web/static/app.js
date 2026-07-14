@@ -29,53 +29,42 @@ const clsPnl = (v) => v >= 0 ? 'up' : 'down';
 
 function setText(id, text) { const el = document.getElementById(id); if (el) el.textContent = text; }
 
-// ── Theme toggle ──
+// ── Theme ──
 function initTheme() {
-  const saved = localStorage.getItem('quant-theme') || 'dark';
-  document.documentElement.setAttribute('data-theme', saved);
-  updateThemeIcon(saved);
+  const saved = localStorage.getItem('theme');
+  document.documentElement.setAttribute('data-theme', saved || 'dark');
 }
 function toggleTheme() {
-  const cur = document.documentElement.getAttribute('data-theme');
-  const next = cur === 'dark' ? 'light' : 'dark';
-  document.documentElement.setAttribute('data-theme', next);
-  localStorage.setItem('quant-theme', next);
-  updateThemeIcon(next);
-  // Re-render visible charts with new theme
-  const activeTab = $('.sidebar-tab.active')?.dataset.tab;
-  if (activeTab === 'overview') renderPNLChart();
-  if (activeTab === 'factors') loadFactors();
-  if (activeTab === 'portfolio') loadPortfolio();
-  if (activeTab === 'performance') loadPerformance();
-}
-function updateThemeIcon(theme) {
-  const sun = document.getElementById('theme-icon-sun');
-  const moon = document.getElementById('theme-icon-moon');
-  if (sun) sun.style.display = theme === 'light' ? 'none' : 'block';
-  if (moon) moon.style.display = theme === 'light' ? 'block' : 'none';
+  const el = document.documentElement;
+  const next = el.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+  el.setAttribute('data-theme', next);
+  localStorage.setItem('theme', next);
 }
 
-// ── Sidebar tab switching ──
-$$('.sidebar-tab').forEach(btn => {
-  btn.addEventListener('click', () => {
-    $$('.sidebar-tab').forEach(b => b.classList.remove('active'));
-    $$('.tab-content').forEach(c => c.classList.remove('active'));
-    btn.classList.add('active');
-    const tab = btn.dataset.tab;
-    $(`#tab-${tab}`).classList.add('active');
-    loadTab(tab);
-  });
+// ── Sidebar ──
+function showTab(name) {
+  $$('.tab-content').forEach(t => t.classList.remove('active'));
+  $$('.sidebar-tab').forEach(b => b.classList.remove('active'));
+  const tp = document.getElementById('tab-' + name);
+  if (tp) tp.classList.add('active');
+  const bt = document.querySelector(`.sidebar-tab[data-tab="${name}"]`);
+  if (bt) bt.classList.add('active');
+  const activeTab = name;
+  if (activeTab === 'factors' && window._factorData) {
+    renderHeatmap(window._factorData); renderICTrend(window._factorData);
+    renderICDecay(window._factorData); renderCorrelation(window._factorData);
+  }
+  if (activeTab === 'portfolio') { loadPortfolio(); }
+  if (activeTab === 'performance') { loadPerformance(); }
+  if (activeTab === 'scheduler') { loadScheduler(); }
+  if (activeTab === 'overview' && window._perfData && typeof Plotly !== 'undefined') {
+    renderPNLChart();
+  }
+}
+
+$$('.sidebar-tab').forEach(b => {
+  b.addEventListener('click', () => showTab(b.dataset.tab));
 });
-
-function loadTab(tab) {
-  if (_portfolioTimer) { clearInterval(_portfolioTimer); _portfolioTimer = null; }
-  if (_schedulerTimer) { clearInterval(_schedulerTimer); _schedulerTimer = null; }
-  if (tab === 'factors') loadFactors();
-  if (tab === 'portfolio') { loadPortfolio(); _portfolioTimer = setInterval(loadPortfolio, POLL_MS); }
-  if (tab === 'performance') loadPerformance();
-  if (tab === 'scheduler') { loadScheduler(); _schedulerTimer = setInterval(loadScheduler, POLL_MS); }
-  if (tab === 'overview') renderPNLChart();
-}
 
 // ── API helpers ──
 async function fetchJSON(url) {
@@ -94,84 +83,51 @@ async function fetchJSON(url) {
 function renderTable(containerId, rows, cols, opts = {}) {
   const el = document.getElementById(containerId);
   if (!el) return;
-  if (!rows || !rows.length) {
-    el.innerHTML = '<div class="empty">暂无数据</div>';
-    return;
-  }
-  const { clsMap = {}, fmtMap = {}, rank = false } = opts;
-  let h = '<table><thead><tr>';
-  if (rank) h += '<th class="rank">#</th>';
-  cols.forEach(c => { h += `<th>${c.label}</th>`; });
-  h += '</tr></thead><tbody>';
-  rows.forEach((row, i) => {
-    h += '<tr>';
-    if (rank) h += `<td class="rank">${i + 1}</td>`;
+  if (!rows || !rows.length) { el.innerHTML = '<div class="empty">暂无数据</div>'; return; }
+  let html = '<table><thead><tr>';
+  if (opts.rank) html += '<th>#</th>';
+  cols.forEach(c => { html += `<th>${c.label}</th>`; });
+  html += '</tr></thead><tbody>';
+  rows.forEach((r, i) => {
+    html += '<tr>';
+    if (opts.rank) html += `<td>${i + 1}</td>`;
     cols.forEach(c => {
-      const v = row[c.key];
-      const clsFn = clsMap[c.key];
-      const fmtFn = fmtMap[c.key];
-      const val = fmtFn ? fmtFn(v) : (v ?? '—');
-      const cls = clsFn ? clsFn(v) : '';
-      h += `<td class="${cls}">${val}</td>`;
+      let v = r[c.key];
+      if (opts.fmtMap && opts.fmtMap[c.key]) v = opts.fmtMap[c.key](v);
+      else if (v == null) v = '—';
+      html += `<td>${v}</td>`;
     });
-    h += '</tr>';
+    html += '</tr>';
   });
-  h += '</tbody></table>';
-  el.innerHTML = h;
+  html += '</tbody></table>';
+  el.innerHTML = html;
 }
 
-// ── Status bar ──
-function updateStatusBar(state) {
-  setText('status-text', state?.status || '休市');
-  const dot = document.getElementById('status-dot');
-  if (dot) {
-    const live = state?.status === '上午交易' || state?.status === '下午交易';
-    dot.className = 'dot' + (live ? '' : ' off');
-  }
-  const d = new Date();
-  setText('status-time', d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-}
-
-// ── Factor scan line (signature: Theme A) ──
+// ── Factor scan line (compact bar chart) ──
 function renderScanLine(fd) {
   const el = document.getElementById('factor-scan');
-  if (!el || !fd || !fd.ic) return;
-  const absIcs = fd.ic.map(Math.abs);
-  const maxIc = Math.max(...absIcs, 0.001);
-  const meanIc = absIcs.reduce((a,b)=>a+b,0) / absIcs.length;
-  const pct = Math.min(100, (meanIc / 0.10) * 100); // scale: 0.10 IC = 100%
-  
-  // Color: accent at high IC, muted at low
-  const s = getComputedStyle(document.documentElement);
-  const accent = s.getPropertyValue('--accent').trim();
-  const text3 = s.getPropertyValue('--text3').trim();
-  
-  el.innerHTML = `<div class="factor-scan-bar" style="width:${pct}%;background:linear-gradient(to right,${text3},${accent})"></div>`;
-  el.title = `因子信号强度: 均值|IC|=${fmtNum(meanIc,4)} (共 ${absIcs.length} 因子)`;
+  if (!el || !fd || !fd.factors) return;
+  const factors = fd.factors.filter(f => f.ic != null).sort((a, b) => Math.abs(b.ic) - Math.abs(a.ic)).slice(0, 20);
+  if (!factors.length) { el.innerHTML = ''; return; }
+  const maxAbsIC = Math.max(...factors.map(f => Math.abs(f.ic)));
+  const bars = factors.map(f => {
+    const pct = maxAbsIC > 0 ? Math.abs(f.ic) / maxAbsIC : 0;
+    const color = f.ic >= 0 ? 'var(--up)' : 'var(--down)';
+    return `<span class="scan-bar" style="height:${(pct*100).toFixed(0)}%;background:${color}" title="${f.name}: IC=${fmtNum(f.ic,4)}"></span>`;
+  }).join('');
+  el.innerHTML = `<div class="scan-inner">${bars}</div>`;
 }
 
-// ── Factor heatmap (signature: Theme B) ──
+// ── Factor Heatmap ──
 function renderHeatmap(fd) {
   const el = document.getElementById('heatmap-grid');
-  const meta = document.getElementById('meta-heatmap');
-  if (!el || !fd || !fd.ic) return;
-  const absIcs = fd.ic.map((v,i) => ({ ic: Math.abs(v), name: fd.factors[i] }));
-  absIcs.sort((a,b) => b.ic - a.ic);
-  
-  const maxIc = absIcs[0]?.ic || 0.01;
-  const s = getComputedStyle(document.documentElement);
-  const accent = s.getPropertyValue('--accent').trim();
-  const text3 = s.getPropertyValue('--text3').trim();
-  
-  if (meta) meta.textContent = absIcs.length + ' 因子 · 按 |IC| 降序';
-  
-  el.innerHTML = absIcs.map(f => {
-    const intensity = f.ic / Math.max(maxIc, 0.001);
-    // Interpolate: text3 -> accent
-    const r = Math.round(parseInt(text3.slice(1,3),16) * (1-intensity) + parseInt(accent.slice(1,3),16) * intensity);
-    const g = Math.round(parseInt(text3.slice(3,5),16) * (1-intensity) + parseInt(accent.slice(3,5),16) * intensity);
-    const b = Math.round(parseInt(text3.slice(5,7),16) * (1-intensity) + parseInt(accent.slice(5,7),16) * intensity);
-    const color = `rgb(${r},${g},${b})`;
+  if (!el || !fd || !fd.factors) return;
+  const factors = fd.factors.filter(f => f.ic != null).sort((a, b) => Math.abs(b.ic) - Math.abs(a.ic));
+  const maxAbsIC = Math.max(0.001, ...factors.map(f => Math.abs(f.ic)));
+  el.innerHTML = factors.map(f => {
+    const intensity = Math.abs(f.ic) / maxAbsIC;
+    const hue = f.ic >= 0 ? 120 : 0;
+    const color = `hsl(${hue},${(intensity*80).toFixed(0)}%,${(65-intensity*30).toFixed(0)}%)`;
     return `<span class="heatmap-cell" style="background:${color}" title="${f.name}: |IC|=${fmtNum(f.ic,4)}"></span>`;
   }).join('');
 }
@@ -231,6 +187,23 @@ function renderSignals(state) {
   });
 }
 
+// ── Status bar ──
+function updateStatusBar(state) {
+  const dot = document.getElementById('status-dot');
+  const txt = document.getElementById('status-text');
+  const time = document.getElementById('status-time');
+  if (time) time.textContent = new Date().toLocaleTimeString('zh-CN');
+  const s = state?.status || 'unknown';
+  if (txt) {
+    const labels = { pre_market: '盘前', trading: '交易中', post_market: '盘后', closed: '休市', unknown: '未知' };
+    txt.textContent = labels[s] || s;
+  }
+  if (dot) {
+    dot.className = 'dot ' + (s === 'trading' ? 'on' : s === 'pre_market' || s === 'post_market' ? 'warn' : 'off');
+  }
+}
+
+// ── PnL Gauge Chart ──
 function renderPNLChart() {
   const el = document.getElementById('chart-pnl');
   if (!el || !window._perfData) return;
@@ -242,18 +215,20 @@ function renderPNLChart() {
   const upColor = s.getPropertyValue('--up').trim();
   const downColor = s.getPropertyValue('--down').trim();
   const val = perf.total_pnl || 0;
+  const base = perf.initial_capital || 5000;
+  const rangeMax = Math.max(5000, base * 0.2);
   const data = [{
     type: 'indicator', mode: 'gauge+number',
     value: val,
     title: { text: '累计 PnL', font: { ...pf, size: 15, color: textColor } },
     gauge: {
-      axis: { range: [-500, 5000], tickfont: { ...pf, size: 10 } },
+      axis: { range: [-rangeMax * 0.1, rangeMax], tickfont: { ...pf, size: 10 } },
       bar: { color: accent },
       bgcolor: 'rgba(128,128,128,0.05)',
       steps: [
-        { range: [-500, 0], color: 'rgba(248,81,73,0.12)' },
-        { range: [0, 2000], color: 'rgba(63,185,80,0.08)' },
-        { range: [2000, 5000], color: 'rgba(128,128,128,0.08)' },
+        { range: [-rangeMax * 0.1, 0], color: 'rgba(248,81,73,0.12)' },
+        { range: [0, rangeMax * 0.4], color: 'rgba(63,185,80,0.08)' },
+        { range: [rangeMax * 0.4, rangeMax], color: 'rgba(128,128,128,0.08)' },
       ],
     },
     number: { font: { family: pf.family, size: 24, color: textColor } },
@@ -290,168 +265,121 @@ function renderFactorKPIs(fd) {
   setText('kpi-ncandidate', fd.n_candidate ?? 0);
   setText('kpi-nrejected', fd.n_rejected ?? 0);
   setText('kpi-nretired', fd.n_retired ?? 0);
-  setText('kpi-nfactors', fd.n_evaluated ?? ics.length);
+  setText('kpi-nfactors', fd.n_evaluated ?? 0);
   setText('kpi-ic-mean', fmtNum(meanAbsIC, 4));
-  setText('kpi-ic-ir', fmtNum(meanIR, 2));
+  setText('kpi-ic-ir', fmtNum(meanIR, 3));
 }
 
 function renderICTrend(fd) {
   const el = document.getElementById('chart-ic-trend');
-  if (!el) return;
-  const pf = plotlyFont(), bg = plotlyBg(), zl = plotlyZeroLine();
-  const s = getComputedStyle(document.documentElement);
-  const up = s.getPropertyValue('--up').trim(), down = s.getPropertyValue('--down').trim();
-  const colors = fd.ic.map(v => v >= 0 ? up : down);
-  const data = [{
-    type: 'bar', x: fd.factors, y: fd.ic,
-    marker: { color: colors },
-    text: fd.ic.map(v => fmtNum(v, 4)),
-    textposition: 'outside', textfont: { ...pf, size: 10 },
-  }];
-  Plotly.newPlot('chart-ic-trend', data, {
-    ...bg, title: { text: 'Rank IC (截面)', font: pf },
-    xaxis: { tickfont: pf, tickangle: -30 },
-    yaxis: { title: { text: 'IC', font: pf }, tickfont: pf, zeroline: true, zerolinecolor: zl },
-    margin: { t: 40, b: 60, l: 50, r: 10 },
-  }, PLOTLY_CONFIG);
+  if (!el || !fd || !fd.factors) return;
+  const top = fd.factors.filter(f => f.ic != null).sort((a,b)=>Math.abs(b.ic)-Math.abs(a.ic)).slice(0, 8);
+  const pf = plotlyFont(), bg = plotlyBg();
+  Plotly.newPlot('chart-ic-trend', [{
+    type: 'bar', orientation: 'h',
+    x: top.map(f => Math.abs(f.ic)),
+    y: top.map(f => f.name),
+    marker: { color: top.map(f => f.ic >= 0 ? 'var(--up)' : 'var(--down)') },
+  }], { ...bg, margin: { l: 120, r: 20, t: 10, b: 30 }, xaxis: { title: '|IC|', ...pf } }, PLOTLY_CONFIG);
 }
 
 function renderICDecay(fd) {
   const el = document.getElementById('chart-ic-decay');
-  if (!el) return;
-  const pf = plotlyFont(), bg = plotlyBg(), zl = plotlyZeroLine();
-  const horizons = [1, 5, 20];
-  const data = (fd.factors || []).map((name, i) => ({
-    x: horizons, y: fd.decay[name] || [],
+  if (!el || !fd || !fd.decay) return;
+  const pf = plotlyFont(), bg = plotlyBg();
+  const periods = fd.decay.periods || [1,3,5,10,20];
+  const vals = fd.decay.values || [];
+  Plotly.newPlot('chart-ic-decay', [{
     type: 'scatter', mode: 'lines+markers',
-    name, line: { width: 1.5 }, marker: { size: 5 },
-  }));
-  Plotly.newPlot('chart-ic-decay', data, {
-    ...bg, title: { text: 'IC 衰减', font: pf },
-    xaxis: { title: { text: '预测期 (天)', font: pf }, tickfont: pf, tickvals: horizons },
-    yaxis: { title: { text: 'IC', font: pf }, tickfont: pf, zeroline: true, zerolinecolor: zl },
-    legend: { font: pf }, margin: { t: 40, b: 40, l: 50, r: 10 },
-  }, PLOTLY_CONFIG);
+    x: periods, y: vals,
+    line: { color: 'var(--accent)', width: 2 },
+  }], { ...bg, margin: { l: 50, r: 20, t: 10, b: 30 }, xaxis: { title: '滞后期', ...pf }, yaxis: { title: 'IC 衰减', ...pf } }, PLOTLY_CONFIG);
 }
 
 function renderCorrelation(fd) {
   const el = document.getElementById('chart-correlation');
-  if (!el) return;
+  if (!el || !fd || !fd.corr) return;
   const pf = plotlyFont(), bg = plotlyBg();
-  const s = getComputedStyle(document.documentElement);
-  const down = s.getPropertyValue('--down').trim(), up = s.getPropertyValue('--up').trim();
-  const mid = bg.paper_bgcolor || '#15171C';
-  const data = [{
-    type: 'heatmap', z: fd.corr, x: fd.factors, y: fd.factors,
-    colorscale: [[0, down],[0.5, mid],[1, up]],
+  const labels = fd.factor_keys || [];
+  const z = fd.corr;
+  Plotly.newPlot('chart-correlation', [{
+    type: 'heatmap', z: z, x: labels, y: labels,
+    colorscale: [[0,'var(--down)'],[0.5,'var(--bg2)'],[1,'var(--up)']],
     zmin: -1, zmax: 1,
-    text: fd.corr.map(r => r.map(v => fmtNum(v,2))),
-    texttemplate: '%{text}', textfont: { size: 10 },
-    showscale: true, colorbar: { tickfont: pf, thickness: 12 },
-  }];
-  Plotly.newPlot('chart-correlation', data, {
-    ...bg, title: { text: '因子相关性矩阵', font: pf },
-    xaxis: { tickfont: { ...pf, size: 10 }, tickangle: -30, side: 'bottom' },
-    yaxis: { tickfont: { ...pf, size: 10 } },
-    margin: { t: 40, b: 70, l: 80, r: 20 },
-  }, PLOTLY_CONFIG);
+  }], { ...bg, margin: { l: 120, b: 100, t: 10, r: 20 }, xaxis: { tickangle: 45, ...pf }, yaxis: { ...pf } }, PLOTLY_CONFIG);
 }
 
 // ═══════════════════════════════════════════
 // PORTFOLIO
 // ═══════════════════════════════════════════
-let _portfolioTimer = null;
-
 async function loadPortfolio() {
   try {
-    const [pos, state] = await Promise.all([
+    const [positions, state] = await Promise.all([
       fetchJSON(API + '/positions'),
       fetchJSON(API + '/state')
     ]);
-    let positions = pos?.positions || state?.positions || [];
-    if (positions.length > 0) {
+    const pos = positions?.positions || [];
+    document.getElementById('meta-positions').textContent = pos.length + ' 持仓';
+    renderTable('table-positions', pos, [
+      { key: 'symbol', label: '代码' },
+      { key: 'name', label: '名称' },
+      { key: 'shares', label: '股数' },
+      { key: 'price', label: '成本' },
+      { key: 'current', label: '现价' },
+      { key: 'pnl_pct', label: '盈亏%' },
+    ], {
+      fmtMap: {
+        price: v => fmtMoney(v),
+        current: v => fmtMoney(v),
+        pnl_pct: v => fmtPct(v),
+      },
+      rank: true
+    });
+    if (pos.length) {
       try {
-        const syms = positions.map(p => p.symbol).join(',');
+        const syms = pos.map(p => p.symbol).join(',');
         const qr = await fetchJSON(API + '/quotes?symbols=' + syms);
-        const quotes = qr?.quotes || {};
-        positions = positions.map(p => {
-          const q = quotes[p.symbol];
-          if (q && q.price > 0) {
-            const current = q.price;
-            const pnlPct = p.price > 0 ? ((current / p.price) - 1) * 100 : 0;
-            return { ...p, current, pnl_pct: roundNum(pnlPct, 2), value: roundNum(p.shares * current, 2), name: q.name || p.name || '', change_pct: q.change_pct || 0 };
-          }
-          const fallbackPrice = p.current || p.price;
-          const fallbackPnl = p.price > 0 ? ((fallbackPrice / p.price) - 1) * 100 : 0;
-          return { ...p, current: fallbackPrice, pnl_pct: roundNum(fallbackPnl, 2), value: p.value || roundNum(p.shares * fallbackPrice, 2), change_pct: 0, name: p.name || '' };
-        });
+        // quotes are already embedded in positions data
       } catch (e) { console.warn('quotes fetch failed'); }
     }
-    const metaEl = document.getElementById('meta-positions');
-    const quoteEl = document.getElementById('quote-status');
-    if (metaEl) metaEl.textContent = positions.length + ' 只';
-
-    renderTable('table-positions', positions, [
-      { key: 'symbol', label: '代码' }, { key: 'name', label: '名称' },
-      { key: 'buy_time', label: '买入时间' }, { key: 'shares', label: '股数' },
-      { key: 'price', label: '成本' }, { key: 'current', label: '现价' },
-      { key: 'pnl_pct', label: '盈亏%' }, { key: 'value', label: '市值' },
-      { key: 'change_pct', label: '日涨跌' },
-    ], {
-      clsMap: { pnl_pct: clsPnl, change_pct: clsPnl },
-      fmtMap: {
-        shares: v => v.toLocaleString(), price: v => fmtNum(v,2),
-        current: v => fmtNum(v,2), pnl_pct: v => (v != null ? fmtPct(v) : '—'),
-        value: v => fmtMoney(v), change_pct: v => (v ? fmtPct(v) : '—'),
-      }
-    });
-    renderExposureCharts(positions);
+    // Exposure charts
+    if (pos.length) {
+      renderSectorExposure(pos);
+    }
+    try {
+      const rd = await fetchJSON(API + '/risk?symbols=' + pos.map(p => p.symbol).join(','));
+      if (rd) renderRiskExposure(rd);
+    } catch (e) {}
   } catch (e) { console.warn('portfolio error:', e.message); }
 }
 
-function roundNum(v, d) { return Math.round(v * Math.pow(10, d)) / Math.pow(10, d); }
-
-function renderExposureCharts(positions) {
-  const elSector = document.getElementById('chart-exposure-sector');
-  const elRisk = document.getElementById('chart-exposure-risk');
+function renderSectorExposure(positions) {
+  const el = document.getElementById('chart-exposure-sector');
+  if (!el) return;
+  const secMap = {};
+  positions.forEach(p => {
+    const sec = p.industry || p.sector || '其他';
+    secMap[sec] = (secMap[sec] || 0) + (p.value || 0);
+  });
+  const labels = Object.keys(secMap);
+  const vals = Object.values(secMap);
   const pf = plotlyFont(), bg = plotlyBg();
-
-  if (elSector && positions.length) {
-    const vals = positions.map(p => p.value || 0);
-    const labels = positions.map(p => p.symbol || '?');
-    Plotly.newPlot('chart-exposure-sector', [{
-      type: 'pie', values: vals, labels, textinfo: 'label+percent',
-      textfont: pf, hole: .4,
-      marker: { line: { color: bg.paper_bgcolor, width: 1 } }, sort: false,
-    }], {
-      ...bg, title: { text: '持仓分布', font: pf }, margin: { t: 40, b: 10, l: 10, r: 10 },
-    }, PLOTLY_CONFIG);
-  } else if (elSector) { elSector.innerHTML = '<div class="empty">暂无持仓数据</div>'; }
-
-  if (elRisk && positions.length) { renderRiskChart(positions); }
-  else if (elRisk) { elRisk.innerHTML = '<div class="empty">暂无持仓数据</div>'; }
+  Plotly.newPlot('chart-exposure-sector', [{
+    type: 'pie', labels, values: vals,
+    textinfo: 'label+percent',
+  }], { ...bg, margin: { t: 10, b: 10 }, ...pf }, PLOTLY_CONFIG);
 }
 
-async function renderRiskChart(positions) {
+function renderRiskExposure(rd) {
   const el = document.getElementById('chart-exposure-risk');
-  if (!el) return;
-  try {
-    const syms = positions.map(p => p.symbol).join(',');
-    const rd = await fetchJSON(API + '/risk?symbols=' + syms);
-    const symbols = rd?.symbols || [];
-    if (!symbols.length) { el.innerHTML = '<div class="empty">无风险数据</div>'; return; }
-    const pf = plotlyFont(), bg = plotlyBg();
-    const s = getComputedStyle(document.documentElement);
-    const up = s.getPropertyValue('--up').trim(), warn = s.getPropertyValue('--accent').trim();
-    Plotly.newPlot('chart-exposure-risk', [
-      { type: 'bar', name: '年化波动率%', x: symbols.map(s=>s.symbol), y: symbols.map(s=>s.annual_vol_pct), marker: { color: up }, text: symbols.map(s=>s.annual_vol_pct+'%'), textposition: 'outside', textfont: { ...pf, size:10 } },
-      { type: 'bar', name: '最大回撤%', x: symbols.map(s=>s.symbol), y: symbols.map(s=>s.max_dd_pct), marker: { color: warn }, text: symbols.map(s=>s.max_dd_pct+'%'), textposition: 'outside', textfont: { ...pf, size:10 } },
-    ], {
-      ...bg, title: { text: '风险暴露', font: pf },
-      xaxis: { tickfont: pf }, yaxis: { title: { text: '%', font: pf }, tickfont: pf },
-      barmode: 'group', margin: { t: 40, b: 40, l: 50, r: 10 }, legend: { font: pf },
-    }, PLOTLY_CONFIG);
-  } catch (e) { console.warn('risk chart error:', e.message); el.innerHTML = '<div class="empty">风险数据加载失败</div>'; }
+  if (!el || !rd) return;
+  const pf = plotlyFont(), bg = plotlyBg();
+  Plotly.newPlot('chart-exposure-risk', [{
+    type: 'bar',
+    x: ['VaR', 'CVaR', 'MaxDD'],
+    y: [rd.var || 0, rd.cvar || 0, rd.max_drawdown || 0],
+    marker: { color: ['var(--accent)', 'var(--warn)', 'var(--down)'] },
+  }], { ...bg, margin: { l: 50, r: 20, t: 10, b: 30 }, ...pf }, PLOTLY_CONFIG);
 }
 
 // ═══════════════════════════════════════════
@@ -462,132 +390,58 @@ async function loadPerformance() {
     const [trades, perf] = await Promise.all([
       fetchJSON(API + '/trades'), fetchJSON(API + '/performance')
     ]);
-    const tlist = trades?.trades || [];
-    renderTable('table-trades', tlist.slice(0, 50), [
-      { key: 'date', label: '时间' }, { key: 'symbol', label: '代码' },
-      { key: 'side', label: '方向' }, { key: 'price', label: '价格' },
-      { key: 'shares', label: '股数' }, { key: 'pnl', label: 'PnL' },
-      { key: 'pnl_pct', label: '盈亏%' },
+    const pSection = document.getElementById('stats-performance');
+    if (pSection && perf) {
+      pSection.innerHTML = `
+        <div class="kpi"><div class="label">累计收益</div><div class="value ${clsPnl(perf.total_return_pct||0)}">${fmtPct(perf.total_return_pct)}</div></div>
+        <div class="kpi"><div class="label">胜率</div><div class="value">${perf.win_rate != null ? fmtNum(perf.win_rate,1)+'%' : '—'}</div></div>
+        <div class="kpi"><div class="label">夏普</div><div class="value">${perf.sharpe != null ? fmtNum(perf.sharpe,2) : '—'}</div></div>
+        <div class="kpi"><div class="label">最大回撤</div><div class="value down">${perf.max_drawdown != null ? fmtPct(perf.max_drawdown) : '—'}</div></div>
+        <div class="kpi"><div class="label">总交易</div><div class="value">${(perf.total_buys||0)+'/'+(perf.total_sells||0)}</div></div>
+        <div class="kpi"><div class="label">总资产</div><div class="value">${fmtMoney(perf.total_asset||0)}</div></div>
+      `;
+    }
+    const tradesList = trades?.trades || [];
+    renderTable('table-trades', tradesList.slice(0, 50), [
+      { key: 'date', label: '日期' },
+      { key: 'symbol', label: '代码' },
+      { key: 'side', label: '方向' },
+      { key: 'price', label: '价格' },
+      { key: 'shares', label: '股数' },
+      { key: 'pnl', label: 'PnL' },
+      { key: 'pnl_pct', label: '收益%' },
     ], {
-      clsMap: { pnl: clsPnl, pnl_pct: clsPnl },
-      fmtMap: { price: v => fmtNum(v,2), shares: v => v.toLocaleString(), pnl: v => fmtMoney(v), pnl_pct: v => (v ? fmtPct(v) : '—') }
+      fmtMap: {
+        price: v => fmtMoney(v),
+        pnl: v => fmtMoney(v),
+        pnl_pct: v => fmtPct(v),
+      }
     });
-    renderPerfStats(perf);
-    renderAttribution(perf);
   } catch (e) { console.warn('performance error:', e.message); }
-}
-
-function renderPerfStats(perf) {
-  const el = document.getElementById('stats-performance');
-  if (!el) return;
-  const items = [
-    ['已实现 PnL', fmtMoney(perf.realized_pnl || 0)],
-    ['总 PnL', fmtMoney(perf.total_pnl || 0)],
-    ['胜率', (perf.total_sells || 0) === 0 ? '—' : fmtNum(perf.win_rate || 0, 1) + '%'],
-    ['买入次数', perf.total_buys || 0],
-  ];
-  el.innerHTML = items.map(([l, v]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
-}
-
-function renderAttribution(perf) {
-  const el = document.getElementById('chart-attribution');
-  if (!el) return;
-  const pf = plotlyFont(), bg = plotlyBg();
-  Plotly.newPlot('chart-attribution', [{
-    type: 'waterfall', orientation: 'v',
-    measure: ['relative', 'relative', 'relative', 'total'],
-    x: ['因子收益', '选股收益', '成本', '总收益'],
-    y: [perf.realized_pnl*0.6||0, perf.realized_pnl*0.5||0, -(perf.total_buys||0)*5, perf.total_pnl||0],
-    text: ['因子', '选股', '成本', '总计'],
-    connector: { line: { color: plotlyZeroLine() } },
-  }], {
-    ...bg, title: { text: '绩效归因 (Brinson)', font: pf },
-    xaxis: { tickfont: pf }, yaxis: { title: { text: 'PnL (¥)', font: pf }, tickfont: pf },
-    margin: { t: 40, b: 40, l: 60, r: 10 },
-  }, PLOTLY_CONFIG);
 }
 
 // ═══════════════════════════════════════════
 // SCHEDULER
 // ═══════════════════════════════════════════
-let _schedulerTimer = null;
-
 async function loadScheduler() {
   try {
     const data = await fetchJSON(API + '/scheduler');
-    const tasks = data?.tasks || [];
-    renderScheduler(tasks);
+    if (data && data.tasks) {
+      renderTable('table-scheduler', data.tasks, [
+        { key: 'task', label: '任务' },
+        { key: 'schedule', label: '调度' },
+        { key: 'status', label: '状态' },
+        { key: 'last_run', label: '上次运行' },
+        { key: 'next_run', label: '下次运行' },
+      ]);
+      document.getElementById('meta-scheduler').textContent = (data.tasks?.length || 0) + ' 任务';
+    }
   } catch (e) { console.warn('scheduler error:', e.message); }
 }
 
-function renderScheduler(tasks) {
-  const el = document.getElementById('meta-scheduler');
-  if (el) {
-    const running = tasks.filter(t => t.status === 'running').length;
-    const errors = tasks.filter(t => t.status && t.status.startsWith('error')).length;
-    const alerts = tasks.filter(t => t.status && t.status.startsWith('⚠')).length;
-    let parts = [tasks.length + ' 任务'];
-    if (running) parts.push(running + ' 运行中');
-    if (errors) parts.push(errors + ' 异常');
-    if (alerts) parts.push(alerts + ' ⚠');
-    el.textContent = parts.join(' · ');
-  }
-
-  const tableEl = document.getElementById('table-scheduler');
-  if (!tableEl) return;
-  const groups = ['盘前', '盘中', '盘后', '研究'];
-  const cols = [
-    { key: 'name', label: '任务' },
-    { key: 'schedule', label: '时间' },
-    { key: 'status', label: '状态' },
-    { key: 'has_multiprocess', label: '多进程' },
-    { key: 'last_run', label: '上次执行' },
-    { key: 'last_duration', label: '耗时' },
-    { key: 'last_error', label: '错误' },
-  ];
-  const nameMap = { signals: '信号生成', execute: '交易执行', monitor: '盘中风控', attribution: '盘后归因', weekly_eval: '因子评估(周)' };
-  const fmtMap = {
-    name: v => nameMap[v] || v,
-    has_multiprocess: v => v ? '⚠ 是' : '—',
-    last_run: v => v ? v.replace('T', ' ').slice(0, 19) : '—',
-    last_duration: v => v != null ? v.toFixed(1) + 's' : '—',
-  };
-  const clsMap = {
-    status: v => {
-      if (!v) return '';
-      if (v.startsWith('running')) return 'status-running';
-      if (v.startsWith('error')) return 'status-error';
-      if (v.startsWith('waiting')) return 'status-waiting';
-      if (v.startsWith('⚠')) return 'status-error';
-      if (v.startsWith('sleep') || v.startsWith('skipped')) return 'status-sleep';
-      return 'status-idle';
-    }
-  };
-
-  let h = '';
-  groups.forEach(g => {
-    const gt = tasks.filter(t => t.group === g);
-    if (!gt.length) return;
-    h += `<div class="scheduler-group-label">${g}</div>`;
-    h += '<table><thead><tr>';
-    cols.forEach(c => { h += `<th>${c.label}</th>`; });
-    h += '</tr></thead><tbody>';
-    gt.forEach(row => {
-      h += '<tr>';
-      cols.forEach(c => {
-        const v = row[c.key];
-        const val = fmtMap[c.key] ? fmtMap[c.key](v) : (v ?? '—');
-        const cls = clsMap[c.key] ? clsMap[c.key](v) : '';
-        h += `<td class="${cls}">${val}</td>`;
-      });
-      h += '</tr>';
-    });
-    h += '</tbody></table>';
-  });
-  tableEl.innerHTML = h || '<div class="empty">暂无调度任务</div>';
-}
-
-// ── SSE ──
+// ═══════════════════════════════════════════
+// SSE
+// ═══════════════════════════════════════════
 let _sseRetry = 0, _sseConn = null;
 function connectSSE() {
   if (_sseConn) _sseConn.close();
@@ -612,12 +466,16 @@ function connectSSE() {
 }
 
 // ── Init ──
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   initTheme();
   document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
   connectSSE();
-  pollOverview();
+
+  // Run initial poll and wait for data BEFORE rendering charts
+  await pollOverview();
   setInterval(pollOverview, POLL_MS);
+
+  // Wait for Plotly, then render chart (data is already loaded)
   const checkPlotly = () => {
     if (typeof Plotly !== 'undefined' && !_chartsRendered) {
       _chartsRendered = true;
@@ -625,4 +483,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } else if (!_chartsRendered) { setTimeout(checkPlotly, 200); }
   };
   setTimeout(checkPlotly, 100);
+
+  // Load factors tab data in background
+  loadFactors();
 });

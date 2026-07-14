@@ -4,7 +4,7 @@ import sqlite3
 from quant.data.repos._base import DatabaseManager, sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-db = sqlite3.connect('data/market.db')
+db = sqlite3.connect('quant/data/market.db')
 for name in ['bp_ratio', 'size', 'gap_5d']:
     db.execute(
         "UPDATE factor_registry SET status='active', status_reason='P43 sleeve candidate (fundamentals + gap, low corr with zt_streak)',"

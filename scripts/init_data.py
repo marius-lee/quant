@@ -1,3 +1,4 @@
+from quant.config.paths import MARKET_DB
 #!/usr/bin/env python3
 """数据源初始化脚本 — 一键拉取全A股基础数据。
 
@@ -29,7 +30,7 @@ def check_data_status():
     """打印当前数据状态。"""
     import sqlite3
 from data.repos._base import DatabaseManager
-    db = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
+    db = MARKET_DB
     if not os.path.exists(db):
         print("market.db 不存在 — 尚未初始化")
         return

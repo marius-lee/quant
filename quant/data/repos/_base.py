@@ -2,7 +2,7 @@
 
 Usage:
     db = DatabaseManager()
-    conn = db.get_connection("data/market.db")
+    conn = db.get_connection("quant/data/market.db")
     conn.execute("SELECT ...")
     conn.close()
 """
@@ -11,12 +11,11 @@ from __future__ import annotations
 
 import sqlite3
 import os
-import threading
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
 
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 
 
 class DatabaseManager:
@@ -46,7 +45,7 @@ class DatabaseManager:
             return os.path.join(_PROJECT_ROOT, db_path)
         return db_path
 
-    def get_connection(self, db_path: str = "data/market.db") -> sqlite3.Connection:
+    def get_connection(self, db_path: str = "quant/data/market.db") -> sqlite3.Connection:
         """Get or create a thread-local SQLite connection for the given db."""
         full = self._resolve_path(db_path)
         thread_id = threading.get_ident()
@@ -86,3 +85,4 @@ def query_scalar(conn: sqlite3.Connection, sql: str, params: tuple = ()):
     """Return single scalar value or None."""
     row = conn.execute(sql, params).fetchone()
     return row[0] if row else None
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))

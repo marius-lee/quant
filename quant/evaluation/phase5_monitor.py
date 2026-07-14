@@ -30,7 +30,7 @@ def run_monitor(output_dir: str = "docs/reports") -> str:
     logger.info(f"Phase 5 [{tid}] start — monitoring report")
     report_path = os.path.join(output_dir, f"monitor_{today}.md")
 
-    conn = DatabaseManager.get_instance().get_connection("data/market.db")
+    conn = DatabaseManager.get_instance().get_connection("quant/data/market.db")
 
     # ── 1. 因子拥挤度 (pairwise correlation) ──
     active = [r[0] for r in conn.execute(
@@ -310,7 +310,7 @@ def sync_factor_status() -> dict:
 
     all_rejected = rejected_phase2 | rejected_phase3 | rejected_phase4
 
-    conn = DatabaseManager.get_instance().get_connection("data/market.db")
+    conn = DatabaseManager.get_instance().get_connection("quant/data/market.db")
     # Get current active factors (don't touch these)
     current_active = set(r[0] for r in conn.execute(
         "SELECT name FROM factor_registry WHERE status='active'"

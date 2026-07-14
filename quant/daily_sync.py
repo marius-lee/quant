@@ -1,3 +1,4 @@
+from quant.config.paths import MARKET_DB
 """每日数据同步 — 一个命令更新所有数据。
 
 功能:
@@ -36,7 +37,7 @@ def step2_margin(date_str: str):
     from data.margin import _sync_sse_raw, _sync_szse_wrapper
     import sqlite3
 from data.repos._base import DatabaseManager
-    conn = sqlite3.connect(os.path.join(os.path.dirname(__file__), "data", "market.db"), timeout=_require_cfg("data.sqlite.timeout"))
+    conn = sqlite3.connect(MARKET_DB, timeout=_require_cfg("data.sqlite.timeout"))
     n_sse = _sync_sse_raw(date_str.replace("-", ""), conn)
     time.sleep(_require_cfg("sync.daily_interval"))
     n_szse = _sync_szse_wrapper(date_str.replace("-", ""), conn)
@@ -68,7 +69,7 @@ def step5_fundamentals():
         return 0
     import sqlite3
 from data.repos._base import DatabaseManager, os
-    conn = sqlite3.connect(os.path.join(os.path.dirname(__file__), "data", "market.db"), timeout=_require_cfg("data.sqlite.timeout"))
+    conn = sqlite3.connect(MARKET_DB, timeout=_require_cfg("data.sqlite.timeout"))
     from data.fundamental import sync_all
     n = sync_all(conn, max_fetch=500)
     conn.close()

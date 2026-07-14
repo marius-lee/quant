@@ -5,18 +5,18 @@
 """
 import threading
 from quant.utils.logger import get_logger
+from quant.scheduler.orchestrator import start as _start_orch
+from quant.scheduler.weekly import _run as _run_weekly, _loop as _weekly_loop
 
 _log = get_logger("quant.scheduler")
 
 
 def start_orchestrator():
-    from quant.scheduler.orchestrator import start as _start_orch
     _start_orch()
     _log.info("orchestrator launched (08:30→09:30→monitor→15:30)")
 
 
 def start_weekly():
-    from quant.scheduler.weekly import _run as _run_weekly, _loop as _weekly_loop
     t = threading.Thread(target=_weekly_loop, daemon=True, name="sch-weekly")
     t.start()
     _log.info("weekly factor eval scheduler launched (周六 06:00)")
@@ -36,7 +36,6 @@ def start_scheduler():
 
 # 保留旧接口供其他模块直接引用 (向后兼容)
 def start_signals():
-    from quant.scheduler.orchestrator import start as _start_orch
     _start_orch()
 
 def start_execute():

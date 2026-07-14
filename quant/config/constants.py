@@ -14,7 +14,7 @@ from typing import Any
 
 def _require_cfg(key: str) -> Any:
     """Return config value for key. Raise if missing — no silent defaults."""
-    import quant.config.loader as _loader as _loader; val = _loader.get(key)
+    import quant.config.loader as _loader; val = _loader.get(key)
     if val is None:
         raise KeyError(f"config.yaml missing required key: {key}")
     return val

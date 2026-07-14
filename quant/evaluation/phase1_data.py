@@ -19,7 +19,7 @@ def prepare_data(output_json: str = "/tmp/_eval_phase1.json") -> dict:
     -------
     dict with keys: symbols, effective_start, db_max, db_min
     """
-    conn = sqlite3.connect("data/market.db")
+    conn = sqlite3.connect("quant/data/market.db")
 
     # 股票池: 全A, 剔除上市 < 60天 (ST 由 pipeline 层按日期动态过滤)
     stocks = conn.execute("""

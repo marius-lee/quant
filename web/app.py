@@ -1,13 +1,14 @@
 """量化选股 Web — 7 层架构监控仪表盘。
 
 状态: web/shared.py 内存共享 (pipeline 写入, Flask 读取)
-持久: data/trades.db (交易唯一真相源)
+持久: quant/data/trades.db (交易唯一真相源)
 """
 
 import json, os, sqlite3
 from quant.config.constants import _require_cfg
 
-from quant.utils.excepthook import setup; setup()  # crash → app.log
+from quant.utils.excepthook import setup; setup()
+from quant.config.paths import TRADE_DB, MARKET_DB  # crash → app.log
 from quant.config.loader import get as cfg, validate; validate()  # 启动时校验 config.yaml 类型
 from quant.data.store import market_conn  # P69: 统一连接层
 from datetime import date, datetime
@@ -51,7 +52,6 @@ app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 import threading
 # 缓存预热已移除 — web 启动不应触发因子计算, 首次 API 请求时懒加载
 
-TRADE_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "trades.db")
 
 def _capital(strategy: str) -> float:
     """从 strategy_config 表读本金。无记录时默认 5000 并自动写入。"""
@@ -146,7 +146,7 @@ def api_positions():
         close_map = {}
         try:
             import sqlite3 as _sql
-            market_db = os.path.join(os.path.dirname(__file__), "..", "data", "market.db")
+            market_db = MARKET_DB
             if os.path.exists(market_db):
                 mc = _sql.connect(market_db)
                 syms = [p["symbol"] for p in raw]
@@ -312,7 +312,7 @@ def api_risk():
         return _api_response(data={"symbols": []})
 
     import sqlite3, math
-    market_db = os.path.join(os.path.dirname(__file__), "..", "data", "market.db")
+    market_db = MARKET_DB
     result = []
     try:
         mc = market_conn("ro")
@@ -500,7 +500,7 @@ def api_health():
     status = {"status": "ok", "checks": {}}
     # DB 连通性
     try:
-        db = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "market.db")
+        db = MARKET_DB
         conn = market_conn("ro")
         conn.execute("SELECT 1").fetchone()
         status["checks"]["market_db"] = "ok"

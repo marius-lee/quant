@@ -15,7 +15,7 @@ class UniverseRepo:
     """Queries for stock universe, daily price data, and fundamentals."""
 
     def __init__(self, db_manager: Optional[DatabaseManager] = None,
-                 db_path: str = "data/market.db"):
+                 db_path: str = "quant/data/market.db"):
         self.db = db_manager or DatabaseManager.get_instance()
         self.db_path = db_path
 

@@ -908,7 +908,12 @@ class DataStore:
                 if rows is not None:
                     break
                 t0 = __import__('time').time()
-                result = fetch_fn()
+                try:
+                    result = fetch_fn()
+                except Exception as _src_err:
+                    logger.warning(f"[{src_name}] fetch failed, trying next: {_src_err}")
+                    self._source_speed[src_name] = 0  # deprioritize
+                    continue
                 elapsed = __import__('time').time() - t0
                 if result:
                     rows = result

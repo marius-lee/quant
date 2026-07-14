@@ -34,3 +34,4 @@ data/metrics.db
 # Redis 持久化文件
 dump.rdb
 appendonly.aof
+data/

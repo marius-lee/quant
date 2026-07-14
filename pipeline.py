@@ -69,7 +69,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
 
     # ── Step 0: Init ──
     _store_in = store
-    store = store or (DataStore() if db_path is None else DataStore(db_path=db_path))
+    store = store or DataStore()  # DataStore 始终用 data/market.db
     engine = ExecutionEngine(db_path=db_path)
     cost_model = CostModel()
     constructor = PortfolioConstructor()

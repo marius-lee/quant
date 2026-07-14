@@ -247,20 +247,44 @@ def _run(today: str):
         else:
             _log.info(f"[{today}] G1 OOS walk-forward: {oos_result.get('n_factors', 0)} factors, no decay alert")
     except Exception as e:
-        _log.warning(f"[{today}] G1 OOS walk-forward failed (non-fatal): {type(e).__name__}: {e}")
+       _log.warning(f"[{today}] G1 OOS walk-forward failed (non-fatal): {type(e).__name__}: {e}")
+
+    # ═══════════════════════════════════════════════════════
+    # G2: 因子拥挤度检测
+    # ═══════════════════════════════════════════════════════
+    try:
+        from quant.scheduler.crowdedness import check_factor_crowdedness
+        crowd_result = check_factor_crowdedness(today, store=store)
+        if crowd_result.get("alert"):
+            _log.warning(
+                f"[{today}] G2 crowdedness: crowd_index={crowd_result['crowd_index']:.3f}, "
+                f"{crowd_result['n_high_corr_pairs']}/{crowd_result['n_factors']} factors "
+                f"with high pairwise ρ (>{'0.70'} threshold)"
+            )
+            _m.inc("scheduler.attribution.crowd_alert", 1)
+        else:
+            _log.info(
+                f"[{today}] G2 crowdedness: crowd_index={crowd_result.get('crowd_index', 0):.3f}, "
+                f"no alert"
+            )
+    except Exception as e:
+        _log.warning(f"[{today}] G2 crowdedness failed (non-fatal): {type(e).__name__}: {e}")
 
     # ═══════════════════════════════════════════════════════
     # G3: DSR / MinTRL 计算
     # ═══════════════════════════════════════════════════════
     try:
         from quant.evaluation.deflated_sharpe import compute_dsr_for_strategy
-        trades = engine.get_trades(strategy="quant", limit=500)
+       trades = engine.get_trades(strategy="quant", limit=500)
         if trades:
-            daily_returns = []
+            # 按日期聚合 daily PnL（同一天多笔交易只算一个日收益）
+            pnl_by_date = {}
             for t in trades:
+                d = t.get("date", "")
                 pnl = t.get("pnl", 0) or 0
-                if pnl != 0:
-                    daily_returns.append(float(pnl))
+                if d and pnl != 0:
+                    pnl_by_date[d] = pnl_by_date.get(d, 0.0) + float(pnl)
+            daily_returns = list(pnl_by_date.values())
             if len(daily_returns) >= 20:
                 from quant.data.repos import FactorRepo
                 n_active = len(FactorRepo().get_factors_by_status(('active',), []))

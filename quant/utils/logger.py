@@ -16,7 +16,7 @@ import contextvars
 import json
 from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 
-_log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
+_log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
 _log_file = os.path.join(_log_dir, "quant.log")
 _initialized = False
 _lock = threading.Lock()

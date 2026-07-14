@@ -1,99 +1,199 @@
-"""G1: 轻量级在线 Walk-Forward OOS 验证 — 每日 15:30 归因挂载.
+"""G1: 在线 Walk-Forward OOS 验证 — 每日 15:30 归因挂载.
 
-对标明汯 forward performance tracking: 用最近 60 日做 expanding-window OOS.
-重算因子 IC → 构建等权组合 → 计算 OOS/IS Sharpe 衰减率.
+对标明汯 forward performance tracking:
+  - expanding-window: IS 窗口到 test_start, OOS 窗口 test_start→today
+  - per-factor IC Information Ratio (IC_IR = mean/std)
+  - 自己拉数据+算因子+算 IC，不依赖 compute_ic (后者 skip warmup 会砍掉 OOS 窗口)
+  - 聚合用 median
 
-不依赖 offline evaluation/ 管线, 纯在线轻量级.
+来源: ADR 029 四层回测, Grinold & Kahn (1999) Ch6.
 """
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
+from scipy import stats as _stats
 from quant.config.constants import _require_cfg
 from quant.utils.logger import get_logger
 
 _log = get_logger("quant.scheduler.oos_verify")
 
+_MIN_IC_OBS = 20           # 单日 IC 计算最少股票数
+_MIN_TOTAL_POINTS = 10     # 因子最少 IC 天数
+_MIN_IS_POINTS = 6         # IS 窗口最少天数
+_MIN_OOS_POINTS = 2        # OOS 窗口最少天数
+
 
 def run_oos_check(today: str) -> dict:
-    """每日 15:30 执行: expanding-window OOS 验证.
-
-    Returns: {n_factors, oos_sharpe, is_sharpe, decay_ratio, alert, details}
-    """
+    """每日 15:30 执行: expanding-window OOS 验证."""
     from quant.data.store import DataStore
-    from quant.data.repos import UniverseRepo, FactorRepo
+    from quant.data.repos import UniverseRepo
     from quant.factor.compute._registry import get_factor_names
-    from quant.factor.ic import compute_ic
+    from quant.factor.compute import compute_all_factors
+    from quant.factor.windows import max_factor_calendar_days
 
     active_names = get_factor_names(status_filter="using")
     if not active_names:
         _log.info(f"[{today}] OOS verify: no active factors, skip")
-        return {"n_factors": 0, "oos_sharpe": 0, "is_sharpe": 0, "decay_ratio": 1.0, "alert": False, "details": {}}
+        return _empty(0)
 
-    TRAIN_DAYS = _require_cfg("oos_verify.train_window_days")
-    TEST_DAYS = _require_cfg("oos_verify.test_window_days")
-    DECAY_WARN = _require_cfg("oos_verify.decay_warn_threshold")
+    TRAIN_DAYS = _require_cfg("oos_verify.train_window_days")    # 60 交易日
+    TEST_DAYS  = _require_cfg("oos_verify.test_window_days")     # 10 交易日
+    DECAY_WARN = _require_cfg("oos_verify.decay_warn_threshold") # 0.5
 
     today_dt = pd.Timestamp(today)
-    train_start = (today_dt - timedelta(days=TRAIN_DAYS + TEST_DAYS)).strftime("%Y-%m-%d")
-    test_start = (today_dt - timedelta(days=TEST_DAYS)).strftime("%Y-%m-%d")
+    _bd = pd.bdate_range(end=today_dt, periods=TEST_DAYS + 1)
+    test_start = _bd[0].strftime("%Y-%m-%d")
+
+    _raw_cal = max_factor_calendar_days(active_names)
+    _cal_cap = 504
+    fac_cal = min(_raw_cal, _cal_cap) if _raw_cal < 1e9 else _cal_cap
+    total_lookback = max(TRAIN_DAYS + TEST_DAYS + fac_cal, 252)
+    data_start = (today_dt - timedelta(days=total_lookback)).strftime("%Y-%m-%d")
 
     store = DataStore()
-    symbols = UniverseRepo().get_symbols(exclude_market='BJ')
-    from quant.factor.windows import max_factor_calendar_days
-    eff_days = max(TRAIN_DAYS + TEST_DAYS, max_factor_calendar_days(active_names))
-    hist_start = (today_dt - timedelta(days=eff_days)).strftime("%Y-%m-%d")
+    symbols = UniverseRepo().get_symbols(exclude_market='BJ')[:300]
+    data = store.get_daily(symbols, start=data_start, end=today)
 
-    try:
-        ic_result = compute_ic(
-            factor_names=active_names,
-            symbols=symbols[:200],
-            date=today,
-            lookback=TRAIN_DAYS,
-            store=store,
-        )
-        ic_series = ic_result.get("ic_series", {})
-
-        oos_decay_factors = []
-        for name in active_names:
-            if name in ic_series and len(ic_series[name]) >= 20:
-                ic_s = pd.Series(ic_series[name])
-                ic_s.index = pd.to_datetime(ic_s.index)
-                ic_s = ic_s.sort_index()  # 切片要求单调索引
-                is_ic_vals = ic_s.loc[:test_start]
-                oos_ic_vals = ic_s.loc[test_start:]
-
-                if len(is_ic_vals) >= 10 and len(oos_ic_vals) >= 3:
-                    is_mean = float(is_ic_vals.mean())
-                    oos_mean = float(oos_ic_vals.mean())
-                    if abs(is_mean) > 1e-10:
-                        ratio = oos_mean / is_mean
-                        if ratio < DECAY_WARN:
-                            oos_decay_factors.append(
-                                f"{name}: IS_IC={is_mean:+.4f}→OOS_IC={oos_mean:+.4f} (ratio={ratio:.2f})")
-
-        is_sharpe = float(np.mean([
-            float(np.mean(list(s.values()))) / max(float(np.std(list(s.values()))), 1e-10)
-            for s in ic_series.values() if len(s) >= 10
-        ])) if ic_series else 0.0
-        oos_sharpe = is_sharpe * 0.7
-        decay_ratio = oos_sharpe / max(abs(is_sharpe), 0.01) if is_sharpe else 1.0
-
-        if oos_decay_factors:
-            _log.warning(f"[{today}] OOS verify: {len(oos_decay_factors)}/{len(active_names)} factors show OOS decay")
-            for f in oos_decay_factors[:5]:
-                _log.warning(f"  {f}")
-
-        return {
-            "n_factors": len(active_names),
-            "oos_sharpe": round(oos_sharpe, 4),
-            "is_sharpe": round(is_sharpe, 4),
-            "decay_ratio": round(decay_ratio, 4),
-            "oos_decay_count": len(oos_decay_factors),
-            "alert": len(oos_decay_factors) > 0,
-            "details": {"decayed": oos_decay_factors[:10]},
-        }
-    except Exception as e:
-        _log.warning(f"[{today}] OOS verify failed (non-fatal): {type(e).__name__}: {e}")
-        return {"n_factors": len(active_names), "oos_sharpe": 0, "is_sharpe": 0, "decay_ratio": 1.0, "alert": False, "details": {}}
-    finally:
+    if data.empty:
         store.close()
+        _log.warning(f"[{today}] OOS verify: no daily data loaded")
+        return _empty(len(active_names))
+
+    # ── 生成 IC 序列 (不依赖 compute_ic 的 warmup 砍天) ──
+    all_dates = pd.bdate_range(start=data_start, end=today_dt)
+    trading_days = [d.strftime("%Y-%m-%d") for d in all_dates if d.strftime("%Y-%m-%d") <= today]
+
+    ic_series_per_factor = {name: {} for name in active_names}
+    daily_close = data["close"]
+
+    for ds in trading_days:
+        if ds not in daily_close.index:
+            continue
+        close_slice = daily_close.loc[ds]
+        if not isinstance(close_slice, pd.Series) or len(close_slice) < 2:
+            continue
+
+        # forward 1-day return
+        if ds == trading_days[-1]:
+            continue  # 最后一天没有次日收益, 跳过
+        next_ds_idx = trading_days.index(ds) + 1
+        if next_ds_idx >= len(trading_days):
+            continue
+        next_ds = trading_days[next_ds_idx]
+        if next_ds not in daily_close.index:
+            continue
+        next_close = daily_close.loc[next_ds]
+        if not isinstance(next_close, pd.Series):
+            continue
+
+        fwd = (next_close / close_slice) - 1
+        fundamentals = store.get_fundamentals(symbols, ds)
+
+        try:
+            fv = compute_all_factors(
+                data, ds, fundamentals=fundamentals,
+                factor_names=active_names,
+            )
+        except Exception:
+            continue
+
+        if not fv:
+            continue
+
+        for fname in active_names:
+            f_series = fv.get(fname)
+            if f_series is None or not isinstance(f_series, pd.Series):
+                continue
+            common = f_series.dropna().index.intersection(fwd.dropna().index)
+            if len(common) < _MIN_IC_OBS:
+                continue
+            rho, _ = _stats.spearmanr(f_series[common], fwd[common])
+            if not np.isnan(rho):
+                ic_series_per_factor[fname][ds] = float(rho)
+
+    # ── IS/OOS 拆分 + IR 计算 ──
+    factor_irs = {}
+    decayed_factors = []
+
+    for name in active_names:
+        daily_ic = ic_series_per_factor.get(name, {})
+        if len(daily_ic) < _MIN_TOTAL_POINTS:
+            _log.debug(f"[{today}] OOS: {name} has {len(daily_ic)} IC points, <{_MIN_TOTAL_POINTS} min, skip")
+            continue
+
+        ic_s = pd.Series(daily_ic)
+        ic_s.index = pd.to_datetime(ic_s.index)
+        ic_s = ic_s.sort_index()
+        is_vals = ic_s[ic_s.index < test_start]
+        oos_vals = ic_s[ic_s.index >= test_start]
+        n_is = len(is_vals)
+        n_oos = len(oos_vals)
+
+        if n_is < _MIN_IS_POINTS or n_oos < _MIN_OOS_POINTS:
+            _log.debug(f"[{today}] OOS: {name} IS={n_is}d OOS={n_oos}d, insufficient")
+            continue
+
+        is_mean = float(is_vals.mean())
+        is_std  = float(is_vals.std())
+        oos_mean = float(oos_vals.mean())
+        oos_std  = float(oos_vals.std())
+        is_ir = is_mean / max(is_std, 1e-10)
+        oos_ir = oos_mean / max(oos_std, 1e-10)
+
+        factor_irs[name] = {
+            "is_ir": round(is_ir, 4), "oos_ir": round(oos_ir, 4),
+            "n_is": n_is, "n_oos": n_oos,
+            "is_mean": round(is_mean, 4), "oos_mean": round(oos_mean, 4),
+        }
+
+        if abs(is_ir) > 0.01:
+            ratio = oos_ir / is_ir if is_ir > 0 else 1.0
+            if ratio < DECAY_WARN:
+                decayed_factors.append(
+                    f"{name}: IS_IR={is_ir:+.4f} → OOS_IR={oos_ir:+.4f} (ratio={ratio:.2f})"
+                )
+
+    n_qualified = len(factor_irs)
+
+    if n_qualified == 0:
+        is_ir_agg, oos_ir_agg, decay_ratio = 0.0, 0.0, 1.0
+    else:
+        is_irs = [v["is_ir"] for v in factor_irs.values()]
+        oos_irs = [v["oos_ir"] for v in factor_irs.values()]
+        is_ir_agg = float(np.median(is_irs))
+        oos_ir_agg = float(np.median(oos_irs))
+        decay_ratio = oos_ir_agg / max(abs(is_ir_agg), 0.01) if abs(is_ir_agg) > 0.01 else 1.0
+
+    _log.info(
+        f"[{today}] OOS verify: {n_qualified}/{len(active_names)} factors qualified | "
+        f"IS_IR={is_ir_agg:+.4f} OOS_IR={oos_ir_agg:+.4f} decay={decay_ratio:.2%} | "
+        f"test_start={test_start} ({TEST_DAYS}td)"
+    )
+    if decayed_factors:
+        _log.warning(f"[{today}] OOS decay alert: {len(decayed_factors)}/{n_qualified} below {DECAY_WARN:.0%}")
+        for f in decayed_factors[:5]:
+            _log.warning(f"  {f}")
+
+    store.close()
+    return {
+        "n_factors": len(active_names),
+        "n_qualified": n_qualified,
+        "oos_ir": round(oos_ir_agg, 4),
+        "is_ir": round(is_ir_agg, 4),
+        "decay_ratio": round(decay_ratio, 4),
+        "oos_decay_count": len(decayed_factors),
+        "alert": len(decayed_factors) > 0,
+        "details": {
+            "decayed": decayed_factors[:10],
+            "per_factor": factor_irs,
+        },
+    }
+
+
+def _empty(n: int) -> dict:
+    return {
+        "n_factors": n, "n_qualified": 0,
+        "oos_ir": 0.0, "is_ir": 0.0, "decay_ratio": 1.0,
+        "oos_decay_count": 0, "alert": False,
+        "details": {"decayed": [], "per_factor": {}},
+    }

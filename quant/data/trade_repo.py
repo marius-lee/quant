@@ -57,6 +57,11 @@ class TradeRepo:
             c.execute("ALTER TABLE sim_trades ADD COLUMN mode TEXT DEFAULT 'live'")
         except sqlite3.OperationalError:
             pass  # column already exists
+        # ── 迁移: daily_signals 兼容旧 schema (无 mode 列) ──
+        try:
+            c.execute("ALTER TABLE daily_signals ADD COLUMN mode TEXT DEFAULT 'live'")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         sc_cols = {r[1] for r in c.execute("PRAGMA table_info(strategy_config)").fetchall()}
         if 'mode' not in sc_cols:
             c.executescript('''

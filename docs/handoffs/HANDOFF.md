@@ -1463,3 +1463,15 @@ METRICS_DB = os.path.join(DATA_DIR, "metrics.db")
 **原因**: 之前版本号写死在 HTML/JS 静态文件，浏览器刷新即显示新版本，但 Flask 进程可能尚未重启，产生"界面显示新版本但实际跑旧代码"的误判。改为服务端注入后，版本号 = 运行中进程的真实版本。
 
 **验证**: 不重启刷新 → 仍显示旧版本; 重启后刷新 → 显示新版本。
+
+---
+
+### #35 2026-07-15 — 修复盘后归因三个运行时错误
+
+**Bug 1**: `factor_ic_snapshot` 表不存在 → 在 market.db 创建表 + 索引
+**Bug 2**: `oos_verify.py` 调用 `compute_ic(start=, end=)` 参数名不匹配 → 改为 `date=, lookback=, store=`
+**Bug 3**: `daily_signals` 表缺 `mode` 列 → `trade_repo.py` 新增 ALTER TABLE 迁移
+
+**代码变更**: `quant/data/trade_repo.py` (+5 行迁移), `quant/scheduler/oos_verify.py` (参数修正), market.db (新表)
+
+**验证**: 三处修改均已 verify; 需重启后重新跑归因确认

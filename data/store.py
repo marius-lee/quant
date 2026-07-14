@@ -800,14 +800,12 @@ class DataStore:
 
     def _analyze_daily_gaps(self, conn) -> dict:
         """分析日线数据缺口 — missing（从未有数据） vs stale（超 250 天未更新） vs full（完整）。
-        
+
         用于增量更新前的精准拉取决策, 只拉缺口 + 过期数据, 不浪费 API 配额。
         """
-        if max_db:
-            cutoff = to_str(datetime.strptime(max_db, '%Y-%m-%d') - timedelta(days=3))
-        else:
-            cutoff = to_str(date.today() - timedelta(days=2))
+        from datetime import datetime, timedelta
         stale_days = _require_cfg("data.stale_days")  # 数据过期阈值
+        cutoff = (datetime.now() - timedelta(days=stale_days)).strftime("%Y-%m-%d")
 
         # 单次查询: PK(symbol,date) 覆盖索引, GROUP BY symbol 只取首尾
         rows = conn.execute("""

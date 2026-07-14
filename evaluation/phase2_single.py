@@ -112,16 +112,14 @@ def screen_factors(input_json: str = None, output_json: str = None,
         decay_vals = decay.get(meta.get(name, {}).get("display", name), [0.0, 0.0, 0.0])
         ic_1d = abs(decay_vals[0]) if len(decay_vals) > 0 else 0.0
         ic_20d = abs(decay_vals[2]) if len(decay_vals) > 2 else 0.0
-        half_life_est = 0
+        half_life_est = None
         if ic_1d > 0.001 and ic_20d > 0:
             ratio_20 = ic_20d / ic_1d
-            if ratio_20 >= 1.0:
-                # IC 不衰减甚至增强 — 无半衰期问题，跳过检查
-                half_life_est = 999
-            elif 0 < ratio_20 < 1.0:
-                # log(ratio) < 0 → half-life > 0; guard: ratio strictly < 1
+            if 0 < ratio_20 < 1.0:
+                # ratio < 1 → log(ratio) < 0 → half-life > 0
                 half_life_est = int(-20 / np.log(ratio_20))
-        if 0 < half_life_est < min_half_life and ic_1d >= min_abs_ic:
+            # ratio >= 1.0: IC 不衰减或增强, half_life_est stays None
+        if half_life_est is not None and half_life_est < min_half_life and ic_1d >= min_abs_ic:
             reasons.append(f"half-life={half_life_est}d<{min_half_life}")
 
         if not reasons:

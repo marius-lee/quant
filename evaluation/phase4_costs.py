@@ -22,6 +22,10 @@ from utils.logger import get_logger, set_trace_id
 def verify_costs(input_json: str = None) -> dict:
     """ICIR -> 估净 Sharpe, 应用 net_sharpe_min 阈值过滤。
 
+    result["dropped"]: Phase 3 通过但 Phase 4 净 Sharpe 不达标的因子列表。
+    这不是 factor_registry.status 的新值。Phase 5 sync 会将这些因子
+    标记为 rejected, reason="Phase 4: net-of-costs Sharpe too low"。
+
     从 evaluation_runs 读取 Phase 3 结果, 过滤后写入 evaluation_runs。
 
     Returns dict: final_factors, dropped, sharpe_estimates, net_verdict

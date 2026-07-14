@@ -15,9 +15,9 @@ logs/
 .env
 
 # 大型二进制 (数据库/模型, 不跟踪)
-data/market.db
-data/market.db-shm
-data/market.db-wal
+quant/data/market.db
+quant/quant/data/market.db-shm
+quant/quant/data/market.db-wal
 data/results.db
 data/monitor.db
 data/monitor.db-shm

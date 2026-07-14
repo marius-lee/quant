@@ -1,4 +1,4 @@
-"""调仓计算 — 目标 vs 当前持仓 → 买卖订单列表。"""
+"""调仓计算 — 目标 vs 当前持仓 → 买卖订单列表。含 alpha 优先级保留 (R1)."""
 
 from typing import Optional
 import pandas as pd
@@ -18,6 +18,8 @@ def compute_trades(
     max_turnover_ratio: float = 0.0,
     capital: float = 0.0,
     cash: float = 0.0,
+    alpha_scores: pd.Series = None,
+    max_trades_per_day: int = 0,
 ) -> list[Order]:
     """计算调仓订单。
 
@@ -27,6 +29,8 @@ def compute_trades(
     cost_model: CostModel 实例 (execution/cost.py)
     max_turnover_ratio: 最大换手率 (总资产占比), 超过则拒绝
     capital: 当前总资产
+    alpha_scores: 各股票 alpha 得分 (用于约束触发时的优先级排序, R1)
+    max_trades_per_day: 单日最大交易笔数 (0=不限制, R1)
 
     返回: [Order, ...] 按 side 排序 (先卖后买，释放资金)
     """
@@ -35,8 +39,11 @@ def compute_trades(
     tgt = target_lots.reindex(all_syms, fill_value=0)
     cur = current_lots.reindex(all_syms, fill_value=0)
     diff = tgt - cur
+    if alpha_scores is not None:
+        alpha_scores = alpha_scores.reindex(all_syms, fill_value=0)
 
     orders = []
+    logger = __import__('utils.logger', fromlist=['get_logger']).get_logger("optimizer.rebalance")
 
     # 计算换手金额
     turnover_value = 0.0
@@ -47,23 +54,44 @@ def compute_trades(
     if capital > 0 and max_turnover_ratio > 0:
         ratio = turnover_value / capital
         if ratio > max_turnover_ratio:
-            from utils.logger import get_logger
-            get_logger("optimizer.rebalance").warning(
+            logger.warning(
                 f"turnover {ratio:.1%} exceeds limit {max_turnover_ratio:.1%}, scaling down"
             )
             scale = max_turnover_ratio / ratio
-            # Use ceil for |diff|≥1 to preserve non-zero orders
-            scaled = diff * scale
-            # Round away from zero: ±0.5 threshold, but never kill |diff|≥1
-            result = pd.Series(0, index=diff.index, dtype=int)
-            for i in range(len(diff)):
-                d = scaled.iloc[i]
-                if abs(d) >= 0.5:
-                    result.iloc[i] = int(np.ceil(d) if d > 0 else np.floor(d))
-                elif abs(diff.iloc[i]) >= 1:
-                    # Original diff was at least 1 lot — keep direction
-                    result.iloc[i] = 1 if diff.iloc[i] > 0 else -1
-            diff = result
+            # R1: 按 alpha 优先级收缩 — 保留高得分交易, 丢弃低得分交易
+            if alpha_scores is not None:
+                trade_list = []
+                for sym in diff.index:
+                    if diff[sym] != 0:
+                        tv = abs(diff[sym]) * prices.get(sym, 0) * LOT_SIZE
+                        trade_list.append((sym, diff[sym], tv, alpha_scores.get(sym, 0)))
+                buys = [(s, d, v, a) for s, d, v, a in trade_list if d > 0]
+                sells = [(s, d, v, a) for s, d, v, a in trade_list if d < 0]
+                buys.sort(key=lambda x: -abs(x[3]))
+                sells.sort(key=lambda x: abs(x[3]))
+
+                target_tv = turnover_value * scale
+                kept_tv = 0.0
+                kept = set()
+                for sym, d, tv, a in sells + buys:
+                    if kept_tv + tv <= target_tv:
+                        kept.add(sym)
+                        kept_tv += tv
+
+                diff = pd.Series({sym: diff[sym] for sym in kept if sym in diff.index}, dtype=int)
+                logger.info(
+                    f"turnover constrained: {len(kept)}/{len(trade_list)} trades kept (alpha-prioritized)"
+                )
+            else:
+                scaled = diff * scale
+                result = pd.Series(0, index=diff.index, dtype=int)
+                for i in range(len(diff)):
+                    d = scaled.iloc[i]
+                    if abs(d) >= 0.5:
+                        result.iloc[i] = int(np.ceil(d) if d > 0 else np.floor(d))
+                    elif abs(diff.iloc[i]) >= 1:
+                        result.iloc[i] = 1 if diff.iloc[i] > 0 else -1
+                diff = result
 
     # 卖出订单 (diff < 0 → 卖出)
     for sym in diff[diff < 0].index:
@@ -91,6 +119,20 @@ def compute_trades(
                 cost=cost_model.buy_cost(price, shares),
             ))
 
+    # R1: 单日交易笔数限制 (防止过度交易)
+    if max_trades_per_day > 0 and len(orders) > max_trades_per_day:
+        order_impact = []
+        for o in orders:
+            impact = abs(o.shares * o.price)
+            order_impact.append((o, impact))
+        order_impact.sort(key=lambda x: -x[1])
+        trimmed = [o for o, _ in order_impact[:max_trades_per_day]]
+        n_trimmed = len(orders) - len(trimmed)
+        orders = trimmed
+        logger.warning(
+            f"trade count limited: {n_trimmed} trades dropped ({len(orders)} retained of {len(orders) + n_trimmed} total)"
+        )
+
     # ── 换手缩放后的 cash feasibility 检查 ──
     # 换手率限制可能使卖单缩水但买单保留, 造成资金缺口。
     # 此时优先执行所有卖单, 再按买入成本从低到高依次纳入买单。
@@ -106,8 +148,7 @@ def compute_trades(
                 feasible.append(o)
                 available -= o.cost
         if len(feasible) < len(buy_orders):
-            from utils.logger import get_logger
-            get_logger("optimizer.rebalance").warning(
+            logger.warning(
                 f"cash feasibility: {len(buy_orders) - len(feasible)} buy(s) trimmed (insufficient funds)"
             )
             orders = sell_orders + feasible

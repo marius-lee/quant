@@ -195,6 +195,41 @@ def compute_ic(*,
 
 # ── 私有: 从预计算因子值算 IC ──
 
+
+# ── 因子卡片自动更新 ──
+
+def _update_factor_cards(ic_means: dict, ic_irs: dict, ic_series: dict = None):
+    """IC 计算后同步更新 factor/cards/ 下的因子卡片 JSON.
+    
+    非阻塞: 失败仅记 warning, 不影响 IC 计算主流程。
+    """
+    import json, os as _os
+    from pathlib import Path
+    cards_dir = Path(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))) / "factor" / "cards"
+    if not cards_dir.exists():
+        return
+    
+    for name, ic_mean in ic_means.items():
+        card_path = cards_dir / f"{name}.json"
+        try:
+            if card_path.exists():
+                card = json.loads(card_path.read_text(encoding="utf-8"))
+            else:
+                card = {"name": name, "display_name": name, "category": "unknown", "sub_category": "unknown"}
+            
+            card["ic_mean_12m"] = round(ic_mean, 4)
+            card["icir_12m"] = round(ic_irs.get(name, 0.0), 4)
+            card["last_evaluated"] = _os.environ.get("EVAL_DATE", "auto")
+            
+            if ic_series and name in ic_series:
+                series = ic_series[name]
+                if series:
+                    card["n_obs"] = len(series)
+            
+            card_path.write_text(json.dumps(card, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        except Exception as e:
+            _log.warning(f"_update_factor_cards: failed for {name}: {e}")
+
 def _compute_ic_from_values(factor_values_by_date, forward_1d, forward_5d=None,
                             forward_20d=None, min_periods=30):
     """从预计算因子值计算 IC (统一内部实现)。
@@ -257,6 +292,12 @@ def _compute_ic_from_values(factor_values_by_date, forward_1d, forward_5d=None,
     n_positive = sum(1 for v in ic_means.values() if v > 0)
     _log.info("compute_ic done: %d/%d valid, %d positive IC",
               n_valid, len(factor_values_by_date), n_positive)
+
+    # ── 同步更新因子卡片 (非阻塞) ──
+    try:
+        _update_factor_cards(ic_means, ic_irs, ic_series)
+    except Exception as _e:
+        _log.warning(f"Factor card update failed (non-blocking): {_e}")
 
     return {
         "ic_means": ic_means,

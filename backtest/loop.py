@@ -16,7 +16,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import traceback
 from utils.logger import get_logger
-from backtest.diagnostics import FactorTracker, diagnose, compute_pre_backtest_ic
+from backtest.diagnostics import FactorTracker, diagnose, apply_diagnosis, compute_pre_backtest_ic
 from backtest.broker import SimulatedBroker
 from config.constants import _require_cfg
 from factor.ic import compute_ic as _compute_ic
@@ -169,6 +169,9 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
     # ── Cooling-off: prevent rebuy after stop-loss ──
     _cooloff = {}  # {symbol: end_date}
 
+    # ── Combine mode: warmup with sleeve, switch to ic_weighted after lookback ──
+    warmup_days = _require_cfg("factor.evaluation.lookback")
+
     # ── Main loop ──
     equity_curve = [{"date": trading_days[0], "equity": float(capital)}]
     errors = 0
@@ -194,11 +197,14 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
             "store": store,
             "exclude_symbols": cooloff_syms,
         }
+        # Switch combine_mode from sleeve (warmup) to ic_weighted (walk-forward)
+        if i >= warmup_days:
+            kwargs["combine_mode"] = "ic_weighted"
         # Walk-forward IC retrain
         if retrain_freq > 0 and (i - _last_retrain_idx) >= retrain_freq and bt_factor_names:
             _log.info("backtest: retraining IC at day %d (%s)", i, today)
             _current_ic_map_raw = _compute_ic(
-                factor_names=bt_factor_names, date=today,
+                factor_names=bt_factor_names, date=pd.Timestamp(today) - pd.Timedelta(days=1),
                 symbols=store.get_universe(today)[:_require_cfg("factor.evaluation.n_symbols")],
                 lookback=ic_lookback, store=store, status_filter=factor_status_filter or "backtesting"
             )
@@ -270,6 +276,16 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
         _backtest_symbols = list(sym_set)
     ic_map_pre = _current_ic_map  # reuse walk-forward IC (was: compute_pre_backtest_ic)
     diag = diagnose(ic_map_pre, tracker, metrics)
+
+    # ── 自动应用诊断结果: 调整权重 + 自动退休未使用因子 ──
+    _adj_ic_map = apply_diagnosis(_current_ic_map, diag)
+    _dropped = [name for name, info in diag.get("factor_report", {}).items()
+                if info.get("recommendation") == "drop" and info.get("n_trades", 0) == 0]
+    if _dropped:
+        _log.info("auto-retiring %d unused factors after backtest", len(_dropped))
+        from data.repos import FactorRepo
+        _frepo = FactorRepo()
+        _frepo.batch_set_status(_dropped, "retired", "auto: unused in backtest")
 
     # Stress test on final portfolio holdings
     try:

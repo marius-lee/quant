@@ -75,33 +75,88 @@ def run_monitor(output_dir: str = "docs/reports") -> str:
 
 
 def _check_crowding(conn, active_factors: list) -> str:
-    """检查因子间相关性是否异常升高 (>0.7 预先警告)."""
+    """G2: 因子拥挤度 — 截面因子值的 pairwise Pearson 相关性.
+
+    真实拥挤度检测 (非 IC 符号代理):
+    1. 计算最近交易日各因子的截面因子值
+    2. 计算因子间的 pairwise Pearson 相关性矩阵
+    3. 标记 |r| > 0.7 的因子对 → 可能拥挤
+    4. 统计每个因子的高相关邻居数 → 拥挤风险排名
+
+    参考: MSCI (2018) "Crowd Control"; Lee (2025) "双曲线衰减模型"
+    """
     if len(active_factors) < 2:
         return "活跃因子 < 2, 跳过拥挤度检查.\n"
 
-    # 从 factor_stats 获取最近 IC 值
-    rows = conn.execute("""
-        SELECT name, ic_mean FROM factor_registry
-        WHERE name IN ({})
-    """.format(",".join("?" * len(active_factors))), active_factors).fetchall()
+    try:
+        from datetime import datetime
+        from data.store import DataStore
+        from factor.compute import compute_all_factors
+        from data.repos import UniverseRepo
 
-    ic_dict = {r[0]: r[1] for r in rows if r[1] is not None}
+        today = datetime.today().strftime("%Y-%m-%d")
+        store = DataStore()
+        symbols = UniverseRepo().get_symbols(exclude_market='BJ')[:500]
+        data = store.get_daily(symbols, start=(pd.Timestamp(today) - pd.Timedelta(days=30)).strftime("%Y-%m-%d"), end=today)
+        fundamentals = store.get_fundamentals(symbols, date=today)
 
-    if len(ic_dict) < 2:
-        return "IC 数据不足, 跳过拥挤度检查.\n"
+        if data.empty:
+            store.close()
+            return "数据不足, 跳过拥挤度检查.\n"
 
-    # 简化的拥挤度指标: 检查 IC 方向一致性
-    # 真实拥挤度需要因子值的截面相关性, 此处用 IC 符号一致性作为代理
-    ics = np.array(list(ic_dict.values()))
-    same_sign_ratio = float(np.sum(ics > 0)) / len(ics)
+        factor_values = compute_all_factors(data, today, fundamentals=fundamentals,
+                                            status_filter="using")
+        factor_values = {k: v for k, v in factor_values.items()
+                        if isinstance(v, pd.Series) and v.notna().sum() >= 30}
 
-    lines = [f"- 正 IC 因子比例: {same_sign_ratio:.0%}"]
-    if same_sign_ratio > 0.8:
-        lines.append("- ⚠️ 警告: >80% 因子同向, 可能存在因子拥挤")
-    elif same_sign_ratio > 0.95:
-        lines.append("- 🔴 严重拥挤: >95% 因子同向")
-    else:
-        lines.append("- ✅ 因子方向分散, 拥挤度正常")
+        store.close()
+
+        if len(factor_values) < 2:
+            return "有效因子值 < 2, 跳过拥挤度检查.\n"
+
+        # ── 构建因子值矩阵 (symbol × factor) ──
+        factor_df = pd.DataFrame(factor_values).dropna(how="all")
+        factor_df = factor_df.dropna(axis=1, thresh=30)
+
+        if factor_df.shape[1] < 2:
+            return "因子值覆盖不足, 跳过拥挤度检查.\n"
+
+        # ── Pairwise Pearson 相关性 ──
+        corr_matrix = factor_df.corr(method="pearson")
+
+        # ── 找高相关对 ──
+        high_corr_pairs = []
+        n = corr_matrix.shape[0]
+        for i in range(n):
+            for j in range(i + 1, n):
+                r = corr_matrix.iloc[i, j]
+                if abs(r) > 0.7:
+                    high_corr_pairs.append((corr_matrix.index[i], corr_matrix.index[j], round(r, 3)))
+
+        # ── 拥挤风险排名 (每个因子有多少邻居 >0.7) ──
+        crowded_factors = {}
+        for f1, f2, r in high_corr_pairs:
+            crowded_factors[f1] = crowded_factors.get(f1, 0) + 1
+            crowded_factors[f2] = crowded_factors.get(f2, 0) + 1
+
+        lines = []
+        lines.append(f"- 分析因子数: {factor_df.shape[1]}, 截面股票数: {factor_df.shape[0]}")
+
+        if high_corr_pairs:
+            lines.append(f"- 🔴 高相关对 (|r|>0.7): {len(high_corr_pairs)} 对")
+            for f1, f2, r in sorted(high_corr_pairs, key=lambda x: -abs(x[2]))[:8]:
+                lines.append(f"  - {f1} ↔ {f2}: r={r:+.3f}")
+
+            lines.append("")
+            lines.append("- 拥挤风险排名 (高相关邻居数):")
+            for fname, n_crowd in sorted(crowded_factors.items(), key=lambda x: -x[1])[:5]:
+                risk = "🔴 高风险" if n_crowd >= 3 else ("⚠️ 中风险" if n_crowd >= 2 else "低风险")
+                lines.append(f"  - {fname}: {n_crowd} 个高相关邻居 ({risk})")
+        else:
+            lines.append("- ✅ 未检测到高相关性拥挤 (所有 |r| < 0.7)")
+
+    except Exception as e:
+        lines = [f"- 拥挤度检查失败 (non-fatal): {type(e).__name__}: {e}"]
 
     return "\n".join(lines) + "\n"
 

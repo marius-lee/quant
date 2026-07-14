@@ -41,9 +41,9 @@ LOT_SIZE = _require_cfg("backtest.lot_size")
 
 
 def generate_signals(date_str: str = None, capital: float = None, strategy: str = "quant",
-                     skip_pull: bool = False, store=None, status_filter: str = "active",
+                     skip_pull: bool = False, store=None, status_filter: str = "using",
                      suppress_push: bool = False, universe_size: int = None,
-                     db_path: str = "data/trades.db", exclude_symbols: list = None, ic_map: dict = None) -> dict:
+                     db_path: str = "data/trades.db", exclude_symbols: list = None, ic_map: dict = None, combine_mode: str = None) -> dict:
     """Pipeline 阶段一: 盘前信号生成 (Steps 0-5, 不执行交易)。
 
     用 T-1 收盘数据计算因子 → alpha → 风险过滤 → 组合优化 → 输出目标持仓。
@@ -445,6 +445,31 @@ def run(date_str: str = None, capital: float = None, strategy: str = "quant", sk
     signals["steps"].update(exec_result.get("steps", {}))
     signals["elapsed_sec"] = signals.get("elapsed_sec", 0) + exec_result.get("elapsed_sec", 0)
     signals["stopped_out"] = exec_result.get("stopped_out", [])
+# ── Trace recording (non-blocking) ──
+    try:
+        from core.trace import get_trace, make_experiment, Hypothesis, ExperimentFeedback
+        trace = get_trace()
+        exp = make_experiment(
+            action="pipeline_run",
+            hypothesis=Hypothesis(
+                hypothesis=f"Strategy {strategy} generates excess returns",
+                reason=f"Pipeline run: factor eval + execution",
+                source="pipeline.run()",
+            ),
+        )
+        steps = signals.get("steps", {})
+        exp.sub_results = {"date": signals.get("date"), "elapsed_sec": signals.get("elapsed_sec", 0)}
+        exp.sub_results["steps_summary"] = {k: {sk: sv for sk, sv in v.items() if sk != "status"}
+                                            for k, v in steps.items()}
+        total_return = steps.get("monitor", {}).get("total_return", 0)
+        exp.feedback = ExperimentFeedback(
+            decision=total_return > 0,
+            reason=f"Pipeline completed. Return: {total_return}",
+            metrics={"total_return_pct": float(total_return) if total_return else 0.0},
+        )
+        trace.record(exp)
+    except Exception as _e:
+        logger.warning(f"Trace recording failed (non-blocking): {_e}")
     return signals
 
 

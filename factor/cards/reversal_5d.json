@@ -1,0 +1,26 @@
+ {
+   "name": "reversal_5d",
+   "display_name": "5日反转",
+   "category": "reversal",
+   "sub_category": "price",
+   "formula": "-1 * (close / close.shift(5) - 1)",
+   "window_days": 5,
+   "data_deps": ["daily.close"],
+   "reference": "Lehmann (1990), Jegadeesh (1990)",
+   "hypothesis": "短期涨幅过大的股票会均值回归，短期跌幅会反弹",
+   "status": "active",
+   "status_history": [
+     {"from": "registered", "to": "candidate", "date": "2025-01-01", "reason": "Initial registration"},
+     {"from": "candidate", "to": "active", "date": "2025-04-01", "reason": "IC = -0.045, t = -3.1"}
+   ],
+   "ic_mean_12m": -0.045,
+   "ic_std_12m": 0.11,
+   "icir_12m": 0.41,
+   "half_life_days": 7,
+   "decay_trend": "stable",
+   "correlations": {
+     "momentum_63d": -0.15,
+     "turnover_rev_5d": 0.38
+   },
+   "last_evaluated": "2026-07-10"
+ }

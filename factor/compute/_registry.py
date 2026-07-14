@@ -12,7 +12,7 @@ def _resolve_statuses(status_filter):
     if isinstance(status_filter, (list, tuple)):
         return tuple(status_filter)
     if status_filter == 'using':
-        return ('active', 'monitoring')
+        return ('active',)  # P1: monitoring 不参与实盘交易，仅观察不交易
     if status_filter == 'backtesting':
         return ('registered', 'candidate', 'retired')
     return (status_filter,)
@@ -21,7 +21,7 @@ def _resolve_statuses(status_filter):
 def load_active_price_factors(status_filter='using'):
     """从 factor_registry 表加载价格因子 → {name: (cat, window, fn)}.
 
-    status_filter: 'using'→active+monitoring (生产中), None (全部, 评估用).
+    status_filter: 'using'→active only (P1: monitoring excluded from live trading), None (全部, 评估用).
     """
     statuses = _resolve_statuses(status_filter)
     name_list = list(_PRICE_FN_MAP.keys())
@@ -37,7 +37,7 @@ def load_active_price_factors(status_filter='using'):
 def load_active_fundamental_factors(status_filter='using'):
     """从 factor_registry 表加载基本面因子.
 
-    status_filter: 'using'→active+monitoring (生产中), None (全部, 评估用).
+    status_filter: 'using'→active only (P1: monitoring excluded from live trading), None (全部, 评估用).
     """
     statuses = _resolve_statuses(status_filter)
     fn_names = list(_FUNDAMENTAL_FN_MAP.keys())
@@ -69,7 +69,7 @@ def update_factor_evaluation(name: str, ic_mean: float, ic_ir: float):
 def get_factor_names(status_filter=None) -> list:
     """返回因子名列表 (从 factor_registry 表读取).
 
-    status_filter: 'active' (生产), None (全部, 评估用).
+    status_filter: 'using'→active only (P1: monitoring excluded from live trading), 'active' (仅active), None (全部, 评估用).
     """
     price_factors = load_active_price_factors(status_filter)
     fund_factors = load_active_fundamental_factors(status_filter)

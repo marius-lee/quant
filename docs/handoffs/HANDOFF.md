@@ -1436,3 +1436,17 @@ METRICS_DB = os.path.join(DATA_DIR, "metrics.db")
 - `factor_repo.count_total()` → 70（2 active, 64 rejected, 4 retired）
 - `broker.get()` → capital=5000, total_asset=5000, PnL=0
 - `node -c app.js` → syntax OK
+
+---
+
+### #33 2026-07-15 — 调度器日志埋点对齐模板9 (trace_id)
+
+**变更**:
+- `quant/scheduler/attribution.py`: import `set_trace_id`; `_run()` 内 `tid` 生成后调用 `set_trace_id(tid)`
+- `quant/scheduler/signals.py`: 同上
+- `quant/scheduler/execute.py`: 同上
+- `quant/web/static/app.js` + `templates/index.html`: bump → test-v37
+
+**原因**: 模板9 硬约束要求 trace_id 贯穿所有日志。三个调度模块 `_run()` 都生成了 `tid` 但从未调用 `set_trace_id()`，导致 `_TraceLoggerAdapter` 无法读取 trace_id，40+ 条 attribution 日志无法串联追踪。
+
+**验证**: `grep set_trace_id quant/scheduler/*.py` — 三个文件各两处 (import + 调用)

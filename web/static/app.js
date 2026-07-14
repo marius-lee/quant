@@ -5,6 +5,7 @@
 
 const API = '/api';
 const POLL_MS = 5000;
+const VERSION = 'test-v37';
 const PLOTLY_CONFIG = { responsive: true, displayModeBar: false };
 
 function plotlyFont() {
@@ -28,6 +29,14 @@ const fmtNum = (v, d = 2) => { if (v == null || isNaN(v)) return '—'; return v
 const clsPnl = (v) => v >= 0 ? 'up' : 'down';
 
 function setText(id, text) { const el = document.getElementById(id); if (el) el.textContent = text; }
+
+// ── Build factor objects from parallel arrays (API returns [names] + [ics] separately)
+function buildFactorObjs(fd) {
+  const keys = fd.factor_keys || [];
+  const ics = fd.ic || [];
+  const irs = fd.ic_ir || [];
+  return keys.map((name, i) => ({ name, ic: ics[i] ?? null, ir: irs[i] ?? null }));
+}
 
 // ── Theme ──
 function initTheme() {
@@ -103,13 +112,13 @@ function renderTable(containerId, rows, cols, opts = {}) {
   el.innerHTML = html;
 }
 
-// ── Factor scan line (compact bar chart) ──
+// ── Factor scan line ──
 function renderScanLine(fd) {
   const el = document.getElementById('factor-scan');
-  if (!el || !fd || !fd.factors) return;
-  const factors = fd.factors.filter(f => f.ic != null).sort((a, b) => Math.abs(b.ic) - Math.abs(a.ic)).slice(0, 20);
+  if (!el || !fd) return;
+  const factors = buildFactorObjs(fd).filter(f => f.ic != null).sort((a, b) => Math.abs(b.ic) - Math.abs(a.ic)).slice(0, 20);
   if (!factors.length) { el.innerHTML = ''; return; }
-  const maxAbsIC = Math.max(...factors.map(f => Math.abs(f.ic)));
+  const maxAbsIC = Math.max(...factors.map(f => Math.abs(f.ic)), 0.001);
   const bars = factors.map(f => {
     const pct = maxAbsIC > 0 ? Math.abs(f.ic) / maxAbsIC : 0;
     const color = f.ic >= 0 ? 'var(--up)' : 'var(--down)';
@@ -121,8 +130,9 @@ function renderScanLine(fd) {
 // ── Factor Heatmap ──
 function renderHeatmap(fd) {
   const el = document.getElementById('heatmap-grid');
-  if (!el || !fd || !fd.factors) return;
-  const factors = fd.factors.filter(f => f.ic != null).sort((a, b) => Math.abs(b.ic) - Math.abs(a.ic));
+  if (!el || !fd) return;
+  const factors = buildFactorObjs(fd).filter(f => f.ic != null).sort((a, b) => Math.abs(b.ic) - Math.abs(a.ic));
+  if (!factors.length) { el.innerHTML = '<div class="empty" style="color:var(--text3);font-size:12px;text-align:center;padding:20px">暂无 IC 数据</div>'; return; }
   const maxAbsIC = Math.max(0.001, ...factors.map(f => Math.abs(f.ic)));
   el.innerHTML = factors.map(f => {
     const intensity = Math.abs(f.ic) / maxAbsIC;
@@ -187,7 +197,6 @@ function renderSignals(state) {
   });
 }
 
-// ── Status bar ──
 function updateStatusBar(state) {
   const dot = document.getElementById('status-dot');
   const txt = document.getElementById('status-text');
@@ -203,7 +212,6 @@ function updateStatusBar(state) {
   }
 }
 
-// ── PnL Gauge Chart ──
 function renderPNLChart() {
   const el = document.getElementById('chart-pnl');
   if (!el || !window._perfData) return;
@@ -212,8 +220,6 @@ function renderPNLChart() {
   const s = getComputedStyle(document.documentElement);
   const accent = s.getPropertyValue('--accent').trim();
   const textColor = s.getPropertyValue('--text').trim();
-  const upColor = s.getPropertyValue('--up').trim();
-  const downColor = s.getPropertyValue('--down').trim();
   const val = perf.total_pnl || 0;
   const base = perf.initial_capital || 5000;
   const rangeMax = Math.max(5000, base * 0.2);
@@ -243,7 +249,7 @@ async function loadFactors() {
   try {
     const fd = await fetchJSON(API + '/factors');
     window._factorData = fd;
-    if (fd && fd.factors && fd.factors.length) {
+    if (fd && fd.factor_keys && fd.factor_keys.length) {
       renderFactorKPIs(fd);
       renderScanLine(fd);
       renderHeatmap(fd);
@@ -272,28 +278,46 @@ function renderFactorKPIs(fd) {
 
 function renderICTrend(fd) {
   const el = document.getElementById('chart-ic-trend');
-  if (!el || !fd || !fd.factors) return;
-  const top = fd.factors.filter(f => f.ic != null).sort((a,b)=>Math.abs(b.ic)-Math.abs(a.ic)).slice(0, 8);
+  if (!el) return;
+  const factors = buildFactorObjs(fd).filter(f => f.ic != null).sort((a,b)=>Math.abs(b.ic)-Math.abs(a.ic)).slice(0, 8);
+  if (!factors.length) return;
   const pf = plotlyFont(), bg = plotlyBg();
   Plotly.newPlot('chart-ic-trend', [{
     type: 'bar', orientation: 'h',
-    x: top.map(f => Math.abs(f.ic)),
-    y: top.map(f => f.name),
-    marker: { color: top.map(f => f.ic >= 0 ? 'var(--up)' : 'var(--down)') },
+    x: factors.map(f => Math.abs(f.ic)),
+    y: factors.map(f => f.name),
+    marker: { color: factors.map(f => f.ic >= 0 ? 'var(--up)' : 'var(--down)') },
   }], { ...bg, margin: { l: 120, r: 20, t: 10, b: 30 }, xaxis: { title: '|IC|', ...pf } }, PLOTLY_CONFIG);
 }
 
 function renderICDecay(fd) {
   const el = document.getElementById('chart-ic-decay');
-  if (!el || !fd || !fd.decay) return;
+  if (!el || !fd) return;
   const pf = plotlyFont(), bg = plotlyBg();
-  const periods = fd.decay.periods || [1,3,5,10,20];
-  const vals = fd.decay.values || [];
+  let periods = [1, 3, 5], vals = [];
+  // Decay is {factor_name: [lag1_ic, lag3_ic, lag5_ic], ...} per-factor dict
+  if (fd.decay && typeof fd.decay === 'object' && !fd.decay.periods) {
+    const allDecays = Object.values(fd.decay).filter(Array.isArray);
+    if (allDecays.length && allDecays[0].length) {
+      periods = allDecays[0].map((_, i) => (i + 1) * 2 - 1); // lag 1,3,5,...
+      vals = periods.map((_, i) => {
+        const atLag = allDecays.map(d => d[i] || 0).filter(v => v !== 0);
+        return atLag.length ? atLag.reduce((a,b)=>a+b)/atLag.length : 0;
+      });
+    }
+  } else if (fd.decay) {
+    periods = fd.decay.periods || [1,3,5,10,20];
+    vals = fd.decay.values || [];
+  }
+  if (!vals.length || vals.every(v => v === 0)) {
+    el.innerHTML = '<div class="empty" style="color:var(--text3);font-size:12px;text-align:center;padding:20px">暂无衰减数据</div>';
+    return;
+  }
   Plotly.newPlot('chart-ic-decay', [{
     type: 'scatter', mode: 'lines+markers',
     x: periods, y: vals,
     line: { color: 'var(--accent)', width: 2 },
-  }], { ...bg, margin: { l: 50, r: 20, t: 10, b: 30 }, xaxis: { title: '滞后期', ...pf }, yaxis: { title: 'IC 衰减', ...pf } }, PLOTLY_CONFIG);
+  }], { ...bg, margin: { l: 50, r: 20, t: 10, b: 30 }, xaxis: { title: '滞后期(日)', ...pf }, yaxis: { title: '均值|IC|', ...pf } }, PLOTLY_CONFIG);
 }
 
 function renderCorrelation(fd) {
@@ -302,8 +326,10 @@ function renderCorrelation(fd) {
   const pf = plotlyFont(), bg = plotlyBg();
   const labels = fd.factor_keys || [];
   const z = fd.corr;
+  // Replace null/None with 0 for Plotly compatibility
+  const zClean = z.map(row => row.map(v => (v == null || isNaN(v)) ? 0 : v));
   Plotly.newPlot('chart-correlation', [{
-    type: 'heatmap', z: z, x: labels, y: labels,
+    type: 'heatmap', z: zClean, x: labels, y: labels,
     colorscale: [[0,'var(--down)'],[0.5,'var(--bg2)'],[1,'var(--up)']],
     zmin: -1, zmax: 1,
   }], { ...bg, margin: { l: 120, b: 100, t: 10, r: 20 }, xaxis: { tickangle: 45, ...pf }, yaxis: { ...pf } }, PLOTLY_CONFIG);
@@ -328,22 +354,14 @@ async function loadPortfolio() {
       { key: 'current', label: '现价' },
       { key: 'pnl_pct', label: '盈亏%' },
     ], {
-      fmtMap: {
-        price: v => fmtMoney(v),
-        current: v => fmtMoney(v),
-        pnl_pct: v => fmtPct(v),
-      },
+      fmtMap: { price: v => fmtMoney(v), current: v => fmtMoney(v), pnl_pct: v => fmtPct(v) },
       rank: true
     });
     if (pos.length) {
       try {
         const syms = pos.map(p => p.symbol).join(',');
-        const qr = await fetchJSON(API + '/quotes?symbols=' + syms);
-        // quotes are already embedded in positions data
+        await fetchJSON(API + '/quotes?symbols=' + syms);
       } catch (e) { console.warn('quotes fetch failed'); }
-    }
-    // Exposure charts
-    if (pos.length) {
       renderSectorExposure(pos);
     }
     try {
@@ -365,8 +383,7 @@ function renderSectorExposure(positions) {
   const vals = Object.values(secMap);
   const pf = plotlyFont(), bg = plotlyBg();
   Plotly.newPlot('chart-exposure-sector', [{
-    type: 'pie', labels, values: vals,
-    textinfo: 'label+percent',
+    type: 'pie', labels, values: vals, textinfo: 'label+percent',
   }], { ...bg, margin: { t: 10, b: 10 }, ...pf }, PLOTLY_CONFIG);
 }
 
@@ -411,11 +428,7 @@ async function loadPerformance() {
       { key: 'pnl', label: 'PnL' },
       { key: 'pnl_pct', label: '收益%' },
     ], {
-      fmtMap: {
-        price: v => fmtMoney(v),
-        pnl: v => fmtMoney(v),
-        pnl_pct: v => fmtPct(v),
-      }
+      fmtMap: { price: v => fmtMoney(v), pnl: v => fmtMoney(v), pnl_pct: v => fmtPct(v) }
     });
   } catch (e) { console.warn('performance error:', e.message); }
 }
@@ -468,14 +481,11 @@ function connectSSE() {
 // ── Init ──
 document.addEventListener('DOMContentLoaded', async () => {
   initTheme();
+  (function(){ var ve = document.getElementById('sidebar-version'); if (ve) ve.textContent = VERSION; })();
   document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
   connectSSE();
-
-  // Run initial poll and wait for data BEFORE rendering charts
   await pollOverview();
   setInterval(pollOverview, POLL_MS);
-
-  // Wait for Plotly, then render chart (data is already loaded)
   const checkPlotly = () => {
     if (typeof Plotly !== 'undefined' && !_chartsRendered) {
       _chartsRendered = true;
@@ -483,7 +493,5 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else if (!_chartsRendered) { setTimeout(checkPlotly, 200); }
   };
   setTimeout(checkPlotly, 100);
-
-  // Load factors tab data in background
   loadFactors();
 });

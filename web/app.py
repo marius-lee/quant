@@ -522,9 +522,22 @@ def api_health():
 
 @app.route("/api/scheduler")
 def api_scheduler():
-    """调度器状态 — 返回所有任务状态列表."""
-    from quant.scheduler.status import all_tasks
-    return _api_response(data={"tasks": all_tasks()})
+    """调度器状态 — 返回静态任务定义 (调度进程独立，此处仅展示)."""
+    tasks = [
+        {"task": "信号生成",   "group": "盘前", "schedule": "08:30",       "desc": "计算所有 using 因子，生成 Alpha 信号与目标持仓"},
+        {"task": "交易执行",   "group": "盘中", "schedule": "09:35-09:40", "desc": "读取信号、获取行情、执行调仓订单"},
+        {"task": "盘中风控",   "group": "盘中", "schedule": "09:35-14:55", "desc": "每5s轮询止损/止盈/熔断，触发后立即卖出"},
+        {"task": "盘后归因",   "group": "盘后", "schedule": "15:30",       "desc": "Brinson 归因 + IC 衰减检测 + active→monitoring 降级"},
+        {"task": "因子评估",   "group": "研究", "schedule": "周六 06:00",   "desc": "评估管线五阶段：回测诊断因子 → 正式认证 → 状态变更"},
+        {"task": "IC 更新",    "group": "研究", "schedule": "周六 06:00",   "desc": "重新计算所有 using+monitoring 因子的滚动 IC 和 IC_IR"},
+        {"task": "OOS 验证",   "group": "研究", "schedule": "周六 08:00",   "desc": "样本外 Walk-Forward 验证，检测因子过拟合"},
+    ]
+    for t in tasks:
+        t.setdefault("status", "idle")
+        t.setdefault("last_run", None)
+        t.setdefault("last_error", None)
+        t.setdefault("next_run", "—")
+    return _api_response(data={"tasks": tasks})
 
 
 @app.route("/api/metrics")

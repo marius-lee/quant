@@ -1450,3 +1450,16 @@ METRICS_DB = os.path.join(DATA_DIR, "metrics.db")
 **原因**: 模板9 硬约束要求 trace_id 贯穿所有日志。三个调度模块 `_run()` 都生成了 `tid` 但从未调用 `set_trace_id()`，导致 `_TraceLoggerAdapter` 无法读取 trace_id，40+ 条 attribution 日志无法串联追踪。
 
 **验证**: `grep set_trace_id quant/scheduler/*.py` — 三个文件各两处 (import + 调用)
+
+---
+
+### #34 2026-07-15 — 版本号改为服务端运行时注入 (防误判)
+
+**变更**:
+- `web/app.py`: 新增 `VERSION = "test-v38"` 常量; `render_template` 注入 `version=VERSION`
+- `web/templates/index.html`: `{{ version }}` 模板变量替换硬编码版本号
+- `web/static/app.js`: 移除硬编码 `const VERSION`; JS 不再参与版本号渲染
+
+**原因**: 之前版本号写死在 HTML/JS 静态文件，浏览器刷新即显示新版本，但 Flask 进程可能尚未重启，产生"界面显示新版本但实际跑旧代码"的误判。改为服务端注入后，版本号 = 运行中进程的真实版本。
+
+**验证**: 不重启刷新 → 仍显示旧版本; 重启后刷新 → 显示新版本。

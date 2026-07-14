@@ -1475,3 +1475,12 @@ METRICS_DB = os.path.join(DATA_DIR, "metrics.db")
 **代码变更**: `quant/data/trade_repo.py` (+5 行迁移), `quant/scheduler/oos_verify.py` (参数修正), market.db (新表)
 
 **验证**: 三处修改均已 verify; 需重启后重新跑归因确认
+
+---
+
+### #36 2026-07-15 — 修复 oos_verify pandas 非单调索引切片报错
+
+**Bug**: `oos_verify.py:68` — `ic_s.index = pd.to_datetime(...)` 后索引无序, `.loc[:test_start]` 切片报
+`KeyError: Value based partial slicing on non-monotonic DatetimeIndexes`
+
+**修复**: 加 `.sort_index()` 行 (第 69 行), 确保 DatetimeIndex 单调后再切片

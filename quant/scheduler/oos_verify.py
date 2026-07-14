@@ -58,6 +58,7 @@ def run_oos_check(today: str) -> dict:
             if name in ic_series and len(ic_series[name]) >= 20:
                 ic_s = pd.Series(ic_series[name])
                 ic_s.index = pd.to_datetime(ic_s.index)
+                ic_s = ic_s.sort_index()  # 切片要求单调索引
                 is_ic_vals = ic_s.loc[:test_start]
                 oos_ic_vals = ic_s.loc[test_start:]
 

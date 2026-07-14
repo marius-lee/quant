@@ -1,0 +1,10 @@
+{
+  "name": "roe_trimmed",
+  "display_name": "roe_trimmed",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.003,
+  "icir_12m": 0.0177,
+  "last_evaluated": "auto",
+  "n_obs": 34
+}

@@ -3,8 +3,8 @@
   "display_name": "dt_streak",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.1414,
-  "icir_12m": 3.977,
+  "ic_mean_12m": 0.1813,
+  "icir_12m": 2.2996,
   "last_evaluated": "auto",
-  "n_obs": 12
+  "n_obs": 20
 }

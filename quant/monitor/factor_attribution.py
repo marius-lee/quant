@@ -101,9 +101,10 @@ def factor_pnl_attribution(
             return {}
 
         try:
-            ic_result = compute_ic(factor_names=list(exposures.keys()),
+           ic_result = compute_ic(factor_names=list(exposures.keys()),
                                    symbols=symbols,
-                                   start=start, end=date)
+                                   date=date, lookback=eff_days,
+                                   store=store, status_filter="using")
             ic_map = ic_result.get("ic_map", {})
         except Exception:
             ic_map = {}

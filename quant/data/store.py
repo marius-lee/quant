@@ -521,8 +521,9 @@ class DataStore:
                         float(p[1]), float(p[3]), float(p[4]), float(p[2]),
                         float(p[5]),      # vol (手, eastmoney 直接就是手)
                         float(p[6]) / 1000 if len(p) > 6 and p[6] else 0.0,  # amt 元→千元
-                        0.0))
+                       0.0))
             except Exception:
+                logger.debug(f"[tencent/em82] {sym} request failed, skipping")
                 continue
         if rows:
             logger.info(f"[tencent/em82] {len(symbols)} stocks: {len(rows)} rows")

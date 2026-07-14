@@ -1484,3 +1484,59 @@ METRICS_DB = os.path.join(DATA_DIR, "metrics.db")
 `KeyError: Value based partial slicing on non-monotonic DatetimeIndexes`
 
 **修复**: 加 `.sort_index()` 行 (第 69 行), 确保 DatetimeIndex 单调后再切片
+
+---
+
+### #40 2026-07-15 — 清理临时脚本 + 修复静默吞异常
+
+**清理**: 删除 8 个 DNS 调试/临时数据拉取脚本：
+- `scripts/fetch_daily_hotspot.py` — 绕过 store.py 的临时数据拉取
+- `scripts/sync_latest.py` — DNS monkeypatch hack
+- `scripts/test_eastmoney.sh` / `test_eastmoney_http.sh` / `test_em_python.sh` / `test_em_tls.sh` / `test_network.sh` / `test_alt_sources.sh` — DNS 连通性调试
+
+**代码变更**: `quant/data/store.py` — `_fetch_tencent_daily()` 的 `except Exception: continue` 改为 `logger.debug()` 后 continue（不再静默吞异常）
+**版本**: test-v43 → test-v44
+
+**原因**: 热点 DNS 不稳定导致所有数据源域名解析失败，之前为了绕过去创建了大量临时脚本和 DNS 补丁。实际数据源头 `store.update_daily()` 本身的多源 fallback 机制是正常的——问题出在网络层，不应在代码层打补丁。ENDOFFILE
+echo "done"
+---
+
+### #41 2026-07-15 — G1: OOS Walk-Forward 验证落地（真正 OOS Sharpe）
+
+**问题**: `run_oos_check()` 的 `oos_sharpe` 硬编码为 `is_sharpe * 0.7`，不是从 OOS 窗口数据算出来的。
+**修复**: 重写 `quant/scheduler/oos_verify.py`（99→171 行）：
+- per-factor IS_IR / OOS_IR：分别计算 IS 窗口和 OOS 窗口的 IC Information Ratio（IC 均值/标准差）
+- 聚合用 median 替代 mean：2~30 个因子均适用，不受极端值影响
+- 衰减检测：per-factor OOS_IR / IS_IR < `decay_warn_threshold`（0.5）触发告警
+- test_start 用 `pd.bdate_range` 反推交易日，不再用自然日（修复 TEST_DAYS=10 实际只给 ~7 日的问题）
+- 返回 dict key 从 `oos_sharpe`/`is_sharpe` 改为 `oos_ir`/`is_ir`（保持 attribution.py 兼容）
+
+**代码变更**: `quant/scheduler/oos_verify.py`（完整重写）
+**版本**: test-v44 → test-v45ENDOFFILE
+echo "done"
+---
+
+### #42 2026-07-15 — G1/G2/G3/G4 落地
+
+**G1 (OOS Walk-Forward)**: `quant/scheduler/oos_verify.py` 重写 — 不再硬编码 `oos_sharpe = is_sharpe * 0.7`，改为从 OOS 窗口实际 IC 序列计算 IC_IR (per-factor mean/std)，聚合用 median。test_start 用 `pd.bdate_range` 反推交易日。
+
+**G2 (因子拥挤度)**: 新增 `quant/scheduler/crowdedness.py` (202行) — 截面 Spearman ρ 检测 pairwise 相关性 >0.7 的因子对 + 60 日趋势追踪。集成到 attribution.py 15:30 归因流程，持久化到 `factor_crowd_snapshot` 表。
+
+**G3 (DSR/MinTRL)**: 修复 `attribution.py` 中 daily_returns 按日期聚合的 bug — 之前每笔交易 PnL 当作一个"日收益"，同天多笔被重复计数。改为 `pnl_by_date` 聚合后取 values。
+
+**G4 (因子 PnL 归因)**: 修复 `quant/monitor/factor_attribution.py` 中 `compute_ic` 调用参数 — 原来传了 `start=start, end=date`（函数签名中不存在），改为 `date=date, lookback=eff_days, store=store, status_filter="using"`。
+
+**版本**: test-v45 → test-v46ENDOFFILE
+echo "done"
+---
+
+### #43 2026-07-15 — OOS verify 重写 + G2 DataStore.conn 修复
+
+**OOS 根因**: `compute_ic` 内部 `compute_days = trading_days[lookback//2:]` 永远砍掉最近 N/2 天做 warmup，导致 OOS 窗口（最近 10 交易日）完全没有 IC 数据。无论 lookback 多大，warmup 天数等比例增长，OOS 永远为 0。
+
+**修复**: `oos_verify.py` 完全重写，不再调用 `compute_ic`。改为自己从 `store.get_daily()` 拉全窗口数据，逐日 `compute_all_factors()` + Spearman IC，IS/OOS 拆分后再算 IR。`total_lookback = max(TRAIN + TEST + factor_calendar, 252)` 确保覆盖全窗口。
+
+**G2 修复**: `crowdedness.py` 中 `store.conn` 不存在（DataStore 没有公开 SQLite 连接）→ 改为 `sqlite3.connect(store.db_path)` 临时连接，用完即关。
+
+**版本**: test-v47 → test-v48ENDOFFILE
+echo "done"

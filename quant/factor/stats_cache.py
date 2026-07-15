@@ -505,10 +505,10 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
 def _load_ic_from_db(filter_names=None, status_filter='using') -> dict:
     """从 factor_registry 表加载因子 IC 权重。
 
-    status_filter: 'using'→active only (实盘, P1 aligned), 'backtesting'→registered+candidate+retired+active+monitoring (回测).
+    status_filter: 'using'→active only (实盘, P1 aligned), 'backtesting'→registered+candidate+retired (回测, 与 _registry.py 对齐).
     """
     if status_filter == 'backtesting':
-        statuses = ('registered', 'candidate', 'retired', 'active', 'monitoring')
+        statuses = ('registered', 'candidate', 'retired')
     elif status_filter == 'using':
         statuses = ('active',)  # P1: monitoring 不参与实盘，与 _registry.py 对齐
     elif isinstance(status_filter, (list, tuple)):

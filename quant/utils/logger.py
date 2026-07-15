@@ -1,11 +1,11 @@
 """统一日志系统 — 所有模块通过 get_logger(__name__) 获取 logger。
 
 日志输出:
-  - 控制台: INFO 级别，关键路径和进度
-  - app.log: 非回测模块日轮转 (INFO+), JSON 结构化
-  - backtest.log: 回测模块日轮转 (INFO+), JSON 结构化
-  - quant.log: JSON 结构化全量 (DEBUG), 过滤 stderr 噪音
-  - 轮转: 单文件最大 50MB，保留最近 5 个
+    - 控制台: INFO 级别，关键路径和进度
+    - app.log: 非回测模块日轮转 (INFO+), JSON 结构化
+    - backtest.log: 回测模块日轮转 (INFO+), JSON 结构化
+    - quant.log: JSON 结构化全量 (DEBUG), 过滤 stderr 噪音
+    - 轮转: 单文件最大 50MB，保留最近 5 个
 """
 
 import logging
@@ -20,6 +20,19 @@ _log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.
 _log_file = os.path.join(_log_dir, "quant.log")
 _initialized = False
 _lock = threading.Lock()
+
+# ── Offline 模式 (回测/评估上下文) ──
+# 入口 (run_backtest / 评估各 phase) 设 True → 共享模块日志路由到 backtest.log
+_offline_mode: contextvars.ContextVar[bool] = contextvars.ContextVar('offline_mode', default=False)
+
+@contextmanager
+def offline_mode():
+    """进入离线模式 — 共享模块 (pipeline/factor/risk 等) 日志路由到 backtest.log."""
+    token = _offline_mode.set(True)
+    try:
+        yield
+    finally:
+        _offline_mode.reset(token)
 
 # ── trace_id context (模板9: 链路追踪) ──
 _trace_id_var: contextvars.ContextVar[str] = contextvars.ContextVar('trace_id', default='')
@@ -65,7 +78,8 @@ def _init():
         r.name.startswith("quant.backtest.") or
         r.name.startswith("backtest.") or
         r.name.startswith("quant.evaluation.") or
-        r.name.startswith("evaluation.")
+        r.name.startswith("evaluation.") or
+        _offline_mode.get()
     )
     _not_stderr = lambda r: not r.name.endswith('.stderr')
 

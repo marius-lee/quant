@@ -11,8 +11,8 @@ lookback=120 对标国内券商因子研报惯例 (过去120个交易日 ≈ 半
 t = |IR| × √n 提供 |IR|≥0.18 的最小可检测效应 (Grinold & Kahn 1999 第6章).
 
 用法:
-  from factor.stats_cache import get_cached_factor_stats
-  stats = get_cached_factor_stats()  # 返回前端需要的 dict
+    from factor.stats_cache import get_cached_factor_stats
+    stats = get_cached_factor_stats()  # 返回前端需要的 dict
 
 多线程策略 (P78): 因子计算使用 ThreadPoolExecutor，worker 线程各自打开 DataStore
 (sqlite3 WAL 模式支持多线程并发读)。线程随 with 语句自动回收，无孤儿进程风险。
@@ -153,7 +153,7 @@ def compute_factor_stats(
                 f"{_MAX_WORKERS} threads (shared data + precomputed primitives)")
 
     def _thread_compute_chunk(chunk_dates: list, shared_data,
-                              shared_financials: dict) -> list:
+                                shared_financials: dict) -> list:
         """Thread worker: 复用主线程预计算的 primitives, 不再自己加载数据."""
         import logging as _log
         _log.captureWarnings(True)
@@ -168,10 +168,10 @@ def compute_factor_stats(
                     fundamentals = shared_financials.get(date_str)
                     prims = _shared_primitives.get(date_str, {})
                     fv = compute_all_factors(data, date_str,
-                                             fundamentals=fundamentals,
-                                             factor_names=factor_names,
-                                             precomputed_primitives=prims
-                                             if prims else None)
+                                                fundamentals=fundamentals,
+                                                factor_names=factor_names,
+                                                precomputed_primitives=prims
+                                                if prims else None)
                     result = {}
                     for name in factor_names:
                         if name in fv and not fv[name].dropna().empty:
@@ -202,7 +202,7 @@ def compute_factor_stats(
     try:
         futures = {executor.submit(_thread_compute_chunk, chunk_dates,
                                     _shared_data, _shared_financials): ci
-                   for ci, chunk_dates in enumerate(date_chunks)}
+                    for ci, chunk_dates in enumerate(date_chunks)}
         for ci, chunk_dates in enumerate(date_chunks):
             logger.info(f"  chunk {ci+1}/{len(date_chunks)}: {len(chunk_dates)} dates")
 
@@ -277,7 +277,7 @@ def compute_factor_stats(
         ic_means = result["ic_means"]
         if name in ic_means:
             return name, (ic_means[name], result["ic_irs"][name],
-                         result["ic_series"].get(name, {}), result["ic_decay"].get(name, {}))
+                            result["ic_series"].get(name, {}), result["ic_decay"].get(name, {}))
         return name, None
 
     logger.info(f"IC compute start: {len(factor_names)} factors")
@@ -285,7 +285,7 @@ def compute_factor_stats(
     executor = ThreadPoolExecutor(max_workers=_MAX_WORKERS)
     try:
         futures = {executor.submit(_compute_ic, name, factor_values_by_date[name],
-                                   forward_1d, forward_5d, forward_20d): name
+                                    forward_1d, forward_5d, forward_20d): name
         for name in factor_names}
         ic_completed = 0
         for future in as_completed(futures):
@@ -322,7 +322,7 @@ def compute_factor_stats(
         return i, j, avg, len(pair_corrs)
 
     pairs = [(i, j, factor_names[i], factor_names[j])
-             for i in range(n) for j in range(i + 1, n)]
+                for i in range(n) for j in range(i + 1, n)]
     logger.info(f"correlation matrix: {n}×{n} factors, {len(pairs)} pairwise pairs")
     corr_matrix = np.eye(n)
     corr_counts = np.zeros((n, n))
@@ -330,7 +330,7 @@ def compute_factor_stats(
         executor = ThreadPoolExecutor(max_workers=_MAX_WORKERS)
         try:
             futures = {executor.submit(_compute_pair, i, j, ni, nj): (i, j)
-                       for i, j, ni, nj in pairs}
+                        for i, j, ni, nj in pairs}
             for future in as_completed(futures):
                 i, j, avg, n_pairs = future.result()
                 corr_matrix[i][j] = avg

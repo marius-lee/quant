@@ -18,6 +18,7 @@ function plotlyBg() {
 function plotlyZeroLine() { const s = getComputedStyle(document.documentElement); return s.getPropertyValue('--border').trim(); }
 
 let _chartsRendered = false;
+let _portfolioTimer = null;
 let _schedulerTimer = null;
 
 // ── Utils ──
@@ -63,7 +64,12 @@ function showTab(name) {
     renderHeatmap(window._factorData); renderICTrend(window._factorData);
     renderICDecay(window._factorData); renderCorrelation(window._factorData);
   }
-  if (activeTab === 'portfolio') { loadPortfolio(); }
+  if (activeTab === 'portfolio') {
+    loadPortfolio();
+    if (!_portfolioTimer) { _portfolioTimer = setInterval(loadPortfolio, POLL_MS); }
+  } else {
+    if (_portfolioTimer) { clearInterval(_portfolioTimer); _portfolioTimer = null; }
+  }
   if (activeTab === 'performance') { loadPerformance(); }
   if (activeTab === 'scheduler') {
     loadScheduler();

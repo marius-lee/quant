@@ -26,6 +26,9 @@
  Phase 1 (Data) → Phase 2 (Single-factor IC) → Phase 3 (Walk-forward + PBO)
     → Phase 4 (Cost-adjusted backtest) → Phase 5 (Monitoring)
       → Phase 6 (Full backtest, PENDING) → Phase 7 (Walk-forward optimization, PENDING)
+
+Note: phases are independent scripts. `run_store.py` provides shared persistence.
+No centralized pipeline orchestrator exists — run phases manually in sequence.
  ```
 
  ## Running the pipeline

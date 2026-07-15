@@ -10,7 +10,7 @@ from factor.stats_cache import compute_factor_stats
 from config.loader import get as _ecfg
 import numpy as np
 
-conn = sqlite3.connect("data/market.db")
+conn = sqlite3.connect("quant/data/market.db")
 all_names = [r[0] for r in conn.execute("SELECT name FROM factor_registry WHERE status='active'").fetchall()]
 conn.close()
 

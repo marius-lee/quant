@@ -23,7 +23,7 @@ from factor.stats_cache import compute_factor_stats
 from config.loader import get as _ecfg
 # P45: 全量因子评估 — 查询 factor_registry 所有因子名, 绕过 status='active' 过滤
 import sqlite3 as _sql
-_conn = _sql.connect("data/market.db")
+_conn = _sql.connect("quant/data/market.db")
 _all_factor_names = [r[0] for r in _conn.execute("SELECT name FROM factor_registry").fetchall()]
 _conn.close()
 print(f"Evaluating {len(_all_factor_names)} registered factors (full universe)")
@@ -127,7 +127,7 @@ for i, (name, mic) in enumerate(candidates):
     print(f"  {i+1}. {name:25s} marginal_IC={mic:+.4f}")
 
 # 从单因子开始, 逐步添加
-conn = sqlite3.connect('data/market.db', timeout=30)
+conn = sqlite3.connect('quant/data/market.db', timeout=30)
 
 # 先全部失活, 再逐个激活测试
 conn.execute("UPDATE factor_registry SET status='deprecated', status_reason='stepwise evaluation', updated_at=datetime('now','localtime')")

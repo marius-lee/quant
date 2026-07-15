@@ -1,6 +1,6 @@
-# HANDOFF — 2026-07-15 ~22:00 CST
+# HANDOFF — 2026-07-15 ~23:30 CST
 
-## 当前状态：日志修复 + 冒烟测试优化 + IC 计算提速 (test-v84)
+## 当前状态：backtesting 筛选统一 + 诊断写因子状态 bug 修复 (test-v85)
 
 ### #49: 日志系统全面修复 (13 files)
 - JSON 统一格式、stderr 过滤、propagate=False、双前缀修复、trace_id 提前
@@ -58,3 +58,31 @@
 
 **改动文件**: `quant/factor/stats_cache.py`
 **影响**: Phase 2 单因子 IC 评估耗时预计降低 60-80%
+
+### #55: backtesting 筛选条件统一 + 诊断模块写入 factor_registry 修复 (test-v85)
+
+**Bug 1 — backtesting 筛选不一致**:
+- `_registry.py`: `backtesting` → `('registered', 'candidate', 'retired')`
+- `stats_cache.py:_load_ic_from_db`: `backtesting` → 包含 `'active', 'monitoring'`（多余）
+- 回测时因子计算只用 3 状态，但 IC 权重加载了 5 状态 → 权重被稀释
+
+**修复**: `stats_cache.py:510-511` 删除 `'active', 'monitoring'`，统一为 3 状态。
+
+**Bug 2 — 诊断模块内 auto-retire 污染因子状态**:
+- `loop.py:296-305` 在诊断完成后自动把 `recommendation="drop"` 的因子设为 `retired`
+- `loop.py:342-355` 直接写 `status_reason` 到 factor_registry
+- 两步架构的职责边界：Step 1 诊断仅出报告（写 evaluation_runs），Step 2 评估管线 sync_factor_status 统一改状态
+- 第一次诊断（#51 前 IC 计算 broken）将所有因子标为 drop → 全部 auto-retired → 68 个 retired
+
+**修复**: 删除 `loop.py` 中的 auto-retire 块和 status_reason SQL 写入。诊断结果仅通过已有的 `save_phase("diagnostics")` 写入 `evaluation_runs`。
+
+**回滚 — 68 个 retired 因子状态恢复**:
+| 目标状态 | 数量 | 依据 |
+|:------|:---:|------|
+| `candidate` | 11 | notes 含"激活"或"启用"（曾通过评估） |
+| `registered` | 55 | notes 含"失效"、空白或公式描述 |
+| `rejected` | 2 | northbound_20d, northbound_streak（数据源永久失效） |
+
+北向资金因子特殊处理: `rejected` 而非 `retired`，原因="数据源停止提供(证监会不再披露北向资金)"。retired 暗示将来可复用，不适合此场景。
+
+### 版本: test-v85

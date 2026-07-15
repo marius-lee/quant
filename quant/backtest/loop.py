@@ -294,15 +294,10 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
     ic_map_pre = _current_ic_map  # reuse walk-forward IC (was: compute_pre_backtest_ic)
     diag = diagnose(ic_map_pre, tracker, metrics)
 
-    # ── 自动应用诊断结果: 调整权重 + 自动退休未使用因子 ──
+    # ── 应用诊断结果: 仅调整 IC 权重 (不写 factor_registry) ──
+    # 诊断结果通过 save_phase("diagnostics") 写入 evaluation_runs;
+    # 因子状态变更由 evaluation pipeline Phase 5b (sync_factor_status) 统一处理
     _adj_ic_map = apply_diagnosis(_current_ic_map, diag)
-    _dropped = [name for name, info in diag.get("factor_report", {}).items()
-                if info.get("recommendation") == "drop" and info.get("n_trades", 0) == 0]
-    if _dropped:
-        _log.info("auto-retiring %d unused factors after backtest", len(_dropped))
-        from quant.data.repos import FactorRepo
-        _frepo = FactorRepo()
-        _frepo.batch_set_status(_dropped, "retired", "auto: unused in backtest")
 
     # Stress test on final portfolio holdings
     try:
@@ -338,22 +333,6 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
     })
     _log.info("diagnosis saved to evaluation_runs: %d passed", len(passed))
 
-    # 更新 factor_registry.status_reason (只改 backtesting 因子)
-    import sqlite3 as _sqlite
-    _conn = _sqlite.connect(os.path.join(_root, "data", "market.db"))
-    _today = datetime.now().strftime("%Y-%m-%d")
-    for name, info in diag.get("factor_report", {}).items():
-        rec = info.get("recommendation", "keep")
-        ir_val = info.get("ic_ir", 0)
-        pnl_val = info.get("pnl_contrib", 0)
-        reason = f"diag:{rec}(ICIR={ir_val:.2f},PnL={pnl_val:.3f},{_today})"
-        _conn.execute(
-            "UPDATE factor_registry SET status_reason=?, updated_at=datetime('now','localtime') "
-            "WHERE name=? AND status IN ('registered','candidate','retired')",
-            (reason, name)
-        )
-    _conn.commit()
-    _conn.close()
 
 
     avg_signals = sum(signal_counts) / max(len(signal_counts), 1)

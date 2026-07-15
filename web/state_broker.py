@@ -7,7 +7,7 @@
   broker.unsubscribe(q)       # SSE 客户端取消
 """
 import json as _json
-import threading, queue
+import threading as _threading, queue
 import os as _os
 import logging
 
@@ -18,7 +18,7 @@ class InProcessBroker:
     """纯内存实现 — pipeline 通过 HTTP POST 跨进程，SSE 通过内存 queue 推送。"""
 
     def __init__(self):
-        self._lock = threading.Lock()
+        self._lock = _threading.Lock()
         self._clients: list[queue.Queue] = []
         self._cache: dict = {}          # pipeline 进度/信号 (非财务数据)
         self._quote_ts = 0.0
@@ -147,6 +147,20 @@ class InProcessBroker:
             import logging
             logging.getLogger("web.state_broker").warning("_init_state failed", exc_info=True)
         return state
+
+    def _start_quote_thread(self):
+        """后台线程: 每 3s 刷新实时报价 (独立于 get() 调用)。"""
+        def _refresh_loop():
+            import time as _t
+            while True:
+                try:
+                    state = self._init_state()
+                    self._quote_overlay(state)
+                except Exception:
+                    pass
+                _t.sleep(3)
+        t = __threading.Thread(target=_refresh_loop, daemon=True, name="quote-refresh")
+        t.start()
 
     def _quote_overlay(self, state: dict):
         """盘中实时报价覆盖持仓市值/总资产/PnL。"""

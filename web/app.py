@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v69"
+VERSION = "test-v71"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 def _log_exit(reason: str = ""):
@@ -183,24 +183,21 @@ def api_positions():
     except Exception:
         logger.warning("api_positions: query failed", exc_info=_DEBUG)
         return _api_response(error={"code": "INTERNAL", "message": "positions query failed"}), 500
-    # ── 实时报价 overlay ──
+    # ── 实时报价 overlay (从 broker 缓存读取，不直接调 fetch_quotes) ──
     try:
-        from quant.execution.quote import fetch_quotes as _fq
-        from quant.execution.calendar import is_market_open as _imo
-        if _imo() and positions:
-            syms = [p["symbol"] for p in positions]
-            _live_quotes = _fq(syms) or {}
-            if _live_quotes:
-                for p in positions:
-                    q = _live_quotes.get(p["symbol"], {})
-                    live_price = q.get("price", 0) or q.get("open", 0)
-                    if live_price > 0:
-                        p["current"] = live_price
-                        p["pnl_pct"] = round((live_price / p["price"] - 1) * 100, 2) if p["price"] > 0 else 0
-                        p["value"] = round(p["shares"] * live_price, 2)
-                        p["change_pct"] = q.get("change_pct", 0)
+        from web.state_broker import broker as _broker
+        _live_quotes = getattr(_broker, "_quote_result", None)
+        if _live_quotes:
+            for p in positions:
+                q = _live_quotes.get(p["symbol"], {})
+                live_price = q.get("price", 0) or q.get("open", 0)
+                if live_price > 0:
+                    p["current"] = live_price
+                    p["pnl_pct"] = round((live_price / p["price"] - 1) * 100, 2) if p["price"] > 0 else 0
+                    p["value"] = round(p["shares"] * live_price, 2)
+                    p["change_pct"] = q.get("change_pct", 0)
     except Exception:
-        logger.debug("api_positions: live quote overlay failed", exc_info=True)
+        pass
 
     paged = positions[offset:offset + limit]
     return _api_response(data={"positions": paged}, meta={"total": len(positions), "limit": limit, "offset": offset})

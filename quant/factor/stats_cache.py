@@ -120,8 +120,7 @@ def compute_factor_stats(
                 f"{len(factor_names)} factors, {_MAX_WORKERS} threads")
 
     # ══ Phase B: primitives 预计算 (一次加载, 所有线程复用) ══
-    from quant.factor.compute import compute_all_factors as _caf
-    from quant.factor.compute import precompute_primitives
+    from quant.factor.compute._primitives import precompute_primitives
     from quant.factor.windows import max_factor_calendar_days
 
     _factor_min = max_factor_calendar_days(factor_names)
@@ -130,15 +129,14 @@ def compute_factor_stats(
     future_end_full = str(pd.Timestamp(eval_date_strs[-1]) + pd.Timedelta(days=40))[:10]
     logger.info(f"primitives: loading data {data_start_full}→{future_end_full}, {len(symbols)} symbols")
     _shared_data = store.get_daily(symbols, start=data_start_full, end=future_end_full)
-    logger.info(f"primitives: precomputing for {len(eval_date_strs)} dates...")
-    _shared_primitives = {}
+    # fundamentals 按日期预加载 (基本面的因子仍需要)
     _shared_financials = {}
     for _ds in eval_date_strs:
-        _fund = store.get_fundamentals(symbols, date=_ds)
-        _shared_financials[_ds] = _fund
-        _prims = precompute_primitives(_shared_data, _ds, fundamentals=_fund)
-        _shared_primitives[_ds] = _prims
-    logger.info(f"primitives ready: {len(_shared_primitives)} dates")
+        _shared_financials[_ds] = store.get_fundamentals(symbols, date=_ds)
+    # primitives 一次预计算, 覆盖全部日期 (DataFrame 按 date 索引, worker 传全量即可)
+    logger.info("primitives: precomputing shared rolling stats (one pass)...")
+    _shared_primitives = precompute_primitives(_shared_data)
+    logger.info(f"primitives ready: {len(_shared_primitives)} keys")
     store.close()
 
     # ══ Phase B: ThreadPoolExecutor 并行因子计算 (P78) ══
@@ -147,7 +145,7 @@ def compute_factor_stats(
     logger.info(f"factor compute start: {len(eval_date_strs)} dates x {len(factor_names)} factors, "
                 f"{_MAX_WORKERS} threads (shared data + precomputed primitives)")
 
-    def _thread_compute_chunk(chunk_dates: list, shared_data, shared_primitives: dict,
+    def _thread_compute_chunk(chunk_dates: list, shared_data,
                               shared_financials: dict) -> list:
         """Thread worker: 复用主线程预计算的 primitives, 不再自己加载数据."""
         import logging as _log
@@ -161,12 +159,10 @@ def compute_factor_stats(
             for date_str in chunk_dates:
                 try:
                     fundamentals = shared_financials.get(date_str)
-                    prims = shared_primitives.get(date_str, {})
                     fv = compute_all_factors(data, date_str,
                                              fundamentals=fundamentals,
                                              factor_names=factor_names,
-                                             precomputed_primitives=prims
-                                             if prims else None)
+                                             precomputed_primitives=_shared_primitives)
                     result = {}
                     for name in factor_names:
                         if name in fv and not fv[name].dropna().empty:
@@ -196,7 +192,7 @@ def compute_factor_stats(
     executor = ThreadPoolExecutor(max_workers=n_chunks)
     try:
         futures = {executor.submit(_thread_compute_chunk, chunk_dates,
-                                    _shared_data, _shared_primitives, _shared_financials): ci
+                                    _shared_data, _shared_financials): ci
                    for ci, chunk_dates in enumerate(date_chunks)}
         for ci, chunk_dates in enumerate(date_chunks):
             logger.info(f"  chunk {ci+1}/{len(date_chunks)}: {len(chunk_dates)} dates")

@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v48"
+VERSION = "test-v67"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 def _log_exit(reason: str = ""):
@@ -525,24 +525,96 @@ def api_health():
 
 @app.route("/api/scheduler")
 def api_scheduler():
-    """调度器状态 — 返回静态任务定义 (调度进程独立，此处仅展示)."""
+    """调度器状态 — DB 驱动的任务监控 (不再从日志刮取)."""
+    import json, os
+    from datetime import datetime
+    import sqlite3
+
+    _proj = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cron_marker = os.path.join(_proj, ".cron_installed")
+    today_str = datetime.now().strftime("%Y-%m-%d")
+
+    # ── 1. crontab 配置检测 ──
+    cron_installed = os.path.exists(cron_marker)
+    cron_tasks = {"signals", "execute", "monitor", "attribution", "weekly_eval"} if cron_installed else set()
+
+    # ── 2. DB 查询 (统一入口: market.db → task_runs 表) ──
+    from quant.config.paths import MARKET_DB
+    db_runs = {}  # task_name → {status, finished_at, error, summary}
+    try:
+        conn = sqlite3.connect(MARKET_DB)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=5000")
+        # 取每个任务今天的最新一条记录
+        rows = conn.execute(
+            "SELECT task_name, status, started_at, finished_at, error, summary "
+            "FROM task_runs WHERE date = ? ORDER BY id DESC",
+            (today_str,)
+        ).fetchall()
+        for r in rows:
+            key = r["task_name"]
+            if key not in db_runs:  # 第一条是最新的
+                db_runs[key] = {
+                    "status": r["status"],
+                    "started_at": r["started_at"],
+                    "finished_at": r["finished_at"],
+                    "error": r["error"],
+                    "summary": r["summary"],
+                }
+        conn.close()
+    except Exception:
+        pass  # 表可能还不存在，跳过
+
+    # ── 3. 任务清单 ──
     tasks = [
-        {"task": "信号生成",   "group": "盘前", "schedule": "08:30",       "desc": "计算所有 using 因子，生成 Alpha 信号与目标持仓"},
-        {"task": "交易执行",   "group": "盘中", "schedule": "09:35-09:40", "desc": "读取信号、获取行情、执行调仓订单"},
-        {"task": "盘中风控",   "group": "盘中", "schedule": "09:35-14:55", "desc": "每5s轮询止损/止盈/熔断，触发后立即卖出"},
-        {"task": "盘后归因",   "group": "盘后", "schedule": "15:30",       "desc": "Brinson 归因 + IC 衰减检测 + active→monitoring 降级"},
-        {"task": "因子评估",   "group": "研究", "schedule": "周六 06:00",   "desc": "评估管线五阶段：回测诊断因子 → 正式认证 → 状态变更"},
-        {"task": "IC 更新",    "group": "研究", "schedule": "周六 06:00",   "desc": "重新计算所有 using+monitoring 因子的滚动 IC 和 IC_IR"},
-        {"task": "OOS 验证",   "group": "研究", "schedule": "周六 08:00",   "desc": "样本外 Walk-Forward 验证，检测因子过拟合"},
+        {"task": "信号生成",   "key": "signals",      "group": "盘前", "schedule": "08:30",       "desc": "计算所有 using 因子，生成 Alpha 信号与目标持仓"},
+        {"task": "交易执行",   "key": "execute",      "group": "盘中", "schedule": "09:30",       "desc": "读取信号、获取行情、执行调仓订单"},
+        {"task": "盘中风控",   "key": "monitor",      "group": "盘中", "schedule": "09:35-14:55", "desc": "每30s轮询止损/止盈/熔断，触发后立即卖出"},
+        {"task": "盘后归因",   "key": "attribution",  "group": "盘后", "schedule": "15:30",       "desc": "Brinson 归因 + IC 衰减 + OOS 验证 + 因子归因"},
+        {"task": "因子评估",   "key": "weekly_eval",  "group": "研究", "schedule": "周六 06:00",   "desc": "评估管线五阶段：回测诊断因子 → 正式认证 → 状态变更"},
+        {"task": "IC 更新",    "key": "weekly_eval",  "group": "研究", "schedule": "周六 06:00",   "desc": "重新计算所有 using+monitoring 因子的滚动 IC 和 IC_IR"},
+        {"task": "OOS 验证",   "key": "weekly_eval",  "group": "研究", "schedule": "周六 08:00",   "desc": "样本外 Walk-Forward 验证，检测因子过拟合"},
     ]
+
+    def _badge(cls, text):
+        colors = {
+            "green":  "#16a34a", "yellow": "#b45309",
+            "blue":   "#2563eb",
+            "red":    "#dc2626", "gray":   "#6b7280",
+        }
+        return f'<span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px;font-weight:600;background:{colors[cls]}18;color:{colors[cls]}">{text}</span>'
+
     for t in tasks:
-        t.setdefault("status", "idle")
-        t.setdefault("last_run", None)
-        t.setdefault("last_error", None)
-        t.setdefault("next_run", "—")
+        key = t["key"]
+        has_cron = key in cron_tasks
+        run = db_runs.get(key)
+
+        if run and run["status"] == "running" and run["finished_at"] is None:
+            t["status_label"] = _badge("blue", "运行中")
+            t["status"] = "running"
+            t["last_run"] = (run["started_at"] or "")[:16].replace("T", " ")
+        elif run and run["status"] == "ok":
+            t["status_label"] = _badge("green", "今日已执行")
+            t["status"] = "success"
+            t["last_run"] = (run["finished_at"] or run["started_at"] or "")[:16].replace("T", " ")
+        elif run and run["status"] == "failed":
+            err = run["error"] or "未知错误"
+            t["status_label"] = _badge("red", "今日失败")
+            t["status"] = "error"
+            t["error_msg"] = err[:120]
+            t["last_run"] = (run["finished_at"] or run["started_at"] or "")[:16].replace("T", " ")
+        elif has_cron:
+            t["status_label"] = _badge("gray", "等待调度")
+            t["status"] = "pending"
+            t["last_run"] = "—"
+        else:
+            t["status_label"] = _badge("gray", "未配置")
+            t["status"] = "unconfigured"
+            t["last_run"] = "—"
+
+        t["cron"] = "已配置" if has_cron else "未配置"
+
     return _api_response(data={"tasks": tasks})
-
-
 @app.route("/api/metrics")
 def api_metrics():
     """模板9 T1: 指标快照 (Prometheus 本地等价)."""

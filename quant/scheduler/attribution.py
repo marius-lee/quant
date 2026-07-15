@@ -6,6 +6,7 @@ P4: IC 滚动窗口 5→20 天 (config.yaml)
 P5: Brinson 基准从等权改为市值加权
 """
 import time as _time, uuid as _uuid
+from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
 import numpy as np
 from datetime import time
 from quant.monitor.metrics import metrics as _m
@@ -19,6 +20,7 @@ _log = get_logger("quant.scheduler.attribution")
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
+    _tk_start("attribution", today)
     _log.info(f"[{today}] 15:30 — attribution")
     t0 = _time.time()
 
@@ -382,6 +384,7 @@ def _run(today: str):
         _log.warning(f"[{today}] R4 signal decay attribution failed (non-fatal): {type(e).__name__}: {e}")
 
     elapsed = _time.time() - t0
+    _tk_finish("attribution", today, "ok", summary={"elapsed": round(elapsed, 1)})
     _log.info(f"[SCHEDULER] {today} | TASK=attribution | STATUS=OK | elapsed={elapsed:.1f}s")
     _m.inc("scheduler.attribution.ok")
 

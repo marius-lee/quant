@@ -316,6 +316,19 @@ td.down { color: var(--down); }
 .status-sleep  { color: var(--text3); }
 .status-idle   { color: var(--down); }
 
+.status-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.badge-green  { background: #16a34a22; color: #16a34a; }
+.badge-yellow { background: #eab30822; color: #b45309; }
+.badge-red    { background: #dc262622; color: #dc2626; }
+.badge-gray   { background: #6b728022; color: #6b7280; }
+
 .scheduler-group-label {
   font-size: 0.8rem;
   font-weight: 600;

@@ -113,19 +113,22 @@ def calibrate_risk_aversion(
 class PortfolioConstructor:
     """资本自适应组合构建器。
 
-    资本自适应分级 (阈值来自 config.yaml, 来源 ARCHITECTURE.md v3.0):
+    资本自适应分级 (阈值来自 config.yaml,
+    来源 docs/reports/capital-segmentation-analysis-2026-07-15.md)。
 
-      贪心等权:   capital < greedy_cap (¥20,000)
-        → 微型账户: 集中持仓, 逐手买入得分最高的股票, 降低佣金占比
+      Nano 层:  capital < nano_cap (¥30,000)
+        → 微型账户: 贪心等权, 集中持仓 1-3 只, 降低佣金占比
+        → Kelly 不适用: 离散化误差 >30%, 使用纯等权
 
-      得分倾斜:   greedy_cap ≤ capital < weighted_cap (¥100,000)
-        → 小型账户: 按得分比例分配 → 整手舍入
-        → 若产出 0 仓位则自动回退到贪心等权
+      Micro 层:  nano_cap ≤ capital < micro_cap (¥100,000)
+        → 小型账户: 得分倾斜 + 整手舍入, 3-8 只股票
 
-      均值-方差:  capital ≥ weighted_cap
-        → 中型+: Markowitz 均值-方差优化 + 整手离散化
+      Small 层:  capital ≥ micro_cap
+        → 中型+: Risk Parity / Kelly 均值-方差, 8-20 只股票
         → 每次进入此分支时实时调用 calibrate_risk_aversion() 确定 λ
-        → 来源: Markowitz (1952); Grinold & Kahn (2000) Chapter 7
+
+      来源: Markowitz (1952); Grinold & Kahn (2000) Ch.7;
+            DeMiguel, Garlappi, Uppal (2009); 华泰金工 (2020)
     """
 
     def __init__(self, config: Optional[dict] = None):
@@ -133,27 +136,27 @@ class PortfolioConstructor:
             config = {
                 "max_positions": _require_cfg("risk.max_positions"),
                 "max_single_position": _require_cfg("risk.max_single_position"),
-                "greedy_cap": _require_cfg("optimizer.greedy_cap"),
-                "weighted_cap": _require_cfg("optimizer.weighted_cap"),
+                "nano_cap": _require_cfg("optimizer.nano_cap"),
+                "micro_cap": _require_cfg("optimizer.micro_cap"),
             }
         self.max_positions = config.get("max_positions")
         self.max_single = config.get("max_single_position")
-        self.greedy_cap = config.get("greedy_cap", _require_cfg("optimizer.greedy_cap"))
-        self.weighted_cap = config.get("weighted_cap", _require_cfg("optimizer.weighted_cap"))
+        self.nano_cap = config.get("nano_cap", _require_cfg("optimizer.nano_cap"))
+        self.micro_cap = config.get("micro_cap", _require_cfg("optimizer.micro_cap"))
 
     def _tier(self, capital: float, avg_price: float) -> str:
-        """根据资金量判定组合优化层级 (固定阈值, 来源 ARCHITECTURE.md v3.0)。
+        """根据资金量判定组合优化层级。
 
-        capital < greedy_cap  → 贪心逐手买入 (微型账户: 集中持仓, 降低佣金占比)
-        capital < weighted_cap → 得分配比 (小型账户: 适度分散)
-        否则 → 均值-方差 (中型+: 分散化收益大于成本)
+        capital < nano_cap   → Nano 层: 贪心等权 (1-3 只)
+        capital < micro_cap  → Micro 层: 得分倾斜 (3-8 只)
+        否则                  → Small 层: 均值-方差 (8-20 只)
         """
-        if capital < self.greedy_cap:
-            return "greedy"
-        elif capital < self.weighted_cap:
-            return "weighted"
+        if capital < self.nano_cap:
+            return "nano"
+        elif capital < self.micro_cap:
+            return "micro"
         else:
-            return "mean_var"
+            return "small"
 
     def construct(
         self,
@@ -180,30 +183,29 @@ class PortfolioConstructor:
         tier = self._tier(capital, avg_price)
         logger.info(
             f"[portfolio] capital=¥{capital:,.0f} avg_price=¥{avg_price:.2f} "
-            f"→ {tier} tier "
-            f"(threshold_greedy=¥{avg_price * LOT_SIZE * 2:,.0f}, "
-            f"threshold_mv=¥{avg_price * LOT_SIZE * self.max_positions:,.0f})"
+            f"→ {tier} tier (nano_cap=¥{self.nano_cap:,.0f} micro_cap=¥{self.micro_cap:,.0f})"
         )
 
-        if tier == "greedy":
-            # Try risk parity first if covariance available
+        if tier == "nano":
+            return self._equal_weight_greedy(a, p, capital)
+        elif tier == "micro":
+            result = self._score_weighted_rounding(a, p, capital)
+            if result.lots.sum() == 0:
+                logger.warning(
+                    "[portfolio] micro tier produced 0 lots (capital=¥%s), "
+                    "falling back to equal-weight greedy", f"{capital:,.0f}"
+                )
+                return self._equal_weight_greedy(a, p, capital)
+            return result
+        else:  # small
+            # Risk parity first if covariance available
             if covariance is not None:
                 result = self._risk_parity(a, p, capital, covariance)
                 if result.lots.sum() > 0:
                     return result
-            return self._kelly_greedy(a, p, capital, ic_map)
-        elif tier == "weighted":
-            result = self._score_weighted_rounding(a, p, capital)
-            # Safety net: weighted produces 0 lots → fall back to greedy
-            if result.lots.sum() == 0:
-                logger.warning(
-                    "[portfolio] weighted tier produced 0 lots (capital=¥%s), "
-                    "falling back to Kelly greedy", f"{capital:,.0f}"
-                )
+            # Kelly if IC available, otherwise mean-variance
+            if ic_map is not None:
                 return self._kelly_greedy(a, p, capital, ic_map)
-            return result
-        else:
-            # 均值-方差分支: 实时校准 risk_aversion
             if covariance is None:
                 raise ValueError(
                     "Mean-variance tier requires covariance matrix. "
@@ -218,7 +220,10 @@ class PortfolioConstructor:
     def _kelly_greedy(
         self, alpha: pd.Series, prices: pd.Series, capital: float, ic_map: dict = None,
     ) -> TargetPortfolio:
-        """Kelly 头寸分配: 用 Kelly 分数替代等权，集中资金到最强信号。
+        """Kelly 头寸分配 (Small 层 ¥100K+ 专用)。
+
+        ⚠️  ADR 032: Kelly 仅在 Small 层启用。Nano/Micro 层禁止。
+        在低资本层引入 Kelly 离散化误差 >25%，已反复造成 0 仓位 bug。
 
         来源: Kelly (1956), Fractional Kelly per Ralph Vince (1990).
         当 ic_map 为 None 或全零时退化为贪心等权 (向后兼容).

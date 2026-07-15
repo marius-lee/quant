@@ -122,6 +122,26 @@ class InProcessBroker:
             except Exception:
                 logging.getLogger("web.state_broker").warning("_init_state: stock close prices query failed", exc_info=True)
 
+            # ── signals: 从 daily_signals 表读取 (cron 进程写入的唯一真相源) ──
+            import json as _json_sig
+            try:
+                from datetime import datetime as _dt_sig
+                today = _dt_sig.now().strftime("%Y-%m-%d")
+                sig_path = _os.path.join(_root, "quant", "data", "trades.db")
+                sc_sig = _sql2.connect(sig_path)
+                sc_sig.row_factory = _sql2.Row
+                # mode='live' 是实盘, 排除了回测写入的 backtest 信号
+                sig_row = sc_sig.execute(
+                    "SELECT signals_json FROM daily_signals WHERE date=? AND mode='live' "
+                    "ORDER BY generated_at DESC LIMIT 1",
+                    (today,)
+                ).fetchone()
+                if sig_row and sig_row["signals_json"]:
+                    state["signals"] = _json_sig.loads(sig_row["signals_json"])
+                sc_sig.close()
+            except Exception:
+                pass
+
             state["positions"] = positions
         except Exception:
             import logging

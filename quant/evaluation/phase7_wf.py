@@ -83,11 +83,12 @@ def _run_train_phase(train_start: str, train_end: str) -> list[str]:
         kept_p3 = p3.get("kept", [])
         _log.info(f"  Phase 3: {len(kept_p3)} kept")
     except Exception as e:
-        _log.warning(f"  Phase 3 failed: {e}")
-        return passed_p2  # fallback to Phase 2 results
+        _log.error(f"  Phase 3 failed: {e} — aborting WF run (no fallback)")
+        return {"error": f"Phase 3 failed: {e}", "phase": "phase3"}
 
     if not kept_p3:
-        return passed_p2  # fallback
+        _log.error("  Phase 3: no factors passed CPCV+PBO — aborting WF run (no fallback)")
+        return {"error": "no factors passed Phase 3", "phase": "phase3"}
 
     # Phase 4: cost verification
     try:
@@ -95,8 +96,8 @@ def _run_train_phase(train_start: str, train_end: str) -> list[str]:
         final_factors = p4.get("final_factors", [])
         _log.info(f"  Phase 4: {len(final_factors)} final")
     except Exception as e:
-        _log.warning(f"  Phase 4 failed: {e}")
-        return kept_p3  # fallback to Phase 3 results
+        _log.error(f"  Phase 4 failed: {e} — aborting WF run (no fallback)")
+        return {"error": f"Phase 4 failed: {e}", "phase": "phase4"}
 
     return final_factors if final_factors else kept_p3
 

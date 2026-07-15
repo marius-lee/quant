@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 if [ "${1:-}" = "--apply" ]; then
     echo ">>> RESET: rejected → retired (仅 Phase 评估失败因子)"
     .venv/bin/python3 -c "
-from utils.excepthook import setup; setup()
+from quant.utils.excepthook import setup; setup()
 import sqlite3
 conn = sqlite3.connect('data/market.db')
 rows = conn.execute('''
@@ -45,7 +45,7 @@ conn.close()
 else
     echo ">>> PREVIEW: 即将重置的 rejected 因子 (用 --apply 执行)"
     .venv/bin/python3 -c "
-from utils.excepthook import setup; setup()
+from quant.utils.excepthook import setup; setup()
 import sqlite3
 conn = sqlite3.connect('data/market.db')
 rows = conn.execute('''

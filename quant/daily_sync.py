@@ -18,7 +18,7 @@ from quant.config.paths import MARKET_DB
 import sys, os, time
 from datetime import datetime, timedelta
 from config.constants import _require_cfg
-from utils.logger import get_logger
+from quant.utils.logger import get_logger
 
 logger = get_logger("daily_sync")
 

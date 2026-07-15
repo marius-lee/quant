@@ -80,7 +80,7 @@
  disallow_untyped_defs = false
  warn_return_any = true
  warn_unused_ignores = true
- exclude = ["\.venv/", "build/", "__pycache__/"]
+ exclude = [".venv/", "build/", "__pycache__/"]
 
  [[tool.mypy.overrides]]
  module = [

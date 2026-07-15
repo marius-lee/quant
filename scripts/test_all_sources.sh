@@ -2,7 +2,7 @@
 # 数据源全面连通性测试
 # 用法: bash scripts/test_all_sources.sh
 
-PROJECT=/Users/mariusto/project/quant
+PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
 V12=$PROJECT/.venv-tushare/bin/python3
 V14=$PROJECT/.venv/bin/python3
 

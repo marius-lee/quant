@@ -35,6 +35,22 @@ class TradeRepo:
                 board_count INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT (datetime('now'))
             );
+            CREATE TABLE IF NOT EXISTS pending_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy TEXT NOT NULL DEFAULT 'quant',
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL DEFAULT 'buy',
+                target_shares INTEGER NOT NULL,
+                limit_price REAL NOT NULL,
+                reference_price REAL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                placed_at TEXT NOT NULL,
+                filled_at TEXT,
+                filled_shares INTEGER DEFAULT 0,
+                filled_price REAL,
+                chase_count INTEGER DEFAULT 0,
+                day TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS strategy_config (
                 strategy TEXT PRIMARY KEY,
                 -- 策略参数默认值来源: config/config.yaml (单一真相源)
@@ -95,6 +111,8 @@ class TradeRepo:
                 ON sim_trades(strategy, side, symbol);
             CREATE INDEX IF NOT EXISTS idx_st_t1_check
                 ON sim_trades(symbol, side, date, strategy);
+            CREATE INDEX IF NOT EXISTS idx_po_status
+                ON pending_orders(status, day);
         """)
         c.commit()
         c.close()

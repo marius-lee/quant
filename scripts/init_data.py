@@ -22,7 +22,7 @@ import sys, os, time, argparse
 # Ensure project root in path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.logger import get_logger
+from quant.utils.logger import get_logger
 logger = get_logger("init_data")
 
 

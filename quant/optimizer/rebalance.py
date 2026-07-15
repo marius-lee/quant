@@ -43,7 +43,8 @@ def compute_trades(
         alpha_scores = alpha_scores.reindex(all_syms, fill_value=0)
 
     orders = []
-    logger = __import__('utils.logger', fromlist=['get_logger']).get_logger("optimizer.rebalance")
+    from quant.utils.logger import get_logger as _get_logger_rb
+    logger = _get_logger_rb("optimizer.rebalance")
 
     # 计算换手金额
     turnover_value = 0.0

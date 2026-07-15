@@ -12,7 +12,7 @@
 import sys, os, sqlite3, inspect
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from utils.logger import get_logger
+from quant.utils.logger import get_logger
 logger = get_logger("validate")
 
 ERRORS = 0

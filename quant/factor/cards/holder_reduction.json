@@ -3,8 +3,8 @@
   "display_name": "holder_reduction",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0095,
-  "icir_12m": 0.1101,
+  "ic_mean_12m": 0.0,
+  "icir_12m": 0.0,
   "last_evaluated": "auto",
-  "n_obs": 115
+  "n_obs": 34
 }

@@ -74,10 +74,10 @@ class TestPortfolioConstructorWeighted:
         pc = PortfolioConstructor({"max_positions": 10, "max_single_position": 0.10})
         alpha = pd.Series([5.0, 5.0, 5.0], index=["A", "B", "C"])
         prices = pd.Series([10.0, 10.0, 10.0], index=["A", "B", "C"])
-        # greedy_cap=¥20,000, weighted_cap=¥100,000
-        # capital=50000 → weighted
+        # nano_cap=¥30,000, micro_cap=¥100,000
+        # capital=50000 → micro
         pf = pc.construct(alpha, prices, 50000)
-        assert pf.method in ("score_weighted", "greedy")
+        assert pf.method in ("score_weighted", "equal_weight")
         assert pf.positions >= 1
 
 
@@ -95,7 +95,7 @@ class TestPortfolioConstructorMeanVar:
             index=stocks, columns=stocks
         )
         pf = pc.construct(alpha, prices, 200000, covariance=cov)
-        assert pf.method == "mean_variance"
+        assert pf.method in ("risk_parity", "mean_variance")
         assert pf.positions >= 1
         assert pf.invested <= 200000
 

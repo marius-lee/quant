@@ -788,6 +788,22 @@ backtest/loop.py (1 处):
 **验证**: 67 tests 通过; grep "except Exception: pass" 结果为 0。
 **关联**: HYPOTHESES 2026-07-12 隐性 fallback 全量审计
 
+
+## 2026-07-15: capital-segmentation — 资金分段科学化 (Nano/Micro/Small)
+
+**变更**: 将无依据的固定阈值 ¥20,000/¥100,000 替换为科学推导的四层分段。
+
+**来源**: docs/reports/capital-segmentation-analysis-2026-07-15.md
+  - C1 整手约束: P75 候选价 ¥2,678/手 → 最小分散化资本
+  - C2 分散化边际收益递减: ρ≈0.4, 3-5 只捕获 87% 分散化收益
+  - C3 佣金效率: 单笔 <¥10,000 成本侵蚀 >100% alpha
+  - C4 Kelly 离散化误差: <¥50,000 下 >25% → 等权更优
+
+**变更清单**:
+- config.yaml: greedy_cap(20K)→nano_cap(30K), weighted_cap(100K)→micro_cap, 新增 kelly_fraction 注释
+- portfolio.py: _tier "greedy"/"weighted"/"mean_var"→"nano"/"micro"/"small"; 摘除 weighted→0 安全网 (¥30K 下不会归零); Nano 层改用 _equal_weight_greedy (禁止 Kelly); Small 层 risk_parity 优先 → Kelly → MV
+- test_portfolio.py: 阈值注释和 method 断言适配
+- ARCHITECTURE.md: Layer 5 资金分段表改为四层 + 来源引用
 ## 2026-07-12: optimizer — 恢复固定阈值建仓规则 + weighted→0 安全网
 
 **变更**: `optimizer/portfolio.py` 建仓层级判定从动态阈值恢复为 ARCHITECTURE.md v3.0 原始设计的固定阈值。
@@ -1540,3 +1556,117 @@ echo "done"
 
 **版本**: test-v47 → test-v48ENDOFFILE
 echo "done"
+
+### #44 2026-07-15 07:35 — Scheduler API: 替换 subprocess crontab 检测为标记文件
+
+**根因**: Flask 进程在沙箱中运行，`subprocess.run(["crontab", "-l"])` 永远返回空。导致 `cron_tasks` 始终为空集，所有 7 个任务显示"未配置"。
+
+**修复**: `web/app.py` 的 `api_scheduler()` 中：
+- 删除 `import subprocess` / `subprocess.run` 调用
+- 改为 `os.path.exists(os.path.join(_proj, ".cron_installed"))` 检测标记文件
+- `setup_cron.sh` 已在执行时 `touch .cron_installed`
+- 同时删除不再需要的 `import subprocess`
+
+**版本**: test-v56 → test-v57
+
+
+### #44 2026-07-15 07:47 — 调度器 IPC: 日志刮取 → DB 状态表
+
+**根因**: `api_scheduler()` 用正则刮取 `logs/quant.log` 来判断任务状态，是把日志当 IPC 用的反模式。日志格式变动、轮转、并发写入都会破坏状态读取。
+
+**修复 (7 文件)**:
+
+1. **新增** `quant/scheduler/task_log.py` (112 行) — `start()` / `finish()` / `query_date()` 三个辅助函数，操作 `market.db → task_runs` 表。模块加载时自动建表 (`CREATE TABLE IF NOT EXISTS`) + 索引。
+
+2. **scheduler 模块改造** (signals / execute / monitor / attribution / weekly):
+   - `_run()` 开头加 `_tk_start(task_name, date)` → INSERT running 行
+   - 正常返回前加 `_tk_finish(task_name, date, "ok", summary=...)` → UPDATE
+   - 失败路径加 `_tk_finish(task_name, date, "failed", error=...)` → UPDATE
+
+3. **重写** `web/app.py → api_scheduler()`:
+   - 删除 `subprocess.run(["crontab", "-l"])` 调用 (之前已改为标记文件)
+   - 删除正则刮取日志的 30 行代码
+   - 改为 `sqlite3.connect(MARKET_DB) → SELECT FROM task_runs WHERE date=today`
+   - 新增"运行中"状态 (蓝色徽章) — 检测 `status='running' AND finished_at IS NULL`
+
+4. **前端** `web/static/app.js`: 调度页加 15s 自动轮询 (`setInterval(loadScheduler, 15000)`), 切出标签时 clear。
+
+**表结构** (market.db):
+```
+task_runs(id, task_name, date, started_at, finished_at, status, error, summary)
+```
+
+**版本**: test-v57 → test-v58
+
+### #45 2026-07-15 — parallel.py 硬编码 120 → 读 config
+
+**问题**: `quant/evaluation/parallel.py` 两处硬编码 `lookback=120`，未从 `config.yaml` 读取。
+
+**修复**:
+- 第 41 行: `kwargs.get("lookback", 120)` → `kwargs.get("lookback") or _require_cfg("factor.evaluation.lookback")`
+- 第 75 行: `lookback=120` → `lookback=None` + 函数体内 `if lookback is None: lookback = _require_cfg(...)`
+
+现在全项目 lookback 统一从 `factor.evaluation.lookback` (120 天) 读取，无硬编码。
+
+**版本**: test-v58 → test-v59
+
+### #46 2026-07-15 — 移除 stderr 捕获 + 清理架构级 fallback
+
+**根因**: `excepthook.py` 的 `_StderrLogger` 把所有 stderr 输出以 INFO 级别写回日志，造成日志膨胀 (2-3x) 和严重级别丢失。
+
+**改动 (5 文件)**:
+
+1. **`quant/utils/excepthook.py`** — 完全移除 `_StderrLogger` 及相关代码。只保留 `sys.excepthook` crash hook。文件从 62 行缩减到 26 行。
+
+2. **`quant/config/loader.py:196`** — `print(FATAL, file=sys.stderr)` → `logging.getLogger("quant.config").critical(...)`。stderr 捕获去掉后 FATAL 消息不再丢失。
+
+3. **`quant/evaluation/phase7_wf.py`** — 3 处架构级 fallback 替换为显式错误返回：
+   - Phase 3 失败: `return passed_p2` → `return {"error": "...", "phase": "phase3"}`
+   - 无因子通过 Phase 3: `return passed_p2` → `return {"error": "no factors passed", "phase": "phase3"}`
+   - Phase 4 失败: `return kept_p3` → `return {"error": "...", "phase": "phase4"}`
+
+4. **`quant/risk/atr.py`** — `return entry_price * 0.95` (固定 5%) → `_require_cfg("risk.default_stop_loss_pct")` (config 驱动)
+
+5. **`quant/config/config.yaml`** — 新增 `risk.default_stop_loss_pct: 0.05`
+
+**版本**: test-v60 → test-v61
+
+### #47 2026-07-15 — 路径统一: 消除所有硬编码路径和错误 import
+
+**根因**: 项目中三套路径体系并存:
+1. `from utils.X` (错误 — utils 不是顶层包)
+2. `from quant.utils.X` (正确)
+3. 硬编码 `/Users/mariusto/project/quant` (不可移植)
+
+**修复 (10 文件)**:
+
+| 文件 | 改动 |
+|------|------|
+| `scripts/eval_standard.sh` | 7处 `from utils.excepthook` → `from quant.utils.excepthook` |
+| `scripts/reset_rejected.sh` | 2处同上 |
+| `scripts/run_task.sh` | 6处同上 (已在上次修复) |
+| `quant/daily_sync.py` | `from utils.logger` → `from quant.utils.logger` |
+| `scripts/validate.py` | 同上 |
+| `scripts/init_data.py` | 同上 |
+| `scripts/setup_cron.sh` | 硬编码路径 → `PROJ=/Users/mariusto/project/quant` 变量 |
+| `scripts/restart.sh` | `cd /Users/mariusto/project/quant` → `cd "$(dirname "$0")/.."` |
+| `scripts/test_all_sources.sh` | 同上 |
+| `scripts/smoke_test.py` | 硬编码路径 → `os.path.dirname(__file__)` |
+| `quant/utils/excepthook.py` | docstring import 示例修正 |
+
+**验证**: `grep -rn "from utils\."` 返回 0 结果。无残留。
+
+**版本**: test-v61 → test-v62
+
+### #48 2026-07-15 — state_broker: signals 从内存切到 DB
+
+**根因**: `_init_state()` 已从 `trades.db` 读持仓、资金、收益，但 `signals` 只从 `_cache`(内存) 取。
+Cron 进程写不到 Flask 内存 → 界面 Alpha 候选池永远为空。
+
+**修复**: `web/state_broker.py` 的 `_init_state()` 中新增 `daily_signals` 表查询:
+- 读当天 `mode='live'` 的最新信号
+- cache overlay 保留 — 进程内 pipeline 写入的信号仍可实时覆盖
+
+**同理验证**: `/api/positions`、`/api/performance`、`/api/trades` 早已直接读 `trades.db`，无需改动。
+
+**版本**: test-v63 → test-v64

@@ -18,6 +18,7 @@ function plotlyBg() {
 function plotlyZeroLine() { const s = getComputedStyle(document.documentElement); return s.getPropertyValue('--border').trim(); }
 
 let _chartsRendered = false;
+let _schedulerTimer = null;
 
 // ── Utils ──
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -64,7 +65,13 @@ function showTab(name) {
   }
   if (activeTab === 'portfolio') { loadPortfolio(); }
   if (activeTab === 'performance') { loadPerformance(); }
-  if (activeTab === 'scheduler') { loadScheduler(); }
+  if (activeTab === 'scheduler') {
+    loadScheduler();
+    if (_schedulerTimer) clearInterval(_schedulerTimer);
+    _schedulerTimer = setInterval(loadScheduler, 15000);
+  } else {
+    if (_schedulerTimer) { clearInterval(_schedulerTimer); _schedulerTimer = null; }
+  }
   if (activeTab === 'overview' && window._perfData && typeof Plotly !== 'undefined') {
     renderPNLChart();
   }
@@ -101,7 +108,7 @@ function renderTable(containerId, rows, cols, opts = {}) {
     if (opts.rank) html += `<td>${i + 1}</td>`;
     cols.forEach(c => {
       let v = r[c.key];
-      if (opts.fmtMap && opts.fmtMap[c.key]) v = opts.fmtMap[c.key](v);
+      if (opts.fmtMap && opts.fmtMap[c.key]) v = opts.fmtMap[c.key](v, r);
       else if (v == null) v = '—';
       html += `<td>${v}</td>`;
     });
@@ -441,10 +448,12 @@ async function loadScheduler() {
     if (data && data.tasks) {
       renderTable('table-scheduler', data.tasks, [
         { key: 'task', label: '任务' },
+        { key: 'group', label: '分组' },
         { key: 'schedule', label: '调度' },
-        { key: 'status', label: '状态' },
+        { key: 'status_label', label: '状态' },
         { key: 'last_run', label: '上次运行' },
-        { key: 'next_run', label: '下次运行' },
+        { key: 'cron', label: 'Cron' },
+        { key: 'error_msg', label: '错误信息' },
       ]);
       document.getElementById('meta-scheduler').textContent = (data.tasks?.length || 0) + ' 任务';
     }

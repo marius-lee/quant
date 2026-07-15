@@ -13,8 +13,7 @@ set -e
 # ── VERSION: git commit hash + timestamp ──
 GIT_HASH=$(git log -1 --format='%h %ci' 2>/dev/null || echo 'unknown')
 VER_NUM=$(cat VERSION 2>/dev/null || echo '?')
-DIRTY=$(git status --porcelain -- factor/ evaluation/ config/ 2>/dev/null | head -20 | tr '
-' ' ')
+DIRTY=$(git status --porcelain -- factor/ evaluation/ config/ 2>/dev/null | head -20 | tr '\n' ' ')
 if [ -n "$DIRTY" ]; then
     echo "=== VERSION: #$VER_NUM ($GIT_HASH) [DIRTY: $DIRTY] ==="
 else
@@ -35,9 +34,11 @@ echo "============================================"
 echo "Phase 1: 数据准备"
 echo "============================================"
 PYTHONPATH=. .venv/bin/python3 -c "
+from quant.utils.logger import offline_mode
 from quant.utils.excepthook import setup; setup()
-from quant.evaluation.phase1_data import prepare_data
-prepare_data()
+with offline_mode():
+    from quant.evaluation.phase1_data import prepare_data
+    prepare_data()
 "
 
 # ────────────────────────────────────────────
@@ -49,6 +50,7 @@ echo "Phase 2: 单因子检验 (IC / |t| / ICIR / half-life)"
 echo "============================================"
 # Ensure no stale DB locks from previous phases
 python3 -c "import sqlite3; c=sqlite3.connect('quant/data/market.db'); c.execute('PRAGMA wal_checkpoint'); c.close()" 2>/dev/null || true
+
 # 两步架构: 默认用 diagnostics 预筛; --all 跳过预筛
 PREFILTER="True"
 for arg in "$@"; do
@@ -58,9 +60,11 @@ for arg in "$@"; do
 done
 
 PYTHONPATH=. .venv/bin/python3 -c "
+from quant.utils.logger import offline_mode
 from quant.utils.excepthook import setup; setup()
-from quant.evaluation.phase2_single import screen_factors
-screen_factors(prefilter_from_diagnostics=$PREFILTER)
+with offline_mode():
+    from quant.evaluation.phase2_single import screen_factors
+    screen_factors(prefilter_from_diagnostics=$PREFILTER)
 "
 
 # ────────────────────────────────────────────
@@ -71,9 +75,11 @@ echo "============================================"
 echo "Phase 3: CPCV + PBO (Walk-Forward OOS)"
 echo "============================================"
 PYTHONPATH=. .venv/bin/python3 -c "
+from quant.utils.logger import offline_mode
 from quant.utils.excepthook import setup; setup()
-from quant.evaluation.phase3_oos import validate_oos
-validate_oos()
+with offline_mode():
+    from quant.evaluation.phase3_oos import validate_oos
+    validate_oos()
 "
 
 # ────────────────────────────────────────────
@@ -84,9 +90,11 @@ echo "============================================"
 echo "Phase 4: 交易成本扣除后验证"
 echo "============================================"
 PYTHONPATH=. .venv/bin/python3 -c "
+from quant.utils.logger import offline_mode
 from quant.utils.excepthook import setup; setup()
-from quant.evaluation.phase4_costs import verify_costs
-verify_costs()
+with offline_mode():
+    from quant.evaluation.phase4_costs import verify_costs
+    verify_costs()
 "
 
 # ────────────────────────────────────────────
@@ -103,12 +111,14 @@ echo "============================================"
 echo "Phase 5b: 因子状态同步"
 echo "============================================"
 PYTHONPATH=. .venv/bin/python3 -c "
+from quant.utils.logger import offline_mode
 from quant.utils.excepthook import setup; setup()
-from quant.evaluation.phase5_monitor import sync_factor_status
-r = sync_factor_status()
-print(f'  rejected={len(r[\"rejected\"])} active={len(r[\"active\"])} unchanged={r[\"unchanged\"]}')
-for n in r['rejected']: print(f'    X {n}')
-for n in r['active']:   print(f'    V {n}')
+with offline_mode():
+    from quant.evaluation.phase5_monitor import sync_factor_status
+    r = sync_factor_status()
+    print(f'  rejected={len(r[\"rejected\"])} active={len(r[\"active\"])} unchanged={r[\"unchanged\"]}')
+    for n in r['rejected']: print(f'    X {n}')
+    for n in r['active']:   print(f'    V {n}')
 "
 
 if $RUN_PHASE5; then
@@ -117,10 +127,12 @@ if $RUN_PHASE5; then
     echo "Phase 5: 持续监控报告"
     echo "============================================"
     PYTHONPATH=. .venv/bin/python3 -c "
+from quant.utils.logger import offline_mode
 from quant.utils.excepthook import setup; setup()
-from quant.evaluation.phase5_monitor import run_monitor
-path = run_monitor()
-print(f'Report: {path}')
+with offline_mode():
+    from quant.evaluation.phase5_monitor import run_monitor
+    path = run_monitor()
+    print(f'Report: {path}')
 "
 fi
 
@@ -141,15 +153,17 @@ if $RUN_PHASE6; then
     echo "Phase 6: 策略级全链路回测 (walk-forward)"
     echo "============================================"
     PYTHONPATH=. .venv/bin/python3 -c "
+from quant.utils.logger import offline_mode
 from quant.utils.excepthook import setup; setup()
-from quant.evaluation.phase6_backtest import run_strategy_backtest
-import json
-result = run_strategy_backtest(
-    start_date='2023-01-01',
-    end_date='2025-12-31',
-    capital=5000,
-    output_json='/tmp/_eval_phase6.json',
-)
-print(json.dumps(result, indent=2, ensure_ascii=False))
+with offline_mode():
+    from quant.evaluation.phase6_backtest import run_strategy_backtest
+    import json
+    result = run_strategy_backtest(
+        start_date='2023-01-01',
+        end_date='2025-12-31',
+        capital=5000,
+        output_json='/tmp/_eval_phase6.json',
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
 "
 fi

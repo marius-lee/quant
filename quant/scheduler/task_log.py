@@ -69,6 +69,12 @@ def start(task_name: str, date: str) -> int:
     conn = _conn()
     try:
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        # 自动清理同任务同日期的旧 running 僵尸行 → aborted
+        conn.execute(
+            "UPDATE task_runs SET status='aborted', finished_at=?, error='上次运行未正常结束 (auto-abort)' "
+            "WHERE task_name=? AND date=? AND status='running'",
+            (now, task_name, date)
+        )
         cur = conn.execute(
             "INSERT INTO task_runs (task_name, date, started_at, status) VALUES (?, ?, ?, 'running')",
             (task_name, date, now)

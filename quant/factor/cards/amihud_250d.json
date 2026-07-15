@@ -1,26 +1,40 @@
- {
-   "name": "amihud_250d",
-   "display_name": "Amihud非流动性 (250日)",
-   "category": "liquidity",
-   "sub_category": "price",
-   "formula": "mean(|return| / amount, 250) * 10^6",
-   "window_days": 250,
-   "data_deps": ["daily.close", "daily.amount"],
-   "reference": "Amihud (2002)",
-   "hypothesis": "非流动性高的股票需要更高的预期收益作为流动性补偿",
-   "status": "active",
-   "status_history": [
-     {"from": "registered", "to": "candidate", "date": "2025-01-01", "reason": "Initial registration"},
-     {"from": "candidate", "to": "active", "date": "2025-07-01", "reason": "IC = 0.018, t = 2.3"}
-   ],
-   "ic_mean_12m": 0.018,
-   "ic_std_12m": 0.08,
-   "icir_12m": 0.22,
-   "half_life_days": 42,
-   "decay_trend": "stable",
-   "correlations": {
-     "volatility_126d": 0.22,
-     "turnover_rev_5d": 0.31
-   },
-   "last_evaluated": "2026-07-10"
- }
+{
+  "name": "amihud_250d",
+  "display_name": "Amihud非流动性 (250日)",
+  "category": "liquidity",
+  "sub_category": "price",
+  "formula": "mean(|return| / amount, 250) * 10^6",
+  "window_days": 250,
+  "data_deps": [
+    "daily.close",
+    "daily.amount"
+  ],
+  "reference": "Amihud (2002)",
+  "hypothesis": "非流动性高的股票需要更高的预期收益作为流动性补偿",
+  "status": "active",
+  "status_history": [
+    {
+      "from": "registered",
+      "to": "candidate",
+      "date": "2025-01-01",
+      "reason": "Initial registration"
+    },
+    {
+      "from": "candidate",
+      "to": "active",
+      "date": "2025-07-01",
+      "reason": "IC = 0.018, t = 2.3"
+    }
+  ],
+  "ic_mean_12m": -0.0297,
+  "ic_std_12m": 0.08,
+  "icir_12m": -0.8936,
+  "half_life_days": 42,
+  "decay_trend": "stable",
+  "correlations": {
+    "volatility_126d": 0.22,
+    "turnover_rev_5d": 0.31
+  },
+  "last_evaluated": "auto",
+  "n_obs": 5
+}

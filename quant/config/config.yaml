@@ -3,7 +3,7 @@ alpha:
   intersection_primary: gap_5d
   intersection_top_fraction: 0.2
   method: ic_weighted
-  retrain_freq: 20
+  retrain_freq: 60
   weekly_weight: 0.3       # MultiTimeframe: 周线信号权重 (0=只用日线, 0.5=等权, 来源: Faber 2007)
   sector_rotation: true    # SectorRotator: 启用美林时钟行业轮动
   sleeve:

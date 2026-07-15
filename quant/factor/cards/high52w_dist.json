@@ -1,0 +1,10 @@
+{
+  "name": "high52w_dist",
+  "display_name": "high52w_dist",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.1279,
+  "icir_12m": 0.9163,
+  "last_evaluated": "auto",
+  "n_obs": 33
+}

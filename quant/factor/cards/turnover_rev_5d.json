@@ -1,0 +1,10 @@
+{
+  "name": "turnover_rev_5d",
+  "display_name": "turnover_rev_5d",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": -0.0128,
+  "icir_12m": -0.1178,
+  "last_evaluated": "auto",
+  "n_obs": 29
+}

@@ -1,0 +1,10 @@
+{
+  "name": "momentum_252d",
+  "display_name": "momentum_252d",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.0,
+  "icir_12m": 0.0,
+  "last_evaluated": "auto",
+  "n_obs": 30
+}

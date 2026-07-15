@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v74"
+VERSION = "test-v84"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 def _log_exit(reason: str = ""):
@@ -39,6 +39,7 @@ _signal.signal(_signal.SIGINT,  lambda s, f: _clean_exit("SIGINT"))
 from quant.utils.logger import get_logger
 
 logger = get_logger("web.app")
+
 app = Flask(__name__)
 _DEBUG = os.environ.get("FLASK_DEBUG", "0") == "1"
 
@@ -134,7 +135,7 @@ def api_factors():
 
 @app.route("/api/positions")
 def api_positions():
-    """持仓 — 直接从 broker 读取 (已含实时报价 overlay)。"""
+    """持仓 — broker 数据 (含 state_broker 实时现价 overlay)。"""
     from flask import request
     strategy = request.args.get("strategy", "quant")
     limit = min(int(request.args.get("limit", 100)), 100)
@@ -147,7 +148,7 @@ def api_positions():
         paged = positions[offset:offset + limit]
         return _api_response(data={"positions": paged}, meta={"total": len(positions), "limit": limit, "offset": offset})
     except Exception:
-        logger.warning("api_positions: broker.get failed", exc_info=True)
+        logger.warning("api_positions failed", exc_info=True)
         return _api_response(error={"code": "INTERNAL", "message": "positions query failed"}), 500
 
 
@@ -554,8 +555,27 @@ def api_scheduler():
         run = db_runs.get(key)
 
         if run and run["status"] == "running" and run["finished_at"] is None:
-            t["status_label"] = _badge("blue", "运行中")
-            t["status"] = "running"
+            # 任务专属超时检测 (与 orchestrator._check_timeouts 阈值一致)
+            try:
+                _API_TIMEOUTS = {"signals": 900, "execute": 600, "monitor": None,
+                                 "attribution": 900, "weekly_eval": 7200}
+                started = datetime.fromisoformat(run["started_at"])
+                elapsed = (datetime.now() - started).total_seconds()
+                limit = _API_TIMEOUTS.get(key)
+                if limit is None and key == "monitor":
+                    # monitor: 盘中不超时, 14:55 后才检查
+                    now = datetime.now()
+                    if now.hour >= 14 and now.minute >= 55:
+                        limit = 1800
+                if limit and elapsed > limit:
+                    t["status_label"] = _badge("yellow", "运行超时")
+                    t["status"] = "timeout"
+                else:
+                    t["status_label"] = _badge("blue", "运行中")
+                    t["status"] = "running"
+            except Exception:
+                t["status_label"] = _badge("blue", "运行中")
+                t["status"] = "running"
             t["last_run"] = (run["started_at"] or "")[:16].replace("T", " ")
         elif run and run["status"] == "ok":
             t["status_label"] = _badge("green", "今日已执行")
@@ -565,6 +585,12 @@ def api_scheduler():
             err = run["error"] or "未知错误"
             t["status_label"] = _badge("red", "今日失败")
             t["status"] = "error"
+            t["error_msg"] = err[:120]
+            t["last_run"] = (run["finished_at"] or run["started_at"] or "")[:16].replace("T", " ")
+        elif run and run["status"] == "aborted":
+            err = run["error"] or "任务异常终止"
+            t["status_label"] = _badge("yellow", "异常终止")
+            t["status"] = "aborted"
             t["error_msg"] = err[:120]
             t["last_run"] = (run["finished_at"] or run["started_at"] or "")[:16].replace("T", " ")
         elif has_cron:

@@ -13,7 +13,7 @@ from quant.execution.cost import CostModel
 from quant.optimizer.rebalance import compute_trades, validate_orders
 from quant.scheduler._base import _timed_loop
 
-_log = get_logger("quant.scheduler.execute")
+_log = get_logger(__name__)
 
 
 def _run(today: str):
@@ -146,6 +146,7 @@ def _run(today: str):
               f"{buys_done} limit buys placed — elapsed={elapsed:.1f}s")
     _log.info(f"[SCHEDULER] {today} | TASK=execute | STATUS=OK | "
               f"sells={sells_done} limit_buys={buys_done} | elapsed={elapsed:.1f}s")
+    _tk_finish("execute", today, "ok", summary={"sells": sells_done, "limit_buys": buys_done, "elapsed": round(elapsed, 1)})
     _m.inc("scheduler.execute.ok")
 
 

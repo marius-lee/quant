@@ -1,0 +1,10 @@
+{
+  "name": "margin_buy_ratio",
+  "display_name": "margin_buy_ratio",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.0528,
+  "icir_12m": 0.3533,
+  "last_evaluated": "auto",
+  "n_obs": 33
+}

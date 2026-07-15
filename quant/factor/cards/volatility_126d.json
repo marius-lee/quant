@@ -1,26 +1,39 @@
- {
-   "name": "volatility_126d",
-   "display_name": "126日波动率",
-   "category": "volatility",
-   "sub_category": "price",
-   "formula": "std(log_return, 126) (annualized)",
-   "window_days": 126,
-   "data_deps": ["daily.close"],
-   "reference": "Andersen et al. (2001)",
-   "hypothesis": "低波动率股票未来风险调整后收益更高（低波动异象）",
-   "status": "active",
-   "status_history": [
-     {"from": "registered", "to": "candidate", "date": "2025-01-01", "reason": "Initial registration"},
-     {"from": "candidate", "to": "active", "date": "2025-06-01", "reason": "IC = -0.028, t = -2.5"}
-   ],
-   "ic_mean_12m": -0.028,
-   "ic_std_12m": 0.09,
-   "icir_12m": 0.31,
-   "half_life_days": 35,
-   "decay_trend": "stable",
-   "correlations": {
-     "idio_vol_126d": 0.65,
-     "amihud_250d": 0.22
-   },
-   "last_evaluated": "2026-07-10"
- }
+{
+  "name": "volatility_126d",
+  "display_name": "126日波动率",
+  "category": "volatility",
+  "sub_category": "price",
+  "formula": "std(log_return, 126) (annualized)",
+  "window_days": 126,
+  "data_deps": [
+    "daily.close"
+  ],
+  "reference": "Andersen et al. (2001)",
+  "hypothesis": "低波动率股票未来风险调整后收益更高（低波动异象）",
+  "status": "active",
+  "status_history": [
+    {
+      "from": "registered",
+      "to": "candidate",
+      "date": "2025-01-01",
+      "reason": "Initial registration"
+    },
+    {
+      "from": "candidate",
+      "to": "active",
+      "date": "2025-06-01",
+      "reason": "IC = -0.028, t = -2.5"
+    }
+  ],
+  "ic_mean_12m": 0.0,
+  "ic_std_12m": 0.09,
+  "icir_12m": 0.0,
+  "half_life_days": 35,
+  "decay_trend": "stable",
+  "correlations": {
+    "idio_vol_126d": 0.65,
+    "amihud_250d": 0.22
+  },
+  "last_evaluated": "auto",
+  "n_obs": 29
+}

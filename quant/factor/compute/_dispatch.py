@@ -11,6 +11,7 @@ from quant.factor.compute.fundamental import _FUNDAMENTAL_FN_MAP
 from quant.factor.compute._registry import load_active_price_factors, load_active_fundamental_factors
 
 def compute_all_factors(data: pd.DataFrame, date: str,
+                      primitives: dict = None,
                       fundamentals: pd.DataFrame = None,
                       benchmark_ret: Optional["pd.Series"] = None,
                       factor_names: list = None,
@@ -46,6 +47,18 @@ def compute_all_factors(data: pd.DataFrame, date: str,
 
     for name, (cat, win, fn) in price_factors.items():
         _plog.info(f"  computing {name}...")
+        # 优先使用预计算算子
+        from quant.factor.compute._primitives import FACTOR_SHORTCUT
+        fn_name = getattr(fn, '__name__', '')
+        if primitives is not None and fn_name in FACTOR_SHORTCUT:
+            shortcut_result = FACTOR_SHORTCUT[fn_name](primitives, date, win)
+            if shortcut_result is not None:
+                results[name] = shortcut_result
+                done_pf += 1
+                if done_pf % 5 == 0 or done_pf == total_pf:
+                    _plog.info(f"  price factors: {done_pf}/{total_pf} ({done_pf*100//total_pf}%, {_time.time()-_t0:.0f}s)")
+                continue
+        # fallback: 原始因子函数
         kwargs = {}
         if 'idio_vol' in name and benchmark_ret is not None:
             kwargs['benchmark_ret'] = benchmark_ret

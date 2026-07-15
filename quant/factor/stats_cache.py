@@ -119,58 +119,67 @@ def compute_factor_stats(
     logger.info(f"eval dates: {len(eval_date_strs)} dates, {eval_date_strs[0]}→{eval_date_strs[-1]}, "
                 f"{len(factor_names)} factors, {_MAX_WORKERS} threads")
 
+    # ══ Phase B: primitives 预计算 (一次加载, 所有线程复用) ══
+    from quant.factor.compute import compute_all_factors as _caf
+    from quant.factor.compute import precompute_primitives
+    from quant.factor.windows import max_factor_calendar_days
+
+    _factor_min = max_factor_calendar_days(factor_names)
+    _eff_days = max(_factor_min, int(lookback * 1.5))
+    data_start_full = str(pd.Timestamp(eval_date_strs[0]) - pd.Timedelta(days=_eff_days))[:10]
+    future_end_full = str(pd.Timestamp(eval_date_strs[-1]) + pd.Timedelta(days=40))[:10]
+    logger.info(f"primitives: loading data {data_start_full}→{future_end_full}, {len(symbols)} symbols")
+    _shared_data = store.get_daily(symbols, start=data_start_full, end=future_end_full)
+    logger.info(f"primitives: precomputing for {len(eval_date_strs)} dates...")
+    _shared_primitives = {}
+    _shared_financials = {}
+    for _ds in eval_date_strs:
+        _fund = store.get_fundamentals(symbols, date=_ds)
+        _shared_financials[_ds] = _fund
+        _prims = precompute_primitives(_shared_data, _ds, fundamentals=_fund)
+        _shared_primitives[_ds] = _prims
+    logger.info(f"primitives ready: {len(_shared_primitives)} dates")
+    store.close()
+
     # ══ Phase B: ThreadPoolExecutor 并行因子计算 (P78) ══
-    # 每个线程打开独立 DataStore, sqlite3 WAL mode 支持多线程并发读
+    # 数据已预加载, 线程 worker 共享内存 — primitives 不再重复计算
     close_by_date = {}
     logger.info(f"factor compute start: {len(eval_date_strs)} dates x {len(factor_names)} factors, "
-                f"{_MAX_WORKERS} threads (each loads own DataStore)")
+                f"{_MAX_WORKERS} threads (shared data + precomputed primitives)")
 
-    def _thread_compute_chunk(chunk_dates: list) -> list:
-        """Thread worker: each thread opens its own DataStore, loads data, computes factors."""
+    def _thread_compute_chunk(chunk_dates: list, shared_data, shared_primitives: dict,
+                              shared_financials: dict) -> list:
+        """Thread worker: 复用主线程预计算的 primitives, 不再自己加载数据."""
         import logging as _log
         _log.captureWarnings(True)
         try:
-            from quant.data.store import DataStore
             from quant.factor.compute import compute_all_factors
             import pandas as _pd
 
-            _store = DataStore()
-            try:
-                min_date = chunk_dates[0]
-                max_date = chunk_dates[-1]
-                from quant.factor.windows import max_factor_calendar_days
-                _factor_min = max_factor_calendar_days(factor_names)
-                _eff_days = max(_factor_min, lookback * 1.5)
-                data_start = (_pd.Timestamp(min_date) - _pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
-                future_end = (_pd.Timestamp(max_date) + _pd.Timedelta(days=40)).strftime("%Y-%m-%d")
-                data = _store.get_daily(symbols, start=data_start, end=future_end)
-
-                results = []
-                for date_str in chunk_dates:
+            data = shared_data
+            results = []
+            for date_str in chunk_dates:
+                try:
+                    fundamentals = shared_financials.get(date_str)
+                    prims = shared_primitives.get(date_str, {})
+                    fv = compute_all_factors(data, date_str,
+                                             fundamentals=fundamentals,
+                                             factor_names=factor_names,
+                                             precomputed_primitives=prims
+                                             if prims else None)
+                    result = {}
+                    for name in factor_names:
+                        if name in fv and not fv[name].dropna().empty:
+                            result[name] = fv[name]
                     try:
-                        fundamentals = _store.get_fundamentals(symbols, date=date_str)
-                        fin = _store.get_financials(symbols, date=date_str)
-                        preloaded_fin = {date_str: fin} if fin is not None and not fin.empty else None
-                        fv = compute_all_factors(data, date_str,
-                                                 fundamentals=fundamentals,
-                                                 factor_names=factor_names,
-                                                 preloaded_financials=preloaded_fin)
-                        result = {}
-                        for name in factor_names:
-                            if name in fv and not fv[name].dropna().empty:
-                                result[name] = fv[name]
-                        try:
-                            close_series = data["close"].loc[date_str]
-                        except KeyError:
-                            close_series = _pd.Series(dtype=float)
-                        results.append((date_str, result, close_series, None))
-                    except Exception as e:
-                        results.append((date_str, {}, _pd.Series(dtype=float), str(e)))
-                        logger.warning(f"_thread_compute_chunk: {type(e).__name__} at {date_str}: {e}")
-
-                return results
-            finally:
-                _store.close()
+                        close_series = data["close"].loc[date_str]
+                    except KeyError:
+                        close_series = _pd.Series(dtype=float)
+                    results.append((date_str, result, close_series, None))
+                except Exception as e:
+                    results.append((date_str, {}, _pd.Series(dtype=float), str(e)))
+                    logger.warning(f"_thread_compute_chunk: {type(e).__name__} at {date_str}: {e}")
+            return results
         except Exception as e:
             logger.error(f"Thread worker fatal error in chunk {chunk_dates[0]}..{chunk_dates[-1]}: {type(e).__name__}: {e}")
             return [(d, {}, _pd.Series(dtype=float), f"{type(e).__name__}: {e}") for d in chunk_dates]
@@ -186,7 +195,8 @@ def compute_factor_stats(
 
     executor = ThreadPoolExecutor(max_workers=n_chunks)
     try:
-        futures = {executor.submit(_thread_compute_chunk, chunk_dates): ci
+        futures = {executor.submit(_thread_compute_chunk, chunk_dates,
+                                    _shared_data, _shared_primitives, _shared_financials): ci
                    for ci, chunk_dates in enumerate(date_chunks)}
         for ci, chunk_dates in enumerate(date_chunks):
             logger.info(f"  chunk {ci+1}/{len(date_chunks)}: {len(chunk_dates)} dates")

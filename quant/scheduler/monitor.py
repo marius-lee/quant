@@ -17,7 +17,7 @@ from quant.monitor.metrics import metrics as _m
 from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
 from quant.scheduler.order_manager import OrderManager
 
-_log = get_logger("quant.scheduler.monitor")
+_log = get_logger(__name__)
 
 # ── 风控阈值 (config-driven, 硬编码为默认值) ──
 MAX_DRAWDOWN_PCT = 5.0

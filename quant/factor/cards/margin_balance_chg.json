@@ -1,0 +1,10 @@
+{
+  "name": "margin_balance_chg",
+  "display_name": "margin_balance_chg",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": -0.0021,
+  "icir_12m": -0.0305,
+  "last_evaluated": "auto",
+  "n_obs": 29
+}

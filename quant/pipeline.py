@@ -43,7 +43,7 @@ LOT_SIZE = _require_cfg("backtest.lot_size")
 def generate_signals(date_str: str = None, capital: float = None, strategy: str = "quant",
                      skip_pull: bool = False, store=None, status_filter: str = "using",
                      suppress_push: bool = False, universe_size: int = None,
-                     db_path: str = "quant/data/trades.db", exclude_symbols: list = None, ic_map: dict = None, combine_mode: str = None) -> dict:
+                     db_path: str = "quant/data/trades.db", exclude_symbols: list = None, ic_map: dict = None, combine_mode: str = None, preloaded_data=None, primitives: dict = None) -> dict:
     """Pipeline 阶段一: 盘前信号生成 (Steps 0-5, 不执行交易)。
 
     用 T-1 收盘数据计算因子 → alpha → 风险过滤 → 组合优化 → 输出目标持仓。
@@ -52,8 +52,9 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     if date_str is None:
         date_str = datetime.today().strftime("%Y-%m-%d")
 
-    tid = _uuid.uuid4().hex[:12]
-    from quant.utils.logger import set_trace_id as _set_tid; _set_tid(tid)
+    from quant.utils.logger import get_trace_id, set_trace_id as _set_tid
+    tid = get_trace_id() or _uuid.uuid4().hex[:12]
+    _set_tid(tid)
     from quant.monitor.metrics import metrics as _m
     _m.inc("pipeline.runs")
 
@@ -101,7 +102,10 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     from quant.factor.windows import max_factor_calendar_days
     _eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(None))
     hist_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
-    data = store.get_daily(symbols, start=hist_start, end=date_str)
+    if preloaded_data is None:
+        data = store.get_daily(symbols, start=hist_start, end=date_str)
+    else:
+        data = preloaded_data.loc[:pd.Timestamp(date_str)]
     fundamentals = store.get_fundamentals(symbols, date=date_str)
     results["steps"]["load"] = {"symbols": len(symbols), "status": "ok"}
     pe_cnt = int(fundamentals["pe"].notna().sum()) if "pe" in fundamentals.columns else 0
@@ -161,7 +165,8 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     factor_values = compute_all_factors(data, actual_date,
                                         fundamentals=fundamentals,
                                         status_filter=status_filter,
-                                        benchmark_ret=benchmark_ret)
+                                        benchmark_ret=benchmark_ret,
+                                        primitives=primitives)
     n_valid = sum(1 for v in factor_values.values() if isinstance(v, pd.Series) and v.notna().sum() > 0)
 
     from quant.alpha.model import AlphaModel
@@ -279,8 +284,9 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
     db_path: 交易数据库路径 (回测用); None使用默认.
     suppress_push: True→不调用 broker.update (回测用).
     """
-    tid = _uuid.uuid4().hex[:12]
-    from quant.utils.logger import set_trace_id as _set_tid; _set_tid(tid)
+    from quant.utils.logger import get_trace_id, set_trace_id as _set_tid
+    tid = get_trace_id() or _uuid.uuid4().hex[:12]
+    _set_tid(tid)
     from quant.monitor.metrics import metrics as _m
     _m.inc("pipeline.runs")
 

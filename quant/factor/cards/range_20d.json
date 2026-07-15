@@ -1,0 +1,10 @@
+{
+  "name": "range_20d",
+  "display_name": "range_20d",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.0455,
+  "icir_12m": 0.245,
+  "last_evaluated": "auto",
+  "n_obs": 33
+}

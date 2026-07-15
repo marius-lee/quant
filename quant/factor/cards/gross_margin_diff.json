@@ -1,0 +1,10 @@
+{
+  "name": "gross_margin_diff",
+  "display_name": "gross_margin_diff",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.0419,
+  "icir_12m": 0.3883,
+  "last_evaluated": "auto",
+  "n_obs": 33
+}

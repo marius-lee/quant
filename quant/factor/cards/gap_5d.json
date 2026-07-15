@@ -1,0 +1,10 @@
+{
+  "name": "gap_5d",
+  "display_name": "gap_5d",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.1658,
+  "icir_12m": 1.425,
+  "last_evaluated": "auto",
+  "n_obs": 32
+}

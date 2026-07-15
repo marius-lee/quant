@@ -1,0 +1,10 @@
+{
+  "name": "accruals",
+  "display_name": "accruals",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": -0.0041,
+  "icir_12m": -0.061,
+  "last_evaluated": "auto",
+  "n_obs": 33
+}

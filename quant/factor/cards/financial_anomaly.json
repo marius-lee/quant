@@ -1,0 +1,10 @@
+{
+  "name": "financial_anomaly",
+  "display_name": "financial_anomaly",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.019,
+  "icir_12m": 0.4857,
+  "last_evaluated": "auto",
+  "n_obs": 33
+}

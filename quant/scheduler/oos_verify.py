@@ -5,6 +5,7 @@
   - per-factor IC Information Ratio (IC_IR = mean/std)
   - 自己拉数据+算因子+算 IC，不依赖 compute_ic (后者 skip warmup 会砍掉 OOS 窗口)
   - 聚合用 median
+  - IS 期采样 (每 SAMPLE_INTERVAL 天算一次), OOS 期每天算 — 提速 ~8x
 
 来源: ADR 029 四层回测, Grinold & Kahn (1999) Ch6.
 """
@@ -15,16 +16,17 @@ from scipy import stats as _stats
 from quant.config.constants import _require_cfg
 from quant.utils.logger import get_logger
 
-_log = get_logger("quant.scheduler.oos_verify")
+_log = get_logger(__name__)
 
 _MIN_IC_OBS = 20           # 单日 IC 计算最少股票数
 _MIN_TOTAL_POINTS = 10     # 因子最少 IC 天数
 _MIN_IS_POINTS = 6         # IS 窗口最少天数
 _MIN_OOS_POINTS = 2        # OOS 窗口最少天数
+_IS_SAMPLE_INTERVAL = 5    # IS 期采样间隔 (每 N 个交易日算一次 IC, 提速)
 
 
 def run_oos_check(today: str) -> dict:
-    """每日 15:30 执行: expanding-window OOS 验证."""
+    """每日 15:30 执行: expanding-window OOS 验证 (IS 采样提速)."""
     from quant.data.store import DataStore
     from quant.data.repos import UniverseRepo
     from quant.factor.compute._registry import get_factor_names
@@ -36,18 +38,19 @@ def run_oos_check(today: str) -> dict:
         _log.info(f"[{today}] OOS verify: no active factors, skip")
         return _empty(0)
 
-    TRAIN_DAYS = _require_cfg("oos_verify.train_window_days")    # 60 交易日
-    TEST_DAYS  = _require_cfg("oos_verify.test_window_days")     # 10 交易日
-    DECAY_WARN = _require_cfg("oos_verify.decay_warn_threshold") # 0.5
+    TRAIN_DAYS = _require_cfg("oos_verify.train_window_days")
+    TEST_DAYS  = _require_cfg("oos_verify.test_window_days")
+    DECAY_WARN = _require_cfg("oos_verify.decay_warn_threshold")
 
     today_dt = pd.Timestamp(today)
     _bd = pd.bdate_range(end=today_dt, periods=TEST_DAYS + 1)
     test_start = _bd[0].strftime("%Y-%m-%d")
 
     _raw_cal = max_factor_calendar_days(active_names)
-    _cal_cap = 504
-    fac_cal = min(_raw_cal, _cal_cap) if _raw_cal < 1e9 else _cal_cap
-    total_lookback = max(TRAIN_DAYS + TEST_DAYS + fac_cal, 252)
+    _cal_cap = min(_raw_cal, 504) if _raw_cal < 1e9 else 504
+    fac_cal = _cal_cap
+    # 回看窗口 = 训练天数 + 测试天数 + 因子最大日历跨度, 不再强制 252 下限
+    total_lookback = TRAIN_DAYS + TEST_DAYS + fac_cal
     data_start = (today_dt - timedelta(days=total_lookback)).strftime("%Y-%m-%d")
 
     store = DataStore()
@@ -59,9 +62,23 @@ def run_oos_check(today: str) -> dict:
         _log.warning(f"[{today}] OOS verify: no daily data loaded")
         return _empty(len(active_names))
 
-    # ── 生成 IC 序列 (不依赖 compute_ic 的 warmup 砍天) ──
+    # ── 生成 IC 序列 (IS 采样, OOS 全量) ──
     all_dates = pd.bdate_range(start=data_start, end=today_dt)
-    trading_days = [d.strftime("%Y-%m-%d") for d in all_dates if d.strftime("%Y-%m-%d") <= today]
+    all_trading_days = [d.strftime("%Y-%m-%d") for d in all_dates
+                        if d.strftime("%Y-%m-%d") <= today]
+
+    # IS 期采样: 每 _IS_SAMPLE_INTERVAL 个交易日算一次
+    trading_days = []
+    for i, ds in enumerate(all_trading_days):
+        if ds >= test_start:
+            trading_days.append(ds)       # OOS 期每天
+        elif i % _IS_SAMPLE_INTERVAL == 0:
+            trading_days.append(ds)       # IS 期采样
+
+    n_full = len(all_trading_days)
+    _log.info(f"[{today}] OOS verify: {len(trading_days)}/{n_full} trading days sampled "
+              f"(IS×1/{_IS_SAMPLE_INTERVAL}) | {len(active_names)} active factors | "
+              f"lookback={total_lookback}cd")
 
     ic_series_per_factor = {name: {} for name in active_names}
     daily_close = data["close"]
@@ -74,12 +91,13 @@ def run_oos_check(today: str) -> dict:
             continue
 
         # forward 1-day return
-        if ds == trading_days[-1]:
-            continue  # 最后一天没有次日收益, 跳过
-        next_ds_idx = trading_days.index(ds) + 1
-        if next_ds_idx >= len(trading_days):
+        try:
+            ds_idx = all_trading_days.index(ds)
+        except ValueError:
             continue
-        next_ds = trading_days[next_ds_idx]
+        if ds_idx + 1 >= len(all_trading_days):
+            continue
+        next_ds = all_trading_days[ds_idx + 1]
         if next_ds not in daily_close.index:
             continue
         next_close = daily_close.loc[next_ds]
@@ -118,7 +136,6 @@ def run_oos_check(today: str) -> dict:
     for name in active_names:
         daily_ic = ic_series_per_factor.get(name, {})
         if len(daily_ic) < _MIN_TOTAL_POINTS:
-            _log.debug(f"[{today}] OOS: {name} has {len(daily_ic)} IC points, <{_MIN_TOTAL_POINTS} min, skip")
             continue
 
         ic_s = pd.Series(daily_ic)
@@ -130,7 +147,6 @@ def run_oos_check(today: str) -> dict:
         n_oos = len(oos_vals)
 
         if n_is < _MIN_IS_POINTS or n_oos < _MIN_OOS_POINTS:
-            _log.debug(f"[{today}] OOS: {name} IS={n_is}d OOS={n_oos}d, insufficient")
             continue
 
         is_mean = float(is_vals.mean())
@@ -170,7 +186,8 @@ def run_oos_check(today: str) -> dict:
         f"test_start={test_start} ({TEST_DAYS}td)"
     )
     if decayed_factors:
-        _log.warning(f"[{today}] OOS decay alert: {len(decayed_factors)}/{n_qualified} below {DECAY_WARN:.0%}")
+        _log.warning(f"[{today}] OOS decay alert: {len(decayed_factors)}/{n_qualified} "
+                     f"below {DECAY_WARN:.0%}")
         for f in decayed_factors[:5]:
             _log.warning(f"  {f}")
 

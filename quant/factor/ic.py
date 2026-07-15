@@ -119,6 +119,12 @@ def compute_ic(*,
     data = store.get_daily(symbols, start=_data_min, end=_data_max)
     _log.info("compute_ic: data loaded, shape=%s", data.shape if data is not None else "None")
 
+    # ── 预计算共享算子 (与 run_backtest 相同的优化) ──
+    from quant.factor.compute._primitives import precompute_primitives
+    _log.info("compute_ic: precomputing shared primitives...")
+    prims = precompute_primitives(data)
+    _log.info("compute_ic: primitives ready (%d tables)", len(prims))
+
     factor_daily = {name: {} for name in factor_names}
     fwd_1d = {}
 
@@ -138,8 +144,10 @@ def compute_ic(*,
                 return (ds, {}, None)
             fwd = (close.iloc[-1] / close.iloc[-2]) - 1
             fundamentals = store.get_fundamentals(symbols, ds)
+            # 切片 primitives 到截止 ds, 传给 compute_all_factors 走 FACTOR_SHORTCUT 快捷路径
+            ds_prims = {k: v.loc[:ds] for k, v in prims.items() if hasattr(v, 'loc')}
             factor_vals = compute_all_factors(
-                ds_data, ds, fundamentals=fundamentals,
+                ds_data, ds, primitives=ds_prims, fundamentals=fundamentals,
                 factor_names=factor_names, status_filter=status_filter,
             )
             return (ds, factor_vals, fwd)

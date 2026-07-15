@@ -1,0 +1,9 @@
+{
+  "name": "seal_time",
+  "display_name": "seal_time",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.0,
+  "icir_12m": 0.0,
+  "last_evaluated": "auto"
+}

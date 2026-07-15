@@ -6,7 +6,7 @@ from quant.monitor.metrics import metrics as _m
 from quant.utils.logger import get_logger, set_trace_id
 from quant.scheduler._base import _timed_loop
 
-_log = get_logger("quant.scheduler.signals")
+_log = get_logger(__name__)
 
 
 def _run(today: str):

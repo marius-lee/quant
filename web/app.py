@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v73"
+VERSION = "test-v74"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 def _log_exit(reason: str = ""):
@@ -134,73 +134,21 @@ def api_factors():
 
 @app.route("/api/positions")
 def api_positions():
-    """持仓 (从 trades.db 读取 — 通过 TradeRepo). ?strategy=过滤"""
+    """持仓 — 直接从 broker 读取 (已含实时报价 overlay)。"""
     from flask import request
     strategy = request.args.get("strategy", "quant")
-    limit = min(int(request.args.get("limit", 100)), 100)  # 模板6: max 100
+    limit = min(int(request.args.get("limit", 100)), 100)
     offset = int(request.args.get("offset", 0))
-    positions = []
     try:
-        from quant.data.trade_repo import TradeRepo
-        repo = TradeRepo(TRADE_DB)
-        raw = repo.get_positions(strategy)
-        # ── stock name + latest close lookup ──
-        name_map = {}
-        close_map = {}
-        try:
-            import sqlite3 as _sql
-            market_db = MARKET_DB
-            if os.path.exists(market_db):
-                mc = _sql.connect(market_db)
-                syms = [p["symbol"] for p in raw]
-                if syms:
-                    ph = ",".join(["?"] * len(syms))
-                    rows = mc.execute(
-                        f"SELECT symbol, name FROM stocks WHERE symbol IN ({ph})", syms
-                    ).fetchall()
-                    name_map = {r[0]: r[1] for r in rows}
-                    # latest close price for each symbol
-                    for sym in syms:
-                        cr = mc.execute(
-                            "SELECT close FROM daily WHERE symbol=? ORDER BY date DESC LIMIT 1", (sym,)
-                        ).fetchone()
-                        if cr and cr[0]:
-                            close_map[sym] = cr[0]
-        except Exception:
-            logger.warning("api_positions: close price query failed", exc_info=True)
-        for p in raw:
-            px = p.get("price", 0)
-            close_px = close_map.get(p["symbol"], px)
-            positions.append({
-                "symbol": p["symbol"], "price": px, "shares": p["shares"],
-                "board_count": p.get("board_count", 0),
-                "buy_time": p.get("buy_time", ""),
-                "current": close_px,
-                "pnl_pct": round((close_px / px - 1) * 100, 2) if px > 0 else 0,
-                "value": round(p["shares"] * close_px, 2),
-                "name": name_map.get(p["symbol"], ""), "change_pct": 0,
-            })
+        state = broker.get()
+        positions = state.get("positions", [])
+        if strategy and strategy != "quant":
+            positions = [p for p in positions if p.get("strategy", "quant") == strategy]
+        paged = positions[offset:offset + limit]
+        return _api_response(data={"positions": paged}, meta={"total": len(positions), "limit": limit, "offset": offset})
     except Exception:
-        logger.warning("api_positions: query failed", exc_info=_DEBUG)
+        logger.warning("api_positions: broker.get failed", exc_info=True)
         return _api_response(error={"code": "INTERNAL", "message": "positions query failed"}), 500
-    # ── 实时报价 overlay (从 broker 缓存读取，不直接调 fetch_quotes) ──
-    try:
-        from web.state_broker import broker as _broker
-        _live_quotes = getattr(_broker, "_quote_result", None)
-        if _live_quotes:
-            for p in positions:
-                q = _live_quotes.get(p["symbol"], {})
-                live_price = q.get("price", 0) or q.get("open", 0)
-                if live_price > 0:
-                    p["current"] = live_price
-                    p["pnl_pct"] = round((live_price / p["price"] - 1) * 100, 2) if p["price"] > 0 else 0
-                    p["value"] = round(p["shares"] * live_price, 2)
-                    p["change_pct"] = q.get("change_pct", 0)
-    except Exception:
-        pass
-
-    paged = positions[offset:offset + limit]
-    return _api_response(data={"positions": paged}, meta={"total": len(positions), "limit": limit, "offset": offset})
 
 
 @app.route("/api/trades")

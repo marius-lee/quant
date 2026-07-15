@@ -7,7 +7,7 @@ PYTHONPATH=. .venv/bin/python3 scripts/validate.py
 
 echo ""
 echo "=== Step 1: Clean trades ==="
-rm -f data/trades.db
+rm -f quant/data/trades.db
 
 echo ""
 echo "=== Step 2: Backtest ==="

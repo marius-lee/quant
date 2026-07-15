@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 echo "=== 删除残废行 ==="
 .venv/bin/python3 -c "
 import sqlite3
-conn = sqlite3.connect('data/market.db')
+conn = sqlite3.connect('quant/data/market.db')
 for n in ['roe_reported','roa','debt_ratio','accruals']:
     conn.execute('DELETE FROM factor_registry WHERE name=?', (n,))
 conn.commit()
@@ -19,7 +19,7 @@ echo ""
 echo "=== 重新注册（直接 SQL，不跑 build_fin_factors.sh 避免重复插入代码）==="
 .venv/bin/python3 -c "
 import sqlite3
-conn = sqlite3.connect('data/market.db')
+conn = sqlite3.connect('quant/data/market.db')
 for name, cat, fn, src in [
     ('roe_reported', 'profitability', 'compute_roe_reported', 'Fama & French (2015)'),
     ('roa', 'profitability', 'compute_roa', 'Novy-Marx (2013)'),

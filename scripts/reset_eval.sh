@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 echo "=== Step 1: 激活全部因子 ==="
 .venv/bin/python3 -c "
 import sqlite3
-conn = sqlite3.connect('data/market.db')
+conn = sqlite3.connect('quant/data/market.db')
 conn.execute(\"UPDATE factor_registry SET status='active', updated_at=datetime('now','localtime')\")
 conn.commit()
 cnt = conn.execute(\"SELECT COUNT(*) FROM factor_registry WHERE status='active'\").fetchone()[0]
@@ -21,7 +21,7 @@ from factor.stats_cache import force_refresh_cache
 stats = force_refresh_cache(n_symbols=300)
 print()
 import sqlite3
-conn = sqlite3.connect('data/market.db')
+conn = sqlite3.connect('quant/data/market.db')
 # 新因子 IC
 rows = conn.execute(\"SELECT name, ic_mean, ic_ir FROM factor_registry WHERE name IN ('roe_reported','roa','debt_ratio','accruals') ORDER BY name\").fetchall()
 print('New financial factor IC:')
@@ -36,7 +36,7 @@ echo ""
 echo "=== Step 3: 阈值筛选 (|IC|>=0.02) ==="
 .venv/bin/python3 -c "
 import sqlite3
-conn = sqlite3.connect('data/market.db')
+conn = sqlite3.connect('quant/data/market.db')
 conn.execute(\"UPDATE factor_registry SET status='inactive' WHERE ABS(COALESCE(ic_mean,0)) < 0.02\")
 conn.execute(\"UPDATE factor_registry SET status='active' WHERE ABS(COALESCE(ic_mean,0)) >= 0.02\")
 conn.commit()

@@ -12,7 +12,7 @@ if [ "${1:-}" = "--apply" ]; then
     .venv/bin/python3 -c "
 from quant.utils.excepthook import setup; setup()
 import sqlite3
-conn = sqlite3.connect('data/market.db')
+conn = sqlite3.connect('quant/data/market.db')
 rows = conn.execute('''
     SELECT name, status_reason FROM factor_registry
     WHERE status='rejected'
@@ -47,7 +47,7 @@ else
     .venv/bin/python3 -c "
 from quant.utils.excepthook import setup; setup()
 import sqlite3
-conn = sqlite3.connect('data/market.db')
+conn = sqlite3.connect('quant/data/market.db')
 rows = conn.execute('''
     SELECT name, status_reason FROM factor_registry
     WHERE status='rejected'

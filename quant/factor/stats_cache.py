@@ -129,14 +129,21 @@ def compute_factor_stats(
     future_end_full = str(pd.Timestamp(eval_date_strs[-1]) + pd.Timedelta(days=40))[:10]
     logger.info(f"primitives: loading data {data_start_full}→{future_end_full}, {len(symbols)} symbols")
     _shared_data = store.get_daily(symbols, start=data_start_full, end=future_end_full)
-    # fundamentals 按日期预加载 (基本面的因子仍需要)
+    # fundamentals 按日期预加载 (基本面的因子)
     _shared_financials = {}
     for _ds in eval_date_strs:
         _shared_financials[_ds] = store.get_fundamentals(symbols, date=_ds)
-    # primitives 一次预计算, 覆盖全部日期 (DataFrame 按 date 索引, worker 传全量即可)
+    # primitives 预计算 → 全量 DataFrame, 再按日期切片为 per-date dict
+    # (照抄 backtest/loop.py:176-180 模式)
     logger.info("primitives: precomputing shared rolling stats (one pass)...")
-    _shared_primitives = precompute_primitives(_shared_data)
-    logger.info(f"primitives ready: {len(_shared_primitives)} keys")
+    _full_prims = precompute_primitives(_shared_data)
+    _shared_primitives = {}  # {date_str: {prim_name: Series}}
+    for _ds in eval_date_strs:
+        try:
+            _shared_primitives[_ds] = {k: v.loc[_ds] for k, v in _full_prims.items()}
+        except KeyError:
+            _shared_primitives[_ds] = {}
+    logger.info(f"primitives ready: {len(_full_prims)} keys, {len(_shared_primitives)} dates")
     store.close()
 
     # ══ Phase B: ThreadPoolExecutor 并行因子计算 (P78) ══
@@ -159,10 +166,12 @@ def compute_factor_stats(
             for date_str in chunk_dates:
                 try:
                     fundamentals = shared_financials.get(date_str)
+                    prims = _shared_primitives.get(date_str, {})
                     fv = compute_all_factors(data, date_str,
                                              fundamentals=fundamentals,
                                              factor_names=factor_names,
-                                             precomputed_primitives=_shared_primitives)
+                                             precomputed_primitives=prims
+                                             if prims else None)
                     result = {}
                     for name in factor_names:
                         if name in fv and not fv[name].dropna().empty:

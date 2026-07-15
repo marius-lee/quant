@@ -1,0 +1,10 @@
+{
+  "name": "ma_alignment_20d",
+  "display_name": "ma_alignment_20d",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.0507,
+  "icir_12m": 0.3524,
+  "last_evaluated": "auto",
+  "n_obs": 29
+}

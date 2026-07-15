@@ -10,12 +10,12 @@ Usage:
 """
 
 from quant.core.phase_tracker import PhaseTracker, PhaseResult
-import os, sys, time
+import os, sys, time, uuid as _uuid
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 import traceback
-from quant.utils.logger import get_logger
+from quant.utils.logger import get_logger, set_trace_id
 from quant.backtest.diagnostics import FactorTracker, diagnose, apply_diagnosis, compute_pre_backtest_ic
 from quant.backtest.broker import SimulatedBroker
 from quant.config.constants import _require_cfg
@@ -116,6 +116,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
     if strategy is None:
         strategy = next_backtest_name()
 
+    set_trace_id(_uuid.uuid4().hex[:12])
     _log.info(f"backtest: {start_date} → {end_date}, capital=Y{capital:,}, strategy={strategy}")
     _log.info("=" * 70)
     bt_tracker = PhaseTracker(f"backtest:{strategy}")
@@ -162,7 +163,21 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
     _current_ic_map = _current_ic_map_raw["ic_map"]
     _log.info("backtest: initial IC: %d factors, retrain every %dd", len(_current_ic_map), retrain_freq)
 
-    
+    # ── Pre-load all daily data once (eliminates 843 DB queries) ──
+    from quant.data.repos import UniverseRepo
+    _all_symbols = UniverseRepo().get_symbols(exclude_market='BJ')
+    from quant.factor.windows import max_factor_calendar_days
+    _eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(None))
+    _full_start = (pd.Timestamp(trading_days[0]) - pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
+    data_full = store.get_daily(_all_symbols, start=_full_start, end=end_date)
+    _log.info("backtest: pre-loaded %d days x %d symbols data", len(data_full), len(_all_symbols))
+
+    # ── 预计算共享算子 (原始计算图) ──
+    from quant.factor.compute._primitives import precompute_primitives
+    _log.info("backtest: precomputing shared primitives...")
+    data_prims = precompute_primitives(data_full)
+    _log.info("backtest: primitives ready (%d tables)", len(data_prims))
+
     # ── Diagnostics: factor tracker ──
     tracker = FactorTracker()
     _last_signals = None
@@ -196,6 +211,8 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
             "db_path": BACKTEST_DB,
             "store": store,
             "exclude_symbols": cooloff_syms,
+            "preloaded_data": data_full,
+            "primitives": data_prims,
         }
         # Switch combine_mode from sleeve (warmup) to ic_weighted (walk-forward)
         if i >= warmup_days:

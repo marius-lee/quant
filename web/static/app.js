@@ -366,7 +366,7 @@ async function loadPortfolio() {
       { key: 'current', label: '现价' },
       { key: 'pnl_pct', label: '盈亏%' },
     ], {
-      fmtMap: { price: v => fmtMoney(v), current: v => fmtMoney(v), pnl_pct: v => fmtPct(v) },
+      fmtMap: { price: v => fmtNum(v, 2), current: v => fmtNum(v, 2), pnl_pct: v => fmtPct(v) },
       rank: true
     });
     if (pos.length) {

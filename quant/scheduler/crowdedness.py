@@ -13,7 +13,7 @@ from datetime import datetime
 from quant.config.constants import _require_cfg
 from quant.utils.logger import get_logger
 
-_log = get_logger("quant.scheduler.crowdedness")
+_log = get_logger(__name__)
 
 CROWD_CORR_THRESHOLD = 0.70       # 截面相关性阈值
 CROWD_PAIR_MIN_STOCKS = 30        # 因子对有效股票数下限

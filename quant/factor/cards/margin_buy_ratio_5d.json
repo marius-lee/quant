@@ -1,0 +1,10 @@
+{
+  "name": "margin_buy_ratio_5d",
+  "display_name": "margin_buy_ratio_5d",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": -0.0265,
+  "icir_12m": -0.2448,
+  "last_evaluated": "auto",
+  "n_obs": 29
+}

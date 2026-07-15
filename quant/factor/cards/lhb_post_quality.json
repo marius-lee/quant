@@ -1,0 +1,10 @@
+{
+  "name": "lhb_post_quality",
+  "display_name": "lhb_post_quality",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.0074,
+  "icir_12m": 0.1561,
+  "last_evaluated": "auto",
+  "n_obs": 28
+}

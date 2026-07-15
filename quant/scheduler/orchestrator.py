@@ -19,7 +19,7 @@ from quant.config.constants import _require_cfg
 from quant.monitor.metrics import metrics as _m
 from quant.utils.logger import get_logger
 
-_log = get_logger("quant.scheduler.orchestrator")
+_log = get_logger(__name__)
 
 def _run():
     """编排器主循环 — 单线程，按时间顺序串行执行日频任务。"""
@@ -90,7 +90,10 @@ def _run():
             for name in done:
                 update(name, status="sleep (非交易日)")
             update("monitor", status="sleep (非交易日)")
-            _time.sleep(POLL)
+            # ── 主动超时检测: 把僵尸 running 行标为 aborted ──
+        _check_timeouts(today)
+
+        _time.sleep(POLL)
             continue
 
         # ═══════════════════════════════════════════
@@ -164,7 +167,65 @@ def _run():
                 wait_m = (time(15, 30).hour * 60 + 30) - (hhmm.hour * 60 + hhmm.minute)
                 update("attribution", status=f"waiting ({wait_m}min)")
 
+        # ── 主动超时检测: 把僵尸 running 行标为 aborted ──
+        _check_timeouts(today)
+
         _time.sleep(POLL)
+
+
+# ── 超时阈值 (秒) ──
+_TIMEOUTS = {
+    "signals": 900,       # 15 min (正常 ~5 min)
+    "execute": 600,       # 10 min (正常 <1 min)
+    "monitor": None,      # 持续运行, 不收市不超时 — 只在 14:55+ 检查
+    "attribution": 900,   # 15 min (正常 ~3 min)
+    "weekly_eval": 7200,  # 120 min (正常 ~30 min)
+}
+
+def _check_timeouts(today: str):
+    """扫描 task_runs 中 status='running' 的行, 超时则标为 aborted."""
+    import sqlite3
+    from datetime import datetime
+    from quant.config.paths import MARKET_DB
+    try:
+        conn = sqlite3.connect(MARKET_DB)
+        conn.execute("PRAGMA busy_timeout=3000")
+        rows = conn.execute(
+            "SELECT id, task_name, started_at FROM task_runs "
+            "WHERE date=? AND status='running' AND finished_at IS NULL",
+            (today,)
+        ).fetchall()
+        if not rows:
+            conn.close()
+            return
+        now = datetime.now()
+        for rid, task_name, started_at in rows:
+            if not started_at:
+                continue
+            dt = datetime.fromisoformat(started_at)
+            elapsed = (now - dt).total_seconds()
+            limit = _TIMEOUTS.get(task_name)
+            # monitor: 只在收市后 (14:55+) 检查, 给 30 min 缓冲
+            if task_name == "monitor":
+                if now.hour >= 14 and now.minute >= 55:
+                    limit = 1800  # 14:55 + 30 min = 15:25
+                else:
+                    continue  # 盘中不检查 monitor
+            if limit is None:
+                continue
+            if elapsed > limit:
+                conn.execute(
+                    "UPDATE task_runs SET status='aborted', finished_at=?, "
+                    "error='任务异常终止: 运行超时 (' || ? || 's)' WHERE id=?",
+                    (now.isoformat(), int(elapsed), rid)
+                )
+                _log.warning(
+                    f"[{today}] {task_name} running for {elapsed:.0f}s > {limit}s → aborted (zombie)"
+                )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        _log.warning(f"[{today}] timeout check failed (non-fatal): {e}")
 
 
 def start():

@@ -1,0 +1,10 @@
+{
+  "name": "max_ret_20d",
+  "display_name": "max_ret_20d",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": -0.0289,
+  "icir_12m": -0.1542,
+  "last_evaluated": "auto",
+  "n_obs": 24
+}

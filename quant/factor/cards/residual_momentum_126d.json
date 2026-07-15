@@ -1,0 +1,10 @@
+{
+  "name": "residual_momentum_126d",
+  "display_name": "residual_momentum_126d",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.2445,
+  "icir_12m": 1.1114,
+  "last_evaluated": "auto",
+  "n_obs": 33
+}

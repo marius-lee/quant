@@ -17,7 +17,7 @@ def _timed_loop(name: str, target_time: time, run_fn, skip_deadline: time = None
     schedule_str = target_time.strftime("%H:%M")
     register(name, schedule_str, has_multiprocess=has_multiprocess)
 
-    log = get_logger(f"quant.scheduler.{name}")
+    log = get_logger(f"scheduler.{name}")
     log.info(f"scheduler started — daily at {schedule_str}")
 
     from quant.execution.calendar import is_trading_day
@@ -73,7 +73,7 @@ def _weekly_loop(name: str, target_weekday: int, target_time: time, run_fn):
     schedule_str = f"{weekday_names[target_weekday]} {target_time.strftime('%H:%M')}"
     register(name, schedule_str, has_multiprocess=False)
 
-    log = get_logger(f"quant.scheduler.{name}")
+    log = get_logger(f"scheduler.{name}")
     log.info(f"scheduler started — weekly on {schedule_str}")
 
     today = None

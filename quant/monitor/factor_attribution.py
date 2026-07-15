@@ -101,7 +101,7 @@ def factor_pnl_attribution(
             return {}
 
         try:
-           ic_result = compute_ic(factor_names=list(exposures.keys()),
+            ic_result = compute_ic(factor_names=list(exposures.keys()),
                                    symbols=symbols,
                                    date=date, lookback=eff_days,
                                    store=store, status_filter="using")

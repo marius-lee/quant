@@ -1,0 +1,10 @@
+{
+  "name": "fund_change",
+  "display_name": "fund_change",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.0053,
+  "icir_12m": 0.0635,
+  "last_evaluated": "auto",
+  "n_obs": 33
+}

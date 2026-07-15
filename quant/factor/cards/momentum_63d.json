@@ -1,27 +1,40 @@
- {
-   "name": "momentum_63d",
-   "display_name": "63日动量",
-   "category": "momentum",
-   "sub_category": "price",
-   "formula": "close / close.shift(63) - 1",
-   "window_days": 63,
-   "data_deps": ["daily.close"],
-   "reference": "Jegadeesh & Titman (1993)",
-   "hypothesis": "过去3个月涨幅最高的股票未来继续跑赢",
-   "status": "active",
-   "status_history": [
-     {"from": "registered", "to": "candidate", "date": "2025-01-01", "reason": "Initial registration"},
-     {"from": "candidate", "to": "active", "date": "2025-03-01", "reason": "IC > 0.02, t > 2.0"}
-   ],
-   "ic_mean_12m": 0.034,
-   "ic_std_12m": 0.12,
-   "icir_12m": 0.28,
-   "half_life_days": 18,
-   "decay_trend": "stable",
-   "correlations": {
-     "momentum_126d": 0.72,
-     "momentum_252d": 0.58,
-     "reversal_5d": -0.15
-   },
-   "last_evaluated": "2026-07-10"
- }
+{
+  "name": "momentum_63d",
+  "display_name": "63日动量",
+  "category": "momentum",
+  "sub_category": "price",
+  "formula": "close / close.shift(63) - 1",
+  "window_days": 63,
+  "data_deps": [
+    "daily.close"
+  ],
+  "reference": "Jegadeesh & Titman (1993)",
+  "hypothesis": "过去3个月涨幅最高的股票未来继续跑赢",
+  "status": "active",
+  "status_history": [
+    {
+      "from": "registered",
+      "to": "candidate",
+      "date": "2025-01-01",
+      "reason": "Initial registration"
+    },
+    {
+      "from": "candidate",
+      "to": "active",
+      "date": "2025-03-01",
+      "reason": "IC > 0.02, t > 2.0"
+    }
+  ],
+  "ic_mean_12m": 0.0985,
+  "ic_std_12m": 0.12,
+  "icir_12m": 9.5687,
+  "half_life_days": 18,
+  "decay_trend": "stable",
+  "correlations": {
+    "momentum_126d": 0.72,
+    "momentum_252d": 0.58,
+    "reversal_5d": -0.15
+  },
+  "last_evaluated": "auto",
+  "n_obs": 3
+}

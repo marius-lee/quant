@@ -1,0 +1,10 @@
+{
+  "name": "bp_ratio",
+  "display_name": "bp_ratio",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.03,
+  "icir_12m": 0.2045,
+  "last_evaluated": "auto",
+  "n_obs": 33
+}

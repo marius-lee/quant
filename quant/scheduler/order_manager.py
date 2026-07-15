@@ -11,7 +11,7 @@ Monitor 每 5s 调一次 check_and_manage, 不靠定时轮询。
   D: 时间 ≥ force_fill_time → 全部未成交市价补单
 """
 from quant.utils.logger import get_logger
-_log = get_logger("quant.scheduler.order_manager")
+_log = get_logger(__name__)
 
 import sqlite3
 from datetime import datetime, time
@@ -99,9 +99,8 @@ class OrderManager:
                 reference_price, status, placed_at, day)
                VALUES (?, ?, 'buy', ?, ?, ?, 'pending', ?, ?)""",
             (strategy, symbol, shares, limit, ref_price, now, day))
-        c.commit()
+        c.connection.commit()
         rid = c.lastrowid
-        c.close()
         _log.info(f"[order_manager] placed limit buy: {symbol} {shares}股 "
                   f"limit=¥{limit:.2f} (ref=¥{ref_price:.2f})")
         return rid

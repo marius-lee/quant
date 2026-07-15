@@ -14,7 +14,7 @@ from quant.utils.logger import get_logger, set_trace_id
 from quant.scheduler._base import _timed_loop
 from quant.factor.registry import _db_connect
 
-_log = get_logger("quant.scheduler.attribution")
+_log = get_logger(__name__)
 
 
 def _run(today: str):
@@ -38,7 +38,9 @@ def _run(today: str):
             syms = [p["symbol"] for p in positions]
             ph = ",".join("?" * len(syms))
             rows = conn.execute(
-                "SELECT symbol, close, sector, date FROM daily WHERE symbol IN (" + ph + ") AND date <= ? ORDER BY date",
+                "SELECT d.symbol, d.close, COALESCE(s.industry,'其他') as sector, d.date "
+                "FROM daily d LEFT JOIN stocks s ON d.symbol=s.symbol "
+                "WHERE d.symbol IN (" + ph + ") AND d.date <= ? ORDER BY d.date",
                 syms + [today]
             ).fetchall()
             if rows:
@@ -66,7 +68,8 @@ def _run(today: str):
                     cap_rows = conn.execute(
                         "SELECT dv.market_cap FROM daily_valuation dv "
                         "JOIN daily d ON dv.symbol=d.symbol AND dv.date=d.date "
-                        "WHERE d.sector=? AND d.date <= ? "
+                        "JOIN stocks s ON d.symbol=s.symbol "
+                        "WHERE s.industry=? AND d.date <= ? "
                         "ORDER BY d.date DESC LIMIT 1",
                         (sec, today)
                     ).fetchall()
@@ -256,7 +259,7 @@ def _run(today: str):
     # ═══════════════════════════════════════════════════════
     try:
         from quant.scheduler.crowdedness import check_factor_crowdedness
-        crowd_result = check_factor_crowdedness(today, store=store)
+        crowd_result = check_factor_crowdedness(today)
         if crowd_result.get("alert"):
             _log.warning(
                 f"[{today}] G2 crowdedness: crowd_index={crowd_result['crowd_index']:.3f}, "
@@ -277,7 +280,7 @@ def _run(today: str):
     # ═══════════════════════════════════════════════════════
     try:
         from quant.evaluation.deflated_sharpe import compute_dsr_for_strategy
-       trades = engine.get_trades(strategy="quant", limit=500)
+        trades = engine.get_trades(strategy="quant", limit=500)
         if trades:
             # 按日期聚合 daily PnL（同一天多笔交易只算一个日收益）
             pnl_by_date = {}

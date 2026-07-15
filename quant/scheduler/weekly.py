@@ -10,7 +10,7 @@ from quant.monitor.metrics import metrics as _m
 from quant.utils.logger import get_logger
 from quant.scheduler._base import _weekly_loop
 
-_log = get_logger("quant.scheduler.weekly")
+_log = get_logger(__name__)
 
 
 def _run(today: str):

@@ -2,9 +2,9 @@
 
 日志输出:
   - 控制台: INFO 级别，关键路径和进度
-  - app.log: 非回测模块日轮转 (INFO+)
-  - backtest.log: 回测模块日轮转 (INFO+)
-  - quant.log: JSON 结构化全量 (DEBUG)
+  - app.log: 非回测模块日轮转 (INFO+), JSON 结构化
+  - backtest.log: 回测模块日轮转 (INFO+), JSON 结构化
+  - quant.log: JSON 结构化全量 (DEBUG), 过滤 stderr 噪音
   - 轮转: 单文件最大 50MB，保留最近 5 个
 """
 
@@ -39,10 +39,17 @@ def _init():
 
     os.makedirs(_log_dir, exist_ok=True)
 
+    # ── 抑制 Werkzeug/Flask 访问日志 (GET /api/... 每秒一条，毫无价值) ──
+    logging.getLogger('werkzeug').disabled = True
+
     root = logging.getLogger("quant")
     root.setLevel(logging.DEBUG)
+    root.propagate = False  # 阻止日志传播到 Python root logger (避免重复行)
 
-    # 控制台: INFO, 人类可读 + trace_id 前缀 (stdout — 不与 stderr capture 冲突)
+    # ── 通用 JSON 格式化器 (app.log / backtest.log / quant.log 共用) ──
+    _json_fmt = _JsonFormatter()
+
+    # 控制台: INFO, 人类可读 + trace_id 前缀
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(logging.INFO)
     console.setFormatter(logging.Formatter(
@@ -50,19 +57,17 @@ def _init():
         datefmt="%m-%d %H:%M:%S",
         defaults={"trace_id": ""}
     ))
+    console.addFilter(lambda r: not r.name.endswith('.stderr'))
     root.addHandler(console)
 
-    # ── 人类可读文件日志: 按模块名分离 ──
-    _fmt = logging.Formatter(
-        "[%(asctime)s] %(levelname)-5s %(name)s | %(trace_id)s%(message)s",
-        datefmt="%m-%d %H:%M:%S", defaults={"trace_id": ""}
-    )
+    # ── 模块名过滤器 ──
     _is_backtest = lambda r: (
-    r.name.startswith("quant.backtest.") or
-    r.name.startswith("backtest.") or
-    r.name.startswith("quant.evaluation.") or
-    r.name.startswith("evaluation.")
-)
+        r.name.startswith("quant.backtest.") or
+        r.name.startswith("backtest.") or
+        r.name.startswith("quant.evaluation.") or
+        r.name.startswith("evaluation.")
+    )
+    _not_stderr = lambda r: not r.name.endswith('.stderr')
 
     # app.log: 非回测 (web, pipeline, scheduler, factor...)
     _app_handler = TimedRotatingFileHandler(
@@ -70,8 +75,8 @@ def _init():
         backupCount=10, encoding="utf-8"
     )
     _app_handler.setLevel(logging.INFO)
-    _app_handler.setFormatter(_fmt)
-    _app_handler.addFilter(lambda r: not _is_backtest(r))
+    _app_handler.setFormatter(_json_fmt)
+    _app_handler.addFilter(lambda r: _not_stderr(r) and not _is_backtest(r))
     root.addHandler(_app_handler)
 
     # backtest.log: 回测专用
@@ -80,16 +85,17 @@ def _init():
         backupCount=10, encoding="utf-8"
     )
     _bt_handler.setLevel(logging.INFO)
-    _bt_handler.setFormatter(_fmt)
-    _bt_handler.addFilter(_is_backtest)
+    _bt_handler.setFormatter(_json_fmt)
+    _bt_handler.addFilter(lambda r: _not_stderr(r) and _is_backtest(r))
     root.addHandler(_bt_handler)
 
-    # 文件: JSON 结构化 DEBUG (模板9 T1)
+    # quant.log: JSON 全量 (DEBUG)
     file_handler = RotatingFileHandler(
         _log_file, maxBytes=50 * 1024 * 1024, backupCount=5, encoding="utf-8"
     )
     file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(_JsonFormatter())
+    file_handler.setFormatter(_json_fmt)
+    file_handler.addFilter(_not_stderr)
     root.addHandler(file_handler)
 
     # ── 未捕获异常自动写入日志 ──
@@ -119,10 +125,15 @@ class _JsonFormatter(logging.Formatter):
 
 
 def get_logger(name: str) -> logging.Logger:
-    """获取模块级 logger。用法: logger = get_logger(__name__)"""
+    """获取模块级 logger。用法: logger = get_logger(__name__)
+
+    __name__ 已经是 quant.xxx 格式时不再重复添加前缀，避免 quant.quant.xxx。
+    """
     _init()
-    # 注入 trace_id 到 log record (Python logging 不自动读 contextvars)
-    logger = logging.getLogger(f"quant.{name}")
+    if name.startswith("quant."):
+        logger = logging.getLogger(name)
+    else:
+        logger = logging.getLogger(f"quant.{name}")
     return _TraceLoggerAdapter(logger)
 
 

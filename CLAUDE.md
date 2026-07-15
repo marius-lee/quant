@@ -4,6 +4,56 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 ---
 
+## 🚨 关键规则（每次改代码前必读，compact 后第一件事就是重读这里）
+
+### 编辑工具
+- **只用 heredoc 或 apply_patch 编辑文件**。严禁用 sed 按行号修改（行号总会漂移）。
+- heredoc 模板: `cat > file.py << 'PYEOF' ... PYEOF`
+
+### 零 Fallback（硬约束）
+- **严禁 fallback**。任何 `try/except` 捕获后不允许降级返回默认值或跳过错误。
+- 配置读取统一用 `_require_cfg("key")`，key 缺失 → KeyError → fail-fast。示范:
+  ```python
+  from quant.config.constants import _require_cfg
+  value = _require_cfg("factor.min_abs_ic")  # 缺 key 即崩
+  ```
+- 业务代码禁止直接调用 `config.loader.get()`（该函数仅作 `_require_cfg` 底层实现）。
+
+### DB 路径（全局常量）
+- 所有数据库路径: `quant/data/`（项目根目录下，非 `data/`）
+- 代码中用 `PROJ` 变量或 `pathlib.Path(__file__).resolve().parents[1]` 推导，不硬编码绝对路径
+- 建表统一在对应 repo 类的 `_ensure_tables()` 中，禁止散落在一处性脚本里
+
+### 导入规范
+- 统一使用 `from quant.X import Y`（quant 前缀），禁止 `from X import Y`
+
+### 日志
+- 所有日志落盘到 `logs/` 目录，不散落各处
+- 日志格式: `get_logger("quant.module.name")`，trace_id 通过 contextvars 贯穿
+- 埋点: 函数入口/出口/异常 三处必须有 logger
+
+### 版本号
+- Web 版本号在 `web/app.py` 顶部 `VERSION = "test-vXX"`
+- 每次修改完代码后推进版本号，并在终端告知用户
+
+### 重启与命令执行（职责分工）
+- **用户**执行: `bash scripts/restart.sh`（重启）、`bash scripts/run_task.sh <task> <date>`（手动跑任务）、crontab 安装
+- **Agent**只给出命令文本，不执行这些命令
+
+### 改代码前置步骤
+1. 先读相关代码和文档（docs/ 下对应 ADR、HANDOFF.md）
+2. 确认现有 pattern — merge/overlay/pipe，不得发明新模式
+3. 对照 `coding-standards` SKILL.md 的「代码修改清单」逐项确认
+4. 再动手改
+
+### 用户约束（速查）
+| 规则 | 说明 |
+|------|------|
+| 零 fallback | try/except 不降级，不吞错误 |
+| heredoc/edit | 不用 sed 按行号 |
+| 读文档先 | 改代码前必读相关 doc |
+| 版本号 | 每次修改推进 test-vXX |
+
 ## Project overview
 
 A股量化选股系统。基于 Grinold & Kahn Fundamental Law 的 7 层架构：数据 → 因子 → Alpha → 风控 → 优化 → 执行 → 监控。¥5,000 起步，目标 ¥100 万。
@@ -34,7 +84,8 @@ PYTHONPATH=. python3 -m pytest tests/ -v
 (7 layers, ~25 files)
 
 ### Layer 0: Infra (`config/` + `utils/` + `execution/calendar.py`)
-- `config/loader.py` — YAML 配置热加载，`get("key.path", default)` 取值
+- `config/loader.py` — YAML 配置热加载
+- `config/constants.py` — `_require_cfg()` 统一配置入口（key 缺失 → KeyError, fail-fast）
 - `utils/logger.py` — `get_logger("module.name")`
 - `utils/date.py` — `to_str()`, `to_compact()`, `today_str()`
 - `execution/calendar.py` — `is_trading_day()`, `is_market_open()`, `get_trading_period()`
@@ -64,7 +115,7 @@ PYTHONPATH=. python3 -m pytest tests/ -v
 ### Layer 6: Execution (`execution/`)
 - `engine.py` — **ExecutionEngine**: 订单执行 → trades.db + capital_after
 - `cost.py` — **CostModel**: 统一成本模型（佣金万三 + 最低 5 元 + 印花税千一）
-- `quote.py` — `fetch_quotes()`: 新浪批量实时行情
+- `quote.py` — `fetch_quotes()`: 实时行情（腾讯主源 + 新浪备用）
 - `calendar.py` — 交易日历
 
 ### Layer 7: Monitor (`monitor/`)
@@ -93,17 +144,8 @@ Each step has independent try/except — failure in one layer does not block lat
 - **Ledoit-Wolf 收缩**: 协方差估计优于样本估计，适合高维截面（~5000 股票 × 60 日）
 - **资本自适应优化**: <2万等权 → 2-10万得分倾斜 → >10万均值-方差 + 整数约束。方法随资金增长自动升级
 - **统一成本模型**: `CostModel` 是所有模拟交易的唯一成本入口，确保绩效可比
-- **配置驱动**: 所有阈值从 `config.yaml` 读取，无硬编码
+- **配置驱动**: 所有阈值从 `config.yaml` 读取，通过 `_require_cfg()` 取值，key 缺失即崩溃（零 fallback）
 - **独立策略多 track**: `strategy_config` 表允许多策略并行运行，各自独立资金核算
-
-## Config access pattern
-
-```python
-from config.loader import get as cfg
-value = cfg("factor.min_abs_ic", 0.02)
-```
-
-Config sections: `data`, `factor`, `alpha`, `risk`, `risk.neutralize`, `optimizer`, `execution`, `backtest`, `web`, `screening`, `cache`, `calendar`, `attribution`
 
 ## Logging convention
 
@@ -163,7 +205,6 @@ Before proposing any solution:
 3. **Fit the change into that pattern** — minimum addition, same shape
 
 If the existing code already has a merge/overlay step, add to it. Never design alternatives before reading.
-
 
 ## Workflow Rule: 回测后自动分析日志
 

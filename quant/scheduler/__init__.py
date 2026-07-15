@@ -8,7 +8,7 @@ from quant.utils.logger import get_logger
 from quant.scheduler.orchestrator import start as _start_orch
 from quant.scheduler.weekly import _run as _run_weekly, _loop as _weekly_loop
 
-_log = get_logger("quant.scheduler")
+_log = get_logger(__name__)
 
 
 def start_orchestrator():

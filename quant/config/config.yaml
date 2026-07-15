@@ -97,6 +97,12 @@ execution:
   stamp_tax: 0.001
   quote:
     max_batch_workers: 4   # 新浪行情并行拉取最大线程数
+  limit_order:
+    discount_pct: 0.002       # 限价折扣: 挂单价 = 参考价 × (1 - discount)
+    chase_threshold: 0.01     # 当前价 < 限价超过 1% → 追价下调限价
+    runaway_threshold: 0.02   # 当前价 > 限价超过 2% → 放弃, 市价补买
+    force_fill_time: "14:50"  # 尾盘强制补单时间; 来源: A股尾盘 14:50 流动性尚可, 15:00 收盘
+    quote_ttl_sec: 30         # 行情陈旧阈值 (秒); 超过此值视为过期, 不触发事件
 factor:
   accruals:
     max: 1
@@ -180,10 +186,11 @@ optimizer:
   method: equal_weight
   min_holding_days: 5
   rebalance_freq: weekly
-  greedy_cap: 20000       # 低于此资金: 贪心逐手买入得分最高的股票
-  weighted_cap: 100000    # 低于此资金: 得分配比; 高于此: 均值-方差
+  nano_cap: 30000          # 低于此资金: Nano 层 — 贪心等权, 集中持仓 (来源: docs/reports/capital-segmentation-analysis-2026-07-15.md)
+  micro_cap: 100000        # 低于此资金: Micro 层 — 得分倾斜; 高于此: Small 层 — 均值-方差 (来源: docs/reports/capital-segmentation-analysis-2026-07-15.md)
   kelly_fraction: 4.0      # Fractional Kelly: 1=full, 2=half, 4=quarter (conservative). Source: Ralph Vince 1990
 risk:
+  default_stop_loss_pct: 0.05  # ATR 不可用时的默认止损比例; 来源: 行业惯例 5% 硬止损
   covariance:
     min_periods: 30
     window: 60

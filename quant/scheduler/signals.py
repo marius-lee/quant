@@ -1,5 +1,6 @@
 """信号生成调度器 — 每日 08:30."""
 import time as _time, uuid as _uuid
+from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
 from datetime import time
 from quant.monitor.metrics import metrics as _m
 from quant.utils.logger import get_logger, set_trace_id
@@ -11,6 +12,7 @@ _log = get_logger("quant.scheduler.signals")
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
+    _tk_start("signals", today)
     _log.info(f"[{today}] 08:30 — generating signals")
     t0 = _time.time()
 
@@ -21,6 +23,7 @@ def _run(today: str):
     # signals already persisted by pipeline.generate_signals() → daily_signals table
     elapsed = _time.time() - t0
     _log.info(f"[{today}] signals done: {len(targets)} targets ({elapsed:.1f}s)")
+    _tk_finish("signals", today, "ok", summary={"targets": len(targets), "elapsed": round(elapsed, 1)})
     _log.info(f"[SCHEDULER] {today} | TASK=signals | STATUS=OK | targets={len(targets)} | elapsed={elapsed:.1f}s")
     _m.inc("scheduler.signals.ok")
 

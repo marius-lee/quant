@@ -16,7 +16,7 @@ import contextvars
 import json
 from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 
-_log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+_log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "logs")
 _log_file = os.path.join(_log_dir, "quant.log")
 _initialized = False
 _lock = threading.Lock()
@@ -42,8 +42,8 @@ def _init():
     root = logging.getLogger("quant")
     root.setLevel(logging.DEBUG)
 
-    # 控制台: INFO, 人类可读 + trace_id 前缀
-    console = logging.StreamHandler()
+    # 控制台: INFO, 人类可读 + trace_id 前缀 (stdout — 不与 stderr capture 冲突)
+    console = logging.StreamHandler(sys.stdout)
     console.setLevel(logging.INFO)
     console.setFormatter(logging.Formatter(
         "[%(asctime)s] %(levelname)-5s %(name)s | %(trace_id)s%(message)s",

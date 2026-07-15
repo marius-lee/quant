@@ -4,6 +4,7 @@
 日更会引入噪声，增大换手率，吃掉收益。
 """
 import time as _time, uuid as _uuid
+from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
 from datetime import time
 from quant.monitor.metrics import metrics as _m
 from quant.utils.logger import get_logger
@@ -14,6 +15,7 @@ _log = get_logger("quant.scheduler.weekly")
 
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
+    _tk_start("weekly_eval", today)
     _log.info(f"[{today}] weekly factor evaluation starting")
     t0 = _time.time()
 
@@ -23,6 +25,7 @@ def _run(today: str):
 
     elapsed = _time.time() - t0
     _log.info(f"[{today}] weekly factor evaluation done: {n_factors} factors ({elapsed:.1f}s)")
+    _tk_finish("weekly_eval", today, "ok", summary={"factors": n_factors, "elapsed": round(elapsed, 1)})
     _log.info(f"[SCHEDULER] {today} | TASK=weekly_eval | STATUS=OK | factors={n_factors} | elapsed={elapsed:.1f}s")
     _m.inc("scheduler.weekly.ok")
 

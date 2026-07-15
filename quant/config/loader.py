@@ -192,6 +192,7 @@ if _VALIDATE_ON_IMPORT:
     try:
         validate()
     except (KeyError, TypeError, ValueError) as _ve:
-        import sys
-        print(f"[config/loader] FATAL: config validation failed — {_ve}", file=sys.stderr)
+        import logging as _logging_config
+        _logging_config.getLogger("quant.config").critical(
+            "FATAL: config validation failed — %s", _ve)
         raise

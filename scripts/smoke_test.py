@@ -20,7 +20,7 @@
   - 日常: factor_status_filter="backtesting" → 仅 backtesting 状态池
 """
 import sys
-sys.path.insert(0, '/Users/mariusto/project/quant')
+import os as _os; sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from quant.backtest.loop import run_backtest
 from quant.backtest.naming import next_smoke_name
 from quant.utils.excepthook import setup; setup()  # crash → app.log (after logger init)

@@ -14,6 +14,8 @@ from datetime import datetime, time
 from quant.config.constants import _require_cfg
 from quant.utils.logger import get_logger
 from quant.monitor.metrics import metrics as _m
+from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
+from quant.scheduler.order_manager import OrderManager
 
 _log = get_logger("quant.scheduler.monitor")
 
@@ -32,6 +34,7 @@ def _run_continuous(today: str):
 
     register("monitor", "09:35-14:55", has_multiprocess=False)
 
+    _tk_start("monitor", today)
     _log.info(f"[{today}] monitor started — interval={CHECK_INTERVAL_SEC}s")
 
     triggered_stop = set()   # 当日已触发: {"600036:profit", "000001:loss"}
@@ -43,6 +46,7 @@ def _run_continuous(today: str):
 
         if hhmm >= time(14, 55):
             update("monitor", status="idle (收市)")
+            _tk_finish("monitor", today, "ok")
             _log.info(f"[{today}] monitor stopped — market closing")
             break
 
@@ -83,6 +87,19 @@ def _run_continuous(today: str):
                 quotes = {}
                 from quant.execution.quote import fetch_quotes
                 quotes = fetch_quotes(syms) or {}
+
+                # ── ADR 033: 限价单盘中管理 (每 5s 检查一次) ──
+                try:
+                    _om = OrderManager()
+                    _order_actions = _om.check_and_manage(today, quotes, strategy="quant")
+                    for _act in _order_actions:
+                        if _act.get("action") in ("fill", "abandon_fill", "force_fill"):
+                            _m.inc("scheduler.monitor.order_fill")
+                            _log.info(f"[{today}] ORDER filled: {_act['symbol']} "
+                                      f"{_act.get('shares', 0)}股 @¥{_act.get('price', 0):.2f} "
+                                      f"({_act['action']})")
+                except Exception as _e:
+                    _log.warning(f"[{today}] limit order check failed (non-fatal): {type(_e).__name__}: {_e}")
                 # ── P6-b: 单票+单行业集中度 ──
                 if positions and total > 0:
                     for p in positions:

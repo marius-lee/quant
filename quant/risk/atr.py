@@ -31,10 +31,12 @@ def atr_stop_loss(entry_price: float, atr_value: float, multiplier: float = 2.0)
     stop = entry_price - multiplier * ATR
     Default multiplier=2.0 (captures ~95% of noise under normal distribution).
 
-    Returns: stop-loss price (or 0 if ATR unavailable)
+    Returns: stop-loss price. ATR 不可用时从 config 读取默认止损比例 (无 fallback)。
     """
     if atr_value <= 0 or np.isnan(atr_value):
-        return entry_price * 0.95  # fallback to 5% fixed
+        from quant.config.constants import _require_cfg
+        default_pct = _require_cfg("risk.default_stop_loss_pct")
+        return entry_price * (1 - default_pct)
     return entry_price - multiplier * atr_value
 
 

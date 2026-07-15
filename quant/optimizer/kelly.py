@@ -1,4 +1,8 @@
-"""Kelly 公式头寸管理 — 替代等权分配，按因子预期收益分配仓位.
+"""Kelly 公式头寸管理 — 替代等权分配，按因子预期收益分配仓位。
+
+⚠️  ADR 032: 此模块仅在 Small 层 (≥¥100K) 的 construct() 中被调用。
+Nano/Micro 层不使用 Kelly — 整数手离散化误差压倒优化收益。
+严禁在低资本层引入 Kelly，这是已验证的反复出现的错误。
 
 理论来源: Kelly (1956) "A New Interpretation of Information Rate".
 Fractional Kelly: 使用 1/N 凯利降低波动 (Ralph Vince 1990).

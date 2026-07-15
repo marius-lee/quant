@@ -38,7 +38,7 @@ def _evaluate_batch(args):
 
     store = DataStore()
     n_symbols = kwargs.get("n_symbols", 500)
-    lookback = kwargs.get("lookback", 120)
+    lookback = kwargs.get("lookback") or _require_cfg("factor.evaluation.lookback")
     date_str = kwargs.get("date_str")
 
     # Load data for evaluation
@@ -72,7 +72,7 @@ def _evaluate_batch(args):
     return results
 
 
-def parallel_evaluate(n_workers=None, n_symbols=500, lookback=120, date_str=None):
+def parallel_evaluate(n_workers=None, n_symbols=500, lookback=None, date_str=None):
     """Evaluate all factors in parallel using N worker processes.
 
     Args:

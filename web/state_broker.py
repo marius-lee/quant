@@ -23,6 +23,8 @@ class InProcessBroker:
         self._cache: dict = {}          # pipeline 进度/信号 (非财务数据)
         self._quote_ts = 0.0
         self._quote_result = None
+        self._init_state()
+        self._start_quote_thread()
 
     # ═══════════════════════════════════════════
     # 内部
@@ -149,56 +151,54 @@ class InProcessBroker:
         return state
 
     def _start_quote_thread(self):
-        """后台线程: 每 3s 刷新实时报价 (独立于 get() 调用)。"""
+        """后台线程: 每 3s 刷新实时报价到 _quote_result (唯一的 fetch_quotes 调用点)。"""
         def _refresh_loop():
             import time as _t
             while True:
                 try:
-                    state = self._init_state()
-                    self._quote_overlay(state)
+                    from quant.data.trade_repo import TradeRepo
+                    from quant.execution.quote import fetch_quotes
+                    from quant.execution.calendar import is_market_open
+                    if is_market_open():
+                        raw = TradeRepo().get_positions("quant")
+                        if raw:
+                            syms = [p["symbol"] for p in raw]
+                            self._quote_result = fetch_quotes(syms) or {}
+                            self._quote_ts = _t.time()
                 except Exception:
                     pass
                 _t.sleep(3)
-        t = __threading.Thread(target=_refresh_loop, daemon=True, name="quote-refresh")
+        t = _threading.Thread(target=_refresh_loop, daemon=True, name="quote-refresh")
         t.start()
 
     def _quote_overlay(self, state: dict):
-        """盘中实时报价覆盖持仓市值/总资产/PnL。"""
-        import time as _time
+        """用 _quote_result 缓存覆盖持仓现价/市值/PnL (不独立拉行情)。"""
         try:
-            from quant.execution.quote import fetch_quotes
-            from quant.execution.calendar import is_market_open
-            if is_market_open() and state.get("positions"):
-                now = _time.time()
-                if self._quote_result is None or now - self._quote_ts > 5:
-                    syms = [p["symbol"] for p in state["positions"]]
-                    self._quote_result = fetch_quotes(syms)
-                    self._quote_ts = now
-                quotes = self._quote_result or {}
-                if quotes:
-                    new_pos_value = 0.0
-                    for p in state["positions"]:
-                        sym = p["symbol"]
-                        q = quotes.get(sym, {})
-                        if q and q.get("price", 0) > 0:
-                            cur = q["price"]
-                            p["current"] = cur
-                            p["pnl_pct"] = round((cur / p["price"] - 1) * 100, 2) if p.get("price", 0) > 0 else 0
-                            p["value"] = round(p["shares"] * cur, 2)
-                        new_pos_value += p["value"]
-                    state["pos_value"] = round(new_pos_value, 2)
-                    cap = state.get("capital", 0)
-                    state["total_asset"] = round(cap + new_pos_value, 2)
-                    base = state.get("metrics", {}).get("initial_capital")
-                    if base:
-                        new_total_pnl = round(cap + new_pos_value - base, 2)
-                        if state.get("pnl"):
-                            state["pnl"]["total"] = new_total_pnl
-                            state["pnl"]["unrealized"] = round(new_total_pnl - state["pnl"].get("realized", 0), 2)
-                        if state.get("metrics"):
-                            state["metrics"]["total_return_pct"] = round(new_total_pnl / base * 100, 2) if base > 0 else 0
+            quotes = self._quote_result or {}
+            positions = state.get("positions", [])
+            if quotes and positions:
+                new_pos_value = 0.0
+                for p in positions:
+                    q = quotes.get(p["symbol"], {})
+                    if q and q.get("price", 0) > 0:
+                        cur = q["price"]
+                        p["current"] = cur
+                        p["pnl_pct"] = round((cur / p["price"] - 1) * 100, 2) if p.get("price", 0) > 0 else 0
+                        p["value"] = round(p["shares"] * cur, 2)
+                    new_pos_value += p.get("value", 0)
+                state["pos_value"] = round(new_pos_value, 2)
+                cap = state.get("capital", 0)
+                state["total_asset"] = round(cap + new_pos_value, 2)
+                base = state.get("metrics", {}).get("initial_capital")
+                if base:
+                    new_total_pnl = round(cap + new_pos_value - base, 2)
+                    if state.get("pnl"):
+                        state["pnl"]["total"] = new_total_pnl
+                        state["pnl"]["unrealized"] = round(new_total_pnl - state["pnl"].get("realized", 0), 2)
+                    if state.get("metrics"):
+                        state["metrics"]["total_return_pct"] = round(new_total_pnl / base * 100, 2) if base > 0 else 0
         except Exception:
-            logging.getLogger("web.state_broker").warning("_quote_overlay: position value calc failed", exc_info=True)
+            logging.getLogger("web.state_broker").warning("_quote_overlay failed", exc_info=True)
 
     # ═══════════════════════════════════════════
     # 公开接口

@@ -3,8 +3,8 @@
   "display_name": "epds",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.081,
-  "icir_12m": -0.4771,
+  "ic_mean_12m": -0.2135,
+  "icir_12m": -1.3758,
   "last_evaluated": "auto",
-  "n_obs": 33
+  "n_obs": 57
 }

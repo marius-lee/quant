@@ -3,8 +3,8 @@
   "display_name": "lhb_post_quality",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0074,
-  "icir_12m": 0.1561,
+  "ic_mean_12m": 0.0095,
+  "icir_12m": 0.2054,
   "last_evaluated": "auto",
-  "n_obs": 28
+  "n_obs": 52
 }

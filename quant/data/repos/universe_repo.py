@@ -22,13 +22,39 @@ class UniverseRepo:
     def _conn(self):
         return self.db.get_connection(self.db_path)
 
-    def get_symbols(self, exclude_market: str = "BJ") -> list[str]:
-        """Get all stock symbols, optionally excluding a market."""
+    def get_symbols(self, exclude_market: str = "BJ",
+                  start_date: str = None, end_date: str = None) -> list[str]:
+        """Get stock symbols, optionally filtered by date range to avoid survivorship bias.
+
+        Args:
+            exclude_market: market to exclude (default "BJ" = Beijing Exchange)
+            start_date: only include stocks listed ON or BEFORE this date AND 
+                        not delisted BEFORE this date (YYYY-MM-DD)
+            end_date: only include stocks listed ON or BEFORE this date (YYYY-MM-DD)
+
+        Delisted stocks are included if they had active trading during the period.
+        """
         conn = self._conn()
-        rows = query_all(conn,
-            "SELECT DISTINCT d.symbol FROM daily d "
-            "JOIN stocks s ON d.symbol = s.symbol "
-            "WHERE s.market != ?", (exclude_market,))
+        sql = ("SELECT DISTINCT d.symbol FROM daily d "
+               "JOIN stocks s ON d.symbol = s.symbol "
+               "WHERE s.market != ?")
+        params = [exclude_market]
+        
+        if end_date:
+            # exclude stocks that IPO'd after the backtest end
+            sql += " AND (s.list_date IS NULL OR s.list_date <= ?)"
+            params.append(end_date)
+        
+        if start_date:
+            # exclude stocks that were already delisted before the backtest start
+            sql += " AND (s.delist_date IS NULL OR s.delist_date > ?)"
+            params.append(start_date)
+        elif end_date:
+            # if only end_date is provided, still filter delisted before end
+            sql += " AND (s.delist_date IS NULL OR s.delist_date > ?)"
+            params.append(end_date)
+        
+        rows = query_all(conn, sql, tuple(params))
         return [r[0] for r in rows]
 
     def get_stock_markets(self) -> dict[str, str]:

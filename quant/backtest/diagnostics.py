@@ -22,8 +22,8 @@ def compute_pre_backtest_ic(factor_names: list, date: str, symbols: list,
     返回: {factor_name: {"ic_mean": float, "ic_ir": float, "weight": float}}
     """
     from quant.factor.ic import compute_ic as _unified_ic
-    return _unified_ic(factor_names, date, symbols, lookback,
-                       store=store, status_filter="backtesting")
+    return _unified_ic(factor_names=factor_names, date=date, symbols=symbols,
+                       lookback=lookback, store=store, status_filter="backtesting")
 
 
 class FactorTracker:

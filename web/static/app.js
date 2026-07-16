@@ -78,7 +78,7 @@ function showTab(name) {
   } else {
     if (_schedulerTimer) { clearInterval(_schedulerTimer); _schedulerTimer = null; }
   }
-  if (activeTab === 'overview' && window._perfData && typeof Plotly !== 'undefined') {
+  if (activeTab === 'overview' && window._perfData) {
     renderPNLChart();
   }
 }
@@ -226,33 +226,35 @@ function updateStatusBar(state) {
 
 function renderPNLChart() {
   const el = document.getElementById('chart-pnl');
-  if (!el || !window._perfData) return;
-  const perf = window._perfData;
+  if (!el) return;
+  const val = parseFloat(el.dataset.pnl) || (window._perfData && window._perfData.total_pnl) || 0;
+  const base = parseFloat(el.dataset.base) || (window._perfData && window._perfData.initial_capital) || 5000;
+  // Plotly gauge
   const pf = plotlyFont(), bg = plotlyBg();
-  const s = getComputedStyle(document.documentElement);
-  const accent = s.getPropertyValue('--accent').trim();
-  const textColor = s.getPropertyValue('--text').trim();
-  const val = perf.total_pnl || 0;
-  const base = perf.initial_capital || 5000;
-  const rangeMax = Math.max(5000, base * 0.2);
+  const ss = getComputedStyle(document.documentElement);
+  const accent = ss.getPropertyValue('--accent').trim();
+  const textColor = ss.getPropertyValue('--text').trim();
+  const rangeMax = Math.max(base * 0.3, 500);
   const data = [{
     type: 'indicator', mode: 'gauge+number',
     value: val,
     title: { text: '累计 PnL', font: { ...pf, size: 15, color: textColor } },
     gauge: {
-      axis: { range: [-rangeMax * 0.1, rangeMax], tickfont: { ...pf, size: 10 } },
+      axis: { range: [-rangeMax, rangeMax], tickfont: { ...pf, size: 10 } },
       bar: { color: accent },
       bgcolor: 'rgba(128,128,128,0.05)',
       steps: [
-        { range: [-rangeMax * 0.1, 0], color: 'rgba(248,81,73,0.12)' },
-        { range: [0, rangeMax * 0.4], color: 'rgba(63,185,80,0.08)' },
-        { range: [rangeMax * 0.4, rangeMax], color: 'rgba(128,128,128,0.08)' },
+        { range: [-rangeMax, 0], color: 'rgba(248,81,73,0.12)' },
+        { range: [0, rangeMax * 0.5], color: 'rgba(63,185,80,0.10)' },
+        { range: [rangeMax * 0.5, rangeMax], color: 'rgba(63,185,80,0.22)' },
       ],
     },
-    number: { font: { family: pf.family, size: 24, color: textColor } },
+    number: { font: { family: pf.family, size: 24, color: textColor }, valueformat: '.2f' },
   }];
+  try { Plotly.purge('chart-pnl'); } catch(_) {}
   Plotly.newPlot('chart-pnl', data, { ...bg, margin: { t: 40, b: 20, l: 20, r: 20 } }, PLOTLY_CONFIG);
 }
+
 
 // ═══════════════════════════════════════════
 // FACTORS
@@ -500,10 +502,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   connectSSE();
   await pollOverview();
   setInterval(pollOverview, POLL_MS);
+  // PnL 直接更新 (test-v92: 不再依赖 Plotly gauge)
+  renderPNLChart();
   const checkPlotly = () => {
     if (typeof Plotly !== 'undefined' && !_chartsRendered) {
       _chartsRendered = true;
-      renderPNLChart();
+      // Plotly loaded — PnL already rendered above
     } else if (!_chartsRendered) { setTimeout(checkPlotly, 200); }
   };
   setTimeout(checkPlotly, 100);

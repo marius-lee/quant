@@ -65,7 +65,7 @@
   </div>
 
   <div class="grid-2">
-    <div class="chart-box" id="chart-pnl"></div>
+    <div class="chart-box" id="chart-pnl" data-pnl="{{ perf.total_pnl if perf else 0 }}" data-base="{{ perf.initial_capital if perf else 5000 }}"></div>
     <div>
       <div class="section">
         <div class="section-header">
@@ -161,5 +161,6 @@
 
 <script defer src="/static/plotly.min.js"></script>
 <script src="/static/app.js?v={{ version }}"></script>
+
 </body>
 </html>

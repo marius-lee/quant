@@ -45,8 +45,8 @@ BACKTEST_DB = os.path.join(_root, "data", "backtest_trades.db")
 
 
 
-def _compute_backtest_metrics(equity_curve):
-    """Compute Sharpe, MDD, CAGR, win rate from equity curve."""
+def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
+    """Compute Sharpe, MDD, CAGR, win rate, Sortino, Calmar, Alpha, IR, Beta from equity curve."""
     df = pd.DataFrame(equity_curve)
     if df.empty or len(df) < 2:
         return {"sharpe": 0, "max_drawdown_pct": 0, "cagr_pct": 0, "final_equity": 0}
@@ -78,6 +78,37 @@ def _compute_backtest_metrics(equity_curve):
     wins = (returns > 0).sum()
     wr = wins / len(returns) if len(returns) > 0 else 0
 
+    # Sortino (annualized): only penalize downside deviation
+    downside = returns[returns < 0]
+    if len(downside) > 1 and downside.std() > 0:
+        sortino = (mean_ret / downside.std() * np.sqrt(252))
+    else:
+        sortino = 0.0
+
+    # Calmar: CAGR / |MDD|
+    calmar = (cagr / abs(max_dd)) if max_dd < 0 else 0.0
+
+    # Benchmark-relative metrics (Alpha, IR, Beta)
+    alpha = None
+    ir = None
+    beta = None
+    if benchmark_returns is not None and not benchmark_returns.empty:
+        bm_returns = benchmark_returns.reindex(returns.index, method='ffill').dropna()
+        common_idx = returns.index.intersection(bm_returns.index)
+        if len(common_idx) > 20:
+            strat = returns.loc[common_idx]
+            bm = bm_returns.loc[common_idx]
+            cov_mat = np.cov(strat, bm)
+            bm_var = cov_mat[1, 1]
+            if bm_var > 0:
+                beta_val = cov_mat[0, 1] / bm_var
+                beta = round(float(beta_val), 3)
+            daily_alpha = (strat - beta_val * bm).mean() if beta is not None else 0
+            alpha = round(float(daily_alpha * 252), 4)
+            tracking_err = (strat - bm).std() * np.sqrt(252)
+            if tracking_err > 0:
+                ir = round(float(daily_alpha * 252 / tracking_err), 3)
+
     return {
         "sharpe": round(sharpe, 3),
         "max_drawdown_pct": round(max_dd * 100, 1),
@@ -87,6 +118,11 @@ def _compute_backtest_metrics(equity_curve):
         "total_return_pct": round((final / initial - 1) * 100, 1),
         "win_rate": round(wr, 3),
         "n_days": len(returns),
+        "sortino": round(sortino, 3),
+        "calmar": round(calmar, 3),
+        "alpha": alpha,
+        "info_ratio": ir,
+        "beta": beta,
     }
 
 
@@ -166,7 +202,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
 
         # ── Pre-load all daily data once (eliminates 843 DB queries) ──
         from quant.data.repos import UniverseRepo
-        _all_symbols = UniverseRepo().get_symbols(exclude_market='BJ')
+        _all_symbols = UniverseRepo().get_symbols(exclude_market='BJ', start_date=start_date, end_date=end_date)
         from quant.factor.windows import max_factor_calendar_days
         _eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(None))
         _full_start = (pd.Timestamp(trading_days[0]) - pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
@@ -278,10 +314,13 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
                             f"{elapsed:.0f}s elapsed")
 
         elapsed = time.time() - t0
+        # Fetch benchmark returns before closing store
+        _bm_returns = store.get_benchmark("000300", start=start_date)
+        _bm_returns = _bm_returns.reindex(pd.to_datetime([e["date"] for e in equity_curve]), method='ffill')
         store.close()
 
         # ── Compute metrics ──
-        metrics = _compute_backtest_metrics(equity_curve)
+        metrics = _compute_backtest_metrics(equity_curve, _bm_returns)
 
         # ── Post-backtest diagnosis ──
         _backtest_symbols = []
@@ -350,7 +389,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
 
         # Explicit flush — web 服务进程同时在写同一日志文件, Python logging
         # 多进程争用 FileHandler 时可能丢失最后几行. 强制刷盘.
-        for h in _log.handlers:
+        for h in getattr(_log, "logger", _log).handlers:
             try:
                 if hasattr(h, 'flush'):
                     h.flush()

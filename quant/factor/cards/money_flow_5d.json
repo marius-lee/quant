@@ -3,8 +3,8 @@
   "display_name": "money_flow_5d",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.3041,
-  "icir_12m": 2.7337,
+  "ic_mean_12m": 0.2814,
+  "icir_12m": 2.3017,
   "last_evaluated": "auto",
-  "n_obs": 33
+  "n_obs": 57
 }

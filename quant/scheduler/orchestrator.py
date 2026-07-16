@@ -30,14 +30,15 @@ def _run():
     register("signals",    "08:30", has_multiprocess=True)
     register("execute",    "09:30", has_multiprocess=True)
     register("monitor",    "09:35-14:55", has_multiprocess=False)
-    register("attribution","15:30", has_multiprocess=False)
+    register("daily_data", "19:00")
+    register("attribution","20:00", has_multiprocess=False)
 
     _log.info("orchestrator started — daily sequence: 08:30 signals → 09:30 execute → "
               "09:35-14:55 monitor → 15:30 attribution")
 
     POLL = _require_cfg("quant.scheduler.poll_interval")
     today = None
-    done = {"signals": False, "execute": False, "attribution": False}
+    done = {"signals": False, "execute": False, "daily_data": False, "attribution": False}
     _monitor_thread = None
     _monitor_stop = _thr.Event()
 
@@ -82,7 +83,7 @@ def _run():
             _monitor_thread = None
 
             today = current_day
-            done = {"signals": False, "execute": False, "attribution": False}
+            done = {"signals": False, "execute": False, "daily_data": False, "attribution": False}
             _log.info(f"[{today}] new day, orchestrator ready")
 
         # ── 非交易日: 全部跳过 ──
@@ -94,7 +95,7 @@ def _run():
         _check_timeouts(today)
 
         _time.sleep(POLL)
-            continue
+        continue
 
         # ═══════════════════════════════════════════
         # 1. 08:30 — 信号生成
@@ -152,10 +153,22 @@ def _run():
                 update("monitor", status=f"waiting")
 
         # ═══════════════════════════════════════════
-        # 4. 15:30 — 盘后归因 (依赖 signals 完成)
+        # 4. 19:00 — 每日数据拉取
         # ═══════════════════════════════════════════
-        if done["signals"] and not done["attribution"]:
-            if hhmm >= time(15, 30):
+        if not done["daily_data"]:
+            if hhmm >= time(19, 0):
+                from quant.scheduler.daily_data import _run as _daily_data_run
+                _run_task("daily_data", _daily_data_run, today)
+                done["daily_data"] = True
+            else:
+                wait_m = (time(19, 0).hour * 60) - (hhmm.hour * 60 + hhmm.minute)
+                update("daily_data", status=f"waiting ({wait_m}min)")
+
+        # ═══════════════════════════════════════════
+        # 5. 20:00 — 盘后归因 (依赖 daily_data 完成)
+        # ═══════════════════════════════════════════
+        if done["daily_data"] and not done["attribution"]:
+            if hhmm >= time(20, 0):
                 from quant.scheduler.attribution import _run as _attr_run
                 _run_task("attribution", _attr_run, today)
                 done["attribution"] = True
@@ -164,7 +177,7 @@ def _run():
                     _monitor_thread.join(timeout=5)
                     _monitor_thread = None
             else:
-                wait_m = (time(15, 30).hour * 60 + 30) - (hhmm.hour * 60 + hhmm.minute)
+                wait_m = (time(20, 0).hour * 60) - (hhmm.hour * 60 + hhmm.minute)
                 update("attribution", status=f"waiting ({wait_m}min)")
 
         # ── 主动超时检测: 把僵尸 running 行标为 aborted ──
@@ -178,6 +191,7 @@ _TIMEOUTS = {
     "signals": 900,       # 15 min (正常 ~5 min)
     "execute": 600,       # 10 min (正常 <1 min)
     "monitor": None,      # 持续运行, 不收市不超时 — 只在 14:55+ 检查
+    "daily_data": 1800,   # 30 min (正常 ~5 min)
     "attribution": 900,   # 15 min (正常 ~3 min)
     "weekly_eval": 7200,  # 120 min (正常 ~30 min)
 }

@@ -3,8 +3,8 @@
   "display_name": "ideal_amplitude",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0441,
-  "icir_12m": 0.2764,
+  "ic_mean_12m": 0.0594,
+  "icir_12m": 0.35,
   "last_evaluated": "auto",
-  "n_obs": 15
+  "n_obs": 39
 }

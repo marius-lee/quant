@@ -46,6 +46,14 @@ from quant.scheduler.attribution import _run
 _run('$DATE')
 "
         ;;
+    daily_data)
+        echo ">>> TASK: daily_data for $DATE"
+        PYTHONPATH=. .venv/bin/python3 -c "
+from quant.utils.excepthook import setup; setup()
+from quant.scheduler.daily_data import _run
+_run('$DATE')
+"
+        ;;
     weekly)
         echo ">>> TASK: weekly factor eval"
         PYTHONPATH=. .venv/bin/python3 -c "

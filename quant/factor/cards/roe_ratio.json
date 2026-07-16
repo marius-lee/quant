@@ -3,8 +3,8 @@
   "display_name": "roe_ratio",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.0026,
-  "icir_12m": -0.0352,
+  "ic_mean_12m": -0.0037,
+  "icir_12m": -0.0798,
   "last_evaluated": "auto",
-  "n_obs": 33
+  "n_obs": 57
 }

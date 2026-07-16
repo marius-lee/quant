@@ -150,3 +150,33 @@
 - market.db 数据已全面复权，无需额外修改
 
 ### 版本: test-v96
+
+### test-v97: 每日数据拉取自动化 + 调度时序调整
+
+**背景**: 数据拉取从未自动化，market.db 停留在手动拉取的最后日期。
+数据源（东方财富/腾讯/通达信）收盘后 30-60 分钟才更新，15:30 拉取不可靠。
+
+**改动**:
+
+1. **新建 `quant/scheduler/daily_data.py`** — 每日 19:00 数据拉取调度器，调用 `DataStore().update_daily()`
+2. **`scripts/run_task.sh`** — 新增 `daily_data` 路由
+3. **`scripts/setup_cron.sh`** — 新增 `0 19 * * 1-5 daily_data`，attribution 从 `30 15` 改为 `0 20`
+4. **`quant/scheduler/orchestrator.py`**:
+   - 注册 `daily_data` 任务（19:00）
+   - `done` 字典新增 `daily_data` 键
+   - 新增 19:00 数据拉取执行块
+   - attribution 从 15:30 改为 20:00，增加 `done["daily_data"]` 前置依赖
+   - `_TIMEOUTS` 新增 `"daily_data": 1800`（30min）
+
+**最终调度时序**:
+```
+周一~五:
+  08:30  signals      信号生成（依赖前一天数据）
+  09:30  execute      交易执行
+  09:35  monitor      盘中风控
+  19:00  daily_data   拉取当日收盘数据
+  20:00  attribution  盘后归因（依赖 daily_data 完成）
+周六 06:00  weekly      周频因子评估
+```
+
+### 版本: test-v97

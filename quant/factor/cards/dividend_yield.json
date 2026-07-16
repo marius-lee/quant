@@ -3,8 +3,8 @@
   "display_name": "dividend_yield",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0739,
-  "icir_12m": 0.3963,
+  "ic_mean_12m": 0.0325,
+  "icir_12m": 0.1503,
   "last_evaluated": "auto",
-  "n_obs": 33
+  "n_obs": 57
 }

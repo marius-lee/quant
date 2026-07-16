@@ -86,3 +86,67 @@
 北向资金因子特殊处理: `rejected` 而非 `retired`，原因="数据源停止提供(证监会不再披露北向资金)"。retired 暗示将来可复用，不适合此场景。
 
 ### 版本: test-v85
+
+### test-v86: contextvars 离线日志路由 + 缩进统一
+
+**背景**: 回测/诊断/评估三个离线入口使用共享模块（pipeline/factor/risk），日志会同时写 app.log 和 backtest.log，造成日志混淆和丢行问题。
+
+**contextvars 方案 — `quant/utils/logger.py`**:
+- 新增 `_offline_mode: ContextVar[bool]` — 标记当前上下文是离线模式
+- 新增 `offline_mode()` context manager — 进入时设 True，退出时恢复
+- `_is_backtest()` filter 检查 `_offline_mode.get()` — True 时日志路由到 backtest.log
+
+**三个入口覆盖**:
+| 入口 | 方式 | 状态 |
+|------|------|:--:|
+| 回测 `run_backtest()` | `loop.py:110` 直接包装 `with offline_mode():` | ✓ |
+| 冒烟测试 `smoke_test.py` | 调用 `run_backtest()` 间接覆盖 | ✓ |
+| 诊断 `diagnostics_test.py` | 调用 `run_backtest()` 间接覆盖 | ✓ |
+| 评估 `eval_standard.sh` | 7 个 phase 各自 `python3 -c` 内 import+with | ✓ |
+
+**修复 — `eval_standard.sh` Phase 2 bug**:
+- Phase 2 的 `from quant.utils.logger import offline_mode` 和 `with offline_mode():` 泄漏到 bash 层
+- 修复: PREFILTER 逻辑提前到 python3 -c 之前，import 和 with 放入 python 字符串内
+- 同时验证全部 7 个 phase 均为 import 在前、with 在后
+
+**缩进统一 — 3 文件 27 处**:
+- `quant/utils/logger.py`: L4-L8 docstring 2空格→4空格
+- `quant/backtest/loop.py`: L94/L277-278/L324/L342-349 续行缩进→4的倍数
+- `quant/factor/stats_cache.py`: L14-15 docstring + L156/L171-174/L205/L280/L288/L325/L333 续行→4的倍数
+
+### test-v96: 回测专业分析 P0-P2 全部落地
+
+**背景**: 回测逻辑专业分析发现 6 个问题，按优先级全部落地。
+
+**P0-1 — UniverseRepo.get_symbols() 生存偏差修复**:
+- `universe_repo.py`: `get_symbols()` 接受 `start_date`/`end_date` 参数
+- JOIN stocks 时过滤 `list_date <= end_date`（排除未来IPO股票）
+- 过滤 `delist_date > start_date`（保留已退市但期间活跃的股票）
+- 消除 survivorship bias 和 look-ahead bias
+
+**P0-2 — 删除 bt_engine.py**:
+- `bt_engine.py` 已删除（`_extract_equity_curve` 存在致命bug: cerebro.broker.getvalue() 循环内始终返回终值）
+- `__init__.py` 移除 `run_backtest_bt` 导入
+- `run_backtest_bt` 仅内部引用，无外部调用者，安全删除
+- 双引擎分歧问题一并解决
+
+**P1-1 — 回测指标增强**:
+- `_compute_backtest_metrics()` 新增 5 个指标:
+  - **Sortino**: annualized, 仅惩罚下行波动（更适合A股高波动特征）
+  - **Calmar**: CAGR / |MDD|
+  - **Alpha**: 年化超额收益（vs 沪深300基准）
+  - **Info Ratio**: 超额收益 / 跟踪误差
+  - **Beta**: 市场暴露系数
+- 函数签名改为 `_compute_backtest_metrics(equity_curve, benchmark_returns=None)`
+- `run_backtest()` 在 store.close() 前拉取沪深300基准数据，传入指标计算
+- 当 benchmark_returns 为空或样本不足时，Alpha/IR/Beta 返回 None（不报错）
+
+**P1-3 — pytdx 复权已验证**:
+- 四个数据源均已提供 qfq 前复权价格:
+  - akshare: `adjust="qfq"`（store.py:545/751）
+  - tencent: qfq（store.py:910 注释确认）
+  - pytdx: 手动 qfq 计算（store.py:651-720）
+  - sina: 已移除（未复权）
+- market.db 数据已全面复权，无需额外修改
+
+### 版本: test-v96

@@ -91,7 +91,7 @@ class InProcessBroker:
             state["pnl"] = {
                 "realized": round(realized, 2),
                 "total": total_pnl,
-                "unrealized": round(total_pnl - realized, 2),
+                "unrealized": round(total_pnl - realized, 2) if pos_value > 0 else 0,
             }
             total_return_pct = round(total_pnl / base * 100, 2) if base > 0 else 0
             _, sells, wins = repo.get_counts("quant")
@@ -194,7 +194,7 @@ class InProcessBroker:
                     new_total_pnl = round(cap + new_pos_value - base, 2)
                     if state.get("pnl"):
                         state["pnl"]["total"] = new_total_pnl
-                        state["pnl"]["unrealized"] = round(new_total_pnl - state["pnl"].get("realized", 0), 2)
+                        state["pnl"]["unrealized"] = round(new_total_pnl - state["pnl"].get("realized", 0), 2) if new_pos_value > 0 else 0
                     if state.get("metrics"):
                         state["metrics"]["total_return_pct"] = round(new_total_pnl / base * 100, 2) if base > 0 else 0
         except Exception:

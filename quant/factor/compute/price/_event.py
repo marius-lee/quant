@@ -250,14 +250,10 @@ def compute_lhb_net_buy(data: "pd.DataFrame", date: str, window: int = _LHB_WIND
 
     添加日期: 2026-07-03 — lhb_detail 表补齐后激活.
     """
-    import sqlite3
-    db_path = _market_db_path()
-    conn = _db_connect()
-
     symbols = list(data["close"].columns)
+    date_str = date.strftime("%Y-%m-%d") if hasattr(date, "strftime") else str(date)[:10]
 
     all_dates = sorted(data.index)
-    date_str = date.strftime("%Y-%m-%d") if hasattr(date, "strftime") else str(date)[:10]
     if date_str not in all_dates:
         return pd.Series(np.nan, index=symbols, name=f"lhb_net_buy_{window}d")
 
@@ -268,22 +264,23 @@ def compute_lhb_net_buy(data: "pd.DataFrame", date: str, window: int = _LHB_WIND
     else:
         start_date = str(all_dates[start])[:10]
 
-    rows = conn.execute("""
-        SELECT symbol,
-               COALESCE(SUM(net_buy), 0) as total_net_buy,
-               AVG(COALESCE(circ_mv, 0)) as avg_circ_mv
-        FROM lhb_detail
-        WHERE trade_date BETWEEN ? AND ?
-        GROUP BY symbol
-    """, (start_date, date_str)).fetchall()
+    if aux is None or "lhb" not in aux:
+        raise ValueError("compute_lhb_net_buy requires preloaded aux['lhb']")
 
-    if not rows:
+    lhb = aux["lhb"]
+    mask = (lhb["trade_date"] >= start_date) & (lhb["trade_date"] <= date_str)
+    w = lhb[mask]
+    if w.empty:
         return pd.Series(0.0, index=symbols, name=f"lhb_net_buy_{window}d")
 
+    grouped = w.groupby("symbol").agg(
+        total_net_buy=("net_buy", "sum"),
+        avg_circ_mv=("circ_mv", lambda x: x.dropna().mean())
+    )
     scores = {}
-    for sym, total_buy, avg_mv in rows:
-        if avg_mv and avg_mv > 0 and total_buy is not None:
-            scores[sym] = total_buy / avg_mv
+    for sym, row in grouped.iterrows():
+        if row["avg_circ_mv"] and row["avg_circ_mv"] > 0:
+            scores[sym] = row["total_net_buy"] / row["avg_circ_mv"]
 
     result = pd.Series(scores, dtype=float)
     result = result.reindex(symbols).fillna(0.0)
@@ -291,7 +288,7 @@ def compute_lhb_net_buy(data: "pd.DataFrame", date: str, window: int = _LHB_WIND
 
 
 
-def compute_lhb_post_quality(data: "pd.DataFrame", date: str, window: int = 90) -> "pd.Series":
+def compute_lhb_post_quality(data: "pd.DataFrame", date: str, window: int = 90, aux=None) -> "pd.Series":
     """LHB 上榜后质量因子: 历史上榜后 post_5d 平均收益。
 
     算法:
@@ -306,10 +303,6 @@ def compute_lhb_post_quality(data: "pd.DataFrame", date: str, window: int = 90) 
 
     添加: 2026-07-03 — lhb_detail 表补齐后, post_5d 字段已有 24,386 行.
     """
-    import sqlite3
-    db_path = _market_db_path()
-    conn = _db_connect()
-
     symbols = list(data["close"].columns)
 
     all_dates = [str(d)[:10] for d in sorted(data.index)]
@@ -326,18 +319,18 @@ def compute_lhb_post_quality(data: "pd.DataFrame", date: str, window: int = 90) 
     start_date = all_dates[start_idx]
     end_date = all_dates[end_idx]
 
-    rows = conn.execute("""
-        SELECT symbol, AVG(post_5d) as avg_post5, COUNT(*) as n
-        FROM lhb_detail
-        WHERE trade_date BETWEEN ? AND ? AND post_5d IS NOT NULL
-        GROUP BY symbol
-        HAVING n >= 2
-    """, (start_date, end_date)).fetchall()
+    if aux is None or "lhb" not in aux:
+        raise ValueError("compute_lhb_post_quality requires preloaded aux['lhb']")
 
-    scores = {}
-    for sym, avg_p5, n in rows:
-        if avg_p5 is not None:
-            scores[sym] = avg_p5
+    lhb = aux["lhb"]
+    mask = (lhb["trade_date"] >= start_date) & (lhb["trade_date"] <= end_date) & lhb["post_5d"].notna()
+    w = lhb[mask]
+    if w.empty:
+        return pd.Series(0.0, index=symbols, name="lhb_post_quality")
+
+    grouped = w.groupby("symbol").agg(avg_post5=("post_5d", "mean"), n=("post_5d", "count"))
+    qualified = grouped[grouped["n"] >= 2]
+    scores = qualified["avg_post5"].to_dict()
 
     result = pd.Series(scores, dtype=float)
     result = result.reindex(symbols).fillna(0.0)
@@ -346,7 +339,7 @@ def compute_lhb_post_quality(data: "pd.DataFrame", date: str, window: int = 90) 
 
 
 
-def compute_margin_balance_chg(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.Series":
+def compute_margin_balance_chg(data: "pd.DataFrame", date: str, window: int = 5, aux=None) -> "pd.Series":
     """融资余额变化率: (今日余额 - window日前余额) / window日前余额。
 
     数据源: margin_detail 表 (融资融券每日明细)
@@ -355,9 +348,6 @@ def compute_margin_balance_chg(data: "pd.DataFrame", date: str, window: int = 5)
 
     添加: 2026-07-03 — Phase 8 P2, margin_detail 表同步后激活.
     """
-    import sqlite3
-    db_path = _market_db_path()
-    conn = _db_connect()
     symbols = list(data["close"].columns)
     date_str = str(date)[:10]
 
@@ -372,27 +362,15 @@ def compute_margin_balance_chg(data: "pd.DataFrame", date: str, window: int = 5)
 
     prev_date = str(all_dates[idx - window])[:10]
 
-    rows = conn.execute("""
-        SELECT symbol, margin_balance FROM margin_detail WHERE date IN (?, ?)
-    """, (date_str, prev_date)).fetchall()
+    if aux is None or "margin" not in aux:
+        raise ValueError("compute_margin_balance_chg requires preloaded aux['margin']")
 
-    today = {}
-    prev = {}
-    for sym, bal in rows:
-        # Multiple rows possible if sym appears in both dates, need to track which date
-        pass
+    m = aux["margin"]
+    today_rows = m[m["date"] == date_str]
+    prev_rows = m[m["date"] == prev_date]
 
-    # Re-query properly
-    conn2 = _db_connect()
-    today_rows = conn2.execute(
-        "SELECT symbol, margin_balance FROM margin_detail WHERE date=?", (date_str,)
-    ).fetchall()
-    prev_rows = conn2.execute(
-        "SELECT symbol, margin_balance FROM margin_detail WHERE date=?", (prev_date,)
-    ).fetchall()
-
-    today_map = {r[0]: r[1] for r in today_rows if r[1] and r[1] > 0}
-    prev_map = {r[0]: r[1] for r in prev_rows if r[1] and r[1] > 0}
+    today_map = {r.name: r["margin_balance"] for _, r in today_rows.iterrows() if r["margin_balance"] and r["margin_balance"] > 0}
+    prev_map = {r.name: r["margin_balance"] for _, r in prev_rows.iterrows() if r["margin_balance"] and r["margin_balance"] > 0}
 
     scores = {}
     for sym in symbols:
@@ -406,7 +384,7 @@ def compute_margin_balance_chg(data: "pd.DataFrame", date: str, window: int = 5)
     return _cs_zscore(result).rename("margin_balance_chg")
 
 
-def compute_margin_buy_ratio_price(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.Series":
+def compute_margin_buy_ratio_price(data: "pd.DataFrame", date: str, window: int = 5, aux=None) -> "pd.Series":
     """融资买入占比: AVG(margin_buy / margin_balance) over window 天。
 
     数据源: margin_detail 表
@@ -416,9 +394,6 @@ def compute_margin_buy_ratio_price(data: "pd.DataFrame", date: str, window: int 
     命名: margin_buy_ratio_5d — 与单日版 margin_buy_ratio 区分, 避免重复注册。
     添加: 2026-07-03 — Phase 8 P2.
     """
-    import sqlite3
-    db_path = _market_db_path()
-    conn = _db_connect()
     symbols = list(data["close"].columns)
     date_str = str(date)[:10]
 
@@ -430,15 +405,16 @@ def compute_margin_buy_ratio_price(data: "pd.DataFrame", date: str, window: int 
         return pd.Series(0.0, index=symbols, name="margin_buy_ratio_5d")
     lookback_dates = dates[-window:]
 
-    placeholders = ','.join(['?'] * len(lookback_dates))
-    rows = conn.execute(f"""
-        SELECT symbol, AVG(CASE WHEN margin_balance > 0 THEN margin_buy * 1.0 / margin_balance ELSE NULL END) as avg_ratio
-        FROM margin_detail
-        WHERE date IN ({placeholders}) AND margin_buy IS NOT NULL AND margin_balance > 0
-        GROUP BY symbol
-    """, lookback_dates).fetchall()
+    if aux is None or "margin" not in aux:
+        raise ValueError("compute_margin_buy_ratio_price requires preloaded aux['margin']")
 
-    scores = {r[0]: r[1] for r in rows if r[1] is not None}
+    m = aux["margin"]
+    w = m[m["date"].isin(lookback_dates) & m["margin_balance"].notna() & (m["margin_balance"] > 0) & m["margin_buy"].notna()]
+    if w.empty:
+        return pd.Series(0.0, index=symbols, name="margin_buy_ratio_5d")
+    w["ratio"] = w["margin_buy"] / w["margin_balance"]
+    grouped = w.groupby("symbol")["ratio"].mean()
+    scores = grouped.dropna().to_dict()
     result = pd.Series(scores, dtype=float)
     result = result.reindex(symbols).fillna(0.0)
     return _cs_zscore(result).rename("margin_buy_ratio_5d")
@@ -451,9 +427,6 @@ def compute_main_flow_ratio(data: "pd.DataFrame", date: str, window: int = 5, au
 
     添加: 2026-07-03 — Phase 8 P2.
     """
-    import sqlite3
-    db_path = _market_db_path()
-    conn = _db_connect()
     symbols = list(data["close"].columns)
     date_str = str(date)[:10]
 
@@ -465,22 +438,22 @@ def compute_main_flow_ratio(data: "pd.DataFrame", date: str, window: int = 5, au
         return pd.Series(0.0, index=symbols, name="main_flow_ratio")
     lookback_dates = dates[-window:]
 
-    placeholders = ','.join(['?'] * len(lookback_dates))
-    rows = conn.execute(f"""
-        SELECT symbol, AVG(main_net_ratio) as avg_ratio
-        FROM fund_flow
-        WHERE date IN ({placeholders}) AND main_net_ratio IS NOT NULL
-        GROUP BY symbol
-    """, lookback_dates).fetchall()
+    if aux is None or "fund_flow" not in aux:
+        raise ValueError("compute_main_flow_ratio requires preloaded aux['fund_flow']")
 
-    scores = {r[0]: r[1] for r in rows if r[1] is not None}
+    ff = aux["fund_flow"]
+    w = ff[ff["date"].isin(lookback_dates) & ff["main_net_ratio"].notna()]
+    if w.empty:
+        return pd.Series(0.0, index=symbols, name="main_flow_ratio")
+    grouped = w.groupby("symbol")["main_net_ratio"].mean()
+    scores = grouped.dropna().to_dict()
     result = pd.Series(scores, dtype=float)
     result = result.reindex(symbols).fillna(0.0)
     return _cs_zscore(result).rename("main_flow_ratio")
 
 
 
-def compute_fund_change(data: "pd.DataFrame", date: str, window: int = 0) -> "pd.Series":
+def compute_fund_change(data: "pd.DataFrame", date: str, window: int = 0, aux=None) -> "pd.Series":
     """基金持仓变动: 最新季报的持股变动比例 (change_ratio)。
 
     数据源: fund_hold 表 (季度基金持仓)
@@ -490,22 +463,20 @@ def compute_fund_change(data: "pd.DataFrame", date: str, window: int = 0) -> "pd
 
     添加: 2026-07-03 — Phase 9.
     """
-    import sqlite3
-    db_path = _market_db_path()
-    conn = _db_connect()
     symbols = list(data["close"].columns)
     date_str = str(date)[:10]
 
-    # Find latest quarter end date before this trading date
-    rows = conn.execute("""
-        SELECT symbol, change_ratio FROM fund_hold
-        WHERE report_date = (SELECT MAX(report_date) FROM fund_hold WHERE report_date <= ?)
-    """, (date_str,)).fetchall()
+    if aux is None or "fund_hold" not in aux:
+        raise ValueError("compute_fund_change requires preloaded aux['fund_hold']")
+
+    fh = aux["fund_hold"]
+    if fh.empty or "change_ratio" not in fh.columns:
+        return pd.Series(0.0, index=symbols, name="fund_change")
 
     scores = {}
-    for sym, ratio in rows:
-        if ratio is not None:
-            scores[sym] = float(ratio)
+    for sym, row in fh.iterrows():
+        if row.get("change_ratio") is not None:
+            scores[sym] = float(row["change_ratio"])
 
     result = pd.Series(scores, dtype=float)
     result = result.reindex(symbols).fillna(0.0)
@@ -521,23 +492,25 @@ def compute_analyst_buy(data: "pd.DataFrame", date: str, window: int = 0, aux=No
 
     添加: 2026-07-03 — Phase 9.
     """
-    import sqlite3
-    db_path = _market_db_path()
-    conn = _db_connect()
     symbols = list(data["close"].columns)
     date_str = str(date)[:10]
 
-    rows = conn.execute("""
-        SELECT symbol, buy_count, overweight_count, neutral_count, underweight_count
-        FROM analyst_forecast
-        WHERE sync_date = (SELECT MAX(sync_date) FROM analyst_forecast WHERE sync_date <= ?)
-    """, (date_str,)).fetchall()
+    if aux is None or "analyst" not in aux:
+        raise ValueError("compute_analyst_buy requires preloaded aux['analyst']")
+
+    a = aux["analyst"]
+    if a.empty:
+        return pd.Series(0.5, index=symbols, name="analyst_buy")
 
     scores = {}
-    for sym, buy, over, neutral, under in rows:
-        total = (buy or 0) + (over or 0) + (neutral or 0) + (under or 0)
+    for sym, row in a.iterrows():
+        buy = row.get("buy_count") or 0
+        over = row.get("overweight_count") or 0
+        neutral = row.get("neutral_count") or 0
+        under = row.get("underweight_count") or 0
+        total = buy + over + neutral + under
         if total > 0:
-            scores[sym] = ((buy or 0) + (over or 0)) / total
+            scores[sym] = (buy + over) / total
 
     result = pd.Series(scores, dtype=float)
     result = result.reindex(symbols).fillna(0.5)  # 无数据 -> 中性

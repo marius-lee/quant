@@ -98,16 +98,25 @@ def finish(task_name: str, date: str, status: str,
     try:
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         summary_json = json.dumps(summary, ensure_ascii=False) if summary else None
-        # 更新最新的一条 running 行 — 用子查询避免 ORDER BY LIMIT 兼容性问题
+        # 先查找 running 行
+        row = conn.execute(
+            "SELECT id FROM task_runs"
+            " WHERE task_name = ? AND date = ? AND status = 'running'"
+            " ORDER BY id DESC LIMIT 1",
+            (task_name, date)
+        ).fetchone()
+        if row is None:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"finish({task_name}, {date}) — no running row found, "
+                f"possibly already updated by another process"
+            )
+            return
         conn.execute(
             """UPDATE task_runs
                SET finished_at = ?, status = ?, error = ?, summary = ?
-               WHERE id = (
-                   SELECT id FROM task_runs
-                   WHERE task_name = ? AND date = ? AND status = 'running'
-                   ORDER BY id DESC LIMIT 1
-               )""",
-            (now, status, error, summary_json, task_name, date)
+               WHERE id = ?""",
+            (now, status, error, summary_json, row[0])
         )
         conn.commit()
     finally:

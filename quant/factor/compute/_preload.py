@@ -50,23 +50,29 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
     result = {}
     ph = ",".join("?" * len(symbols))
 
-    # margin_detail: latest date per symbol
+    # margin_detail: 60-day window for all margin-based factors
     try:
-        df = pd.read_sql_query(
-            f"SELECT symbol, margin_buy, margin_balance, margin_ratio, rz_balance, rq_balance "
-            f"FROM margin_detail WHERE date = (SELECT MAX(date) FROM margin_detail WHERE date <= ?)",
-            conn, params=(date,)
-        )
-        if not df.empty:
-            result["margin"] = df.set_index("symbol")
+        margin_max_date = pd.read_sql_query(
+            "SELECT MAX(date) FROM margin_detail WHERE date <= ?", conn, params=(date,)
+        ).iloc[0, 0]
+        if margin_max_date:
+            margin_start = (pd.Timestamp(margin_max_date) - pd.Timedelta(days=65)).strftime("%Y-%m-%d")
+            df = pd.read_sql_query(
+                "SELECT symbol, date, margin_buy, margin_balance, margin_ratio, rz_balance, rq_balance "
+                "FROM margin_detail WHERE date >= ? AND date <= ?",
+                conn, params=(margin_start, margin_max_date)
+            )
+            if not df.empty:
+                result["margin"] = df.set_index("symbol")
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
         pass
 
-    # analyst_forecast: latest sync_date per symbol
+    # analyst_forecast: latest sync_date per symbol (all rating columns)
     try:
         df = pd.read_sql_query(
-            f"SELECT symbol, buy_count, report_count FROM analyst_forecast "
-            f"WHERE sync_date = (SELECT MAX(sync_date) FROM analyst_forecast WHERE sync_date <= ?)",
+            "SELECT symbol, buy_count, overweight_count, neutral_count, underweight_count, report_count "
+            "FROM analyst_forecast "
+            "WHERE sync_date = (SELECT MAX(sync_date) FROM analyst_forecast WHERE sync_date <= ?)",
             conn, params=(date,)
         )
         if not df.empty:
@@ -74,11 +80,11 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
         pass
 
-    # fund_hold: latest date
+    # fund_hold: latest date (ratio + change_ratio for fund_change factor)
     try:
         df = pd.read_sql_query(
-            f"SELECT symbol, ratio, fund_count FROM fund_hold "
-            f"WHERE date = (SELECT MAX(date) FROM fund_hold WHERE date <= ?)",
+            "SELECT symbol, ratio, fund_count, change_ratio FROM fund_hold "
+            "WHERE date = (SELECT MAX(date) FROM fund_hold WHERE date <= ?)",
             conn, params=(date,)
         )
         if not df.empty:
@@ -98,30 +104,6 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
         except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
             pass
 
-    # lhb_detail: latest records
-    try:
-        df = pd.read_sql_query(
-            f"SELECT symbol, net_buy, buy_amt, sell_amt, change_pct FROM lhb_detail "
-            f"WHERE trade_date <= ? ORDER BY trade_date DESC",
-            conn, params=(date,)
-        )
-        if not df.empty:
-            result["lhb"] = df.set_index("symbol")
-    except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        pass
-
-    # fund_flow: latest date
-    try:
-        df = pd.read_sql_query(
-            f"SELECT symbol, main_net_inflow, super_large_net_inflow FROM fund_flow "
-            f"WHERE date = (SELECT MAX(date) FROM fund_flow WHERE date <= ?)",
-            conn, params=(date,)
-        )
-        if not df.empty:
-            result["fund_flow"] = df.set_index("symbol")
-    except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        pass
-
     # pledge: latest date
     try:
         df = pd.read_sql_query(
@@ -134,10 +116,11 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
         pass
 
-    # lhb_detail: net_buy for lhb factors (compute_lhb_net_buy, compute_lhb_post_quality)
+    # lhb_detail: 90-day window with all columns for lhb factors
     try:
         df = pd.read_sql_query(
-            "SELECT symbol, net_buy, buy_amt, sell_amt, change_pct, close FROM lhb_detail "
+            "SELECT symbol, trade_date, net_buy, buy_amt, sell_amt, change_pct, close, circ_mv, post_5d "
+            "FROM lhb_detail "
             "WHERE trade_date <= ? AND trade_date >= date(?, '-90 days') ORDER BY trade_date DESC",
             conn, params=(date, date)
         )
@@ -146,15 +129,20 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
         pass
 
-    # fund_flow: main_net_inflow for compute_main_flow_ratio
+    # fund_flow: 60-day window with main_net_ratio for compute_main_flow_ratio
     try:
-        df = pd.read_sql_query(
-            "SELECT symbol, main_net_inflow, super_large_net_inflow FROM fund_flow "
-            "WHERE date = (SELECT MAX(date) FROM fund_flow WHERE date <= ?)",
-            conn, params=(date,)
-        )
-        if not df.empty:
-            result["fund_flow"] = df.set_index("symbol")
+        ff_max = pd.read_sql_query(
+            "SELECT MAX(date) FROM fund_flow WHERE date <= ?", conn, params=(date,)
+        ).iloc[0, 0]
+        if ff_max:
+            ff_start = (pd.Timestamp(ff_max) - pd.Timedelta(days=65)).strftime("%Y-%m-%d")
+            df = pd.read_sql_query(
+                "SELECT symbol, date, main_net_inflow, super_large_net_inflow, main_net_ratio FROM fund_flow "
+                "WHERE date >= ? AND date <= ?",
+                conn, params=(ff_start, ff_max)
+            )
+            if not df.empty:
+                result["fund_flow"] = df.set_index("symbol")
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
         pass
 

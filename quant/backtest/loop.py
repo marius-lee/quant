@@ -16,7 +16,8 @@ import pandas as pd
 from datetime import datetime, timedelta
 import traceback
 from quant.utils.logger import get_logger, set_trace_id, offline_mode
-from quant.backtest.diagnostics import FactorTracker, diagnose, apply_diagnosis, compute_pre_backtest_ic
+from quant.backtest.diagnostics import compute_pre_backtest_ic
+from quant.backtest.analyze import FactorTracker, diagnose, apply_diagnosis
 from quant.backtest.broker import SimulatedBroker
 from quant.config.constants import _require_cfg
 from quant.factor.ic import compute_ic as _compute_ic
@@ -93,21 +94,33 @@ def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
     ir = None
     beta = None
     if benchmark_returns is not None and not benchmark_returns.empty:
-        bm_returns = benchmark_returns.reindex(returns.index, method='ffill').dropna()
-        common_idx = returns.index.intersection(bm_returns.index)
-        if len(common_idx) > 20:
-            strat = returns.loc[common_idx]
-            bm = bm_returns.loc[common_idx]
-            cov_mat = np.cov(strat, bm)
-            bm_var = cov_mat[1, 1]
-            if bm_var > 0:
-                beta_val = cov_mat[0, 1] / bm_var
-                beta = round(float(beta_val), 3)
-            daily_alpha = (strat - beta_val * bm).mean() if beta is not None else 0
-            alpha = round(float(daily_alpha * 252), 4)
-            tracking_err = (strat - bm).std() * np.sqrt(252)
-            if tracking_err > 0:
-                ir = round(float(daily_alpha * 252 / tracking_err), 3)
+        try:
+            bm_returns = benchmark_returns.reindex(returns.index, method='ffill').dropna()
+            if bm_returns.empty:
+                pass  # 无可用基准数据，跳过 Alpha/IR/Beta
+            else:
+                common_idx = returns.index.intersection(bm_returns.index)
+                if len(common_idx) > 20:
+                    strat = returns.loc[common_idx]
+                    bm = bm_returns.loc[common_idx]
+                    if len(strat) <= 1 or len(bm) <= 1:
+                        pass  # 样本不足，无法计算协方差
+                    else:
+                        cov_mat = np.cov(strat, bm)
+                        if cov_mat.shape == (2, 2):
+                            bm_var = cov_mat[1, 1]
+                            beta_val = 0.0
+                            if bm_var > 0:
+                                beta_val = cov_mat[0, 1] / bm_var
+                                beta = round(float(beta_val), 3)
+                            if beta is not None:
+                                daily_alpha = (strat - beta_val * bm).mean()
+                                alpha = round(float(daily_alpha * 252), 4)
+                                tracking_err = (strat - bm).std() * np.sqrt(252)
+                                if tracking_err > 0:
+                                    ir = round(float(daily_alpha * 252 / tracking_err), 3)
+        except (TypeError, ValueError, IndexError):
+            pass
 
     return {
         "sharpe": round(sharpe, 3),
@@ -127,7 +140,8 @@ def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
 
 
 def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq=None,
-                    universe_size=None, ic_lookback=None, factor_status_filter="backtesting"):
+                    universe_size=None, ic_lookback=None, factor_status_filter="backtesting",
+                    factor_store=None):
     """Run a full walk-forward backtest.
 
     Args:
@@ -139,6 +153,8 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
         ic_lookback: override backtest.diagnosis_ic_window (None=use config)
         factor_status_filter: status filter for get_factor_names (default "backtesting";
             None=all factors)
+        factor_store: FactorStore instance (因子值物化缓存). If provided, generate_signals()
+            will read from cache instead of re-computing factors each day.
 
     Returns:
         dict with keys: equity_curve, metrics, signals_per_day, errors
@@ -164,6 +180,15 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
         engine.set_initial_capital(strategy, capital)  # always fresh for each run
 
         _log.info(f"backtest: initialized {strategy} with Y{capital:,}")
+
+        # 清理该策略旧交易记录 (防止旧数据污染 get_cash() 计算)
+        import sqlite3 as _sql
+        _bc = _sql.connect(BACKTEST_DB)
+        deleted = _bc.execute("DELETE FROM sim_trades WHERE strategy=?", (strategy,)).rowcount
+        if deleted:
+            _bc.commit()
+            _log.info(f"backtest: cleaned {deleted} old trades for {strategy}")
+        _bc.close()
 
         store = DataStore()
         broker = SimulatedBroker(store, engine, BACKTEST_DB)
@@ -250,6 +275,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
                 "exclude_symbols": cooloff_syms,
                 "preloaded_data": data_full,
                 "primitives": data_prims,
+                "factor_store": factor_store,
             }
             # Switch combine_mode from sleeve (warmup) to ic_weighted (walk-forward)
             if i >= warmup_days:
@@ -334,8 +360,8 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
         ic_map_pre = _current_ic_map  # reuse walk-forward IC (was: compute_pre_backtest_ic)
         diag = diagnose(ic_map_pre, tracker, metrics)
 
-        # ── 应用诊断结果: 仅调整 IC 权重 (不写 factor_registry) ──
-        # 诊断结果通过 save_phase("diagnostics") 写入 evaluation_runs;
+        # ── 应用诊断结果: 仅调整 IC 权重 (不写 factor_registry, 不写 evaluation_runs) ──
+        # 回测诊断仅内部使用; 独立诊断模块 (run_diagnostics.py) 负责写入 evaluation_runs
         # 因子状态变更由 evaluation pipeline Phase 5b (sync_factor_status) 统一处理
         _adj_ic_map = apply_diagnosis(_current_ic_map, diag)
 
@@ -356,22 +382,6 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
         for adj in diag["adjustments"]:
             _log.info("  adjust: %s", adj)
 
-        # ── 两步架构 Step 1: 诊断结果持久化 ──
-        # 写入 evaluation_runs (供 Step 2 正式评估做预筛)
-        from quant.evaluation.run_store import save_phase
-        passed = [name for name, info in diag.get("factor_report", {}).items()
-                    if info.get("recommendation") in ("keep", "boost")]
-        save_phase("diagnostics", {
-            "n_factors": len(diag.get("factor_report", {})),
-            "passed": passed,
-            "factor_report": diag.get("factor_report", {}),
-            "adjustments": diag.get("adjustments", []),
-            "backtest_strategy": strategy,
-            "backtest_period": f"{start_date}_{end_date}",
-            "sharpe": metrics.get("sharpe", 0),
-            "cagr_pct": metrics.get("cagr_pct", 0),
-        })
-        _log.info("diagnosis saved to evaluation_runs: %d passed", len(passed))
 
 
 

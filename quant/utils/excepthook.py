@@ -31,13 +31,16 @@ def setup():
     _original = _sys.excepthook
 
     def _hook(exc_type, exc_value, exc_tb):
+        _is_bt = _is_backtest_context(exc_tb)
         msg = ("\nUNCAUGHT EXCEPTION:\n"
                + "".join(_traceback.format_exception(exc_type, exc_value, exc_tb)).strip())
         # 路由: backtest 上下文 → backtest.log; 否则 → app.log
-        if _is_backtest_context(exc_tb):
+        if _is_bt:
             _logging.getLogger("quant.backtest.crash").error(msg)
+            # 不回退到原始 hook — 避免回测崩溃同时写进 app.log (重复日志)
+            return
         else:
             _logging.getLogger("quant.crash").error(msg)
-        _original(exc_type, exc_value, exc_tb)
+            _original(exc_type, exc_value, exc_tb)
 
     _sys.excepthook = _hook

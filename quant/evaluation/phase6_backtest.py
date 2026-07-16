@@ -37,6 +37,21 @@ def run_strategy_backtest(
 
     _log.info(f"Phase 6 start: {start_date} → {end_date}, capital=Y{capital:,}")
 
+    # ── 硬门禁: Phase 3 PBO 未通过 → 拒绝策略回测 (fail-fast) ──
+    from quant.evaluation.run_store import load_latest
+    p3 = load_latest("phase3")
+    if p3 and p3.get("pbo_result", {}).get("passed") is False:
+        raise ValueError(
+            f"Phase 6 GATE REJECTED: Phase 3 PBO not passed "
+            f"(PBO={p3['pbo_result'].get('pbo', 'N/A')}). "
+            f"Run Phase 3 first and ensure PBO < threshold."
+        )
+    if p3 and not p3.get("kept"):
+        raise ValueError(
+            "Phase 6 GATE REJECTED: Phase 3 found 0 validated factors. "
+            "Refine factor pool before strategy backtest."
+        )
+
     t0 = time.time()
     from quant.backtest.naming import next_backtest_name
     if strategy is None:

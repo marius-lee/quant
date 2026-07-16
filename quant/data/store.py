@@ -811,9 +811,14 @@ class DataStore:
         return updated
 
     def _analyze_daily_gaps(self, conn) -> dict:
-        """分析日线数据缺口 — missing（从未有数据） vs stale（超 250 天未更新） vs full（完整）。
+        """分析日线数据缺口 — missing（从未有数据） vs stale（超250天未更新） vs stale_recent（近期缺数据） vs full（完整）。
 
         用于增量更新前的精准拉取决策, 只拉缺口 + 过期数据, 不浪费 API 配额。
+
+        两级检查:
+          1. 长期过期: max(date) < stale_days 天前 → stale
+          2. 近期缺失: 最新 DB 日期落后于最近交易日 → 所有有数据的股票判为 stale_recent
+             (例如 DB 最新 07-13 但今天 07-16, 则全部股票需补拉 07-14/15/16)
         """
         from datetime import datetime, timedelta
         stale_days = _require_cfg("data.stale_days")  # 数据过期阈值
@@ -825,22 +830,45 @@ class DataStore:
             FROM daily GROUP BY symbol ORDER BY symbol
         """).fetchall()
 
+        # global latest date — 用于近期缺失检测
+        global_max = conn.execute("SELECT MAX(date) FROM daily").fetchone()[0] or "2020-01-01"
+
+        # 最近交易日 (取本地日历; 在线不可用时用今天近似)
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        try:
+            from quant.execution.calendar import get_trading_days
+            all_td = sorted(get_trading_days())
+            most_recent_td = [d for d in all_td if d <= today_str][-1] if all_td else today_str
+        except Exception:
+            most_recent_td = today_str
+
+        recent_stale = global_max < most_recent_td  # DB 落后于最近交易日?
+        if recent_stale:
+            logger = __import__("quant.utils.logger", fromlist=["get_logger"]).get_logger("quant.data.store")
+            logger.warning(
+                f"daily DB latest={global_max} < recent_td={most_recent_td} — "
+                f"all symbols need pull (stale_recent mode)"
+            )
+
         # 所有 stocks 符号
         all_symbols = {r[0] for r in conn.execute("SELECT symbol FROM stocks WHERE market!=\"BJ\"").fetchall()}
         have_data = set()
 
-        stale, full = [], []
+        stale, stale_recent, full = [], [], []
         for sym, min_d, max_d in rows:
             have_data.add(sym)
             if max_d < cutoff:
                 stale.append(sym)
+                continue
+            if recent_stale:
+                stale_recent.append(sym)
                 continue
             full.append(sym)
 
         missing = sorted(all_symbols - have_data)
 
         return {
-            "missing": missing, "stale": stale, "full": full,
+            "missing": missing, "stale": stale, "stale_recent": stale_recent, "full": full,
             "total": len(all_symbols),
         }
 
@@ -865,10 +893,11 @@ class DataStore:
         # 1. 精准分析数据缺口
         if symbols is None:
             gaps = self._analyze_daily_gaps(conn)
-            target = gaps["missing"] + gaps["stale"]
+            target = gaps["missing"] + gaps["stale"] + gaps.get("stale_recent", [])
             logger.info(f"daily gaps: {gaps['total']} total, "
                        f"{len(gaps['missing'])} missing, "
                        f"{len(gaps['stale'])} stale(<250d), "
+                       f"{len(gaps.get('stale_recent', []))} stale_recent, "
                        f"{len(gaps['full'])} full — pulling {len(target)}")
             if not target:
                 logger.info("daily data complete, nothing to pull")
@@ -911,10 +940,12 @@ class DataStore:
 
             all_sources = [
                 ("tencent",  lambda: self._fetch_tencent_daily(chunk, batch_start)),
-                ("tushare",  lambda: self._fetch_batch_tushare(chunk, batch_start)),
                 ("akshare",  lambda: self._fetch_akshare_daily(chunk, batch_start)),
                 ("pytdx",    lambda: self._fetch_pytdx_daily(chunk, batch_start)),
             ]
+            # tushare 仅在 token 有效时加入, 避免无 token 时仍触发 API 限频
+            if pro is not None:
+                all_sources.insert(1, ("tushare", lambda: self._fetch_batch_tushare(chunk, batch_start)))
             ordered = sorted(all_sources, key=lambda x: self._source_speed.get(x[0], 999), reverse=True)
             for src_name, fetch_fn in ordered:
                 if rows is not None:

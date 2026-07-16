@@ -31,8 +31,8 @@ from dataclasses import dataclass
 
 
 @dataclass
-# NOTE: buy_cost/sell_proceeds 会直接影响 cash_balance。
-# cash_balance_gap = commission + slippage (参见 CLAUDE.md "Data quirks")
+# NOTE: buy_cost/sell_proceeds 会直接影响现金余额 (由 get_cash() 从 sim_trades 计算)。
+# cost_gap = commission + slippage
 class CostModel:
     """A股交易成本模型。
 

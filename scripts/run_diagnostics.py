@@ -32,18 +32,41 @@ log.info(f"backtesting factors: {len(factors)}")
 # 取流动性前 2000 只
 try:
     from quant.data.store import market_conn
-    symbols = [r[0] for r in market_conn().execute('SELECT symbol FROM stocks LIMIT 6000').fetchall()]
+    from quant.data.repos import UniverseRepo
+    symbols = UniverseRepo().get_symbols()[:800]
 except Exception:
-    from quant.data.store import market_conn
-    symbols = [r[0] for r in market_conn().execute(
-        "SELECT symbol FROM stocks ORDER BY symbol LIMIT 2000"
-    ).fetchall()]
-log.info(f"symbols: {len(symbols)}")
+    from quant.data.repos import UniverseRepo
+    symbols = UniverseRepo().get_symbols()[:800]
+log.info(f"symbols: {len(symbols)} (via UniverseRepo)")
 
 ic_map = compute_pre_backtest_ic(factors, "2026-07-01", symbols, lookback=120, store=store)
 log.info(f"IC computed: {len(ic_map)} factors")
 
 # 分类
+
+# ── 持久化到 evaluation_runs (供 Phase 2 预筛) ──
+strong_names = list(strong.keys())
+moderate_names = list(moderate.keys())
+passed = strong_names + moderate_names  # |IC| >= 0.02 视为通过
+factor_report = {}
+for k, v in ic_map.items():
+    factor_report[k] = {
+        "ic_mean": v.get("ic_mean", 0),
+        "ic_ir": v.get("ic_ir", 0),
+        "recommendation": "keep" if k in passed else "drop",
+    }
+
+from quant.evaluation.run_store import save_phase
+save_phase("diagnostics", {
+    "n_factors": len(ic_map),
+    "passed": passed,
+    "factor_report": factor_report,
+    "backtest_strategy": "diagnostics",
+    "backtest_period": "2026-07-01_pre_backtest",
+})
+log.info("diagnosis saved to evaluation_runs: %d passed/%d total", len(passed), len(ic_map))
+
+
 strong = {k: v for k, v in ic_map.items() if abs(v.get("ic_mean", 0)) >= 0.03}
 moderate = {k: v for k, v in ic_map.items() if 0.02 <= abs(v.get("ic_mean", 0)) < 0.03}
 weak = {k: v for k, v in ic_map.items() if abs(v.get("ic_mean", 0)) < 0.02}

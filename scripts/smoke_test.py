@@ -4,19 +4,11 @@
   - 股票数: 300（按流动性取前N，足够覆盖因子计算和组合优化的所有分支）
   - 交易日: ≥10（覆盖至少一个完整双周，验证信号→执行→监控链路）
   - IC窗口: 60天（方向性检查，不做统计推断）
-  - 因子池: backtesting 状态池
+  - 因子池: 实际使用 active 状态因子 (仅 2 个), 验证管线通畅即可
   - 目的: 只验证管线不崩，不产出投资决策
 
 性能说明 (2026-07-15):
-  冒烟测试耗时主要由 backtesting 因子数量决定，不是 primitives 预计算或数据加载。
-  - 4 因子时 ≈163s，66 因子时线性膨胀到数十分钟
-  - primitives 预计算是固定开销 (~10-20s)，非瓶颈
-  - data.lookback_days=365 → 预加载 ~1.2M 行数据，也是固定开销
-  因此冒烟测试的因子数必须与"快速验证"的目的匹配：
-  - backtesting 因子 ≤8: 冒烟测试合理耗时 (≤5min)
-  - backtesting 因子 >20: 不再是冒烟，应降级为正式回测
-  如需限制因子数，在 run_backtest 的上游截断:
-    factor_names = get_factor_names(status_filter="backtesting")[:8]
+  冒烟测试使用 active 因子 (仅 2 个), 耗时由信号生成管线决定 (约 200s)。
 
 用法:
   PYTHONPATH=. .venv/bin/python3 scripts/smoke_test.py

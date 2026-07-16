@@ -16,3 +16,4 @@ from quant.factor.compute._registry import (  # noqa: F401
     get_factor_names,
 )
 from quant.factor.compute._dispatch import compute_all_factors  # noqa: F401
+from quant.factor.compute._primitives import precompute_primitives  # noqa: F401

@@ -141,18 +141,8 @@ def compute_margin_buy_ratio(fundamentals: "pd.DataFrame", date: str, aux=None) 
         if not m.empty and "margin_buy" in m.columns and "margin_balance" in m.columns:
             s = m["margin_buy"] / m["margin_balance"].replace(0, np.nan)
             return s.dropna().rename("margin_buy_ratio")
-    # Fallback: standalone query
-    conn = _db_connect()
-    rows = conn.execute(
-        "SELECT symbol, margin_buy, margin_balance FROM margin_detail "
-        "WHERE date = (SELECT MAX(date) FROM margin_detail WHERE date <= ?)",
-        (date,)
-    ).fetchall()
-    if not rows:
-        return pd.Series(dtype=float, name="margin_buy_ratio")
-    s = pd.Series({r[0]: r[1] / r[2] if r[2] and r[2] > 0 else np.nan
-                   for r in rows if r[1] is not None and r[2] is not None})
-    return s.dropna().rename("margin_buy_ratio")
+    # aux must be provided by caller (compute_all_factors always calls preload_aux_data)
+    raise ValueError("compute_margin_buy_ratio requires preloaded aux['margin']")
 
 
 def compute_analyst_consensus(fundamentals: "pd.DataFrame", date: str, aux=None) -> "pd.Series":
@@ -168,18 +158,8 @@ def compute_analyst_consensus(fundamentals: "pd.DataFrame", date: str, aux=None)
         if not a.empty and "buy_count" in a.columns and "report_count" in a.columns:
             s = a["buy_count"] / a["report_count"].replace(0, np.nan)
             return s.dropna().rename("analyst_consensus")
-    # Fallback: standalone query
-    conn = _db_connect()
-    rows = conn.execute(
-        "SELECT symbol, buy_count, report_count FROM analyst_forecast "
-        "WHERE sync_date = (SELECT MAX(sync_date) FROM analyst_forecast WHERE sync_date <= ?)",
-        (date,)
-    ).fetchall()
-    if not rows:
-        return pd.Series(dtype=float, name="analyst_consensus")
-    s = pd.Series({r[0]: r[1] / r[2] if r[2] and r[2] > 0 else np.nan
-                   for r in rows if r[1] is not None and r[2] is not None})
-    return s.dropna().rename("analyst_consensus")
+    # aux must be provided by caller (compute_all_factors always calls preload_aux_data)
+    raise ValueError("compute_analyst_consensus requires preloaded aux['analyst']")
 
 
 # ── Phase 3 财务因子 (季报三表) ──

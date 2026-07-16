@@ -43,7 +43,7 @@ LOT_SIZE = _require_cfg("backtest.lot_size")
 def generate_signals(date_str: str = None, capital: float = None, strategy: str = "quant",
                      skip_pull: bool = False, store=None, status_filter: str = "using",
                      suppress_push: bool = False, universe_size: int = None,
-                     db_path: str = "quant/data/trades.db", exclude_symbols: list = None, ic_map: dict = None, combine_mode: str = None, preloaded_data=None, primitives: dict = None) -> dict:
+                     db_path: str = "quant/data/trades.db", exclude_symbols: list = None, ic_map: dict = None, combine_mode: str = None, preloaded_data=None, primitives: dict = None, factor_store=None) -> dict:
     """Pipeline 阶段一: 盘前信号生成 (Steps 0-5, 不执行交易)。
 
     用 T-1 收盘数据计算因子 → alpha → 风险过滤 → 组合优化 → 输出目标持仓。
@@ -116,6 +116,22 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     if not suppress_push:
         broker.update({"status": "data_loaded", "progress": "2/5", "symbols": len(symbols), "trace_id": tid})
 
+    # ── Step 2.3: Risk pre-filters (liquidity / price / ST) → investable universe ──
+    # Industry standard: risk filters applied to the ENTIRE universe BEFORE alpha scoring.
+    # This replaces the old Step 4 apply_all_filters on the alpha-scored subset.
+    _risk_limits = RiskLimits.from_config()
+    _latest_close = data["close"].iloc[-1].dropna()
+    _latest_amount = data["amount"].iloc[-1] if "amount" in data else pd.Series(dtype=float)
+    _pre_df = pd.DataFrame({"close": _latest_close, "amount": _latest_amount})
+    _pre_filtered = apply_all_filters(_pre_df, limits=_risk_limits, stock_names=store.get_stock_names(symbols))
+    investable_symbols = _pre_filtered.index.tolist()
+    logger.info(f"[2.3] risk pre-filters: {len(symbols)} → {len(investable_symbols)} investable "
+                f"(liquidity>{_risk_limits.min_daily_amount}, price>{_risk_limits.min_price}, no ST)")
+    # Feed investable universe into subsequent steps
+    symbols = [s for s in symbols if s in set(investable_symbols)]
+    results["steps"]["risk_pre"] = {"investable": len(symbols), "status": "ok"}
+    logger.info(f"[debug] after Step 2.3: symbols={len(symbols)}")
+
     # ── Step 2.5: Universe size filter (backtest only) ──
     if universe_size and len(symbols) > universe_size:
         close_df = data["close"]
@@ -138,6 +154,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         data = data.loc[:, data.columns.get_level_values(1).isin(keep_syms)]
         fundamentals = fundamentals[fundamentals.index.isin(keep_syms)]
         results["steps"]["load"]["symbols"] = len(symbols)
+        logger.info(f"[debug] after Step 2.5: symbols={len(symbols)}")
 
 
     # ── Step 2.6: Cooling-off exclude (backtest only) ──
@@ -161,8 +178,22 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     _ztd_dates = pd.date_range(start=pd.Timestamp(hist_start), end=pd.Timestamp(date_str), freq="B")
     preload_ztd_cache([d.strftime("%Y-%m-%d") for d in _ztd_dates], symbols)
 
-    logger.info(f"step 3 starting: computing factors for {len(symbols)} symbols on {actual_date}...")
-    factor_values = compute_all_factors(data, actual_date,
+    # ── 因子值来源: factor_store (缓存) 优先, 否则实时计算 ──
+    factor_values = None
+    if factor_store is not None:
+        try:
+            factor_values = factor_store.load(actual_date, symbols=symbols, factor_names=None)
+            if factor_values:
+                logger.info(f"step 3: loaded {len(factor_values)} factors from factor_cache for {actual_date}")
+        except Exception:
+            pass
+
+    if not len(symbols):
+        logger.warning(f"[2.5] no symbols left for date={actual_date}, returning empty signals")
+        return {"date": actual_date, "target_positions": [], "signal_count": 0, "steps": results["steps"]}
+    if not factor_values:
+        logger.info(f"step 3 starting: computing factors for {len(symbols)} symbols on {actual_date}...")
+        factor_values = compute_all_factors(data, actual_date,
                                         fundamentals=fundamentals,
                                         status_filter=status_filter,
                                         benchmark_ret=benchmark_ret,
@@ -200,12 +231,14 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     log_ret = np.log(close_df).diff().dropna(how="all")
     cov = covariance_matrix(log_ret, method="ledoit_wolf")
 
+    # Step 4 candidates: alpha_neut already within investable universe (pre-filtered in Step 2.3)
+    # Risk pre-filters (liquidity/price/ST) are already applied — no re-filtering here.
+    # Only stocks with valid alpha scores pass through to the optimizer.
     candidates = pd.DataFrame({
         "alpha": alpha_neut, "close": prices,
-        "amount": data["amount"].loc[risk_date] if risk_date in data["amount"].index
-                  else data["amount"].iloc[-1]
     })
-    filtered = apply_all_filters(candidates.reindex(prices.index))
+    # Drop rows where alpha is NaN (stocks not scored by alpha model)
+    filtered = candidates.dropna(subset=["alpha"])
     results["steps"]["risk"] = {"candidates": len(filtered), "status": "ok"}
     logger.info(f"[4/5] risk: {len(filtered)} candidates after filters")
     tracker.phases.append(PhaseResult(name="risk", started=_ph_start, finished=_time_ph.time(), status="ok"))

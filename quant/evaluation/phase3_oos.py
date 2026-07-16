@@ -122,6 +122,14 @@ def validate_oos(input_json: str = "/tmp/_eval_phase2.json",
     logger.info(f"Phase 3 PBO check: {'PASS' if pbo_result['passed'] else 'FAIL'} (threshold: <{pbo_max})")
     logger.info(f"Phase 3 IS-OOS ICIR Spearman corr: {pbo_result['is_oos_corr']:+.3f}")
 
+    # ── 硬门禁: PBO 未通过 → 拒绝进入策略回测 (fail-fast, 零 fallback) ──
+    if not pbo_result["passed"]:
+        raise ValueError(
+            f"Phase 3 GATE REJECTED: PBO={pbo_result['pbo']:.3f} >= threshold={pbo_max}. "
+            f"IS-OOS corr={pbo_result['is_oos_corr']:+.3f}. "
+            f"Factor pool likely overfit — refine factors before strategy backtest."
+        )
+
     # ── 汇总各因子 OOS 表现 ──
     kept = []
     kept_oos_ir = []

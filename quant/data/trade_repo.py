@@ -55,12 +55,10 @@ class TradeRepo:
                 strategy TEXT PRIMARY KEY,
                 -- 策略参数默认值来源: config/config.yaml (单一真相源)
                 --   initial_capital → backtest.default_capital=100000
-                --   cash_balance    → 由 set_initial_capital() 同步写入 = initial_capital
                 --   max_positions   → risk.max_positions=20
                 --   stop_loss_pct   → risk.stop_loss_pct=0.15
                 -- SQL DEFAULT 已移除; 所有写入均通过 TradeRepo API 显式传值.
                 initial_capital REAL NOT NULL,
-                cash_balance REAL NOT NULL,
                 max_positions INTEGER,
                 stop_loss_pct REAL,
                 combine_mode TEXT DEFAULT 'sleeve',
@@ -73,6 +71,10 @@ class TradeRepo:
             c.execute("ALTER TABLE sim_trades ADD COLUMN mode TEXT DEFAULT 'live'")
         except sqlite3.OperationalError:
             pass  # column already exists
+        try:
+            c.execute("ALTER TABLE sim_trades ADD COLUMN cost REAL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
         # ── 迁移: daily_signals 兼容旧 schema (无 mode 列) ──
         try:
             c.execute("ALTER TABLE daily_signals ADD COLUMN mode TEXT DEFAULT 'live'")
@@ -91,6 +93,20 @@ class TradeRepo:
                     SELECT strategy, initial_capital, cash_balance, COALESCE(initialized,0), updated_at FROM strategy_config;
                 DROP TABLE strategy_config;
                 ALTER TABLE strategy_config_new RENAME TO strategy_config;
+            ''')
+        # ── 迁移: 删除 cash_balance 列 (不再使用, 由 get_cash() 实时计算) ──
+        if 'cash_balance' in sc_cols:
+            c.executescript('''
+                CREATE TABLE strategy_config_new2 (
+                    strategy TEXT NOT NULL, mode TEXT NOT NULL DEFAULT \'live\',
+                    initial_capital REAL NOT NULL,
+                    initialized INTEGER DEFAULT 0, updated_at TEXT,
+                    PRIMARY KEY (strategy, mode)
+                );
+                INSERT INTO strategy_config_new2 (strategy, mode, initial_capital, initialized, updated_at)
+                    SELECT strategy, mode, initial_capital, COALESCE(initialized,0), updated_at FROM strategy_config;
+                DROP TABLE strategy_config;
+                ALTER TABLE strategy_config_new2 RENAME TO strategy_config;
             ''')
         c.execute("UPDATE strategy_config SET initialized = 1 WHERE initialized IS NULL OR initialized = 0")
         # ── 每日信号持久化 ──
@@ -121,19 +137,25 @@ class TradeRepo:
 
     # ── 资金 ──
     def get_cash(self, strategy: str, mode: str = 'live') -> float:
-        """返回当前现金余额 — strategy_config.cash_balance (资金唯一真相源).
+        """返回当前现金余额 — 始终从 sim_trades 计算 (单一真相源).
 
-        首次启动时 cash_balance = initial_capital (¥5000).
-        每次交易后自动更新.
+        cash = initial_capital + SUM(sell: price*shares - cost) - SUM(buy: price*shares + cost)
         """
         c = self._conn()
         row = c.execute(
-            "SELECT cash_balance, COALESCE(initialized,0) FROM strategy_config WHERE strategy=?",
+            "SELECT COALESCE(initial_capital,0) FROM strategy_config WHERE strategy=?",
             (strategy,)).fetchone()
+        initial = float(row[0]) if row else 0.0
+        buys = c.execute(
+            "SELECT COALESCE(SUM(price*shares + COALESCE(cost,0)), 0) FROM sim_trades "
+            "WHERE side='buy' AND strategy=? AND mode=?",
+            (strategy, mode)).fetchone()[0]
+        sells = c.execute(
+            "SELECT COALESCE(SUM(price*shares - COALESCE(cost,0)), 0) FROM sim_trades "
+            "WHERE side='sell' AND strategy=? AND mode=?",
+            (strategy, mode)).fetchone()[0]
         c.close()
-        if row and row[0] is not None:
-            return round(float(row[0]), 2)
-        return 0.0
+        return round(initial + float(sells) - float(buys), 2)
 
     def is_initialized(self, strategy: str = "quant", mode: str = "live") -> bool:
         """策略是否已初始化 (initial_capital 已写入且不应被覆盖)。"""
@@ -156,10 +178,10 @@ class TradeRepo:
         """设置种子本金 (同时初始化现金余额)。"""
         c = self._conn()
         c.execute(
-            "INSERT OR REPLACE INTO strategy_config (strategy, mode, initial_capital, cash_balance, initialized, updated_at) VALUES (?, ?, ?, ?, 1, datetime('now'))",
-            (strategy, mode, capital, capital))
+            "INSERT OR REPLACE INTO strategy_config (strategy, mode, initial_capital, initialized, updated_at) VALUES (?, ?, ?, 1, datetime('now'))",
+            (strategy, mode, capital))
         c.commit(); c.close()
-        logger.info(f"[capital] {strategy}/{mode} initial_capital=cash_balance={capital}")
+        logger.info(f"[capital] {strategy}/{mode} initial_capital={capital}")
 
     # ── 持仓 ──
     def get_positions(self, strategy: str, mode: str = "live") -> list[dict]:
@@ -225,31 +247,17 @@ class TradeRepo:
                      board_count: int = 0, cost: float = 0.0,
                      mode: str = "live",
                      conn: "sqlite3.Connection" = None) -> None:
-        """写入一笔交易并原子更新现金余额 (单连接事务)。
+        """写入交易到 sim_trades (单一真相源).
 
+        现金余额由 get_cash() 实时计算, 不再维护 cash_balance 列。
         若 conn 提供，使用外部连接（调用者管理事务），内部不 commit/close。
         """
         own_conn = conn is None
         c = conn if conn is not None else self._conn()
-        # 读取当前现金
-        cash_row = c.execute(
-            "SELECT cash_balance FROM strategy_config WHERE strategy=?",
-            (strategy,)
-        ).fetchone()
-        cash = float(cash_row[0]) if cash_row and cash_row[0] is not None else 0.0
-
-        if side == 'buy':
-            cash -= price * shares + cost
-        else:
-            cash += price * shares - cost
 
         c.execute(
-            "INSERT INTO sim_trades(date, symbol, side, price, shares, pnl, pnl_pct, strategy, board_count) VALUES(?,?,?,?,?,?,?,?,?)",
-            (date, symbol, side, price, shares, pnl, pnl_pct, strategy, board_count)
-        )
-        c.execute(
-            "UPDATE strategy_config SET cash_balance = ?, updated_at = datetime('now') WHERE strategy = ?",
-            (round(cash, 2), strategy)
+            "INSERT INTO sim_trades(date, symbol, side, price, shares, pnl, pnl_pct, strategy, board_count, mode, cost) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (date, symbol, side, price, shares, pnl, pnl_pct, strategy, board_count, mode, cost)
         )
         if own_conn:
             c.commit()

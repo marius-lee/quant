@@ -59,16 +59,26 @@ def screen_factors(input_json: str = None, output_json: str = None,
     all_backtesting = get_factor_names(status_filter="backtesting")
 
     if prefilter_from_diagnostics:
+        # 两步架构: 独立诊断模块 (run_diagnostics.py) 的 backtesting 因子 IC 快照
+        # 已写入 evaluation_runs, 此处取 passed 因子与 backtesting 因子取交集做预筛
         from quant.evaluation.run_store import load_latest
         diag = load_latest("diagnostics")
         if diag and diag.get("passed"):
             diag_passed = set(diag["passed"])
             active_names = [n for n in all_backtesting if n in diag_passed]
-            logger.info("Phase 2: diagnostics pre-filter %d -> %d factors",
-                        len(all_backtesting), len(active_names))
+            if not active_names:
+                # 安全网: 交集为空时退回全部 backtesting (例如诊断数据过期)
+                active_names = all_backtesting
+                logger.warning("Phase 2: diagnostics passed ∩ backtesting = ∅, "
+                               "fallback: using all %d backtesting factors",
+                               len(active_names))
+            else:
+                logger.info("Phase 2: diagnostics pre-filter %d -> %d factors",
+                            len(all_backtesting), len(active_names))
         else:
             active_names = all_backtesting
-            logger.info("Phase 2: no diagnostics data — using all %d backtesting factors",
+            logger.info("Phase 2: no diagnostics data in evaluation_runs — "
+                        "using all %d backtesting factors (run scripts/run_diagnostics.py first)",
                         len(active_names))
     else:
         active_names = all_backtesting

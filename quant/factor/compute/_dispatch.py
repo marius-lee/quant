@@ -9,6 +9,7 @@ from quant.factor.registry import _FIN_FACTORS
 from quant.factor.compute.price import _PRICE_FN_MAP
 from quant.factor.compute.fundamental import _FUNDAMENTAL_FN_MAP
 from quant.factor.compute._registry import load_active_price_factors, load_active_fundamental_factors
+import inspect
 
 def compute_all_factors(data: pd.DataFrame, date: str,
                       primitives: dict = None,
@@ -41,6 +42,9 @@ def compute_all_factors(data: pd.DataFrame, date: str,
 
     # Preload auxiliary data (margin, analyst, financials) once for all factors
     _syms = list(data.columns.get_level_values(1).unique())
+    if not _syms:
+        _plog.warning('  no symbols in data, skipping factor computation')
+        return {}
     _aux = preload_aux_data(_syms, date)
     if _aux:
         _plog.info("  aux data preloaded: %d tables", len(_aux))
@@ -62,10 +66,10 @@ def compute_all_factors(data: pd.DataFrame, date: str,
         kwargs = {}
         if 'idio_vol' in name and benchmark_ret is not None:
             kwargs['benchmark_ret'] = benchmark_ret
-        try:
-            results[name] = fn(data, date, win, aux=_aux, **kwargs)
-        except TypeError:
-            results[name] = fn(data, date, win, **kwargs)
+        _sig = inspect.signature(fn)
+        if 'aux' in _sig.parameters:
+            kwargs['aux'] = _aux
+        results[name] = fn(data, date, win, **kwargs)
         done_pf += 1
         if done_pf % 5 == 0 or done_pf == total_pf:
             _plog.info(f"  price factors: {done_pf}/{total_pf} ({done_pf*100//total_pf}%, {_time.time()-_t0:.0f}s)")
@@ -90,13 +94,13 @@ def compute_all_factors(data: pd.DataFrame, date: str,
             kwargs = {}
             if name in _FIN_FACTORS and financials is not None:
                 kwargs['financials'] = financials
-            try:
-                results[name] = fn(fundamentals, date, aux=_aux, **kwargs)
-            except TypeError:
-                if kwargs:
-                    results[name] = fn(fundamentals, date, **kwargs)
-                else:
-                    results[name] = fn(fundamentals, date)
+            _sig = inspect.signature(fn)
+            _fn_kwargs = {}
+            if 'aux' in _sig.parameters:
+                _fn_kwargs['aux'] = _aux
+            if kwargs and 'financials' in _sig.parameters:
+                _fn_kwargs['financials'] = kwargs['financials']
+            results[name] = fn(fundamentals, date, **_fn_kwargs)
             done_ff += 1
             if done_ff % 5 == 0 or done_ff == total_ff:
                 _plog.info(f"  fundamental factors: {done_ff}/{total_ff} ({done_ff*100//total_ff}%, {_time2.time()-_t1:.0f}s)")

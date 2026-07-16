@@ -62,31 +62,29 @@ def compute_factor_stats(
 
     store = DataStore()
 
-    # 1. 选择样本股票
+    # 1. 选择样本股票 — 统一用 UniverseRepo (survivorship-free, 与 loop.py 一致)
     if symbols is None:
-        conn = store._connect()
-        stock_window = int(lookback * 1.5)
-        min_days = max(5, lookback // 2)
-        if n_symbols and n_symbols > 0:
+        from quant.data.repos.universe_repo import UniverseRepo
+        all_symbols = UniverseRepo().get_symbols(exclude_market="BJ")
+        if n_symbols and n_symbols > 0 and len(all_symbols) > n_symbols:
+            # 按流动性排名截断 (与 backtest/loop.py 的 rank_by_turnover 逻辑一致)
+            conn = store._connect()
+            stock_window = int(lookback * 1.5)
+            min_days = max(5, lookback // 2)
+            placeholders = ",".join("?" * len(all_symbols))
             rows = conn.execute(f"""
                 SELECT symbol, AVG(amount) as avg_amt
                 FROM daily
-                WHERE date >= date('now', '-{stock_window} days')
+                WHERE symbol IN ({placeholders})
+                  AND date >= date('now', '-{stock_window} days')
                 GROUP BY symbol
                 HAVING COUNT(*) >= {min_days}
                 ORDER BY avg_amt DESC
                 LIMIT ?
-            """, (n_symbols,)).fetchall()
+            """, all_symbols + [n_symbols]).fetchall()
+            symbols = [r[0] for r in rows]
         else:
-            rows = conn.execute(f"""
-                SELECT symbol, AVG(amount) as avg_amt
-                FROM daily
-                WHERE date >= date('now', '-{stock_window} days')
-                GROUP BY symbol
-                HAVING COUNT(*) >= {min_days}
-                ORDER BY avg_amt DESC
-            """).fetchall()
-        symbols = [r[0] for r in rows]
+            symbols = all_symbols
 
     if not symbols:
         logger.warning("No symbols available for factor evaluation")
@@ -129,6 +127,14 @@ def compute_factor_stats(
     future_end_full = str(pd.Timestamp(eval_date_strs[-1]) + pd.Timedelta(days=40))[:10]
     logger.info(f"primitives: loading data {data_start_full}→{future_end_full}, {len(symbols)} symbols")
     _shared_data = store.get_daily(symbols, start=data_start_full, end=future_end_full)
+    # 数据完整性: 过滤 eval_date_strs 到 _shared_data 实际包含的日期
+    # (UniverseRepo 与 daily DISTINCT 的日期集合在符号过滤后可能不一致)
+    _data_dates = set(_shared_data.index)
+    _old_count = len(eval_date_strs)
+    eval_date_strs = [d for d in eval_date_strs if pd.Timestamp(d) in _data_dates]
+    if len(eval_date_strs) < _old_count:
+        logger.warning(f"eval_date_strs filtered: {_old_count} → {len(eval_date_strs)} "
+                       f"(dropped {_old_count - len(eval_date_strs)} dates not in data)")
     # fundamentals 按日期预加载 (基本面的因子)
     _shared_financials = {}
     for _ds in eval_date_strs:
@@ -170,7 +176,7 @@ def compute_factor_stats(
                     fv = compute_all_factors(data, date_str,
                                                 fundamentals=fundamentals,
                                                 factor_names=factor_names,
-                                                precomputed_primitives=prims
+                                                primitives=prims
                                                 if prims else None)
                     result = {}
                     for name in factor_names:

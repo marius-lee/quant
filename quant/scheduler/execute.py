@@ -134,6 +134,7 @@ def _run(today: str):
     if buy_orders:
         from quant.scheduler.order_manager import OrderManager
         om = OrderManager()
+        om.cancel_all(today, strategy)  # 先清旧挂单, 防重启重复
         for o in buy_orders:
             ref_price = prices.get(o.symbol, o.price)
             om.place(today, strategy, o.symbol, o.shares, ref_price)

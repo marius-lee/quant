@@ -47,7 +47,7 @@ class ExecutionEngine:
         return cash + pos_value
 
     def get_cash(self, strategy: str = "quant") -> float:
-        """获取当前现金余额 — 委托 TradeRepo (strategy_config.cash_balance)。"""
+        """获取当前现金余额 — 委托 TradeRepo (sim_trades 实时计算)。"""
         return TradeRepo(self.db_path).get_cash(strategy)
 
     def is_initialized(self, strategy: str = "quant") -> bool:

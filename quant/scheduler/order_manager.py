@@ -93,14 +93,14 @@ class OrderManager:
         limit = round(ref_price * (1 - DISCOUNT_PCT), 2)
         c = _conn()
         now = datetime.now().isoformat(timespec="seconds")
-        c.execute(
+        rid = c.execute(
             """INSERT INTO pending_orders
                (strategy, symbol, side, target_shares, limit_price,
                 reference_price, status, placed_at, day)
                VALUES (?, ?, 'buy', ?, ?, ?, 'pending', ?, ?)""",
-            (strategy, symbol, shares, limit, ref_price, now, day))
-        c.connection.commit()
-        rid = c.lastrowid
+            (strategy, symbol, shares, limit, ref_price, now, day)
+        ).lastrowid
+        c.commit()
         _log.info(f"[order_manager] placed limit buy: {symbol} {shares}股 "
                   f"limit=¥{limit:.2f} (ref=¥{ref_price:.2f})")
         return rid
@@ -189,6 +189,13 @@ class OrderManager:
         """执行成交: 写入 sim_trades + 更新 pending 状态."""
         from quant.execution.engine import ExecutionEngine, Order
         engine = ExecutionEngine()
+        cost_est = round(price * po.target_shares * 1.001 + 5.0, 2)
+        cash = engine.get_cash(po.strategy)
+        if cash < cost_est:
+            _log.warning(f"[order_manager] insufficient cash for {po.symbol}: "
+                         f"need ¥{cost_est:.2f}, have ¥{cash:.2f} — cancelling")
+            self._cancel(po.id, "insufficient cash")
+            return
         engine.execute(
             [Order(symbol=po.symbol, side="buy", shares=po.target_shares,
                    price=round(price, 2), cost=5.0)],

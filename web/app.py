@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v97"
+VERSION = "test-v117"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 def _log_exit(reason: str = ""):
@@ -512,6 +512,7 @@ def api_scheduler():
     import json, os
     from datetime import datetime
     import sqlite3
+    from quant.scheduler.status import register_all, all_tasks
 
     _proj = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     cron_marker = os.path.join(_proj, ".cron_installed")
@@ -519,7 +520,7 @@ def api_scheduler():
 
     # ── 1. crontab 配置检测 ──
     cron_installed = os.path.exists(cron_marker)
-    cron_tasks = {"signals", "execute", "monitor", "attribution", "weekly_eval"} if cron_installed else set()
+    cron_tasks = {"signals", "execute", "monitor", "daily_data", "attribution", "weekly_eval"} if cron_installed else set()
 
     # ── 2. DB 查询 (统一入口: market.db → task_runs 表) ──
     from quant.config.paths import MARKET_DB
@@ -549,15 +550,15 @@ def api_scheduler():
         pass  # 表可能还不存在，跳过
 
     # ── 3. 任务清单 ──
-    tasks = [
-        {"task": "信号生成",   "key": "signals",      "group": "盘前", "schedule": "08:30",       "desc": "计算所有 using 因子，生成 Alpha 信号与目标持仓"},
-        {"task": "交易执行",   "key": "execute",      "group": "盘中", "schedule": "09:30",       "desc": "读取信号、获取行情、执行调仓订单"},
-        {"task": "盘中风控",   "key": "monitor",      "group": "盘中", "schedule": "09:35-14:55", "desc": "每30s轮询止损/止盈/熔断，触发后立即卖出"},
-        {"task": "盘后归因",   "key": "attribution",  "group": "盘后", "schedule": "15:30",       "desc": "Brinson 归因 + IC 衰减 + OOS 验证 + 因子归因"},
-        {"task": "因子评估",   "key": "weekly_eval",  "group": "研究", "schedule": "周六 06:00",   "desc": "评估管线五阶段：回测诊断因子 → 正式认证 → 状态变更"},
-        {"task": "IC 更新",    "key": "weekly_eval",  "group": "研究", "schedule": "周六 06:00",   "desc": "重新计算所有 using+monitoring 因子的滚动 IC 和 IC_IR"},
-        {"task": "OOS 验证",   "key": "weekly_eval",  "group": "研究", "schedule": "周六 08:00",   "desc": "样本外 Walk-Forward 验证，检测因子过拟合"},
-    ]
+    # ── 从单一真相源 (status.register_all) 获取任务定义 ──
+    register_all()
+    _raw = all_tasks()
+    tasks = []
+    for rt in _raw:
+        t = dict(rt)
+        t["task"] = t.pop("label")
+        t["key"] = t.pop("name")
+        tasks.append(t)
 
     def _badge(cls, text):
         colors = {

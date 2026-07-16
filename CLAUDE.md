@@ -3,6 +3,28 @@
 This file provides guidance to Claude Code when working with code in this repository.
 
 ---
+---
+
+## 工作纪律 (每次改动必须遵守)
+
+### HANDOFF 文档
+- 路径: `docs/handoffs/HANDOFF.md`
+- **每次代码改动后必须更新**，记录：版本号、变更内容、原因、涉及文件、设计原则
+- 每次 compact / 重启后第一步：读取 HANDOFF.md 了解最近变更
+
+### 资金计算
+- `sim_trades` 是资金唯一真相源，`get_cash()` 实时计算，从不缓存
+- 禁止维护 `cash_balance` 之类的手动同步列
+- 每笔交易必须存储 `cost` (佣金+印花税+滑点)
+
+### 代码编辑
+- 禁止 `sed` — 用 heredoc (`python3 << 'PYEOF'`) 或 `apply_patch`
+- 禁止 fallback (静默降级掩盖错误)
+
+### 版本号
+- 格式: `test-v{N}`, 在 `web/app.py` 的 `VERSION` 变量
+- 每次修改后递增
+
 
 ## 🚨 关键规则（每次改代码前必读，compact 后第一件事就是重读这里）
 

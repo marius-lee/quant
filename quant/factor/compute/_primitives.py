@@ -52,8 +52,8 @@ def precompute_primitives(data: pd.DataFrame) -> dict:
         # total_shares 不在 data 中，换手率 ≈ volume / amount（用成交额反推）
         # 或者直接用 volume 代替，在因子函数内处理
         prims["raw_volume"] = volume
-        if amount is not None and (amount > 0).all(None):
-            prims["approx_turnover"] = (volume * close) / amount.replace(0, np.nan)
+        if "turnover" in data.columns.levels[0]:
+            prims["approx_turnover"] = data["turnover"]
 
     if amount is not None:
         prims["raw_amount"] = amount

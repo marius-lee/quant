@@ -3,8 +3,8 @@
   "display_name": "zt_streak",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0462,
-  "icir_12m": 0.6704,
+  "ic_mean_12m": 0.0473,
+  "icir_12m": 0.6854,
   "last_evaluated": "auto",
   "n_obs": 57
 }

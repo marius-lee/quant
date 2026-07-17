@@ -3,8 +3,8 @@
   "display_name": "residual_momentum_126d",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.032,
-  "icir_12m": -0.2272,
+  "ic_mean_12m": -0.0239,
+  "icir_12m": -0.1755,
   "last_evaluated": "auto",
   "n_obs": 57
 }

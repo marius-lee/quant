@@ -3,8 +3,8 @@
   "display_name": "gross_margin_diff",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0262,
-  "icir_12m": 0.3774,
+  "ic_mean_12m": 0.0272,
+  "icir_12m": 0.2628,
   "last_evaluated": "auto",
   "n_obs": 57
 }

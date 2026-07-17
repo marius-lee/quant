@@ -69,12 +69,12 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
         if margin_max_date:
             margin_start = (pd.Timestamp(margin_max_date) - pd.Timedelta(days=65)).strftime("%Y-%m-%d")
             df = pd.read_sql_query(
-                "SELECT symbol, date, margin_buy, margin_balance, margin_ratio, rz_balance, rq_balance "
+                "SELECT symbol, date, margin_buy, margin_balance, short_balance, short_total "
                 "FROM margin_detail WHERE date >= ? AND date <= ?",
                 conn, params=(margin_start, margin_max_date)
             )
             if not df.empty:
-                result["margin"] = df.set_index("symbol")
+                result["margin"] = df  # keep natural index — multi-date rows per symbol
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
         pass
 
@@ -94,8 +94,8 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
     # fund_hold: latest date (ratio + change_ratio for fund_change factor)
     try:
         df = pd.read_sql_query(
-            "SELECT symbol, ratio, fund_count, change_ratio FROM fund_hold "
-            "WHERE date = (SELECT MAX(date) FROM fund_hold WHERE date <= ?)",
+            "SELECT symbol, fund_count, change_ratio FROM fund_hold "
+            "WHERE report_date = (SELECT MAX(report_date) FROM fund_hold WHERE report_date <= ?)",
             conn, params=(date,)
         )
         if not df.empty:
@@ -136,7 +136,7 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
             conn, params=(date, date)
         )
         if not df.empty:
-            result["lhb"] = df.set_index("symbol")
+            result["lhb"] = df  # keep natural index — multi-date rows per symbol
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
         pass
 

@@ -126,8 +126,7 @@ def compute_ic(*,
     _log.info("compute_ic: primitives ready (%d tables)", len(prims))
 
     # ── 前向收益: factor(t) × return(t→t+1), Grinold & Kahn (1999) Ch.6 ──
-    full_close = data["close"]
-    all_fwd_1d = full_close.pct_change().shift(-1) if isinstance(full_close, pd.DataFrame) else None
+    full_close = data["close"] if isinstance(data["close"], pd.DataFrame) else None
 
     factor_daily = {name: {} for name in factor_names}
     fwd_1d = {}
@@ -139,7 +138,7 @@ def compute_ic(*,
 
         前向 IC 设计 (Grinold & Kahn 1999 Ch.6):
           - 因子值在 t 时刻用 data[:t] 计算 (模拟"截至 t 已知的信息")
-          - 前向收益为 return(t→t+1), 来自预计算的 all_fwd_1d
+          - 前向收益为 return(t→t+1): full_close[t+1] / full_close[t] - 1
           - IC = corr(factor_t, return_{t→t+1}) — 预测性, 非同期
         """
         try:
@@ -152,12 +151,17 @@ def compute_ic(*,
                 return (ds, {}, None)
             if len(close) < 2:
                 return (ds, {}, None)
-            # 前向收益: return(ds→ds+1); 最后一天为 NaN (无 ds+1 数据)
-            if all_fwd_1d is not None:
+            # 前向收益: return(ds→ds+1), 从 full_close 按位置取
+            if full_close is not None:
                 try:
-                    fwd = all_fwd_1d.loc[ds]
+                    date_idx = full_close.index.get_loc(ds)
                 except KeyError:
-                    fwd = None
+                    date_idx = -1
+                if date_idx >= 0 and date_idx + 1 < len(full_close):
+                    ds_next = full_close.index[date_idx + 1]
+                    fwd = (full_close.loc[ds_next] / full_close.loc[ds]) - 1
+                else:
+                    fwd = None  # 最后一天无前向收益
             else:
                 fwd = None
             fundamentals = store.get_fundamentals(symbols, ds)

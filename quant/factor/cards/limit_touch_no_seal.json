@@ -3,8 +3,8 @@
   "display_name": "limit_touch_no_seal",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.1736,
-  "icir_12m": -5.9839,
+  "ic_mean_12m": 0.0326,
+  "icir_12m": 0.5236,
   "last_evaluated": "auto",
   "n_obs": 57
 }

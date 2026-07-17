@@ -4,7 +4,8 @@
 #   bash scripts/run_task.sh signals       [date]  # 生成信号 (默认今天)
 #   bash scripts/run_task.sh execute       [date]  # 执行交易
 #   bash scripts/run_task.sh monitor       [date]  # 盘中风控 (单次)
-#   bash scripts/run_task.sh attribution   [date]  # 盘后归因 (15:30)
+#   bash scripts/run_task.sh attribution   [date]  # 盘后归因 (20:00)
+#   bash scripts/run_task.sh factor_cache   [date]  # 增量物化因子 (21:00)
 #   bash scripts/run_task.sh weekly                # 周频因子评估
 #   bash scripts/run_task.sh daemon                # 启动全天编排器 (08:30-15:30)
 set -e
@@ -54,6 +55,14 @@ from quant.scheduler.daily_data import _run
 _run('$DATE')
 "
         ;;
+    factor_cache)
+        echo ">>> TASK: factor_cache for $DATE"
+        PYTHONPATH=. .venv/bin/python3 -c "
+from quant.utils.excepthook import setup; setup()
+from quant.scheduler.factor_cache import _run
+_run('$DATE')
+"
+        ;;
     weekly)
         echo ">>> TASK: weekly factor eval"
         PYTHONPATH=. .venv/bin/python3 -c "
@@ -79,8 +88,9 @@ while true:
         echo "  signals      生成当日信号 (08:30)"
         echo "  execute      执行交易 (09:30)"
         echo "  monitor      盘中风控 (09:35-14:55)"
-        echo "  attribution  盘后归因 (15:30)"
-        echo "  weekly       周频因子评估刷新 (周六 06:00)"
+        echo "  attribution  盘后归因 (20:00)"
+        echo "  factor_cache 增量因子物化 (21:00)
+  weekly       周频因子评估刷新 (周六 06:00)"
         echo "  daemon       启动全天编排器"
         echo ""
         echo "  date 可选, 默认今天 ($DATE)"

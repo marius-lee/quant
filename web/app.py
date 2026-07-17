@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v134"
+VERSION = "test-v138"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 def _log_exit(reason: str = ""):
@@ -519,8 +519,10 @@ def api_scheduler():
     today_str = datetime.now().strftime("%Y-%m-%d")
 
     # ── 1. crontab 配置检测 ──
+    # ── 从单一真相源 (status.register_all) 获取任务定义 ──
+    register_all()
     cron_installed = os.path.exists(cron_marker)
-    cron_tasks = {"signals", "execute", "monitor", "daily_data", "attribution", "weekly_eval"} if cron_installed else set()
+    cron_tasks = {t["name"] for t in all_tasks()} if cron_installed else set()
 
     # ── 2. DB 查询 (统一入口: market.db → task_runs 表) ──
     from quant.config.paths import MARKET_DB
@@ -550,8 +552,6 @@ def api_scheduler():
         pass  # 表可能还不存在，跳过
 
     # ── 3. 任务清单 ──
-    # ── 从单一真相源 (status.register_all) 获取任务定义 ──
-    register_all()
     _raw = all_tasks()
     tasks = []
     for rt in _raw:

@@ -3,8 +3,8 @@
   "display_name": "turnover_rev_5d",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0296,
-  "icir_12m": 0.2105,
+  "ic_mean_12m": 0.0273,
+  "icir_12m": 0.1892,
   "last_evaluated": "auto",
-  "n_obs": 53
+  "n_obs": 49
 }

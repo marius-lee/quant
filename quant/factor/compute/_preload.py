@@ -56,10 +56,9 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
             "SELECT symbol, market, name FROM stocks WHERE symbol IN (" + ph + ")",
             conn, params=symbols
         )
-        if not df.empty:
-            result["stocks"] = df.set_index("symbol")
+        result["stocks"] = df.set_index("symbol") if not df.empty else pd.DataFrame()
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        pass
+        result["stocks"] = pd.DataFrame()
 
     # margin_detail: 60-day window for all margin-based factors
     try:
@@ -73,10 +72,11 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
                 "FROM margin_detail WHERE date >= ? AND date <= ?",
                 conn, params=(margin_start, margin_max_date)
             )
-            if not df.empty:
-                result["margin"] = df  # keep natural index — multi-date rows per symbol
+            result["margin"] = df if not df.empty else pd.DataFrame()
+        else:
+            result["margin"] = pd.DataFrame()
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        pass
+        result["margin"] = pd.DataFrame()
 
     # analyst_forecast: latest sync_date per symbol (all rating columns)
     try:
@@ -86,10 +86,10 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
             "WHERE sync_date = (SELECT MAX(sync_date) FROM analyst_forecast WHERE sync_date <= ?)",
             conn, params=(date,)
         )
-        if not df.empty:
-            result["analyst"] = df.set_index("symbol")
+        # PIT: always set key — empty df means no prior data exists, factors return NaN gracefully
+        result["analyst"] = df.set_index("symbol") if not df.empty else pd.DataFrame()
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        pass
+        result["analyst"] = pd.DataFrame()
 
     # fund_hold: latest date (ratio + change_ratio for fund_change factor)
     try:
@@ -98,10 +98,9 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
             "WHERE report_date = (SELECT MAX(report_date) FROM fund_hold WHERE report_date <= ?)",
             conn, params=(date,)
         )
-        if not df.empty:
-            result["fund_hold"] = df.set_index("symbol")
+        result["fund_hold"] = df.set_index("symbol") if not df.empty else pd.DataFrame()
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        pass
+        result["fund_hold"] = pd.DataFrame()
 
     # financial tables: TTM data
     for tbl in ["financial_income", "financial_balance", "financial_cashflow"]:
@@ -110,10 +109,9 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
                 f"SELECT * FROM {tbl} WHERE stat_date <= ? ORDER BY stat_date",
                 conn, params=(date,)
             )
-            if not df.empty:
-                result[tbl] = df
+            result[tbl] = df if not df.empty else pd.DataFrame()
         except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-            pass
+            result[tbl] = pd.DataFrame()
 
     # pledge: latest date
     try:
@@ -122,10 +120,9 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
             f"WHERE date = (SELECT MAX(date) FROM pledge WHERE date <= ?)",
             conn, params=(date,)
         )
-        if not df.empty:
-            result["pledge"] = df.set_index("symbol")
+        result["pledge"] = df.set_index("symbol") if not df.empty else pd.DataFrame()
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        pass
+        result["pledge"] = pd.DataFrame()
 
     # lhb_detail: 90-day window with all columns for lhb factors
     try:
@@ -135,10 +132,9 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
             "WHERE trade_date <= ? AND trade_date >= date(?, '-90 days') ORDER BY trade_date DESC",
             conn, params=(date, date)
         )
-        if not df.empty:
-            result["lhb"] = df  # keep natural index — multi-date rows per symbol
+        result["lhb"] = df if not df.empty else pd.DataFrame()
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        pass
+        result["lhb"] = pd.DataFrame()
 
     # fund_flow: 60-day window with main_net_ratio for compute_main_flow_ratio
     try:
@@ -152,9 +148,10 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
                 "WHERE date >= ? AND date <= ?",
                 conn, params=(ff_start, ff_max)
             )
-            if not df.empty:
-                result["fund_flow"] = df.set_index("symbol")
+            result["fund_flow"] = df.set_index("symbol") if not df.empty else pd.DataFrame()
+        else:
+            result["fund_flow"] = pd.DataFrame()
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        pass
+        result["fund_flow"] = pd.DataFrame()
 
     return result

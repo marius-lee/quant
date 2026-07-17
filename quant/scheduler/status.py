@@ -11,7 +11,7 @@ _tasks: dict[str, dict] = {}
 
 _GROUPS = {
     "signals": "盘前", "execute": "盘中", "monitor": "盘中",
-    "daily_data": "盘后", "attribution": "盘后", "weekly_eval": "研究",
+    "daily_data": "盘后", "attribution": "盘后", "factor_cache": "盘后", "weekly_eval": "研究",
 }
 
 
@@ -49,6 +49,8 @@ def register_all():
              desc="拉取当日 A 股日线行情，更新 market.db")
     register("attribution",  "20:00",       label="盘后归因",
              desc="Brinson 归因 + IC 衰减 + OOS 验证 + 因子归因")
+    register("factor_cache", "21:00",       label="因子物化",
+             desc="增量更新 factor_cache.db，为新交易日计算回测因子值")
     register("weekly_eval",  "周六 06:00",   label="因子评估",
              desc="评估管线五阶段：回测诊断因子 → 正式认证 → 状态变更")
 

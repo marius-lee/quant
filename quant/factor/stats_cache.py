@@ -117,196 +117,73 @@ def compute_factor_stats(
     logger.info(f"eval dates: {len(eval_date_strs)} dates, {eval_date_strs[0]}→{eval_date_strs[-1]}, "
                 f"{len(factor_names)} factors, {_MAX_WORKERS} threads")
 
-    # ══ Phase B: primitives 预计算 (一次加载, 所有线程复用) ══
-    from quant.factor.compute._primitives import precompute_primitives
-    from quant.factor.windows import max_factor_calendar_days
+    # ══ Phase B: 从 factor_cache.db 读取因子值 + IC 计算 (不再重算) ══
+    from quant.factor.ic import compute_ic as _compute_ic
 
-    _factor_min = max_factor_calendar_days(factor_names)
-    _eff_days = max(_factor_min, int(lookback * 1.5))
-    data_start_full = str(pd.Timestamp(eval_date_strs[0]) - pd.Timedelta(days=_eff_days))[:10]
-    future_end_full = str(pd.Timestamp(eval_date_strs[-1]) + pd.Timedelta(days=40))[:10]
-    logger.info(f"primitives: loading data {data_start_full}→{future_end_full}, {len(symbols)} symbols")
-    _shared_data = store.get_daily(symbols, start=data_start_full, end=future_end_full)
-    # 数据完整性: 过滤 eval_date_strs 到 _shared_data 实际包含的日期
-    # (UniverseRepo 与 daily DISTINCT 的日期集合在符号过滤后可能不一致)
-    _data_dates = set(_shared_data.index)
-    _old_count = len(eval_date_strs)
-    eval_date_strs = [d for d in eval_date_strs if pd.Timestamp(d) in _data_dates]
-    if len(eval_date_strs) < _old_count:
-        logger.warning(f"eval_date_strs filtered: {_old_count} → {len(eval_date_strs)} "
-                       f"(dropped {_old_count - len(eval_date_strs)} dates not in data)")
-    # fundamentals 按日期预加载 (基本面的因子)
-    _shared_financials = {}
-    for _ds in eval_date_strs:
-        _shared_financials[_ds] = store.get_fundamentals(symbols, date=_ds)
-    # primitives 预计算 → 全量 DataFrame, 再按日期切片为 per-date dict
-    # (照抄 backtest/loop.py:176-180 模式)
-    logger.info("primitives: precomputing shared rolling stats (one pass)...")
-    _full_prims = precompute_primitives(_shared_data)
-    _shared_primitives = {}  # {date_str: {prim_name: Series}}
-    for _ds in eval_date_strs:
-        try:
-            _shared_primitives[_ds] = {k: v.loc[_ds] for k, v in _full_prims.items()}
-        except KeyError:
-            _shared_primitives[_ds] = {}
-    logger.info(f"primitives ready: {len(_full_prims)} keys, {len(_shared_primitives)} dates")
+    # 从 factor_cache.db 加载 close 行情数据 (仅用于后续相关性矩阵计算, Phase 2 不需要)
+    data_start = str(pd.Timestamp(eval_date_strs[0]) - pd.Timedelta(days=lookback))[:10]
+    data_end = str(pd.Timestamp(eval_date_strs[-1]) + pd.Timedelta(days=40))[:10]
+    _shared_data = store.get_daily(symbols, start=data_start, end=data_end)
     store.close()
 
-    # ══ Phase B: ThreadPoolExecutor 并行因子计算 (P78) ══
-    # 数据已预加载, 线程 worker 共享内存 — primitives 不再重复计算
-    close_by_date = {}
-    logger.info(f"factor compute start: {len(eval_date_strs)} dates x {len(factor_names)} factors, "
-                f"{_MAX_WORKERS} threads (shared data + precomputed primitives)")
+    logger.info(
+        f"factor_cache: computing IC for {len(factor_names)} factors "
+        f"over {len(eval_date_strs)} dates ({eval_date_strs[0]}→{eval_date_strs[-1]})"
+    )
 
-    def _thread_compute_chunk(chunk_dates: list, shared_data,
-                                shared_financials: dict) -> list:
-        """Thread worker: 复用主线程预计算的 primitives, 不再自己加载数据."""
-        import logging as _log
-        _log.captureWarnings(True)
-        try:
-            from quant.factor.compute import compute_all_factors
-            import pandas as _pd
+    _ic_result = _compute_ic(
+        factor_names=factor_names,
+        date=eval_date_strs[-1],
+        symbols=symbols,
+        lookback=lookback,
+        store=store,
+        status_filter=None,  # 已传 factor_names, 不额外过滤
+    )
 
-            data = shared_data
-            results = []
-            for date_str in chunk_dates:
-                try:
-                    fundamentals = shared_financials.get(date_str)
-                    prims = _shared_primitives.get(date_str, {})
-                    fv = compute_all_factors(data, date_str,
-                                                fundamentals=fundamentals,
-                                                factor_names=factor_names,
-                                                primitives=prims if prims else None,
-                                                factor_fail_fast=False)
-                    result = {}
-                    for name in factor_names:
-                        if name in fv and not fv[name].dropna().empty:
-                            result[name] = fv[name]
-                    try:
-                        close_series = data["close"].loc[date_str]
-                    except KeyError:
-                        close_series = _pd.Series(dtype=float)
-                    results.append((date_str, result, close_series, None))
-                except Exception as e:
-                    results.append((date_str, {}, _pd.Series(dtype=float), str(e)))
-                    logger.warning(f"_thread_compute_chunk: {type(e).__name__} at {date_str}: {e}")
-            return results
-        except Exception as e:
-            logger.error(f"Thread worker fatal error in chunk {chunk_dates[0]}..{chunk_dates[-1]}: {type(e).__name__}: {e}")
-            return [(d, {}, _pd.Series(dtype=float), f"{type(e).__name__}: {e}") for d in chunk_dates]
+    _valid_ic = {n: r for n, r in _ic_result.items() if r["n_valid"] > 0}
+    logger.info(
+        f"factor_cache IC done: {len(_ic_result)} factors → "
+        f"{len(_valid_ic)} with valid IC"
+    )
 
-    n_chunks = min(_MAX_WORKERS, len(eval_date_strs))
-    chunk_size = max(1, len(eval_date_strs) // n_chunks)
-    date_chunks = [eval_date_strs[i:i + chunk_size] for i in range(0, len(eval_date_strs), chunk_size)]
-    logger.info(f"partitioned {len(eval_date_strs)} dates into {len(date_chunks)} chunks (max {chunk_size}/chunk)")
-
-    # ── ztd 预计算缓存: 消除评估管线每交易日重复 SQL 查询 ──
-    from quant.factor.compute.price._alternative import preload_ztd_cache as _preload_ztd
-    _preload_ztd(eval_date_strs, symbols)
-
-    executor = ThreadPoolExecutor(max_workers=n_chunks)
-    try:
-        futures = {executor.submit(_thread_compute_chunk, chunk_dates,
-                                    _shared_data, _shared_financials): ci
-                    for ci, chunk_dates in enumerate(date_chunks)}
-        for ci, chunk_dates in enumerate(date_chunks):
-            logger.info(f"  chunk {ci+1}/{len(date_chunks)}: {len(chunk_dates)} dates")
-
-        logger.info(f"parallel compute: {len(futures)} chunks x {n_chunks} threads")
-
-        try:
-            from tqdm import tqdm
-            pbar = tqdm(total=len(futures), desc="Computing factors (parallel)")
-        except ImportError:
-            pbar = None
-
-        try:
-            for future in as_completed(futures):
-                chunk_results = future.result()
-                for date_str, fv_partial, close_series, err in chunk_results:
-                    if err:
-                        logger.warning(f"Factor compute failed at {date_str}: {err}")
-                    else:
-                        for name, series in fv_partial.items():
-                            factor_values_by_date[name][date_str] = series
-                        if close_series is not None and not close_series.empty:
-                            close_by_date[date_str] = close_series
-                if pbar:
-                    pbar.update(1)
-        finally:
-            if pbar:
-                pbar.close()
-    finally:
-        executor.shutdown(wait=True)
-
-    completed_dates = set()
-    for name in factor_names:
-        completed_dates |= set(factor_values_by_date[name].keys())
-    logger.info(f"factor compute complete: {len(completed_dates)}/{len(eval_date_strs)} dates")
-
-    # 4. 构建 forward returns
+    # 从 IC 结果构建 forward returns 结构 (后续代码需要)
+    import pandas as _pd
     close_parts = []
-    for date_str in sorted(close_by_date.keys()):
-        s = close_by_date[date_str]
+    for _ds in sorted(eval_date_strs):
+        try:
+            s = _shared_data["close"].loc[_ds] if _ds in _shared_data.index else _pd.Series(dtype=float)
+        except Exception:
+            s = _pd.Series(dtype=float)
         if s.empty:
             continue
-        mi = pd.MultiIndex.from_tuples([(date_str, sym) for sym in s.index],
+        mi = _pd.MultiIndex.from_tuples([(_ds, sym) for sym in s.index],
                                         names=['date', 'symbol'])
-        close_parts.append(pd.Series(s.values, index=mi, name='close'))
+        close_parts.append(_pd.Series(s.values, index=mi, name='close'))
     if not close_parts:
-        logger.warning("No close data from workers — cannot compute forward returns")
+        logger.warning("No close data — cannot compute forward returns")
         return _empty_result(factor_names)
-    close = pd.concat(close_parts)
-    if isinstance(close, pd.Series):
+    close = _pd.concat(close_parts)
+    if isinstance(close, _pd.Series):
         close = close.unstack()
     forward_1d = close.pct_change().shift(-1)
     forward_5d = close.pct_change(5).shift(-5)
     forward_20d = close.pct_change(20).shift(-20)
 
-    # 5. 计算每个因子的 IC/IR
-    ic_means = {}
-    ic_irs = {}
-    ic_series = {}
-    ic_decay = {}
+    # 映射 compute_ic 返回格式到 compute_factor_stats 输出格式
+    ic_means = {n: r["ic"] for n, r in _ic_result.items()}
+    ic_irs = {n: r["ic_ir"] for n, r in _ic_result.items()}
+    ic_series = {n: r.get("ic_series", {}) for n, r in _ic_result.items()}
+    ic_decay = {n: r.get("decay", {}) for n, r in _ic_result.items()}
 
-    min_periods = _require_cfg("factor.stats.ic_min_periods")
+    # factor_values_by_date: 不再需要 (后续用 ic_series)
+    # close_by_date: 不再需要 (后续用 forward_1d)
+    close_by_date = {}
+    factor_values_by_date = {name: {} for name in factor_names}
 
-    def _compute_ic(name, fv_dict, forward_1d, forward_5d, forward_20d):
-        if len(fv_dict) < min_periods:
-            return name, None
-        from quant.factor.ic import compute_ic
-        fv_single = {name: fv_dict}
-        result = compute_ic(
-            factor_values=fv_single, forward_1d=forward_1d,
-            forward_5d=forward_5d, forward_20d=forward_20d, min_periods=min_periods
-        )
-        ic_means = result["ic_means"]
-        if name in ic_means:
-            return name, (ic_means[name], result["ic_irs"][name],
-                            result["ic_series"].get(name, {}), result["ic_decay"].get(name, {}))
-        return name, None
-
-    logger.info(f"IC compute start: {len(factor_names)} factors")
-
-    executor = ThreadPoolExecutor(max_workers=_MAX_WORKERS)
-    try:
-        futures = {executor.submit(_compute_ic, name, factor_values_by_date[name],
-                                    forward_1d, forward_5d, forward_20d): name
-        for name in factor_names}
-        ic_completed = 0
-        for future in as_completed(futures):
-            name, result = future.result()
-            if result is not None:
-                ic_means[name], ic_irs[name], ic_series[name], ic_decay[name] = result
-            else:
-                logger.info(f"IC compute skip {name}: < min_periods")
-            ic_completed += 1
-            if ic_completed % 10 == 0:
-                logger.info(f"IC compute progress: {ic_completed}/{len(factor_names)} factors")
-        logger.info(f"IC compute complete: {len(factor_names)} factors")
-    finally:
-        executor.shutdown(wait=True)
-
+    logger.info(
+        f"factor_cache: loaded IC data for {len(_ic_result)} factors, "
+        f"{sum(1 for r in _ic_result.values() if abs(r['ic']) > 0.001)} with non-zero IC"
+    )
     # 6. 计算因子相关性矩阵
     n = len(factor_names)
 

@@ -172,7 +172,8 @@ class FactorStore:
                 day_data, date_str,
                 primitives=prims,
                 factor_names=factor_names,
-                status_filter=None,  # 算全部指定因子, 不受状态限制
+                status_filter=None,
+                factor_fail_fast=False,  # 批量物化: 单个因子数据缺失不阻塞全量
             )
 
             # 截面 zscore + 写入 batch

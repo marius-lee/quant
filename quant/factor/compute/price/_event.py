@@ -354,8 +354,8 @@ def compute_margin_balance_chg(data: "pd.DataFrame", date: str, window: int = 5,
     today_rows = m[m["date"] == date_str]
     prev_rows = m[m["date"] == prev_date]
 
-    today_map = {r.name: r["margin_balance"] for _, r in today_rows.iterrows() if r["margin_balance"] and r["margin_balance"] > 0}
-    prev_map = {r.name: r["margin_balance"] for _, r in prev_rows.iterrows() if r["margin_balance"] and r["margin_balance"] > 0}
+    today_map = {r["symbol"]: r["margin_balance"] for _, r in today_rows.iterrows() if r["margin_balance"] and r["margin_balance"] > 0}
+    prev_map = {r["symbol"]: r["margin_balance"] for _, r in prev_rows.iterrows() if r["margin_balance"] and r["margin_balance"] > 0}
 
     scores = {}
     for sym in symbols:

@@ -3,8 +3,8 @@
   "display_name": "turnover_anomaly",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0198,
-  "icir_12m": 0.1428,
+  "ic_mean_12m": -0.0314,
+  "icir_12m": -0.2022,
   "last_evaluated": "auto",
   "n_obs": 53
 }

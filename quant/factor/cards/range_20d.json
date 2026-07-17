@@ -3,8 +3,8 @@
   "display_name": "range_20d",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0431,
-  "icir_12m": 0.1974,
+  "ic_mean_12m": 0.0581,
+  "icir_12m": 0.2953,
   "last_evaluated": "auto",
   "n_obs": 57
 }

@@ -3,8 +3,8 @@
   "display_name": "rsi_rev_14d",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.2167,
-  "icir_12m": -1.5887,
+  "ic_mean_12m": 0.0382,
+  "icir_12m": 0.2655,
   "last_evaluated": "auto",
   "n_obs": 56
 }

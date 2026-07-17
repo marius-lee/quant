@@ -3,8 +3,8 @@
   "display_name": "short_interest",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.0026,
-  "icir_12m": -0.0173,
+  "ic_mean_12m": 0.0033,
+  "icir_12m": 0.026,
   "last_evaluated": "auto",
   "n_obs": 57
 }

@@ -176,8 +176,8 @@ def compute_factor_stats(
                     fv = compute_all_factors(data, date_str,
                                                 fundamentals=fundamentals,
                                                 factor_names=factor_names,
-                                                primitives=prims
-                                                if prims else None)
+                                                primitives=prims if prims else None,
+                                                factor_fail_fast=False)
                     result = {}
                     for name in factor_names:
                         if name in fv and not fv[name].dropna().empty:

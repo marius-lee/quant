@@ -124,7 +124,6 @@ def compute_factor_stats(
     data_start = str(pd.Timestamp(eval_date_strs[0]) - pd.Timedelta(days=lookback))[:10]
     data_end = str(pd.Timestamp(eval_date_strs[-1]) + pd.Timedelta(days=40))[:10]
     _shared_data = store.get_daily(symbols, start=data_start, end=data_end)
-    store.close()
 
     logger.info(
         f"factor_cache: computing IC for {len(factor_names)} factors "
@@ -136,15 +135,16 @@ def compute_factor_stats(
         date=eval_date_strs[-1],
         symbols=symbols,
         lookback=lookback,
-        store=store,
         status_filter=None,  # 已传 factor_names, 不额外过滤
     )
 
-    _valid_ic = {n: r for n, r in _ic_result.items() if r["n_valid"] > 0}
-    logger.info(
-        f"factor_cache IC done: {len(_ic_result)} factors → "
-        f"{len(_valid_ic)} with valid IC"
-    )
+    ic_means = _ic_result["ic_means"]
+    ic_irs = _ic_result["ic_irs"]
+    ic_series = _ic_result.get("ic_series", {})
+    ic_decay = _ic_result.get("ic_decay", {})
+
+    _n_valid = _ic_result.get("n_valid", 0)
+    logger.info(f"factor_cache IC done: {_n_valid}/{len(factor_names)} factors with valid IC")
 
     # 从 IC 结果构建 forward returns 结构 (后续代码需要)
     import pandas as _pd
@@ -169,20 +169,14 @@ def compute_factor_stats(
     forward_5d = close.pct_change(5).shift(-5)
     forward_20d = close.pct_change(20).shift(-20)
 
-    # 映射 compute_ic 返回格式到 compute_factor_stats 输出格式
-    ic_means = {n: r["ic"] for n, r in _ic_result.items()}
-    ic_irs = {n: r["ic_ir"] for n, r in _ic_result.items()}
-    ic_series = {n: r.get("ic_series", {}) for n, r in _ic_result.items()}
-    ic_decay = {n: r.get("decay", {}) for n, r in _ic_result.items()}
-
     # factor_values_by_date: 不再需要 (后续用 ic_series)
     # close_by_date: 不再需要 (后续用 forward_1d)
     close_by_date = {}
     factor_values_by_date = {name: {} for name in factor_names}
 
     logger.info(
-        f"factor_cache: loaded IC data for {len(_ic_result)} factors, "
-        f"{sum(1 for r in _ic_result.values() if abs(r['ic']) > 0.001)} with non-zero IC"
+        f"factor_cache: loaded IC data for {_n_valid} factors, "
+        f"{sum(1 for v in ic_means.values() if abs(v) > 0.001)} with non-zero IC"
     )
     # 6. 计算因子相关性矩阵
     n = len(factor_names)

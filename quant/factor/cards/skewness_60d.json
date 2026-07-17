@@ -3,8 +3,8 @@
   "display_name": "skewness_60d",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.022,
-  "icir_12m": 0.3473,
+  "ic_mean_12m": 0.0062,
+  "icir_12m": 0.1109,
   "last_evaluated": "auto",
   "n_obs": 28
 }

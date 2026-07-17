@@ -110,6 +110,53 @@ def precompute_primitives(data: pd.DataFrame) -> dict:
                 continue
             prims[f"amt_ma_{w}"] = amount.rolling(w, min_periods=max(w//2, 1)).mean()
 
+
+    # ── 资金流向 (Chaikin Money Flow) ──
+    if high is not None and low is not None and amount is not None:
+        hl_range = high - low
+        hl_range = hl_range.where(hl_range > 0)
+        mfm = ((close - low) - (high - close)) / hl_range
+        mfv = mfm * amount
+        for w in sorted(all_windows):
+            if w <= 1:
+                continue
+            prims[f"money_flow_{w}"] = (
+                mfv.rolling(w, min_periods=max(w // 2, 1)).sum()
+                / amount.rolling(w, min_periods=max(w // 2, 1)).sum()
+            )
+
+    # ── 移动均线 ──
+    for w in sorted(all_windows):
+        if w <= 1:
+            continue
+        prims[f"ma_{w}"] = close.rolling(w, min_periods=max(w // 2, 1)).mean()
+
+    # ── 量价相关性 (Pearson) ──
+    if volume is not None:
+        close_ret = close.pct_change()
+        vol_chg = volume.pct_change()
+        for w in sorted(all_windows):
+            if w <= 1:
+                continue
+            prims[f"vol_price_corr_{w}"] = close_ret.rolling(
+                w, min_periods=max(w // 2, 1)).corr(vol_chg)
+
+    # ── 偏度 ──
+    for w in sorted(all_windows):
+        if w <= 1:
+            continue
+        prims[f"skew_{w}"] = log_ret.rolling(w, min_periods=max(w // 2, 1)).skew()
+
+    # ── RSI ──
+    pct = prims["pct_ret"]
+    for w in sorted(all_windows):
+        if w <= 1:
+            continue
+        gain = pct.where(pct > 0, 0).rolling(w, min_periods=max(w // 2, 1)).mean()
+        loss = (-pct.where(pct < 0, 0)).rolling(w, min_periods=max(w // 2, 1)).mean()
+        rs = gain / loss.replace(0, np.nan)
+        prims[f"rsi_{w}"] = 100 - (100 / (1 + rs))
+
     elapsed = (pd.Timestamp.now() - t0).total_seconds()
     _log.info(f"  primitives done: {len(prims)} tables in {elapsed:.1f}s")
     return prims
@@ -123,36 +170,36 @@ def _momentum(prims: dict, date: str, window: int):
     """动量 = cum_log_N.loc[date] → zscore"""
     from quant.factor.registry import _cs_zscore
     key = f"cum_log_{window}"
-    if key in prims:
-        s = prims[key].loc[date].dropna()
-        return _cs_zscore(s).rename(f"momentum_{window}d")
-    return None
+    s = prims[key].loc[date].dropna()
+    return _cs_zscore(s).rename(f"momentum_{window}d")
 
 def _volatility(prims: dict, date: str, window: int):
     """波动率 = -vol_N.loc[date] (低波异象) → zscore"""
     from quant.factor.registry import _cs_zscore
     key = f"vol_{window}"
-    if key in prims:
-        s = prims[key].loc[date].dropna()
-        return _cs_zscore(-s).rename(f"volatility_{window}d")
-    return None
+    s = prims[key].loc[date].dropna()
+    return _cs_zscore(-s).rename(f"volatility_{window}d")
 
 def _max_return(prims: dict, date: str, window: int):
     """最大收益 = -max_pct_N.loc[date] → zscore"""
     from quant.factor.registry import _cs_zscore
     key = f"max_pct_{window}"
-    if key in prims:
-        s = prims[key].loc[date].dropna()
-        return _cs_zscore(-s).rename(f"max_ret_{window}d")
-    return None
+    s = prims[key].loc[date].dropna()
+    return _cs_zscore(-s).rename(f"max_ret_{window}d")
 
 def _skewness(prims: dict, date: str, window: int):
-    """偏度: 需要原始 log_ret 数组计算 skew, 无法从预计算直接得出。返回 None 走 fallback。"""
-    return None  # 需要自定义窗口 skew，走原始函数
+    """偏度 = -skew_N.loc[date] (负偏度异象) → zscore"""
+    from quant.factor.registry import _cs_zscore
+    key = f"skew_{window}"
+    s = prims[key].loc[date].dropna()
+    return _cs_zscore(-s).rename(f"skewness_{window}d")
 
 def _rsi_reversal(prims: dict, date: str, window: int):
-    """RSI: 需要逐日涨幅/跌幅分拆, 无法从预计算直接得出。返回 None 走 fallback。"""
-    return None
+    """RSI 反转 = -rsi_N.loc[date] → zscore"""
+    from quant.factor.registry import _cs_zscore
+    key = f"rsi_{window}"
+    s = prims[key].loc[date].dropna()
+    return _cs_zscore(-s).rename(f"rsi_rev_{window}d")
 
 def _volume_ratio(prims: dict, date: str, window: int):
     """量比 = vol_ma_N / vol_ma_L"""
@@ -160,49 +207,56 @@ def _volume_ratio(prims: dict, date: str, window: int):
     from quant.config.constants import _VOL_RATIO_LONG
     s_key = f"vol_ma_{window}"
     l_key = f"vol_ma_{_VOL_RATIO_LONG}"
-    if s_key in prims and l_key in prims:
-        short_avg = prims[s_key].loc[date]
-        long_avg = prims[l_key].loc[date]
-        ratio = short_avg / long_avg.replace(0, np.nan)
-        return _cs_zscore(ratio).rename(f"vol_ratio_{window}d")
-    return None
+    short_avg = prims[s_key].loc[date]
+    long_avg = prims[l_key].loc[date]
+    ratio = short_avg / long_avg.replace(0, np.nan)
+    return _cs_zscore(ratio).rename(f"vol_ratio_{window}d")
 
 def _overnight_gap(prims: dict, date: str, window: int):
     """隔夜缺口: 从预计算 gap 取 rolling mean"""
     from quant.factor.registry import _cs_zscore
-    if "overnight_gap" in prims:
-        gap_ma = prims["overnight_gap"].rolling(window, min_periods=max(window//2,1)).mean()
-        s = gap_ma.loc[date].dropna()
-        return _cs_zscore(s).rename(f"gap_{window}d")
-    return None
+    gap_ma = prims["overnight_gap"].rolling(window, min_periods=max(window // 2, 1)).mean()
+    s = gap_ma.loc[date].dropna()
+    return _cs_zscore(s).rename(f"gap_{window}d")
 
-def _intraday_range(prims: dict, date: str, window: int):
-    """日内振幅: 需要 (high-low)/close 再 rolling mean, 无法从预计算直接得出。"""
-    return None  # 走原始函数
+# _intraday_range removed from FACTOR_SHORTCUT — 走 fn(data) 路径
 
 def _turnover_reversal(prims: dict, date: str, short: int, long: int = 20):
     """换手率反转: 需要换手率数据, 用 approx_turnover 近似。"""
     from quant.factor.registry import _cs_zscore
-    key = "approx_turnover"
-    if key in prims:
-        to = prims[key]
-        s_avg = to.rolling(short, min_periods=max(short//2,1)).mean().loc[date]
-        l_avg = to.rolling(long, min_periods=max(long//2,1)).mean().loc[date]
-        ratio = s_avg / l_avg.replace(0, np.nan)
-        return _cs_zscore(-(ratio - 1)).rename(f"turnover_rev_{short}d")
-    return None
+    to = prims["approx_turnover"]
+    s_avg = to.rolling(short, min_periods=max(short // 2, 1)).mean().loc[date]
+    l_avg = to.rolling(long, min_periods=max(long // 2, 1)).mean().loc[date]
+    ratio = s_avg / l_avg.replace(0, np.nan)
+    return _cs_zscore(-(ratio - 1)).rename(f"turnover_rev_{short}d")
 
 def _money_flow(prims: dict, date: str, window: int):
-    """资金流: 需要 (high+low+close)/3 * volume, 无法直接从预计算得出。"""
-    return None  # 走原始函数
+    """资金流 = money_flow_N.loc[date] (Chaikin CMF) → zscore"""
+    from quant.factor.registry import _cs_zscore
+    key = f"money_flow_{window}"
+    s = prims[key].loc[date].dropna()
+    return _cs_zscore(s).rename(f"money_flow_{window}d")
 
 def _ma_alignment(prims: dict, date: str, window: int):
-    """均线排列: 需要多均线比较, 无法从预计算直接得出。"""
-    return None
+    """均线排列 = sum(MA_short/MA_long - 1) → zscore"""
+    from quant.factor.registry import _cs_zscore
+    import numpy as np
+    ma5 = prims["ma_5"].loc[date]
+    ma10 = prims["ma_10"].loc[date]
+    ma20 = prims["ma_20"].loc[date]
+    ma60 = prims["ma_60"].loc[date]
+    with np.errstate(divide='ignore', invalid='ignore'):
+        score = ((ma5 / ma10.replace(0, np.nan) - 1).fillna(0)
+               + (ma10 / ma20.replace(0, np.nan) - 1).fillna(0)
+               + (ma20 / ma60.replace(0, np.nan) - 1).fillna(0))
+    return _cs_zscore(score).rename("ma_alignment")
 
 def _volume_price_corr(prims: dict, date: str, window: int):
-    """量价相关: 需要 pairwise correlation, 无法从预计算直接得出。"""
-    return None
+    """量价相关 = vol_price_corr_N.loc[date] (Pearson) → zscore"""
+    from quant.factor.registry import _cs_zscore
+    key = f"vol_price_corr_{window}"
+    s = prims[key].loc[date].dropna()
+    return _cs_zscore(s).rename(f"vol_price_corr_{window}d")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -211,27 +265,28 @@ def _volume_price_corr(prims: dict, date: str, window: int):
 # ═══════════════════════════════════════════════════════════
 
 FACTOR_SHORTCUT = {
-    # compute_momentum 因子 — 直接取 cum_log_N
+    # compute_momentum — 直接取 cum_log_N
     "compute_momentum":            _momentum,
     # compute_volatility — 直接取 vol_N
     "compute_volatility":           _volatility,
     # compute_max_return — 直接取 max_pct_N
     "compute_max_return":           _max_return,
-    # compute_skewness — 需要自定义计算，走 fallback
+    # compute_skewness — 从预计算 skew_N 取
     "compute_skewness":             _skewness,
-    # compute_rsi_reversal — 需要自定义计算，走 fallback
+    # compute_rsi_reversal — 从预计算 rsi_N 取
     "compute_rsi_reversal":         _rsi_reversal,
     # compute_volume_ratio — 从预计算取
     "compute_volume_ratio":         _volume_ratio,
     # compute_overnight_gap — 从预计算取
     "compute_overnight_gap":        _overnight_gap,
-    # compute_intraday_range — 需要原始 high/low，走 fallback
-    "compute_intraday_range":       _intraday_range,
+    # compute_intraday_range — 已移除: 需要 high/low 原始数据, 不在 primitives 中
     # 换手率 — 从预计算取
     "compute_turnover_reversal":    _turnover_reversal,
     "compute_turnover_change":      _turnover_reversal,
-    # 复杂因子 — 走 fallback
+    # 资金流 — 从预计算 money_flow_N 取
     "compute_money_flow":           _money_flow,
+    # 均线排列 — 从预计算 ma_N 取
     "compute_ma_alignment":         _ma_alignment,
+    # 量价相关 — 从预计算 vol_price_corr_N 取
     "compute_volume_price_corr":    _volume_price_corr,
 }

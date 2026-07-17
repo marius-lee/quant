@@ -549,3 +549,160 @@ PYTHONPATH=. .venv/bin/python scripts/smoke_test.py
 
 ### 未覆盖
 - `compute_limit_up_proximity` (line 18-76) 和 `compute_limit_up_streak` (line 78-157) 仍有 `import sqlite3` 和 `_db_connect()`，待后续处理
+
+---
+
+## test-v121 — 涨跌停幅度配置化: 消除硬编码板识别与阈值 (2026-07-17)
+
+**问题**: 3 个涨跌停因子 (`compute_limit_up_proximity`, `compute_limit_up_streak`, `compute_dt_streak`) 存在两类硬编码:
+1. `compute_limit_up_proximity` 用 `sqlite3` 直连 `stocks` 表查询市场板块 → 0.10/0.20/0.30
+2. `compute_limit_up_streak` / `compute_dt_streak` 用硬编码前缀判断 (30/68 → 19.5%, 其余 → 9.5%)
+
+**原则**: 系统严禁硬编码, 所有参数数值必须有来源依据且写入 `config.yaml`。
+
+**修改**:
+
+### 1. `quant/config/config.yaml` — 新增 `factor.board_limits` + `factor.limit_detection_margin`
+- 四个板块幅度: main: 0.10, chinext: 0.20, star: 0.20, beijing: 0.30
+- 检测容差: 0.005 (tick size 舍入 → 9.5% / 19.5% / 29.5%)
+- 来源: 上交所/深交所/北交所交易规则
+
+### 2. `quant/config/constants.py` — 新增常量和辅助函数
+- `_BOARD_LIMIT_MAIN/STAR/CHINEXT/BEIJING`, `_LIMIT_DETECTION_MARGIN` — 通过 `_require_cfg()` 读取
+- `_get_board_limit(symbol)` — 基于股票代码前缀返回板块涨跌停幅度 (小数)
+- `_get_limit_detection_pct(symbol)` — 返回涨停检测阈值 (百分比, 已扣容差)
+- `_startswith_any(s, *prefixes)` — 多前缀匹配工具
+
+### 3. `quant/factor/compute/price/_event.py` — 三个因子重构
+- `compute_limit_up_proximity`: 移除 `import sqlite3` / `_db_connect()` / `_market_db_path()`, 用 `_get_board_limit(sym)` 替代 DB 查询
+- `compute_limit_up_streak`: `limit_map` 用 `_get_limit_detection_pct(sym)` 替代硬编码 9.5/19.5
+- `compute_dt_streak`: 同上, 负值用 `-_get_limit_detection_pct(sym)`
+- 清理导入: 移除 `sqlite3`, `_db_connect`, `_FIN_FACTORS`, `_shared_limit_conn`, `_market_db_path`
+
+### 验证
+- `_get_board_limit("603969") = 0.10, detect = 9.5` — 主板
+- `_get_board_limit("300750") = 0.20, detect = 19.5` — 创业板
+- `_get_board_limit("688981") = 0.20, detect = 19.5` — 科创板
+- `_get_board_limit("832982") = 0.30, detect = 29.5` — 北交所
+- 全量导入链验证通过 (compute_all_factors, preload_aux_data, 所有 10 个因子函数)
+
+### 设计原则
+- 板块识别 (前缀规则) 是交易所固定规则, 不是可调参数 — 保留在 `_get_board_limit()` 函数逻辑中
+- 涨跌停幅度和检测容差是参数 — 写入 `config.yaml`, 通过 `_require_cfg()` fail-fast 读取
+- 零 fallback: 配置缺失 → KeyError → 直接崩溃
+
+**版本**: test-v121
+
+---
+
+## test-v122 — 板块/ST 识别对齐业界标准 (2026-07-17)
+
+**问题**: test-v121 的 `_get_board_limit()` 仅靠股票代码前缀推导板块类型,
+无法区分 ST 股（主板 ST 股 ±5% vs 正常股 ±10%）。业界平台（米筐/聚宽/LEAN/Qlib）
+统一从数据层的股票元数据获取板块和 ST 状态，不靠因子函数内推导。
+
+**修改**:
+
+### 1. `quant/config/config.yaml` — 新增 `main_st`
+- `factor.board_limits.main_st: 0.05` — 主板 ST 股 ±5%
+- 来源: 深交所/上交所特别处理规定
+
+### 2. `quant/config/constants.py`
+- 新增 `_BOARD_LIMIT_MAIN_ST = _require_cfg("factor.board_limits.main_st")`
+- `_get_board_limit(symbol, aux)`:
+  - 必需参数 `aux` (含 `aux["stocks"]` DataFrame)
+  - 从 aux 读取 `market` (SH/SZ/BJ) 和 `name` (含 ST 标记)
+  - BJ → 0.30; 68/30 前缀 → 0.20; 主板 + ST → 0.05; 主板正常 → 0.10
+  - aux 缺失或 symbol 不在数据中 → `raise ValueError`
+- `_get_limit_detection_pct(symbol, aux)`: 新增 `aux` 参数, 转发给 `_get_board_limit()`
+- `__all__` 新增 `_BOARD_LIMIT_MAIN_ST`
+
+### 3. `quant/factor/compute/_preload.py` — 新增 `stocks` 元数据查询
+- 查询 `SELECT symbol, market, name FROM stocks` 为所有给定 symbols
+- 结果作为 `aux["stocks"]` (DataFrame, index=symbol)
+
+### 4. `quant/factor/compute/price/_event.py` — 三个涨跌停因子加 `aux=None`
+- `compute_limit_up_proximity(data, date, window=5, aux=None)`
+- `compute_limit_up_streak(data, date, window=0, aux=None)`
+- `compute_dt_streak(data, date, window=0, aux=None)`
+- 三者均: 入口检查 `aux["stocks"]`, 缺失 → `raise ValueError`
+- 调用 `_get_board_limit(sym, aux)` 和 `_get_limit_detection_pct(sym, aux)`
+- `_dispatch.py` 通过 `inspect.signature` 自动传递 aux (无需修改)
+
+### 验证
+- 正常主板: 603969 → limit=0.10, detect=9.5%
+- STAR: 688981 → limit=0.20, detect=19.5%
+- ST 主板: 000004 (*ST国华) → limit=0.05, detect≈4.5%
+- 无 aux → ValueError (非静默降级)
+- 全量导入链验证通过
+
+### 设计原则
+- 板块/ST 识别来自数据层 (`stocks` 表 → `aux["stocks"]`), 不在因子函数内推导 — 对齐业界标准
+- 涨跌停幅度值在 config.yaml, 通过 `_require_cfg()` fail-fast 读取
+- 零 fallback: 数据缺失 → 直接报错
+
+**版本**: test-v122
+
+
+
+### test-v124: 修复 Step 2.5 全过滤问题
+
+**Bug**: 冒烟测试 Step 2.5 每天 `symbols=0`。根因是 `total_capital` 用 `engine.get_cash()`
+(剩余现金)赋值。Day 1 买入后现金只剩 ¥135.16, 后续 `affordable` 筛选
+`close*100 <= 135.16` → 只能买 ≤1.35 元的股票 → `candidates=0`。
+
+**修复** (`quant/pipeline.py` line 79):
+- `total_capital = engine.get_cash(strategy)` → `total_capital = seed` (初始本金)
+- 始终用 TradeRepo 的初始本金, 不用会随持仓变化的剩余现金
+
+### test-v124: 修复 restart.sh 进程泄漏
+
+**Bug**: `restart.sh` 只 `kill -9` web 服务端口, 不杀旧 orchestrator 进程。每次重启开新进程,
+旧进程永远活着 → 累积 20+ 个 Python 进程, 内存/CPU 泄漏。
+
+**修复** (`scripts/restart.sh`):
+- 启动新 orchestrator 前: `pkill -f "from quant.scheduler.orchestrator import start" 2>/dev/null`
+
+**版本**: test-v124
+
+
+### test-v125: IC 计算 factor_fail_fast=False
+
+**Bug**: `scripts/run_diagnostics.py` 崩溃 — `_compute_one_day` 调用 `compute_all_factors` 时,
+`compute_fund_change` 因 `aux['fund_hold']` 缺失抛出 `ValueError` → `factor_fail_fast=True`(默认)
+导致同一交易日的全部 66 个因子被跳过 → `compute_ic done: 0/0 valid` → `ic_map` 全零。
+
+**修复** (`quant/factor/ic.py` line ~152):
+- `compute_all_factors()` 调用新增 `factor_fail_fast=False` 参数
+- 单个因子异常 (如 fund_hold 数据缺失) 只跳过该因子, 不阻塞同批次其他因子
+- 对齐 `_dispatch.py` 已有的 per-factor 异常捕获逻辑 (error 日志 + skip)
+
+**版本**: test-v125
+
+
+### test-v126: 计算层四合一修复 — 对齐业界 IC 标准
+
+**1. forward IC（前向收益）— 修复 ic.py 核心算法**
+
+之前 IC 计算使用同期收益: `fwd = close[-1] / close[-2] - 1` → factor(ds) × return(ds-1→ds)。
+因子已知 ds 收盘价, 却用 ds 收盘价"验证"收益 — 循环论证, 违背 Grinold & Kahn (1999) 定义。
+
+修复后: 全窗口预计算 `all_fwd_1d = close.pct_change().shift(-1)`, 
+`_compute_one_day` 取 `all_fwd_1d.loc[ds]` → factor(ds) × return(ds→ds+1)。
+对齐 Alphalens/Quantopian/米筐的前向 IC 标准。
+
+与 loop.py:287 purge (date=today-1d, test-v84) 配合:
+  - purge 确保 IC 权重不含今天因子值 (调参/信号分离)
+  - forward IC 确保 IC 本身衡量预测力而非同期相关
+  - 两者叠加 = 完整 purged walk-forward IC
+
+**2. shortcut 路径加 factor_fail_fast 保护** (`_dispatch.py`)
+FACTOR_SHORTCUT 调用也受 factor_fail_fast 控制 — 快/慢路径错误语义一致。
+
+**3. 基本面因子加 factor_fail_fast 保护** (`_dispatch.py`)
+价格因子和基本面因子共享同一 fail-fast 契约。
+
+**4. 删除 _AUX_TABLES 中的 limit_up 死代码** (`_preload.py`)
+声明但从未加载, 无因子检查该 key (涨跌停因子用 aux["stocks"])。
+
+**版本**: test-v126

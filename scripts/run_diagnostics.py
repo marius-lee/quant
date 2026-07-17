@@ -1,8 +1,8 @@
-"""回测诊断 — 因子快照（backtesting 因子池的 IC 计算 + 诊断）。
+"""回测诊断 - 因子快照（backtesting 因子池的 IC 计算 + 诊断）。
 
 与冒烟测试的区别:
-  - 冒烟测试用 active 因子 (2个) → 验证管线
-  - 诊断用 backtesting 因子 → 因子 IC 快照 + 状态评估
+  - 冒烟测试用 active 因子 (2个) -> 验证管线
+  - 诊断用 backtesting 因子 -> 因子 IC 快照 + 状态评估
 
 用法:
   PYTHONPATH=. .venv/bin/python scripts/run_diagnostics.py
@@ -29,9 +29,8 @@ store = DataStore()
 factors = get_factor_names(status_filter="backtesting")
 log.info(f"backtesting factors: {len(factors)}")
 
-# 取流动性前 2000 只
+# 取流动性前 800 只
 try:
-    from quant.data.store import market_conn
     from quant.data.repos import UniverseRepo
     symbols = UniverseRepo().get_symbols()[:800]
 except Exception:
@@ -42,9 +41,12 @@ log.info(f"symbols: {len(symbols)} (via UniverseRepo)")
 ic_map = compute_pre_backtest_ic(factors, "2026-07-01", symbols, lookback=120, store=store)
 log.info(f"IC computed: {len(ic_map)} factors")
 
-# 分类
+# 分档 (必须在 save_phase 之前)
+strong = {k: v for k, v in ic_map.items() if abs(v.get("ic_mean", 0)) >= 0.03}
+moderate = {k: v for k, v in ic_map.items() if 0.02 <= abs(v.get("ic_mean", 0)) < 0.03}
+weak = {k: v for k, v in ic_map.items() if abs(v.get("ic_mean", 0)) < 0.02}
 
-# ── 持久化到 evaluation_runs (供 Phase 2 预筛) ──
+# 持久化到 evaluation_runs (供 Phase 2 预筛)
 strong_names = list(strong.keys())
 moderate_names = list(moderate.keys())
 passed = strong_names + moderate_names  # |IC| >= 0.02 视为通过
@@ -65,11 +67,6 @@ save_phase("diagnostics", {
     "backtest_period": "2026-07-01_pre_backtest",
 })
 log.info("diagnosis saved to evaluation_runs: %d passed/%d total", len(passed), len(ic_map))
-
-
-strong = {k: v for k, v in ic_map.items() if abs(v.get("ic_mean", 0)) >= 0.03}
-moderate = {k: v for k, v in ic_map.items() if 0.02 <= abs(v.get("ic_mean", 0)) < 0.03}
-weak = {k: v for k, v in ic_map.items() if abs(v.get("ic_mean", 0)) < 0.02}
 
 log.info(f"Strong  (|IC|>=0.03): {len(strong)}")
 log.info(f"Moderate (|IC| 0.02-0.03): {len(moderate)}")

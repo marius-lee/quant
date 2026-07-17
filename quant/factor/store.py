@@ -141,6 +141,12 @@ class FactorStore:
         preload_ztd_cache(date_range, symbols)
         _log.info("factor_cache: ztd cache preloaded (%d dates × %d symbols)", len(date_range), len(symbols))
 
+        # 2.6 预加载 fundamentals (基本面因子需要)
+        _store_fundamentals = {}
+        for date_str in date_range:
+            _store_fundamentals[date_str] = store.get_fundamentals(symbols, date=date_str)
+        _log.info("factor_cache: fundamentals ready (%d dates)", len(_store_fundamentals))
+
         # 3. 逐日计算因子值 + 截面 zscore
         if force:
             c = self._get_conn()
@@ -171,6 +177,7 @@ class FactorStore:
             fv = compute_all_factors(
                 day_data, date_str,
                 primitives=prims,
+                fundamentals=_store_fundamentals.get(date_str),
                 factor_names=factor_names,
                 status_filter=None,
                 factor_fail_fast=False,  # 批量物化: 单个因子数据缺失不阻塞全量

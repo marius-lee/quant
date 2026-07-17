@@ -37,6 +37,13 @@ def compute_all_factors(data: pd.DataFrame, date: str,
         price_factors = load_active_price_factors(status_filter=status_filter)
         fund_factors = load_active_fundamental_factors(status_filter=status_filter)
 
+    # 零 fallback: 如果要求了基本面因子但没传 fundamentals, 直接报错
+    if fund_factors and fundamentals is None:
+        raise ValueError(
+            f"fundamental factors requested but no fundamentals data provided: "
+            f"{list(fund_factors.keys())[:10]}..."
+        )
+
     total_pf = len(price_factors)
     done_pf = 0
     _plog = get_logger("factor.compute")

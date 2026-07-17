@@ -31,7 +31,7 @@ def _run():
     register_all()
 
     _log.info("orchestrator started — daily sequence: 08:30 signals → 09:30 execute → "
-              "09:35-14:55 monitor → 15:30 attribution")
+              "09:35-14:55 monitor → 19:00 daily_data → 20:00 attribution → 21:00 factor_cache")
 
     POLL = _require_cfg("quant.scheduler.poll_interval")
     today = None
@@ -163,6 +163,17 @@ def _run():
                     _monitor_thread = None
             else:
                 wait_m = (time(20, 0).hour * 60) - (hhmm.hour * 60 + hhmm.minute)
+
+        # ═══════════════════════════════════════════
+        # 6. 21:00 — 增量因子物化 (依赖 daily_data 完成)
+        # ═══════════════════════════════════════════
+        if done["daily_data"] and not done.get("factor_cache"):
+            if hhmm >= time(21, 0):
+                from quant.scheduler.factor_cache import _run as _factor_cache_run
+                _run_task("factor_cache", _factor_cache_run, today)
+                done["factor_cache"] = True
+            else:
+                wait_m = (time(21, 0).hour * 60) - (hhmm.hour * 60 + hhmm.minute)
 
         # ── 主动超时检测: 把僵尸 running 行标为 aborted ──
         _check_timeouts(today)

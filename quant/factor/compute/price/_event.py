@@ -485,7 +485,8 @@ def compute_analyst_buy(data: "pd.DataFrame", date: str, window: int = 0, aux=No
 
     a = aux["analyst"]
     if a.empty:
-        return pd.Series(0.5, index=symbols, name="analyst_buy")
+        # PIT: no analyst data exists for this date — return NaN (no signal)
+        return pd.Series(np.nan, index=symbols, name="analyst_buy")
 
     scores = {}
     for sym, row in a.iterrows():

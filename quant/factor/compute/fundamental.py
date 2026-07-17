@@ -155,11 +155,13 @@ def compute_analyst_consensus(fundamentals: "pd.DataFrame", date: str, aux=None)
     # Use preloaded aux data if available
     if aux is not None and "analyst" in aux:
         a = aux["analyst"]
+        if a.empty:
+            return pd.Series(dtype=float, name="analyst_consensus")
         if not a.empty and "buy_count" in a.columns and "report_count" in a.columns:
             s = a["buy_count"] / a["report_count"].replace(0, np.nan)
             return s.dropna().rename("analyst_consensus")
-    # aux must be provided by caller (compute_all_factors always calls preload_aux_data)
-    raise ValueError("compute_analyst_consensus requires preloaded aux['analyst']")
+    # PIT: no analyst data — return empty Series (no signal)
+    return pd.Series(dtype=float, name="analyst_consensus")
 
 
 # ── Phase 3 财务因子 (季报三表) ──

@@ -125,13 +125,23 @@ def compute_ic(*,
     prims = precompute_primitives(data)
     _log.info("compute_ic: primitives ready (%d tables)", len(prims))
 
+    # ── 前向收益: factor(t) × return(t→t+1), Grinold & Kahn (1999) Ch.6 ──
+    full_close = data["close"]
+    all_fwd_1d = full_close.pct_change().shift(-1) if isinstance(full_close, pd.DataFrame) else None
+
     factor_daily = {name: {} for name in factor_names}
     fwd_1d = {}
 
     compute_days = trading_days[lookback // 2:]
 
     def _compute_one_day(ds):
-        """从预加载的 data 切片出截至 ds 的窗口，计算因子。（不调 SQLite）"""
+        """从预加载的 data 切片出截至 ds 的窗口，计算因子。（不调 SQLite）
+
+        前向 IC 设计 (Grinold & Kahn 1999 Ch.6):
+          - 因子值在 t 时刻用 data[:t] 计算 (模拟"截至 t 已知的信息")
+          - 前向收益为 return(t→t+1), 来自预计算的 all_fwd_1d
+          - IC = corr(factor_t, return_{t→t+1}) — 预测性, 非同期
+        """
         try:
             # 切片: 只保留 <= ds 的数据（模拟"截至 ds 已知的数据"）
             ds_data = data.loc[:ds]
@@ -142,13 +152,21 @@ def compute_ic(*,
                 return (ds, {}, None)
             if len(close) < 2:
                 return (ds, {}, None)
-            fwd = (close.iloc[-1] / close.iloc[-2]) - 1
+            # 前向收益: return(ds→ds+1); 最后一天为 NaN (无 ds+1 数据)
+            if all_fwd_1d is not None:
+                try:
+                    fwd = all_fwd_1d.loc[ds]
+                except KeyError:
+                    fwd = None
+            else:
+                fwd = None
             fundamentals = store.get_fundamentals(symbols, ds)
             # 切片 primitives 到截止 ds, 传给 compute_all_factors 走 FACTOR_SHORTCUT 快捷路径
             ds_prims = {k: v.loc[:ds] for k, v in prims.items() if hasattr(v, 'loc')}
             factor_vals = compute_all_factors(
                 ds_data, ds, primitives=ds_prims, fundamentals=fundamentals,
                 factor_names=factor_names, status_filter=status_filter,
+                factor_fail_fast=False,
             )
             return (ds, factor_vals, fwd)
         except Exception as e:

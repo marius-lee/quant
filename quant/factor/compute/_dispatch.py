@@ -18,8 +18,11 @@ def compute_all_factors(data: pd.DataFrame, date: str,
                       factor_names: list = None,
                       status_filter: str = "using",
                       preloaded_financials: pd.DataFrame = None,
-                      preloaded_fundamentals: pd.DataFrame = None) -> dict:
+                      preloaded_fundamentals: pd.DataFrame = None,
+                      factor_fail_fast: bool = True) -> dict:
     """批量计算所有已注册因子 -> {factor_name: Series(index=symbol)}。
+
+    当 factor_fail_fast=False 时, 单个因子异常不阻塞其他因子 (用于批量诊断/IC 计算)。
 
     价格因子从 data 计算, 基本面因子从 fundamentals 计算。
     benchmark_ret 用于特质波动率因子(对指数回归取残差)。
@@ -55,13 +58,22 @@ def compute_all_factors(data: pd.DataFrame, date: str,
         from quant.factor.compute._primitives import FACTOR_SHORTCUT
         fn_name = getattr(fn, '__name__', '')
         if primitives is not None and fn_name in FACTOR_SHORTCUT:
-            shortcut_result = FACTOR_SHORTCUT[fn_name](primitives, date, win)
-            if shortcut_result is not None:
-                results[name] = shortcut_result
-                done_pf += 1
-                if done_pf % 5 == 0 or done_pf == total_pf:
-                    _plog.info(f"  price factors: {done_pf}/{total_pf} ({done_pf*100//total_pf}%, {_time.time()-_t0:.0f}s)")
-                continue
+            try:
+                shortcut_result = FACTOR_SHORTCUT[fn_name](primitives, date, win)
+                if shortcut_result is not None:
+                    results[name] = shortcut_result
+                    done_pf += 1
+                    if done_pf % 5 == 0 or done_pf == total_pf:
+                        _plog.info(f"  price factors: {done_pf}/{total_pf} ({done_pf*100//total_pf}%, {_time.time()-_t0:.0f}s)")
+                    continue
+            except Exception as _e:
+                if not factor_fail_fast:
+                    _plog.error(f"  factor {name} shortcut failed ({type(_e).__name__}: {_e}), skipping")
+                    done_pf += 1
+                    continue
+                else:
+                    raise
+            # shortcut returned None → fall through to fallback
         # fallback: 原始因子函数
         kwargs = {}
         if 'idio_vol' in name and benchmark_ret is not None:
@@ -69,7 +81,13 @@ def compute_all_factors(data: pd.DataFrame, date: str,
         _sig = inspect.signature(fn)
         if 'aux' in _sig.parameters:
             kwargs['aux'] = _aux
-        results[name] = fn(data, date, win, **kwargs)
+        if not factor_fail_fast:
+            try:
+                results[name] = fn(data, date, win, **kwargs)
+            except Exception as _e:
+                _plog.error(f"  factor {name} failed ({type(_e).__name__}: {_e}), skipping")
+        else:
+            results[name] = fn(data, date, win, **kwargs)
         done_pf += 1
         if done_pf % 5 == 0 or done_pf == total_pf:
             _plog.info(f"  price factors: {done_pf}/{total_pf} ({done_pf*100//total_pf}%, {_time.time()-_t0:.0f}s)")
@@ -100,7 +118,13 @@ def compute_all_factors(data: pd.DataFrame, date: str,
                 _fn_kwargs['aux'] = _aux
             if kwargs and 'financials' in _sig.parameters:
                 _fn_kwargs['financials'] = kwargs['financials']
-            results[name] = fn(fundamentals, date, **_fn_kwargs)
+            if not factor_fail_fast:
+                try:
+                    results[name] = fn(fundamentals, date, **_fn_kwargs)
+                except Exception as _e:
+                    _plog.error(f"  fundamental factor {name} failed ({type(_e).__name__}: {_e}), skipping")
+            else:
+                results[name] = fn(fundamentals, date, **_fn_kwargs)
             done_ff += 1
             if done_ff % 5 == 0 or done_ff == total_ff:
                 _plog.info(f"  fundamental factors: {done_ff}/{total_ff} ({done_ff*100//total_ff}%, {_time2.time()-_t1:.0f}s)")

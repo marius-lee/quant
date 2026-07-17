@@ -2,69 +2,55 @@
 
 import numpy as np
 import pandas as pd
-import sqlite3
 import os as _os
 from typing import Optional
 
-from quant.config.constants import *
-from quant.factor.registry import _cs_zscore, _db_connect, _FIN_FACTORS, _shared_limit_conn
-from quant.factor.compute._shared import _market_db_path
+from quant.config.constants import (
+    _get_board_limit, _get_limit_detection_pct,
+    _LHB_WINDOW,
+)
+from quant.factor.registry import _cs_zscore
 
 from quant.utils.logger import get_logger as _get_logger
 from quant.data.store import market_conn as _market_conn
 
 _log = _get_logger("factor.compute")
 
-def compute_limit_up_proximity(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.Series":
+
+def compute_limit_up_proximity(data: "pd.DataFrame", date: str, window: int = 5, aux=None) -> "pd.Series":
     """涨停距离因子: 近期涨幅占涨跌停板比例的平均值.
-    
-    算法: avg(daily_return / board_limit_up_pct, window).
-    主板 ±10%, 科创板/创业板 ±20%. 自动识别.
+
+    算法: avg(daily_return / board_limit, window).
+    板块识别: 从 aux["stocks"] (预加载的 stocks 表元数据) 获取 market + name,
+              ST 股主板 5% / 主板 10% / 科创创业板 20% / 北交所 30%.
     高分 = 近期持续接近涨停 → 强势股 → 动量延续.
-    
+
     来源: A股涨跌停制度独有异象. 接近涨停板的股票存在动量溢出效应.
+    修改: 2026-07-17 — 涨跌停幅度从 config.yaml 读取, aux["stocks"] 替代 DB 查询.
     """
     close = data["close"]
-    
+
+    if aux is None or "stocks" not in aux:
+        raise ValueError("compute_limit_up_proximity requires aux['stocks']")
+
     if date not in close.index:
         return pd.Series(np.nan, index=close.columns, name=f"limit_up_prox_{window}d")
-    
+
     idx = close.index.get_loc(date)
     start = max(0, idx - window + 1)
-    
+
     ret = close.pct_change()
     ret_slice = ret.iloc[start:idx + 1]
-    
-    # Determine board limit: use market info from stocks table
-    # 主板 ±10%, 科创(688xxx) ±20%, 创业(300xxx) ±20%, 北交(8/9xxxxx) ±30%
-    import sqlite3
-    db_path = _market_db_path()
-    conn = _db_connect()
-    symbols_sample = list(close.columns[:100])  # sample for market check
-    placeholders = ",".join("?" * len(symbols_sample))
-    market_rows = conn.execute(
-        f"SELECT symbol, market FROM stocks WHERE symbol IN ({placeholders})",
-        symbols_sample
-    ).fetchall()
-    market_map = {r[0]: r[1] for r in market_rows}
-    
-    def _limit_pct(sym):
-        m = market_map.get(sym, "SH")
-        if m in ("BJ",):
-            return 0.30
-        if sym.startswith("688") or sym.startswith("300") or sym.startswith("301"):
-            return 0.20
-        return 0.10
-    
+
     avg_proximity = {}
     for sym in close.columns:
         r = ret_slice[sym].dropna()
         if len(r) < 2:
             continue
-        limit = _limit_pct(sym)
+        limit = _get_board_limit(sym, aux)
         prox = (r / limit).mean()
         avg_proximity[sym] = prox
-    
+
     result = pd.Series(avg_proximity)
     return _cs_zscore(result).rename(f"limit_up_prox_{window}d")
 
@@ -75,21 +61,25 @@ def compute_limit_up_proximity(data: "pd.DataFrame", date: str, window: int = 5)
 # 首板次日连板概率 30-40%, IC≈0.06-0.10 (A股独有)
 # ═══════════════════════════════════════════════════════════
 
-def compute_limit_up_streak(data: "pd.DataFrame", date: str, window: int = 0) -> "pd.Series":
+def compute_limit_up_streak(data: "pd.DataFrame", date: str, window: int = 0, aux=None) -> "pd.Series":
     """涨停连板因子: 从 data OHLCV 自算涨停 + 连板数(不依赖 limit_up_pool)。
 
     算法:
-      - 主板(60/00开头): 涨停 = 日收益 >= 9.5% 且 close == high
-      - 科创/创业(68/30开头): 涨停 = 日收益 >= 19.5% 且 close == high
+      - 涨停检测阈值: 板块涨跌停幅度 - 容差 (config.yaml factor.limit_detection_margin),
+        从 aux["stocks"] 获取板块/ST 状态, config.yaml 读取幅度值
+      - 涨停 = 日收益 >= 检测阈值 且 close == high
       - 连板数 = 从今日往前连续涨停的天数
       - 倒U型评分: 1连板→1, 2→3, 3→6, 4→10, 5→8, 6+→递减
 
     来源: A股涨跌停制度独有异象. 涨停板有显著动量溢出.
-    修改: 2026-07-03 — 从 limit_up_pool 改为 data OHLCV 自算, 覆盖 6 年历史.
-          limit_up_pool 仍每日积累(封板资金/炸板次数), 但不用于因子计算.
+    修改: 2026-07-03 — 从 limit_up_pool 改为 data OHLCV 自算.
+    修改: 2026-07-17 — 涨跌停阈值从 config.yaml 读取, aux["stocks"] 提供板块/ST 识别.
     """
     close = data["close"]
     high = data["high"]
+
+    if aux is None or "stocks" not in aux:
+        raise ValueError("compute_limit_up_streak requires aux['stocks']")
 
     # 匹配日期索引 (兼容 Timestamp 和 string)
     date_str = str(date)[:10]
@@ -108,13 +98,8 @@ def compute_limit_up_streak(data: "pd.DataFrame", date: str, window: int = 0) ->
 
     ret = cw.pct_change()  # row 0 = NaN (无前一日 close)
 
-    # 涨停幅度: 科创/创业板 20%, 主板 10%
-    limit_map = {}
-    for sym in symbols:
-        if sym.startswith('30') or sym.startswith('68'):
-            limit_map[sym] = 19.5
-        else:
-            limit_map[sym] = 9.5
+    # 涨停检测阈值: 各板块涨跌停幅度 - 容差, 从 aux["stocks"] + config.yaml
+    limit_map = {sym: _get_limit_detection_pct(sym, aux) for sym in symbols}
 
     # 今日是否涨停
     today_ret = ret.iloc[-1] * 100
@@ -156,21 +141,26 @@ def compute_limit_up_streak(data: "pd.DataFrame", date: str, window: int = 0) ->
     return _cs_zscore(result).rename("zt_streak")
 
 
-def compute_dt_streak(data: "pd.DataFrame", date: str, window: int = 0) -> "pd.Series":
+def compute_dt_streak(data: "pd.DataFrame", date: str, window: int = 0, aux=None) -> "pd.Series":
     """跌停连板因子: zt_streak 的镜像 — 从 data OHLCV 自算跌停 + 连板数。
 
     算法:
-      - 主板(60/00开头): 跌停 = 日收益 <= -9.5% 且 close == low
-      - 科创/创业(68/30开头): 跌停 = 日收益 <= -19.5% 且 close == low
+      - 跌停检测阈值: 负的板块涨跌停幅度 + 容差 (config.yaml factor.limit_detection_margin),
+        从 aux["stocks"] 获取板块/ST 状态, config.yaml 读取幅度值
+      - 跌停 = 日收益 <= 检测阈值 且 close == low
       - 连板数 = 从今日往前连续跌停的天数
       - 负向评分(镜像倒U): 1连板→-1, 2→-3, 3→-6, 4→-10, 5→-8, 6+→递减
       - 跌停后大概率继续下跌(A股实证~70%), 连板越多负信号越强
 
     来源: A股涨跌停制度独有异象. 跌停板有显著的负向动量溢出.
     添加: 2026-07-03 — zt_streak 镜像, Phase 7 P1.
+    修改: 2026-07-17 — 涨跌停阈值从 config.yaml 读取, aux["stocks"] 提供板块/ST 识别.
     """
     close = data["close"]
     low = data["low"]
+
+    if aux is None or "stocks" not in aux:
+        raise ValueError("compute_dt_streak requires aux['stocks']")
 
     # 匹配日期索引
     date_str = str(date)[:10]
@@ -189,13 +179,8 @@ def compute_dt_streak(data: "pd.DataFrame", date: str, window: int = 0) -> "pd.S
 
     ret = cw.pct_change()
 
-    # 跌停幅度: 科创/创业板 -20%, 主板 -10%
-    limit_map = {}
-    for sym in symbols:
-        if sym.startswith('30') or sym.startswith('68'):
-            limit_map[sym] = -19.5
-        else:
-            limit_map[sym] = -9.5
+    # 跌停检测阈值: 负的(板块涨跌停幅度 - 容差), 从 aux["stocks"] + config.yaml
+    limit_map = {sym: -_get_limit_detection_pct(sym, aux) for sym in symbols}
 
     today_ret = ret.iloc[-1] * 100
     today_close = cw.iloc[-1]
@@ -515,5 +500,3 @@ def compute_analyst_buy(data: "pd.DataFrame", date: str, window: int = 0, aux=No
     result = pd.Series(scores, dtype=float)
     result = result.reindex(symbols).fillna(0.5)  # 无数据 -> 中性
     return _cs_zscore(result).rename("analyst_buy")
-
-

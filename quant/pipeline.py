@@ -75,13 +75,12 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     cost_model = CostModel()
     constructor = PortfolioConstructor()
 
-    if engine.is_initialized(strategy):
-        total_capital = engine.get_cash(strategy)
-    else:
-        from quant.data.trade_repo import TradeRepo
-        seed = TradeRepo(db_path=db_path).get_initial_capital(strategy)
+    from quant.data.trade_repo import TradeRepo
+    seed = TradeRepo(db_path=db_path).get_initial_capital(strategy)
+    if not engine.is_initialized(strategy):
         engine.set_initial_capital(strategy, seed)
-        total_capital = seed
+    total_capital = seed  # 用初始本金, 不用剩余现金 (get_cash 会随持仓变化缩小)
+
 
     # ── Step 1: Data Update ──
     if not skip_pull:

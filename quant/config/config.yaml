@@ -182,6 +182,14 @@ factor:
     volatility: 126
     volume_ratio_long: 20
     volume_ratio_short: 5
+  board_limits:
+    # A股各板块涨跌停幅度; 来源: 上交所/深交所/北交所交易规则
+    main: 0.10          # 主板 (60xxxx, 00xxxx) ±10%
+    main_st: 0.05       # 主板ST股 (60xxxx, 00xxxx, 含*ST) ±5%; 来源: 深交所/上交所特别处理规定
+    chinext: 0.20       # 创业板 (30xxxx) ±20%
+    star: 0.20          # 科创板 (68xxxx) ±20%
+    beijing: 0.30       # 北交所 (8xxxxx, 9xxxxx) ±30%
+  limit_detection_margin: 0.005  # 涨跌停检测容差; 来源: tick size 舍入可能导致收盘价略低于涨跌停线, 业界常用 0.5% (聚宽/米筐)
 optimizer:
   method: equal_weight
   min_holding_days: 5

@@ -25,7 +25,6 @@ _AUX_TABLES = [
     "financial_cashflow",
     "lhb_detail",
     "fund_flow",
-    "limit_up",
     "pledge",
 ]
 
@@ -49,6 +48,18 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
 
     result = {}
     ph = ",".join("?" * len(symbols))
+
+
+    # stocks: symbol → market, name for board limit detection (ST, STAR, ChiNext)
+    try:
+        df = pd.read_sql_query(
+            "SELECT symbol, market, name FROM stocks WHERE symbol IN (" + ph + ")",
+            conn, params=symbols
+        )
+        if not df.empty:
+            result["stocks"] = df.set_index("symbol")
+    except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
+        pass
 
     # margin_detail: 60-day window for all margin-based factors
     try:

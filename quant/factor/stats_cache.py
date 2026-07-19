@@ -92,8 +92,8 @@ def compute_factor_stats(
 
     # 2. 获取评估日期
     if factor_names is None:
-        # 回测池 = registered(待评估) + candidate(待验证) + retired(待复评)
-        # 排除: active(已投产), monitoring(生产中), rejected(不适合A股)
+        # 回测池 = registered + candidate + monitoring + retired
+        # 排除: active(已投产, 实盘模块管理), rejected(永久淘汰)
         if status_filter is None:
             status_filter = 'backtesting'
         factor_names = get_factor_names(status_filter=status_filter)
@@ -169,10 +169,21 @@ def compute_factor_stats(
     forward_5d = close.pct_change(5).shift(-5)
     forward_20d = close.pct_change(20).shift(-20)
 
-    # factor_values_by_date: 不再需要 (后续用 ic_series)
     # close_by_date: 不再需要 (后续用 forward_1d)
     close_by_date = {}
+    # 从 factor_cache.db 读取因子值用于相关性矩阵计算 (修正 test-v139 引入的全零 bug)
+    from quant.factor.store import FactorStore
+    _fs = FactorStore()
     factor_values_by_date = {name: {} for name in factor_names}
+    for _ds in eval_date_strs:
+        try:
+            _fv = _fs.load(_ds, symbols=symbols, factor_names=factor_names)
+            for _fn, _series in _fv.items():
+                if isinstance(_series, pd.Series) and _series.notna().sum() >= 30:
+                    factor_values_by_date[_fn][_ds] = _series.dropna()
+        except Exception:
+            pass
+    _fs.close()
 
     logger.info(
         f"factor_cache: loaded IC data for {_n_valid} factors, "
@@ -297,8 +308,8 @@ def _empty_result(factor_names: list = None) -> dict:
     """返回空结果（数据不足时）。使用传入 factor_names，None 时回退到全量因子。"""
     if factor_names is None:
         from quant.factor.compute import get_factor_names
-        # 回测池 = registered(待评估) + candidate(待验证) + retired(待复评)
-        # 排除: active(已投产), monitoring(生产中), rejected(不适合A股)
+        # 回测池 = registered + candidate + monitoring + retired
+        # 排除: active(已投产, 实盘模块管理), rejected(永久淘汰)
         if status_filter is None:
             status_filter = 'backtesting'
         factor_names = get_factor_names(status_filter=status_filter)
@@ -382,12 +393,12 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
 def _load_ic_from_db(filter_names=None, status_filter='using') -> dict:
     """从 factor_registry 表加载因子 IC 权重。
 
-    status_filter: 'using'→active only (实盘, P1 aligned), 'backtesting'→registered+candidate+retired (回测, 与 _registry.py 对齐).
+    status_filter: 'using'→active+monitoring (实盘), 'backtesting'→registered+candidate+monitoring+retired (回测池, 与 _registry.py 对齐).
     """
     if status_filter == 'backtesting':
-        statuses = ('registered', 'candidate', 'retired')
+        statuses = ('registered', 'candidate', 'monitoring', 'retired')
     elif status_filter == 'using':
-        statuses = ('active',)  # P1: monitoring 不参与实盘，与 _registry.py 对齐
+        statuses = ('active', 'monitoring')  # 与 _resolve_statuses('using') 对齐
     elif isinstance(status_filter, (list, tuple)):
         statuses = tuple(status_filter)
     else:

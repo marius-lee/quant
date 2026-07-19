@@ -123,6 +123,21 @@ class FactorStore:
                     "n_symbols": len(symbols), "n_rows": 0, "elapsed_sec": 0,
                     "skipped": True}
 
+        # 0.5 清理孤儿因子数据: 因子状态变更 (monitoring→retired→rejected) 后,
+        # 增量路径 (force=False) 需主动删除已排除因子的旧数据, 避免垃圾累积。
+        # 设计原则: 因子值是可重算的衍生数据, 丢失后可用 force=True 重建。
+        if not force:
+            c = self._get_conn()
+            stored = set(r[0] for r in c.execute("SELECT DISTINCT factor FROM factor_values").fetchall())
+            factor_set = set(factor_names)
+            orphans = stored - factor_set
+            if orphans:
+                c.execute(
+                    f"DELETE FROM factor_values WHERE factor IN ({','.join('?' * len(orphans))})",
+                    list(orphans))
+                c.commit()
+                _log.info("factor_cache: pruned %d orphan factors: %s", len(orphans), sorted(orphans))
+
         # 1. 预加载全部行情数据
         start_dt = date_range[0]
         end_dt = date_range[-1]
@@ -137,7 +152,21 @@ class FactorStore:
         prims = precompute_primitives(data_full)
         _log.info("factor_cache: primitives ready (%d tables)", len(prims))
 
-        # 2.5 预加载 ztd 缓存 (ztd/zt_streak 等涨跌停因子依赖)
+       # 2.25 加载沪深300基准收益 (residual_momentum_126d / idio_vol_126d 共用)
+       # 来源: AQR (2014) — 残差动量; Ang et al. (2006) — 特质波动; 均需CAPM基准
+        # 数据从 benchmark_daily 表获取, 非 daily 表 (指数不在个股行情中)
+        try:
+           bm_ret = store.get_benchmark("000300", start=full_start)
+           if not bm_ret.empty:
+               # get_benchmark 返回 pd.Series(date → decimal return)
+               prims["benchmark_ret"] = bm_ret
+               _log.info("factor_cache: benchmark_ret loaded (%d dates, %.1f%% → %.1f%%)",
+                         len(bm_ret), bm_ret.iloc[0]*100, bm_ret.iloc[-1]*100)
+        except Exception as _e:
+           _log.warning("factor_cache: benchmark_ret not available (%s), "
+                        "residual_momentum_126d/idio_vol_126d will skip", _e)
+
+       # 2.5 预加载 ztd 缓存 (ztd/zt_streak 等涨跌停因子依赖)
         preload_ztd_cache(date_range, symbols)
         _log.info("factor_cache: ztd cache preloaded (%d dates × %d symbols)", len(date_range), len(symbols))
 
@@ -159,10 +188,14 @@ class FactorStore:
         batch_size = 5000
 
         for date_str in date_range:
-            if not force and self._date_has_data(date_str, factor_names):
+            # 查该日期已有因子, 只算缺失的 (避免重复计算已有数据)
+            existing = self._get_existing_factors(date_str)
+            missing = [f for f in factor_names if f not in existing]
+            if not missing:
                 continue
 
             # 从 pre-loaded data 中提取当天切片
+# 从 pre-loaded data 中提取当天切片
             try:
                 ts = pd.Timestamp(date_str)
                 if ts not in data_full.index:
@@ -177,9 +210,9 @@ class FactorStore:
             fv = compute_all_factors(
                 day_data, date_str,
                 primitives=prims,
-                fundamentals=_store_fundamentals.get(date_str),
-                factor_names=factor_names,
-                status_filter=None,
+               fundamentals=_store_fundamentals.get(date_str),
+               factor_names=missing,
+               status_filter=None,
                 factor_fail_fast=False,  # 批量物化: 单个因子数据缺失不阻塞全量
             )
 
@@ -227,104 +260,36 @@ class FactorStore:
             (start, end, n_factors, n_symbols, n_dates, n_rows, round(elapsed, 1), int(force)))
         c.commit()
 
-    def _date_has_data(self, date_str: str, factor_names: list[str]) -> bool:
-        c = self._get_conn()
-        placeholders = ",".join("?" * len(factor_names))
-        cnt = c.execute(
-            f"SELECT COUNT(*) FROM factor_values WHERE date=? AND factor IN ({placeholders})",
-            [date_str] + list(factor_names)
-        ).fetchone()[0]
-        return cnt > 0
-
-    # ── 读取 ──
-
-    def load(self, date: str, symbols: list[str] = None,
-             factor_names: list[str] = None) -> dict:
-        """加载某日的因子值 → {factor_name: Series(symbol→value)}。
-
-        返回格式与 compute_all_factors() 一致, 可直接传入 AlphaModel.combine()。
-        """
-        import pandas as pd
-        c = self._get_conn()
-
-        if factor_names:
-            placeholders = ",".join("?" * len(factor_names))
-            rows = c.execute(
-                f"SELECT symbol, factor, raw_value FROM factor_values "
-                f"WHERE date=? AND factor IN ({placeholders})",
-                [date] + list(factor_names)
-            ).fetchall()
-        else:
-            rows = c.execute(
-                "SELECT symbol, factor, raw_value FROM factor_values WHERE date=?",
-                (date,)
-            ).fetchall()
-
-        if not rows:
-            return {}
-
-        # 按因子分组构建 Series
-        from collections import defaultdict
-        by_factor = defaultdict(dict)
-        for sym, fname, val in rows:
-            by_factor[fname][sym] = val
-
-        result = {}
-        for fname, sym_vals in by_factor.items():
-            s = pd.Series(sym_vals, name=fname)
-            if symbols:
-                s = s.reindex(symbols)
-            result[fname] = s
-
-        return result
-
     def is_materialized(self, date_range: list[str], factor_names: list[str]) -> bool:
-        """检查所有日期 × 因子的值是否都已物化。"""
-        c = self._get_conn()
-        placeholders = ",".join("?" * len(factor_names))
-        for d in date_range:
-            cnt = c.execute(
-                f"SELECT COUNT(*) FROM factor_values WHERE date=? AND factor IN ({placeholders})",
-                [d] + list(factor_names)
-            ).fetchone()[0]
-            if cnt == 0:
-                return False
-        return True
+        """检查最新日期是否覆盖了全部因子。
 
-    def get_coverage(self, date_range: list[str], factor_names: list[str]) -> dict:
-        """返回物化覆盖率统计。"""
-        c = self._get_conn()
-        placeholders = ",".join("?" * len(factor_names))
-        total = len(date_range)
-        covered = 0
-        for d in date_range:
-            cnt = c.execute(
-                f"SELECT COUNT(*) FROM factor_values WHERE date=? AND factor IN ({placeholders})",
-                [d] + list(factor_names)
-            ).fetchone()[0]
-            if cnt > 0:
-                covered += 1
-        return {"total_dates": total, "covered_dates": covered,
-                "coverage_pct": round(covered / max(total, 1) * 100, 1)}
+        只检查 date_range[-1] 而非逐日期遍历: 增量物化是顺序的, 最新日期覆盖
+        了全部因子意味着历史日期也已覆盖。因子池变更 (新增因子) 时最新日期缺少
+        新因子数据 → 返回 False → 触发补算。
+        场景 7 (数据回补) 和场景 8 (因子逻辑修正) 仍需用户手动 force=True。
+        """
+        return self._date_has_data(date_range[-1], factor_names)
 
-    def get_latest_materialization(self) -> dict | None:
-        """返回最近一次物化的元数据。"""
-        c = self._get_conn()
-        row = c.execute(
-            "SELECT run_ts, date_start, date_end, n_factors, n_symbols, n_dates, n_rows, elapsed_sec, force "
-            "FROM materialization_log ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        if row:
-            return dict(zip(["run_ts", "date_start", "date_end", "n_factors",
-                             "n_symbols", "n_dates", "n_rows", "elapsed_sec", "force"], row))
-        return None
+    def _date_has_data(self, date_str: str, factor_names: list[str]) -> bool:
+        """检查该日期是否所有因子都有数据 (COUNT(DISTINCT factor) == len(factor_names))。
 
-    def invalidate(self, date_str: str = None):
-        """使缓存失效。不传参数则清空全部。"""
+        之前用 COUNT(*)>0 的 bug: 只要任意一个因子有数据就跳过该日期,
+        因子池新增因子时旧日期的数据永不补算。
+        """
+        return len(self._get_existing_factors(date_str)) == len(factor_names)
+
+    def _get_existing_factors(self, date_str: str) -> set:
+        """返回该日期已物化的因子名集合。"""
         c = self._get_conn()
-        if date_str:
-            c.execute("DELETE FROM factor_values WHERE date=?", (date_str,))
-        else:
-            c.execute("DELETE FROM factor_values")
-        c.commit()
-        _log.info("factor_cache: invalidated %s", date_str or "ALL")
+        rows = c.execute(
+            "SELECT DISTINCT factor FROM factor_values WHERE date=?", (date_str,)
+        ).fetchall()
+        return {r[0] for r in rows}
+
+    def _get_existing_factors(self, date_str: str) -> set:
+        """返回该日期已物化的因子名集合。"""
+        c = self._get_conn()
+        rows = c.execute(
+            "SELECT DISTINCT factor FROM factor_values WHERE date=?", (date_str,)
+        ).fetchall()
+        return {r[0] for r in rows}

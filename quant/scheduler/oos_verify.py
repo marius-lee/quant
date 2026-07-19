@@ -43,7 +43,8 @@ def run_oos_check(today: str) -> dict:
     DECAY_WARN = _require_cfg("oos_verify.decay_warn_threshold")
 
     today_dt = pd.Timestamp(today)
-    _bd = pd.bdate_range(end=today_dt, periods=TEST_DAYS + 1)
+    from quant.execution.calendar import is_trading_day as _is_td
+    _bd = [d for d in pd.date_range(end=today_dt, periods=TEST_DAYS + 2, freq="B") if _is_td(d.date())][:TEST_DAYS + 1]
     test_start = _bd[0].strftime("%Y-%m-%d")
 
     _raw_cal = max_factor_calendar_days(active_names)
@@ -63,7 +64,8 @@ def run_oos_check(today: str) -> dict:
         return _empty(len(active_names))
 
     # ── 生成 IC 序列 (IS 采样, OOS 全量) ──
-    all_dates = pd.bdate_range(start=data_start, end=today_dt)
+    all_dates = pd.date_range(start=data_start, end=today_dt, freq="B")
+    all_dates = [d for d in all_dates if _is_td(d.date())]
     all_trading_days = [d.strftime("%Y-%m-%d") for d in all_dates
                         if d.strftime("%Y-%m-%d") <= today]
 

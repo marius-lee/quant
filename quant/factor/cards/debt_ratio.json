@@ -3,8 +3,8 @@
   "display_name": "debt_ratio",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0001,
-  "icir_12m": 0.0012,
+  "ic_mean_12m": -0.0048,
+  "icir_12m": -0.0718,
   "last_evaluated": "auto",
-  "n_obs": 57
+  "n_obs": 64
 }

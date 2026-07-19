@@ -285,6 +285,7 @@ function renderFactorKPIs(fd) {
   setText('kpi-ncandidate', fd.n_candidate ?? 0);
   setText('kpi-nrejected', fd.n_rejected ?? 0);
   setText('kpi-nretired', fd.n_retired ?? 0);
+  setText('kpi-nmonitoring', fd.n_monitoring ?? 0);
   setText('kpi-nfactors', fd.n_evaluated ?? 0);
   setText('kpi-ic-mean', fmtNum(meanAbsIC, 4));
   setText('kpi-ic-ir', fmtNum(meanIR, 3));

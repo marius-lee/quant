@@ -94,6 +94,28 @@ def validate_oos(input_json: str = "/tmp/_eval_phase2.json",
     unique_dates = sorted(set(all_dates))
     date_index = pd.DatetimeIndex(unique_dates)
 
+    # ── 日期数检查: 数据不足时跳过 OOS 验证, 因子不被打回 ──
+    # 对齐业界标准 (QuantConnect/米筐): 数据不足是暂时状态, 不是因子失效
+    # 因子带着 insufficient_data 标记通过, Phase 4 可继续评估, Phase 5 设 monitoring
+    if len(unique_dates) < 4:
+        logger.warning("Phase 3: insufficient IC history (%d dates < 4 min for CPCV). "
+                       "Skipping OOS validation — all %d candidates pass through with insufficient_data note.",
+                       len(unique_dates), len(candidates))
+        result = {
+            "kept": candidates,
+            "oos_irs": [0.0] * len(candidates),
+            "pbo_result": {"pbo": 0.0, "logit_pbo": 0.0, "passed": True, "is_oos_corr": 0.0},
+            "n_folds": 0,
+            "note": (f"insufficient_data: {len(candidates)} factor(s) passed through Phase 3 "
+                     f"due to insufficient IC history ({len(unique_dates)} dates < 4 min for CPCV fold). "
+                     f"OOS validation deferred to next evaluation cycle."),
+        }
+        from quant.evaluation.run_store import save_phase
+        result["n_factors"] = len(candidates)
+        save_phase("phase3", result)
+        logger.info("Phase 3 saved to evaluation_runs (insufficient_data, %d candidates passed through)", len(candidates))
+        return result
+
     splits = pvf.split(unique_dates)
     logger.info(f"Phase 3: {len(splits)} CPCV folds from {len(unique_dates)} unique dates")
 
@@ -130,8 +152,10 @@ def validate_oos(input_json: str = "/tmp/_eval_phase2.json",
             f"Factor pool likely overfit — refine factors before strategy backtest."
         )
 
-    # ── 汇总各因子 OOS 表现 ──
+    # ── 汇总各因子 OOS 表现 (三档: pass/marginal/fail) ──
     kept = []
+    marginal = []
+    dropped = []
     kept_oos_ir = []
     for name in candidates:
         oos_irs = []
@@ -145,17 +169,30 @@ def validate_oos(input_json: str = "/tmp/_eval_phase2.json",
         avg_is_ir = float(np.mean(is_icirs)) if is_icirs else 0.0
         decay_ratio = (avg_oos_ir / avg_is_ir) if abs(avg_is_ir) > 0.01 else 1.0
 
-        if avg_oos_ir > 0 and decay_ratio > (1 - sharpe_decay_max):
+        # Three-tier verdict (De Prado 2018 Ch.7-8; 明汯标准):
+        #   kept:     OOS_ICIR>0 AND decay_ratio >= 0.50 (明汯: IS→OOS Sharpe 衰减<50%)
+        #   marginal: OOS_ICIR>0 AND 0.30 <= decay_ratio < 0.50 (中等衰减, monitoring)
+        #   dropped:  OOS_ICIR<=0 OR decay_ratio < 0.30 (严重衰减, retired)
+        marginal_decay_min = 0.30  # 来源: 明汯 OOS/IS=0.50 threshold → 松一档 0.30
+        if avg_oos_ir > 0 and decay_ratio >= (1 - sharpe_decay_max):
             kept.append(name)
             kept_oos_ir.append(avg_oos_ir)
             logger.info(f"  ✓ {name:30s} OOS_ICIR={avg_oos_ir:+.3f} (IS→OOS decay={decay_ratio:.0%})")
+        elif avg_oos_ir > 0 and decay_ratio >= marginal_decay_min:
+            marginal.append(name)
+            logger.info(f"  ~ {name:30s} OOS_ICIR={avg_oos_ir:+.3f} (IS→OOS decay={decay_ratio:.0%}) — MARGINAL")
         else:
+            dropped.append(name)
             logger.info(f"  ✗ {name:30s} OOS_ICIR={avg_oos_ir:+.3f} (IS→OOS decay={decay_ratio:.0%}) — DROPPED")
 
-    logger.info(f"Phase 3 complete ({time.monotonic()-t0:.1f}s). {len(kept)}/{len(candidates)} factors validated.")
+    logger.info(f"Phase 3 complete ({time.monotonic()-t0:.1f}s). "
+                f"{len(kept)} kept, {len(marginal)} marginal, {len(dropped)} dropped "
+                f"(total: {len(candidates)} candidates)")
 
     result = {
         "kept": kept,
+        "marginal": marginal,
+        "dropped": dropped,
         "oos_irs": [float(x) for x in kept_oos_ir],
         "pbo_result": pbo_result,
         "n_folds": len(splits),

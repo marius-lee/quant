@@ -18,6 +18,7 @@ from quant.data.cache import get_backend, DataCache, RateLimiter
 from quant.config.loader import load as _load_config
 from quant.config.constants import _require_cfg
 from quant.data.repos._base import DatabaseManager
+from quant.utils.date import validate_date_format
 
 # ── Module-level cache (lazy init) ──
 _backend = None
@@ -831,7 +832,7 @@ class DataStore:
         """).fetchall()
 
         # global latest date — 用于近期缺失检测
-        global_max = conn.execute("SELECT MAX(date) FROM daily").fetchone()[0] or "2020-01-01"
+        global_max = conn.execute("SELECT MAX(date) FROM daily WHERE date >= '2000-01-01' AND date < '2100-01-01'").fetchone()[0] or "2020-01-01"
 
         # 最近交易日 (取本地日历; 在线不可用时用今天近似)
         today_str = datetime.now().strftime("%Y-%m-%d")
@@ -966,6 +967,22 @@ class DataStore:
                     old = self._source_speed.get(src_name, rps)
                     self._source_speed[src_name] = old * 0.7 + rps * 0.3
             if rows:
+                # 入口校验: 过滤非 YYYY-MM-DD 格式的脏日期, 防止类似 '80846-51-5' 污染数据库
+                import re as _re
+                _date_ok = _re.compile(r'^\d{4}-\d{2}-\d{2}$')
+                _clean, _skipped = [], 0
+                for _r in rows:
+                    if _date_ok.match(str(_r[1])):
+                        _clean.append(_r)
+                    else:
+                        _skipped += 1
+                if _skipped:
+                    logger.warning(f"daily [{source}] skipped {_skipped} rows with invalid date format")
+                if not _clean:
+                    rows = None
+                else:
+                    rows = _clean
+            if rows:
                 conn.executemany(
                     """INSERT OR IGNORE INTO daily
                        (symbol,date,open,high,low,close,volume,amount,turnover)
@@ -1064,7 +1081,7 @@ class DataStore:
         n_stocks = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
         n_daily = conn.execute("SELECT COUNT(*) FROM daily").fetchone()[0]
         date_range = conn.execute(
-            "SELECT MIN(date), MAX(date), COUNT(DISTINCT date) FROM daily"
+            "SELECT MIN(date), MAX(date), COUNT(DISTINCT date) FROM daily WHERE date >= '2000-01-01' AND date < '2100-01-01'"
         ).fetchone()
         return {
             "stocks": n_stocks,
@@ -1111,7 +1128,7 @@ class DataStore:
         conn = self._connect()
         max_date = conn.execute("SELECT MAX(trade_date) FROM lhb_detail").fetchone()[0]
         # lhb_detail.trade_date 现在统一为 YYYY-MM-DD, 与 daily.date 一致
-        daily_max = conn.execute("SELECT MAX(date) FROM daily").fetchone()[0]
+        daily_max = conn.execute("SELECT MAX(date) FROM daily WHERE date >= '2000-01-01' AND date < '2100-01-01'").fetchone()[0]
         if max_date and daily_max and (max_date or "") >= (daily_max or ""):
             logger.info(f"lhb up to date ({max_date} >= {daily_max}), skipping")
             return 0
@@ -1130,6 +1147,9 @@ class DataStore:
         for _, row in df.iterrows():
             sym = str(row.get("代码", "")).zfill(6)
             if len(sym) != 6:
+                continue
+            trade_date = trade_date
+            if not validate_date_format(trade_date, 'lhb_detail'):
                 continue
             conn.execute(
                 """INSERT OR IGNORE INTO lhb_detail

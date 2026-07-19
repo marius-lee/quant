@@ -51,7 +51,21 @@ class AlphaModel:
                 def _ic_ok(name):
                     v = ic_map.get(name, {})
                     if isinstance(v, dict):
-                        return v.get("ic_mean", 0) > 0
+                        ic_mean = v.get("ic_mean", 0)
+                        if ic_mean <= 0:
+                            return False
+                        # Grinold & Kahn (1999) Ch.6, Eq.6.16: w_k ∝ IC_k / σ²_k
+                        # Monitoring 因子权重按 |IC_5d| / |IC_60d| 连续比例衰减
+                        # 无地板 — 状态机在 10d 持续衰减后自动退役因子
+                        # Source: Active Portfolio Management, 2nd ed., p.178
+                        status = v.get("status", "active")
+                        if status == "monitoring":
+                            ic_5d = v.get("ic_5d", v.get("ic_mean", 0))
+                            ic_60d = v.get("ic_60d", v.get("ic_mean", 0))
+                            if abs(ic_60d) > 1e-10:
+                                decay = min(1.0, abs(ic_5d) / abs(ic_60d))
+                                return ic_mean * decay > 0
+                        return True
                     return v > 0  # plain float from factor_registry
                 keep = {k: v for k, v in factor_values.items() if _ic_ok(k)}
                 if len(keep) >= self.min_factors:

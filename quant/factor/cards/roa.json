@@ -3,8 +3,8 @@
   "display_name": "roa",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0196,
-  "icir_12m": 0.1853,
+  "ic_mean_12m": 0.0158,
+  "icir_12m": 0.1633,
   "last_evaluated": "auto",
-  "n_obs": 57
+  "n_obs": 64
 }

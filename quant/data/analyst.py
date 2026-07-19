@@ -11,6 +11,7 @@ from datetime import datetime
 
 import pandas as pd
 from quant.utils.logger import get_logger
+from quant.utils.date import validate_date_format
 
 logger = get_logger("data.analyst")
 DB_PATH = os.path.join(os.path.dirname(__file__), "market.db")

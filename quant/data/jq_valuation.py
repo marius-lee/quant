@@ -18,6 +18,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("jq_valuation")
 
 from quant.data.cache import get_backend, DataCache, RateLimiter
+from quant.utils.date import validate_date_format
 
 # ── Module-level cache (lazy init) ──
 _cache = None

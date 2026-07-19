@@ -1,4 +1,4 @@
-"""沪深 300 基准数据 — akshare 免费 API 拉取指数日线，存 SQLite。
+"""沪深 300 基准数据 — akshare eastmoney API 拉取指数日线，存 SQLite。
 
 用于回测收益对比 (M5)。
 用法:
@@ -11,6 +11,7 @@ from quant.data.repos._base import DatabaseManager, os
 from datetime import datetime
 import pandas as pd
 from quant.utils.logger import get_logger
+from quant.utils.date import validate_date_format
 
 logger = get_logger("data.benchmark")
 _MARKET_DB = os.path.join(os.path.dirname(__file__), "market.db")
@@ -38,7 +39,11 @@ def _init_db():
 
 
 def sync_benchmark(index_code: str = "000300") -> int:
-    """同步指数日线数据。返回新写入行数。"""
+    """同步指数日线数据。返回新写入行数。
+    
+    使用 eastmoney API (stock_zh_index_daily_em)，而非 Sina API。
+    Sina 的 vip.stock.finance.sina.com.cn 在国内 DNS 环境下被屏蔽。
+    """
     import akshare as ak
     conn = _init_db()
     # 获取已有日期范围
@@ -48,7 +53,12 @@ def sync_benchmark(index_code: str = "000300") -> int:
     ).fetchone()
     last_date = row[0] if row and row[0] else "2020-01-01"
 
-    df = ak.stock_zh_index_daily(symbol=f"sh{index_code}")
+    # eastmoney API 需要 YYYYMMDD 格式的日期参数
+    df = ak.stock_zh_index_daily_em(
+        symbol=f"sh{index_code}",
+        start_date=last_date.replace("-", ""),
+        end_date="20500101"
+    )
     if df is None or df.empty:
         logger.warning(f"benchmark {index_code}: empty response")
         return 0

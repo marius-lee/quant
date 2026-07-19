@@ -56,9 +56,9 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
             "SELECT symbol, market, name FROM stocks WHERE symbol IN (" + ph + ")",
             conn, params=symbols
         )
-        result["stocks"] = df.set_index("symbol") if not df.empty else pd.DataFrame()
+        result["stocks"] = df.set_index("symbol") if not df.empty else pd.DataFrame(columns=["symbol", "market", "name"]).set_index("symbol")
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        result["stocks"] = pd.DataFrame()
+        result["stocks"] = pd.DataFrame(columns=["symbol", "market", "name"]).set_index("symbol")
 
     # margin_detail: 60-day window for all margin-based factors
     try:
@@ -72,11 +72,11 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
                 "FROM margin_detail WHERE date >= ? AND date <= ?",
                 conn, params=(margin_start, margin_max_date)
             )
-            result["margin"] = df if not df.empty else pd.DataFrame()
+            result["margin"] = df if not df.empty else pd.DataFrame(columns=["symbol", "date", "margin_buy", "margin_balance", "short_balance", "short_total"])
         else:
-            result["margin"] = pd.DataFrame()
+            result["margin"] = pd.DataFrame(columns=["symbol", "date", "margin_buy", "margin_balance", "short_balance", "short_total"])
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        result["margin"] = pd.DataFrame()
+        result["margin"] = pd.DataFrame(columns=["symbol", "date", "margin_buy", "margin_balance", "short_balance", "short_total"])
 
     # analyst_forecast: latest sync_date per symbol (all rating columns)
     try:
@@ -87,9 +87,9 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
             conn, params=(date,)
         )
         # PIT: always set key — empty df means no prior data exists, factors return NaN gracefully
-        result["analyst"] = df.set_index("symbol") if not df.empty else pd.DataFrame()
+        result["analyst"] = df.set_index("symbol") if not df.empty else pd.DataFrame(columns=["symbol", "buy_count", "overweight_count", "neutral_count", "underweight_count", "report_count"]).set_index("symbol")
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        result["analyst"] = pd.DataFrame()
+        result["analyst"] = pd.DataFrame(columns=["symbol", "buy_count", "overweight_count", "neutral_count", "underweight_count", "report_count"]).set_index("symbol")
 
     # fund_hold: latest date (ratio + change_ratio for fund_change factor)
     try:
@@ -98,9 +98,9 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
             "WHERE report_date = (SELECT MAX(report_date) FROM fund_hold WHERE report_date <= ?)",
             conn, params=(date,)
         )
-        result["fund_hold"] = df.set_index("symbol") if not df.empty else pd.DataFrame()
+        result["fund_hold"] = df.set_index("symbol") if not df.empty else pd.DataFrame(columns=["symbol", "fund_count", "change_ratio"]).set_index("symbol")
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        result["fund_hold"] = pd.DataFrame()
+        result["fund_hold"] = pd.DataFrame(columns=["symbol", "fund_count", "change_ratio"]).set_index("symbol")
 
     # financial tables: TTM data
     for tbl in ["financial_income", "financial_balance", "financial_cashflow"]:
@@ -109,9 +109,9 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
                 f"SELECT * FROM {tbl} WHERE stat_date <= ? ORDER BY stat_date",
                 conn, params=(date,)
             )
-            result[tbl] = df if not df.empty else pd.DataFrame()
+            result[tbl] = df if not df.empty else pd.DataFrame(columns=df.columns)
         except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-            result[tbl] = pd.DataFrame()
+            result[tbl] = pd.DataFrame(columns=["symbol", "stat_date"])
 
     # pledge: latest date
     try:
@@ -120,9 +120,9 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
             f"WHERE date = (SELECT MAX(date) FROM pledge WHERE date <= ?)",
             conn, params=(date,)
         )
-        result["pledge"] = df.set_index("symbol") if not df.empty else pd.DataFrame()
+        result["pledge"] = df.set_index("symbol") if not df.empty else pd.DataFrame(columns=["symbol", "pledge_ratio"]).set_index("symbol")
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        result["pledge"] = pd.DataFrame()
+        result["pledge"] = pd.DataFrame(columns=["symbol", "pledge_ratio"]).set_index("symbol")
 
     # lhb_detail: 90-day window with all columns for lhb factors
     try:
@@ -132,9 +132,9 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
             "WHERE trade_date <= ? AND trade_date >= date(?, '-90 days') ORDER BY trade_date DESC",
             conn, params=(date, date)
         )
-        result["lhb"] = df if not df.empty else pd.DataFrame()
+        result["lhb"] = df if not df.empty else pd.DataFrame(columns=["symbol", "trade_date", "net_buy", "buy_amt", "sell_amt", "change_pct", "close", "circ_mv", "post_5d"])
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        result["lhb"] = pd.DataFrame()
+        result["lhb"] = pd.DataFrame(columns=["symbol", "trade_date", "net_buy", "buy_amt", "sell_amt", "change_pct", "close", "circ_mv", "post_5d"])
 
     # fund_flow: 60-day window with main_net_ratio for compute_main_flow_ratio
     try:
@@ -148,10 +148,10 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
                 "WHERE date >= ? AND date <= ?",
                 conn, params=(ff_start, ff_max)
             )
-            result["fund_flow"] = df.set_index("symbol") if not df.empty else pd.DataFrame()
+            result["fund_flow"] = df.set_index("symbol") if not df.empty else pd.DataFrame(columns=["symbol", "date", "main_net_inflow", "super_large_net_inflow", "main_net_ratio"]).set_index("symbol")
         else:
-            result["fund_flow"] = pd.DataFrame()
+            result["fund_flow"] = pd.DataFrame(columns=["symbol", "date", "main_net_inflow", "super_large_net_inflow", "main_net_ratio"]).set_index("symbol")
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        result["fund_flow"] = pd.DataFrame()
+        result["fund_flow"] = pd.DataFrame(columns=["symbol", "date", "main_net_inflow", "super_large_net_inflow", "main_net_ratio"]).set_index("symbol")
 
     return result

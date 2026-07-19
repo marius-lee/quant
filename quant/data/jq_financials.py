@@ -6,6 +6,7 @@
 import sqlite3
 import logging
 import os as _os
+from quant.utils.date import validate_date_format
 
 _log = logging.getLogger("data.jq_financials")
 

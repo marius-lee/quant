@@ -87,4 +87,4 @@ class UniverseRepo:
 
     def get_latest_trade_date(self) -> str | None:
         conn = self._conn()
-        return query_scalar(conn, "SELECT MAX(date) FROM daily")
+        return query_scalar(conn, "SELECT MAX(date) FROM daily WHERE date >= '2000-01-01' AND date < '2100-01-01'")

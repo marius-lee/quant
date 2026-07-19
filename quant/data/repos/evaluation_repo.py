@@ -28,7 +28,7 @@ class EvaluationRepo:
         conn = self._conn()
         conn.execute(
             "INSERT INTO evaluation_runs (run_ts, phase, data_json, n_factors, n_passed) "
-            "VALUES (datetime('now'), ?, ?, ?, ?)",
+            "VALUES (datetime('now','localtime'), ?, ?, ?, ?)",
             (phase, data_json, n_factors, n_passed))
         conn.commit()
         return conn.execute("SELECT last_insert_rowid()").fetchone()[0]

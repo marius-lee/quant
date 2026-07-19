@@ -10,7 +10,8 @@ from quant.data.repos._base import DatabaseManager, query_all, query_row
 
 logger = logging.getLogger(__name__)
 
-VALID_STATUSES = frozenset({"registered", "candidate", "active", "monitoring",                              "retired", "rejected", "backtesting"})
+# backtesting is not a real status — it's a filter alias in _resolve_statuses()
+VALID_STATUSES = frozenset({"registered", "candidate", "active", "monitoring", "retired", "rejected"})
 
 
 class FactorRepo:

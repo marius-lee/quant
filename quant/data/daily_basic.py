@@ -7,6 +7,7 @@ import os, time, sqlite3, logging
 from quant.config.constants import _require_cfg
 import pandas as pd
 import baostock as bs
+from quant.utils.date import validate_date_format
 
 logger = logging.getLogger("quant.data.daily_basic")
 

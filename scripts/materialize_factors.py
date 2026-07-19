@@ -16,5 +16,5 @@ store.close()
 
 print(f'materializing {len(factors)} factors x {len(dates)} dates x {len(symbols)} symbols')
 fs = FactorStore()
-fs.materialize(dates, factors, symbols, force=True)
+fs.materialize(dates, factors, symbols, force=False)
 print('DONE')

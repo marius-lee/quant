@@ -252,118 +252,217 @@ def _estimate_capacity(conn) -> str:
 
 
 def sync_factor_status() -> dict:
-    """Phase 5b: 从 evaluation_runs 读评估结果, 同步到 factor_registry.status。
-
-    不碰已有 status='active' 的因子 (已认证的线上因子)。
-    只处理 backtesting 状态 (registered/candidate/retired/rejected) 的因子。
-
-    Returns dict: {rejected: [names], active: [names], unchanged: int}
-    """
+    # ── 综合裁决逻辑 (De Prado 2018 Ch.7-8: 多阶段过滤, 每阶段三档输出) ──
     import sqlite3
     from quant.evaluation.run_store import load_latest
     from quant.utils.logger import get_logger
-    logger = get_logger("evaluation.phase5")
+    _log = get_logger("evaluation.phase5")
 
     p2 = load_latest("phase2")
     p3 = load_latest("phase3")
     p4 = load_latest("phase4")
 
     if not p2:
-        logger.warning("sync_factor_status: no Phase 2 data — skipping")
-        return {"rejected": [], "active": [], "unchanged": 0}
+        _log.warning("sync_factor_status: no Phase 2 data — skipping")
+        return {"rejected": [], "retired": [], "monitoring": [], "active": [], "unchanged": 0}
 
     # ── 探伤断点: 全零 IC 守卫 ──
-    # 如果 Phase 2 所有因子 IC 均为 0.0000 且 0 passed，说明 IC 计算本身可能
-    # 出了问题（超时/数据缺失/bug），不是因子真的无效。拒绝同步，保留因子原状态。
-    p2_ic_means = p2.get("ic_means", {})
+    p2_ic_vals_raw = p2.get("ic_means", {})
     p2_n_factors = p2.get("n_factors", 0)
     p2_n_passed = len(p2.get("passed", []))
     if (p2_n_factors > 4
             and p2_n_passed == 0
-            and p2_ic_means
-            and all(abs(v) < 1e-10 for v in p2_ic_means.values())):
-        logger.critical(
+            and p2_ic_vals_raw
+            and all(abs(v) < 1e-10 for v in p2_ic_vals_raw.values())):
+        _log.critical(
             "sync_factor_status: CIRCUIT BREAKER — all %d factors have IC≈0.0000, "
             "Phase 2 IC computation likely broken. Refusing to sync. "
             "Fix Phase 2 and re-run evaluation.",
             p2_n_factors
         )
-        return {"rejected": [], "active": [], "unchanged": 0, "circuit_breaker": True}
+        return {"rejected": [], "retired": [], "monitoring": [], "active": [], "unchanged": 0, "circuit_breaker": True}
 
-    # Phase 2: failed list
-    p2_failed = set(p2.get("failed", {}).keys()) if isinstance(p2.get("failed"), dict) else set(p2.get("failed", []))
-    p2_passed = set(p2.get("passed", []))
-
-    # Phase 3: kept list (passed CPCV+PBO)
-    p3_kept = set(p3.get("kept", [])) if p3 else set()
-
-    # Phase 4: final certified
-    p4_final = set(p4.get("final_factors", [])) if p4 else set()
-
-    # Factors that made it through all phases
-    certified = p2_passed & p3_kept & p4_final if p3 and p4 else set()
-
-    # Factors that failed at some phase
-    rejected_phase2 = p2_failed
-    rejected_phase3 = (p2_passed - p3_kept) if p3 else set()
-    rejected_phase4 = ((p2_passed & p3_kept) - p4_final) if p4 else set()
-
-    all_rejected = rejected_phase2 | rejected_phase3 | rejected_phase4
-
+    from quant.data.repos._base import DatabaseManager
     conn = DatabaseManager.get_instance().get_connection("quant/data/market.db")
-    # Get current active factors (don't touch these)
+    # 各 Phase 输出: passed=通过, marginal=踩线(观察), failed=不通过(退役)
+    # Phase 5 聚合:
+    #   pass+pass+pass → active
+    #   any marginal → monitoring (信号偏弱, 等下一评估周期)
+    #   any fail → retired (本轮无明显信号, retry_count++)
+    #   retry_count ≥ max_retries → rejected (永久淘汰)
+    max_retries = _require_cfg("factor.evaluation.max_retries")
+
+    # 从 factor_registry 读取当前 retry_count
+    retry_map = {}
+    try:
+        retry_rows = conn.execute(
+            "SELECT name, retry_count FROM factor_registry"
+        ).fetchall()
+        retry_map = {r[0]: r[1] or 0 for r in retry_rows}
+    except Exception:
+        pass
+
+    # 加载 IC 数据用于 reason 生成
+    p2_ic_vals = p2.get("ic_means", {})
+    p2_ic_irs = p2.get("ic_irs", {})
+    min_abs_ic = _require_cfg("factor.evaluation.min_abs_ic")
+    min_icir = _require_cfg("factor.evaluation.min_icir")
+
+    # Phase 2 输出
+    p2_passed = set(p2.get("passed", []))
+    p2_monitoring = set(p2.get("monitoring", []))
+    p2_failed = set(p2.get("failed", {}).keys()) if isinstance(p2.get("failed"), dict) else set(p2.get("failed", []))
+
+    # Phase 3 输出 (三档)
+    p3_kept = set(p3.get("kept", [])) if p3 else set()
+    p3_marginal = set(p3.get("marginal", [])) if p3 else set()
+    p3_dropped = set(p3.get("dropped", [])) if p3 else set()
+    p3_note = p3.get("note", "") if p3 else ""
+
+    # Phase 4 输出 (三档)
+    p4_final = set(p4.get("final_factors", [])) if p4 else set()
+    p4_marginal = set(p4.get("marginal", [])) if p4 else set()
+    p4_dropped = set(p4.get("dropped", [])) if p4 else set()
+    p4_insufficient = p4.get("insufficient_data", False) if p4 else False
+
+    # ── 综合裁决 ──
+    certified_active = set()
+    monitoring_factors = set()
+    retired_factors = set()
+    rejected_factors = set()
+
+    # 数据不足: Phase 3 因数据太少跳过 OOS 验证的因子 → monitoring
+    insufficient_data_factors = set()
+    if (p3_note and "insufficient_data" in p3_note) or p4_insufficient:
+        insufficient_data_factors = p2_passed  # 所有 Phase 2 pass 但因数据不足跳过后续的
+
+    # 对每个 backtesting 池中的因子逐个裁决
+    all_evaluated = p2_passed | p2_monitoring | p2_failed
+    reasons = {}  # factor_name → reason_str
+    for fname in sorted(all_evaluated):
+        # 跳过 diagnostics 排除的因子 (保留原状态)
+        if fname not in all_evaluated:
+            continue
+
+        p2_status = ("pass" if fname in p2_passed
+                     else "marginal" if fname in p2_monitoring
+                     else "fail")
+        p3_status = ("pass" if fname in p3_kept
+                     else "marginal" if fname in p3_marginal
+                     else "skip" if fname in insufficient_data_factors and p3_note
+                     else "fail" if fname in p3_dropped
+                     else "skip")
+        p4_status = ("pass" if fname in p4_final
+                     else "marginal" if fname in p4_marginal
+                     else "skip" if fname in insufficient_data_factors
+                     else "fail" if fname in p4_dropped
+                     else "skip")
+
+        # 综合裁决表
+        if fname in insufficient_data_factors:
+            monitoring_factors.add(fname)
+            reasons[fname] = (
+                f"[EVAL] Phase 3: OOS validation skipped — IC history too short for CPCV. "
+                f"IC={p2_ic_vals.get(fname, 0):+.4f}. Awaiting more data for re-evaluation."
+            )
+        elif p2_status == "pass" and p3_status == "pass" and p4_status == "pass":
+            certified_active.add(fname)
+            reasons[fname] = "[EVAL] passed Phase 2+3+4 (full evaluation)"
+        elif p2_status == "fail":
+            retired_factors.add(fname)
+            reasons[fname] = f"[EVAL] Phase 2: IC/ICIR below all thresholds"
+        elif p3_status == "fail":
+            retired_factors.add(fname)
+            reasons[fname] = f"[EVAL] Phase 3: CPCV OOS_ICIR<0 or PBO>threshold"
+        elif p4_status == "fail":
+            retired_factors.add(fname)
+            reasons[fname] = f"[EVAL] Phase 4: net-of-costs Sharpe too low"
+        else:
+            # any marginal → monitoring
+            monitoring_factors.add(fname)
+            ic_val = p2_ic_vals.get(fname, 0.0)
+            icir_val = p2_ic_irs.get(fname, 0.0)
+            reasons[fname] = (
+                f"[EVAL] Phase 2: IC={ic_val:+.4f} "
+                f"|IC|<{min_abs_ic}" if abs(ic_val) < min_abs_ic else
+                f"[EVAL] Phase 2: ICIR={abs(icir_val):.2f}<{min_icir}"
+            ) + ", routed to monitoring"
+
+    # ── retry_count 管理 ──
+    # 对于本轮判定为 retired 的因子, retry_count += 1
+    # 达到 max_retries → 升级为 rejected
+    for fname in sorted(retired_factors):
+        new_retry = retry_map.get(fname, 0) + 1
+        retry_map[fname] = new_retry
+        if new_retry >= max_retries:
+            rejected_factors.add(fname)
+            reasons[fname] = f"[EVAL] 累计 {new_retry} 次 retired (≥{max_retries}), 永久淘汰"
+            _log.critical(f"[EVAL] {fname}: retired → rejected (retry_count={new_retry}≥{max_retries})")
+        else:
+            reasons[fname] = f"{reasons[fname]} (retry={new_retry}/{max_retries})"
+            _log.info(f"[EVAL] {fname}: retired (retry_count={new_retry}/{max_retries})")
+
+    # 对于本轮判定为 active/monitoring 的因子, retry_count 不递增
+    # 但如果之前有 retired → 通过后续评估 → 重置 retry_count = 0
+    for fname in sorted(certified_active | monitoring_factors):
+        if retry_map.get(fname, 0) > 0:
+            retry_map[fname] = 0  # 恢复, 重置计数
+            _log.info(f"[EVAL] {fname}: retry_count reset to 0 (recovered)")
+
+    # ── 数据库写入 ──
     current_active = set(r[0] for r in conn.execute(
         "SELECT name FROM factor_registry WHERE status='active'"
     ).fetchall())
 
-    # Only act on non-active factors
-    rejected_to_update = all_rejected - current_active
-    active_to_update = certified - current_active
+    # 不碰 active 因子 (实盘模块管理)
+    active_to_update = certified_active - current_active
+    monitoring_to_update = monitoring_factors - current_active
+    retired_to_update = retired_factors - rejected_factors - current_active
+    rejected_to_update = rejected_factors - current_active
 
-    # Build reasons
-    reasons = {}
-    for name in rejected_to_update:
-        if name in rejected_phase2:
-            reasons[name] = "Phase 2: IC/ICIR/t/half-life thresholds not met"
-        elif name in rejected_phase3:
-            reasons[name] = "Phase 3: CPCV OOS_ICIR<0 or PBO>threshold"
-        elif name in rejected_phase4:
-            reasons[name] = "Phase 4: net-of-costs Sharpe too low"
-        else:
-            reasons[name] = "failed evaluation"
     for name in active_to_update:
-        reasons[name] = "passed Phase 2+3+4 (full evaluation)"
-
-    # Update rejected
-    for name in rejected_to_update:
-        reason = reasons[name]
-        conn.execute(
-            "UPDATE factor_registry SET status='rejected', status_reason=?, "
-            "updated_at=datetime('now','localtime') WHERE name=?",
-            (reason, name)
-        )
-
-    # Update active
-    for name in active_to_update:
-        reason = reasons[name]
         conn.execute(
             "UPDATE factor_registry SET status='active', status_reason=?, "
+            "retry_count=0, updated_at=datetime('now','localtime') WHERE name=?",
+            (reasons[name], name)
+        )
+    for name in monitoring_to_update:
+        conn.execute(
+            "UPDATE factor_registry SET status='monitoring', status_reason=?, "
+            "retry_count=?, updated_at=datetime('now','localtime') WHERE name=?",
+            (reasons[name], retry_map.get(name, 0), name)
+        )
+    for name in retired_to_update:
+        conn.execute(
+            "UPDATE factor_registry SET status='retired', status_reason=?, "
+            "retry_count=?, last_retry=datetime('now','localtime'), "
             "updated_at=datetime('now','localtime') WHERE name=?",
-            (reason, name)
+            (reasons[name], retry_map.get(name, 0), name)
+        )
+    for name in rejected_to_update:
+        conn.execute(
+            "UPDATE factor_registry SET status='rejected', status_reason=?, "
+            "retry_count=?, updated_at=datetime('now','localtime') WHERE name=?",
+            (reasons[name], retry_map.get(name, 0), name)
         )
 
-    conn.commit()
-    conn.close()
-
-    logger.info(f"sync_factor_status: {len(rejected_to_update)} rejected, "
-                f"{len(active_to_update)} active, {len(current_active)} unchanged")
+    _log.info(f"sync_factor_status: {len(active_to_update)} active, "
+              f"{len(monitoring_to_update)} monitoring, "
+              f"{len(retired_to_update)} retired, "
+              f"{len(rejected_to_update)} rejected")
     for name in sorted(rejected_to_update):
-        logger.info(f"  rejected: {name} — {reasons[name]}")
+        _log.critical(f"  [REJECTED] {name} — {reasons[name]}")
+    for name in sorted(retired_to_update):
+        _log.info(f"  [RETIRED]  {name} — {reasons[name]}")
+    for name in sorted(monitoring_to_update):
+        _log.info(f"  [MONITOR]  {name} — {reasons[name]}")
     for name in sorted(active_to_update):
-        logger.info(f"  active:   {name} — {reasons[name]}")
+        _log.info(f"  [ACTIVE]   {name} — {reasons[name]}")
 
     return {
         "rejected": sorted(rejected_to_update),
+        "retired": sorted(retired_to_update),
+        "monitoring": sorted(monitoring_to_update),
         "active": sorted(active_to_update),
         "unchanged": len(current_active),
     }

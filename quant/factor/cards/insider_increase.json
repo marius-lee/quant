@@ -3,8 +3,8 @@
   "display_name": "insider_increase",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0166,
-  "icir_12m": 0.1064,
+  "ic_mean_12m": 0.026,
+  "icir_12m": 0.1803,
   "last_evaluated": "auto",
-  "n_obs": 57
+  "n_obs": 64
 }

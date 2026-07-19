@@ -3,8 +3,8 @@
   "display_name": "bp_ratio",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.0014,
-  "icir_12m": -0.0073,
+  "ic_mean_12m": -0.0134,
+  "icir_12m": -0.0718,
   "last_evaluated": "auto",
-  "n_obs": 57
+  "n_obs": 64
 }

@@ -12,6 +12,7 @@ from datetime import datetime
 import requests
 from quant.config.constants import _require_cfg
 from quant.utils.logger import get_logger
+from quant.utils.date import validate_date_format
 
 logger = get_logger("data.margin")
 DB_PATH = os.path.join(os.path.dirname(__file__), "market.db")

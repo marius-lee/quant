@@ -12,16 +12,30 @@ def _resolve_statuses(status_filter):
     if isinstance(status_filter, (list, tuple)):
         return tuple(status_filter)
     if status_filter == 'using':
-        return ('active',)  # P1: monitoring 不参与实盘交易，仅观察不交易
+        # using = active + monitoring: monitoring 以衰减权重参与实盘信号生成
+        # 来源: Grinold & Kahn (1999) Ch.6 Eq.6.16 — w_k ∝ IC_k/σ²_k
+        #       监测因子权重由 |IC_5d| / |IC_60d| 连续比例决定, 无硬阈值
+        #       QuantConnect 排除监测因子 (Inactive=removed),
+        #       但 AQR/WorldQuant/Barra 保留监测因子在组合内仅降权
+        #       — 本项目对齐机构级标准
+        return ('active', 'monitoring')
     if status_filter == 'backtesting':
-        return ('registered', 'candidate', 'retired')
+        # backtesting = 所有非 active/非 rejected 的因子
+        # 来源: WorldQuant WebSim — 回测池包含注册/候选/退役/监测因子
+        #       rejected 永久排除 (数据源死亡 或 retry_count ≥ max_retries)
+        #       active 不参与回测 (已认证的线上因子)
+        return ('registered', 'candidate', 'monitoring', 'retired')
     return (status_filter,)
 
 
 def load_active_price_factors(status_filter='using'):
     """从 factor_registry 表加载价格因子 → {name: (cat, window, fn)}.
 
-    status_filter: 'using'→active only (P1: monitoring excluded from live trading), None (全部, 评估用).
+    status_filter:
+        'using' → active + monitoring (实盘信号生成, monitoring 以衰减权重参与;
+                   来源: Grinold & Kahn 1999 Ch.6 — w_k ∝ IC_k)
+        'backtesting' → registered + candidate + monitoring + retired (回测评估池)
+        None → 全部因子 (评估用)
     """
     statuses = _resolve_statuses(status_filter)
     name_list = list(_PRICE_FN_MAP.keys())
@@ -37,7 +51,11 @@ def load_active_price_factors(status_filter='using'):
 def load_active_fundamental_factors(status_filter='using'):
     """从 factor_registry 表加载基本面因子.
 
-    status_filter: 'using'→active only (P1: monitoring excluded from live trading), None (全部, 评估用).
+    status_filter:
+        'using' → active + monitoring (实盘信号生成, monitoring 以衰减权重参与;
+                   来源: Grinold & Kahn 1999 Ch.6 — w_k ∝ IC_k)
+        'backtesting' → registered + candidate + monitoring + retired (回测评估池)
+        None → 全部因子 (评估用)
     """
     statuses = _resolve_statuses(status_filter)
     fn_names = list(_FUNDAMENTAL_FN_MAP.keys())
@@ -69,7 +87,11 @@ def update_factor_evaluation(name: str, ic_mean: float, ic_ir: float):
 def get_factor_names(status_filter=None) -> list:
     """返回因子名列表 (从 factor_registry 表读取).
 
-    status_filter: 'using'→active only (P1: monitoring excluded from live trading), 'active' (仅active), None (全部, 评估用).
+    status_filter:
+        'using' → active + monitoring (实盘, monitoring 以衰减权重参与)
+        'backtesting' → registered + candidate + monitoring + retired (回测池)
+        'active' → 仅 active
+        None → 全部因子
     """
     price_factors = load_active_price_factors(status_filter)
     fund_factors = load_active_fundamental_factors(status_filter)

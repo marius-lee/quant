@@ -44,6 +44,11 @@ def verify_costs(input_json: str = None) -> dict:
 
     kept = p3.get("kept", [])
     oos_irs = p3.get("oos_irs", [])
+    phase3_note = p3.get("note", "")
+
+    # insufficient_data from Phase 3: OOS_ICIR=0.0 is a placeholder, not a real value
+    # No data means no ICIR → cannot compute net Sharpe → pass through to Phase 5 as monitoring
+    insufficient_data = bool(phase3_note and "insufficient_data" in phase3_note)
 
     if not kept:
         logger.warning("No factors from Phase 3. Skipping Phase 4.")
@@ -77,11 +82,26 @@ def verify_costs(input_json: str = None) -> dict:
 
     # ICIR -> 净 Sharpe 估算 (GK99 Ch.8)
     final_factors = []
+    marginal = []
     dropped = []
     sharpe_estimates = {}
 
     for i, (name, oos_ir) in enumerate(zip(kept, oos_irs)):
         abs_ir = abs(oos_ir)
+
+        if insufficient_data and abs_ir < 1e-10:
+            # Phase 3 skipped OOS; OOS_ICIR=0.0 is a placeholder
+            # Skip net Sharpe calculation but keep factor for Phase 5 monitoring
+            sharpe_estimates[name] = {
+                "gross_sharpe": 0.0,
+                "annual_cost_pct": 0.0,
+                "net_sharpe": 0.0,
+                "note": "OOS_ICIR not yet available — insufficient IC history for CPCV. Awaiting more data."
+            }
+            final_factors.append(name)
+            dropped.append(name)  # Also in dropped so Phase 5 knows it needs monitoring
+            logger.info(f"  ~ {name:30s} OOS_ICIR=placeholder (insufficient IC history) — pass through to monitoring")
+            continue
 
         # 毛 Sharpe = ICIR * sqrt(breadth) (GK99 Eq.6.5)
         gross_sharpe = abs_ir * math.sqrt(breadth)
@@ -113,7 +133,10 @@ def verify_costs(input_json: str = None) -> dict:
         "dropped": dropped,
         "sharpe_estimates": sharpe_estimates,
         "net_verdict": "ok" if final_factors else "empty",
+        "insufficient_data": insufficient_data,
     }
+    if phase3_note:
+        result["note"] = phase3_note
 
     from quant.evaluation.run_store import save_phase
     result["n_factors"] = len(kept)

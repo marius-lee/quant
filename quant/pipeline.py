@@ -174,7 +174,8 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
 
     # ── ztd 预计算缓存: 确保 compute_ztd 在实盘 / 回测均能命中缓存 ──
     from quant.factor.compute.price._alternative import preload_ztd_cache
-    _ztd_dates = pd.date_range(start=pd.Timestamp(hist_start), end=pd.Timestamp(date_str), freq="B")
+    from quant.execution.calendar import is_trading_day as _is_td
+    _ztd_dates = [d for d in pd.date_range(start=pd.Timestamp(hist_start), end=pd.Timestamp(date_str), freq="B") if _is_td(d.date())]
     preload_ztd_cache([d.strftime("%Y-%m-%d") for d in _ztd_dates], symbols)
 
     # ── 因子值来源: factor_store (缓存) 优先, 否则实时计算 ──

@@ -111,6 +111,23 @@ def precompute_primitives(data: pd.DataFrame) -> dict:
             prims[f"amt_ma_{w}"] = amount.rolling(w, min_periods=max(w//2, 1)).mean()
 
 
+
+   # ── 沪深300基准收益 (residual_momentum / idio_vol 共用) ──
+   # 来源: AQR (2014) — 残差动量需要基准收益做回归; Ang et al. (2006) — 特质波动需要CAPM基准
+   # benchmark_ret 从 benchmark_daily 表加载, 在 materialize() 中通过 store.get_benchmark() 添加
+   # 指数数据不在 daily 表中, 此处不做 if "000300" in close.columns 检查
+
+    # ── turnover 滚动统计 (trcf/str/abn_turnover/turnover_anomaly 共用) ──
+    if "turnover" in data.columns.levels[0]:
+        to = data["turnover"].astype(float)
+        for w in sorted(all_windows):
+            if w <= 1:
+                continue
+            prims[f"turnover_ma_{w}"] = to.rolling(w, min_periods=max(w // 2, 1)).mean()
+            prims[f"turnover_std_{w}"] = to.rolling(w, min_periods=max(w // 2, 1)).std()
+        prims["turnover"] = to
+        _log.info("  primitives: turnover_ma/roll/std (multi-window)")
+
     # ── 资金流向 (Chaikin Money Flow) ──
     if high is not None and low is not None and amount is not None:
         hl_range = high - low
@@ -264,6 +281,90 @@ def _volume_price_corr(prims: dict, date: str, window: int):
 # 不在映射表中的因子走原始函数 (fallback)
 # ═══════════════════════════════════════════════════════════
 
+def _reversal(prims: dict, date: str, window: int):
+    """短周期反转 = -pct_ret_ma_N.loc[date] → zscore.
+    算法: 短期收益率均值的负值 (反转效应: 近期涨→未来跌).
+    来源: Jegadeesh (1990) — 短期反转效应; Lehmann (1990)."""
+    from quant.factor.registry import _cs_zscore
+    key = f"mean_log_{window}"
+    s = prims[key].loc[date].dropna()
+    return _cs_zscore(-s).rename(f"reversal_{window}d")
+
+def _residual_momentum(prims: dict, date: str, window: int):
+    """残差动量 = 总收益 - 基准收益 (beta≈1近似) → cum → zscore.
+    算法: cumsum(log_ret - benchmark_ret) 最后 window 日求和, 截面 zscore.
+    来源: Blitz, Huij & Martens (2011) — 残差动量; AQR (2014) — 纯 Alpha 剥离."""
+    from quant.factor.registry import _cs_zscore
+    import numpy as np
+    if "benchmark_ret" not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name=f"residual_momentum_{window}d")
+    residual_ret = prims["log_ret"].sub(prims["benchmark_ret"], axis=0)
+    cum_resid = residual_ret.rolling(window, min_periods=max(window // 2, 1)).sum()
+    s = cum_resid.loc[date].dropna()
+    return _cs_zscore(s).rename(f"residual_momentum_{window}d")
+
+def _idio_vol(prims: dict, date: str, window: int):
+    """特质波动率 = std(log_ret - benchmark_ret) 滚动 window 日 → 取负 zscore.
+    来源: Ang et al. (2006, JF) — 特质波动率异象: 高特质波动→低收益."""
+    from quant.factor.registry import _cs_zscore
+    import numpy as np
+    if "benchmark_ret" not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name=f"idio_vol_{window}d")
+    residual_ret = prims["log_ret"].sub(prims["benchmark_ret"], axis=0)
+    vol = residual_ret.rolling(window, min_periods=max(window // 2, 1)).std() * np.sqrt(252)
+    s = vol.loc[date].dropna()
+    return _cs_zscore(-s).rename(f"idio_vol_{window}d")
+
+def _turnover_anomaly(prims: dict, date: str, short: int = 5, long: int = 60):
+    """换手率异常 = turnover 短期均值 / 长期均值 - 1 → 取负 zscore.
+    来源: Lee & Swaminathan (2000) — turnover anomaly; A股实证 IC≈0.03."""
+    from quant.factor.registry import _cs_zscore
+    import numpy as np
+    s_key = f"turnover_ma_{short}"
+    l_key = f"turnover_ma_{long}"
+    if s_key not in prims or l_key not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name=f"turnover_anomaly")
+    s_avg = prims[s_key].loc[date]
+    l_avg = prims[l_key].loc[date]
+    ratio = s_avg / l_avg.replace(0, np.nan)
+    return _cs_zscore(-(ratio - 1)).rename("turnover_anomaly")
+
+def _trcf(prims: dict, date: str, window: int = 120):
+    """TRCF 换手率收敛 = -log(1 + std(MA5/10/20/60/120 turnover)).
+    来源: 数据源适配报告 — ICIR=4.19, turnover 类最强."""
+    from quant.factor.registry import _cs_zscore
+    import numpy as np
+    to_keys = [f"turnover_ma_{w}" for w in [5, 10, 20, 60, 120]]
+    if not all(k in prims for k in to_keys):
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="trcf")
+    mas = [prims[k].loc[date] for k in to_keys]
+    std_ma = pd.Series(np.std(mas, axis=0), index=mas[0].index)
+    result = -np.log(1 + std_ma)
+    return _cs_zscore(result.fillna(0)).rename("trcf")
+
+def _str(prims: dict, date: str, window: int = 20):
+    """STR 量稳换手率 = -std(turnover, N日), 取负 zscore.
+    来源: 东吴证券(2021) — 换手率波动小→未来收益高. IC=-7.9%, IR=2.96."""
+    from quant.factor.registry import _cs_zscore
+    key = f"turnover_std_{window}"
+    if key not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="str")
+    s = prims[key].loc[date].dropna()
+    return _cs_zscore(-s).rename("str")
+
+def _abn_turnover(prims: dict, date: str, window: int = 20):
+    """ABN_TURN 异常换手率 = -|turnover / avg(turnover) - 1| → zscore.
+    来源: 换手率偏离历史均值越大→投机信号越强→未来收益越低."""
+    from quant.factor.registry import _cs_zscore
+    to_key = "turnover"
+    ma_key = f"turnover_ma_{window}"
+    if to_key not in prims or ma_key not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="abn_turnover")
+    current = prims[to_key].loc[date]
+    avg = prims[ma_key].loc[date]
+    dev = abs(current / avg.replace(0, np.nan) - 1).fillna(0)
+    return _cs_zscore(-dev).rename("abn_turnover")
+
 FACTOR_SHORTCUT = {
     # compute_momentum — 直接取 cum_log_N
     "compute_momentum":            _momentum,
@@ -289,4 +390,12 @@ FACTOR_SHORTCUT = {
     "compute_ma_alignment":         _ma_alignment,
     # 量价相关 — 从预计算 vol_price_corr_N 取
     "compute_volume_price_corr":    _volume_price_corr,
+    # 新增 (test-v152): reversal/residual/idio/turnover/trcf/str/abn 走 primitives
+    "compute_reversal":             _reversal,
+    "compute_residual_momentum":    _residual_momentum,
+    "compute_idiosyncratic_vol":    _idio_vol,
+    "compute_turnover_anomaly":     _turnover_anomaly,
+    "compute_trcf":                 _trcf,
+    "compute_str":                  _str,
+    "compute_abn_turnover":         _abn_turnover,
 }

@@ -5,6 +5,23 @@
 
 from datetime import date, datetime
 
+import re as _re
+_DATE_RE = _re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+def validate_date_format(date_str, source="unknown"):
+    """Validate date string is YYYY-MM-DD. Returns bool.
+    Logs WARNING on invalid format.
+    Usage: if not validate_date_format(d, 'lhb_detail'): continue
+    """
+    if _DATE_RE.match(str(date_str)):
+        return True
+    from quant.utils.logger import get_logger
+    get_logger("quant.utils.date").warning(
+        f"[{source}] invalid date format: {repr(date_str)}, skipping row"
+    )
+    return False
+
+
 DATE_FMT = "%Y-%m-%d"
 DEFAULT_START_DATE = "2020-01-01"  # 来源: 2020年前A股审批制+壳价值, 市场结构根本不同。无严格来源, 合理切分点。
 

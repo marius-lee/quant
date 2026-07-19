@@ -141,6 +141,8 @@ factor:
     # 来源: 低于正式阈值但仍有微弱信号; 不对实盘开放但保留观察
     monitoring_min_icir: 0.15            # ICIR<0.15 → fail; 来源: 与 diagnostics 松阈值对齐
     monitoring_min_abs_ic: 0.01          # |IC|<0.01 → fail; 来源: 微弱但有方向性的信号下限
+    # -- 退役重试上限 --
+    max_retries: 3                      # retired 累计次数上限, 达此阈值 → rejected; 来源: 业界惯例 (WorldQuant 3次未过即永久淘汰)
     # ── 两步架构: 诊断快筛阈值 ──
     diagnostics_min_icir: 0.15            # ICIR<0.15 → drop; A股预筛松阈值, 保留微弱信号给 Phase 2 验证
     diagnostics_pnl_threshold: 0.1        # PnL>0.1 → boost; 来源: backtest/diagnostics.py diagnose()

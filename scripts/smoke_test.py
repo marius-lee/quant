@@ -1,14 +1,14 @@
-"""冒烟测试 — 快速端到端管线验证（A档：10交易日/300股/60天IC/全因子）。
+"""冒烟测试 — 快速端到端管线验证（A档：10交易日/300股/60天IC/active因子）。
 
-设计依据 (2026-07-13):
+设计依据 (2026-07-13, 更新 2026-07-19):
   - 股票数: 300（按流动性取前N，足够覆盖因子计算和组合优化的所有分支）
   - 交易日: ≥10（覆盖至少一个完整双周，验证信号→执行→监控链路）
   - IC窗口: 60天（方向性检查，不做统计推断）
-  - 因子池: 实际使用 active 状态因子 (仅 2 个), 验证管线通畅即可
+  - 因子池: 使用 active 状态因子, 快速验证评估业务流程是否通畅
   - 目的: 只验证管线不崩，不产出投资决策
 
-性能说明 (2026-07-15):
-  冒烟测试使用 active 因子 (仅 2 个), 耗时由信号生成管线决定 (约 200s)。
+性能说明 (2026-07-19):
+  与正式评估 (backtesting 因子) 职责分离 — 冒烟验证链路，正式评估验证因子质量。
 
 用法:
   PYTHONPATH=. .venv/bin/python3 scripts/smoke_test.py
@@ -27,15 +27,14 @@ from quant.utils.excepthook import setup; setup()  # crash → app.log (after lo
 name = next_smoke_name()  # smoke_1, smoke_2, ...
 print(f"[smoke] strategy={name}")
 
-# A档冒烟测试: 10交易日, 300股, 60天IC
-# 因子数 >20 时不是冒烟测试，应在调用前截断 backtesting 因子池到前 8 个
+# A档冒烟测试: 10交易日, 300股, 60天IC, active因子
 r = run_backtest(
     "2026-06-29", "2026-07-10",   # 10个交易日 (06-29→07-10)
     capital=5000,
     strategy=name,
     universe_size=300,               # A档: 300只
     ic_lookback=60,                  # A档: 60天IC
-    factor_status_filter="active",  # 验证目标池; 因子过多时上游做前 N 截断
+    factor_status_filter="active",  # 验证目标池: active因子
 )
 
 if "error" in r:

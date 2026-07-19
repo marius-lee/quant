@@ -10,6 +10,7 @@ import os, sqlite3, time
 import pandas as pd
 import akshare as ak
 from quant.utils.logger import get_logger
+from quant.utils.date import validate_date_format
 
 logger = get_logger("data.pledge")
 DB_PATH = os.path.join(os.path.dirname(__file__), "market.db")

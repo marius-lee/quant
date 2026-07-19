@@ -395,9 +395,12 @@ trace_id 可后期通过 Phase 间的 `evaluation_runs` DB 记录关联 (各 Pha
 **方案**:
 1. `backtest/loop.py` `run_backtest()` 新增 `universe_size`, `ic_lookback`, `factor_status_filter` 可选参数
 2. `scripts/smoke_test.py` 硬编码 A 档参数: 300股/60天IC/10交易日
-3. 因子池切换: 首次 `factor_status_filter=None`(全量) → 稳定后 `factor_status_filter="backtesting"`
+3. 因子池切换: ~~首次 `factor_status_filter=None`(全量) → 稳定后 `factor_status_filter="backtesting"`~~
 4. `config/config.yaml` 添加冒烟覆盖注释
 
 **状态**: 已落地 (2026-07-13)
 
 **关联**: `scripts/smoke_test.py`, `backtest/loop.py:run_backtest()`, `config/config.yaml:backtest.*`
+
+3. **实际实现 (smoke_test.py)**: `factor_status_filter="active"` — 冒烟测链路, 正式评因子质量
+   冒烟=active | 诊断=backtesting | 正式=backtesting — 见 HANDOFF test-v158

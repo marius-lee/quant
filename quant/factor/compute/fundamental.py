@@ -134,15 +134,18 @@ def compute_margin_buy_ratio(fundamentals: "pd.DataFrame", date: str, aux=None) 
     公式: 融资买入额 / 融资余额。分母是余额而非成交额。
     数据源: margin_detail 表 (akshare stock_margin_detail_sse/szse)。
     来源: 广发证券《多因子ALPHA系列之五十二：基于融资融券因子研究》2024.02。
+    修改: 2026-07-17 — PIT 标准: 无数据时返回 NaN (无信号), 区分"aux 缺失"与"数据空"
     """
-    # Use preloaded aux data if available
-    if aux is not None and "margin" in aux:
-        m = aux["margin"]
-        if not m.empty and "margin_buy" in m.columns and "margin_balance" in m.columns:
-            s = m["margin_buy"] / m["margin_balance"].replace(0, np.nan)
-            return s.dropna().rename("margin_buy_ratio")
-    # aux must be provided by caller (compute_all_factors always calls preload_aux_data)
-    raise ValueError("compute_margin_buy_ratio requires preloaded aux['margin']")
+    if aux is None or "margin" not in aux:
+        # Programming error: caller failed to preload aux data
+        raise ValueError("compute_margin_buy_ratio requires preloaded aux['margin']")
+    m = aux["margin"]
+    # PIT: no margin data available → return NaN (no signal)
+    # Aligns with: compute_analyst_buy (a.empty → NaN), compute_margin_buy_ratio_price (w.empty → 0.0)
+    if m.empty or "margin_buy" not in m.columns or "margin_balance" not in m.columns:
+        return pd.Series(np.nan, index=fundamentals.index, name="margin_buy_ratio")
+    s = m["margin_buy"] / m["margin_balance"].replace(0, np.nan)
+    return s.dropna().rename("margin_buy_ratio")
 
 
 def compute_analyst_consensus(fundamentals: "pd.DataFrame", date: str, aux=None) -> "pd.Series":

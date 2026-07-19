@@ -93,11 +93,13 @@ def compute_ic(*,
     from quant.factor.windows import max_factor_calendar_days
     _ic_factor_min = max_factor_calendar_days(factor_names)
     start_dt = end_dt - pd.Timedelta(days=max(lookback * 2, _ic_factor_min))
-    all_dates = pd.bdate_range(start=start_dt, end=end_dt)
+    # 用中国A股交易日历 + 日期上限, 修复 pd.bdate_range 默认美国日历导致的 KeyError
+    from quant.execution.calendar import is_trading_day
+    all_dates = pd.date_range(start=start_dt, end=end_dt, freq="B")
     trading_days = []
     for d in reversed(all_dates):
-        ds = d.strftime("%Y-%m-%d")
-        trading_days.append(ds)
+        if is_trading_day(d.date()):
+            trading_days.append(d.strftime("%Y-%m-%d"))
         if len(trading_days) >= lookback + 5:
             break
     if len(trading_days) < 30:
@@ -118,6 +120,11 @@ def compute_ic(*,
               len(symbols), _data_min, _data_max)
     data = store.get_daily(symbols, start=_data_min, end=_data_max)
     _log.info("compute_ic: data loaded, shape=%s", data.shape if data is not None else "None")
+
+    # ── 安全过滤: trading_days 与 data 中实际日期取交集, 排除日历不匹配导致的 KeyError ──
+    valid_dates = set(str(d.date()) for d in data.index.unique())
+    trading_days = [d for d in trading_days if d in valid_dates]
+    _log.info("compute_ic: %d trading days after alignment with data", len(trading_days))
 
     # ── 预计算共享算子 (与 run_backtest 相同的优化) ──
     from quant.factor.compute._primitives import precompute_primitives

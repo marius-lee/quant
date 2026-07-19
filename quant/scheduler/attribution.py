@@ -171,7 +171,7 @@ def _run(today: str):
                                             break
                                     if stable_days >= PROMOTION_STABILITY_DAYS:
                                         repo.update_status(mname, 'active',
-                                            f"IC recovered: mean={rolling_mean:+.4f}, stable for {stable_days}d")
+                                            f"[LIVE] monitoring→active: IC recovered (mean={rolling_mean:+.4f}, stable for {stable_days}d)")
                                         _log.info(f"[{today}] {mname}: monitoring → active (IC recovered, {stable_days}d stable)")
                                         _m.inc("scheduler.attribution.promoted", 1)
                                         promoted.append(mname)
@@ -186,7 +186,7 @@ def _run(today: str):
                     if fname in promoted:
                         continue
                     try:
-                        repo.update_status(fname, 'monitoring', f"IC degraded ({IC_ROLLING_WINDOW}d): {entry}")
+                        repo.update_status(fname, 'monitoring', f"[LIVE] IC degraded ({IC_ROLLING_WINDOW}d): {entry}")
                         _log.warning(f"[{today}] {fname}: active → monitoring (IC degraded)")
                     except Exception as e:
                         _log.warning(f"[{today}] IC degrade update failed for {fname}: {type(e).__name__}", exc_info=True)
@@ -205,7 +205,7 @@ def _run(today: str):
                         updated_at = repo.get_factor_updated_at(mname)
                         if updated_at and updated_at < _buffer_cutoff:
                             repo.update_status(mname, 'retired',
-                                f"持续衰减退役: {next(e for e in degraded if e.startswith(mname + ':'))}")
+                                f"[LIVE] 持续衰减退役: {next(e for e in degraded if e.startswith(mname + ':'))}")
                             _log.warning(f'[{today}] {mname}: monitoring → retired '
                                          f'(持续IC衰减, 已监控≥{MONITORING_BUFFER_DAYS}d)')
                             _m.inc("scheduler.attribution.retired", 1)

@@ -44,7 +44,7 @@ class PurgedWalkForward:
         """
         n = len(dates)
         if n < self.n_groups * 2:
-            raise ValueError(f"Not enough dates ({n}) for {self.n_groups}-fold CPCV")
+            logger.warning(f"CPCV: only %d dates (< %d groups × 2), falling back to simple split", n, self.n_groups)
 
         group_size = n // self.n_groups
         splits = []
@@ -73,11 +73,16 @@ class PurgedWalkForward:
 
         # If no splits generated (too few dates), create minimal split
         if not splits:
-            logger.warning(f"CPCV: too few dates ({len(dates)}) for {self.n_groups} groups, falling back to 60/40 split")
-            # Use first 60% as train, last 40% as test
-            split_point = int(n * 0.6)
-            splits = [(list(range(0, split_point - self.embargo_days)),
-                       list(range(split_point, n)))]
+            logger.warning(f"CPCV: too few dates ({len(dates)}) for {self.n_groups} groups, falling back to simple split")
+            if n >= 4:
+                # Use first 60% as train, last 40% as test
+                split_point = int(n * 0.6)
+                embargo_start = max(0, split_point - self.embargo_days)
+                if embargo_start > 0 and n > split_point:
+                    splits = [(list(range(0, embargo_start)),
+                               list(range(split_point, n)))]
+            if not splits:
+                logger.warning(f"CPCV: only %d dates — insufficient for any split, returning empty", n)
 
         return splits
 

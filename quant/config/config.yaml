@@ -62,7 +62,7 @@ data:
   tickflow_api_key: "tk_868557a55bac4d1e859bf5be94087550"  # tickflow 免费注册版; 来源: tickflow.org 控制台
   rate_limit:
     # -- 批量源 --
-    tushare_batch_sec: 0.4            # tushare 批量间隔; 来源: 200次/分钟免费额度 → 保守 0.4s/批
+    tushare_batch_sec: 1.2            # tushare 批量间隔; 来源: 50次/分钟免费额度 → 50批/分钟需≥1.2s/批
     tickflow_batch_sec: 1.5           # tickflow 批量间隔; 来源: 实测 20只/1.2s, 加 0.3s 安全边际
     # -- 逐只源 --
     zzshare_per_stock_sec: 0.3        # zzshare 逐只间隔; 来源: 实测 0.2s, 加 0.1s 安全边际

@@ -801,20 +801,20 @@ class DataStore:
 
 
     def backfill_turnover_quotes(self, date: str = None):
-        """用 tickflow 全量实时行情回填当日换手率。
+        """用 tickflow 实时行情回填当日换手率。
 
-        tickflow 免费注册版 quotes.get(universes=["CN_Equity_A"]) 一次返回 5500+ 只
-        A 股的实时行情, 含 ext.turnover_rate 字段。盘后调用, 更新 daily.turnover。
-        来源: tickflow free registered API
+        免费注册版不支持 universes 查询, 改为从 stocks 表取全量 symbol,
+        转 tickflow 格式后调用 quotes.get(symbols=...)。
+        每批 500 只, 避免超长 URL。
         """
         try:
             from tickflow import TickFlow
         except ImportError:
-            logger.warning("tickflow not installed — turnover backfill skipped")
+            logger.warning("tickflow not installed")
             return 0
         tf_key = _require_cfg("data.tickflow_api_key")
         if not tf_key:
-            logger.warning("tickflow api key not configured — turnover backfill skipped")
+            logger.warning("tickflow api key not configured")
             return 0
 
         from datetime import datetime
@@ -822,43 +822,48 @@ class DataStore:
             date = datetime.today().strftime("%Y-%m-%d")
 
         tf = TickFlow(api_key=tf_key)
-        logger.info(f"turnover backfill: pulling quotes for {date} via tickflow")
-        t0 = __import__("time").time()
-        try:
-            quotes = tf.quotes.get(universes=["CN_Equity_A"], as_dataframe=True)
-        except Exception as e:
-            logger.error(f"tickflow quotes failed: {e}")
-            return 0
-        elapsed = __import__("time").time() - t0
-        if quotes is None or quotes.empty:
-            logger.warning("tickflow quotes returned empty")
-            return 0
-        logger.info(f"tickflow quotes: {len(quotes)} stocks in {elapsed:.1f}s")
-
-        # 查找 turnover_rate 列 (ext.turnover_rate)
-        turnover_col = None
-        for col in quotes.columns:
-            if "turnover" in str(col).lower():
-                turnover_col = col
-                break
-        if turnover_col is None:
-            logger.warning("tickflow quotes: no turnover column found")
-            return 0
-
         conn = self._connect()
-        updated = 0
-        for _, row in quotes.iterrows():
-            sym = str(row["symbol"]).split(".")[0]
-            tv = row.get(turnover_col, 0)
-            tv = float(tv) if tv and tv == tv else 0.0
-            if tv > 0:
-                conn.execute(
-                    "UPDATE daily SET turnover=? WHERE symbol=? AND date=? AND (turnover=0 OR turnover IS NULL)",
-                    (tv, sym, date))
-                updated += 1
-        conn.commit()
-        logger.info(f"turnover backfill (tickflow): {updated} stocks updated for {date}")
-        return updated
+        all_syms = [r[0] for r in conn.execute("SELECT symbol FROM stocks").fetchall()]
+        if not all_syms:
+            logger.warning("no stocks in DB")
+            return 0
+
+        def _to_tf(sym):
+            if sym.startswith(("6", "9", "68")): return sym + ".SH"
+            if sym.startswith(("4", "8", "92")): return sym + ".BJ"
+            return sym + ".SZ"
+
+        batch_size = 500
+        total_updated = 0
+        for i in range(0, len(all_syms), batch_size):
+            chunk = all_syms[i:i + batch_size]
+            tf_symbols = [_to_tf(s) for s in chunk]
+            try:
+                quotes = tf.quotes.get(symbols=tf_symbols, as_dataframe=True)
+            except Exception as e:
+                logger.warning(f"tickflow quotes chunk {i}: {e}")
+                continue
+            if quotes is None or quotes.empty:
+                continue
+            turnover_col = None
+            for col in quotes.columns:
+                if "turnover" in str(col).lower():
+                    turnover_col = col
+                    break
+            if turnover_col is None:
+                continue
+            for _, row in quotes.iterrows():
+                sym = str(row["symbol"]).split(".")[0]
+                tv = row.get(turnover_col, 0)
+                tv = float(tv) if tv and tv == tv else 0.0
+                if tv > 0:
+                    conn.execute(
+                        "UPDATE daily SET turnover=? WHERE symbol=? AND date=? AND (turnover=0 OR turnover IS NULL)",
+                        (tv, sym, date))
+                    total_updated += 1
+            conn.commit()
+        logger.info(f"turnover backfill (tickflow): {total_updated} stocks for {date}")
+        return total_updated
     def _sync_industry_akshare(self, conn) -> int:
         """akshare 逐只查询行业回退 — 仅针对 industry IS NULL 的股票。
 

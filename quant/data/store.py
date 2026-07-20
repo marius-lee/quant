@@ -819,13 +819,17 @@ class DataStore:
 
         from datetime import datetime
         if date is None:
-            date = datetime.today().strftime("%Y-%m-%d")
+            row = conn.execute("SELECT MAX(date) FROM daily WHERE volume>0").fetchone()
+            date = row[0] if row and row[0] else datetime.today().strftime("%Y-%m-%d")
 
         tf = TickFlow(api_key=tf_key)
         conn = self._connect()
-        all_syms = [r[0] for r in conn.execute("SELECT symbol FROM stocks").fetchall()]
+        # 只取该日期有 daily 数据且 turnover 为 0/NULL 的股票
+        all_syms = [r[0] for r in conn.execute(
+            "SELECT symbol FROM daily WHERE date=? AND (turnover=0 OR turnover IS NULL)", (date,)
+        ).fetchall()]
         if not all_syms:
-            logger.warning("no stocks in DB")
+            logger.info(f"turnover backfill: no stocks need turnover for {date}")
             return 0
 
         def _to_tf(sym):

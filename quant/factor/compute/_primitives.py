@@ -399,3 +399,50 @@ FACTOR_SHORTCUT = {
     "compute_str":                  _str,
     "compute_abn_turnover":         _abn_turnover,
 }
+
+# ═══════════════════════════════════════════════════════════
+# 幻方 Tier S 新因子 shortcut (2026-07-20)
+# ═══════════════════════════════════════════════════════════
+
+def _turnover_accel(prims: dict, date: str, short: int = 5, long: int = 10):
+    """加速换手因子 shortcut: (turnover_t / turnover_{t-5} - 1) / (turnover_{t-5} / turnover_{t-10} - 1).
+    来源: 华安证券金工 (2024), IC=-10.5%, IR=4.29.
+          幻方方法论"加速/减速特征": 换手率二阶导数(变化速率).
+    """
+    from quant.factor.registry import _cs_zscore
+    import numpy as np
+    if "turnover" not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="turnover_accel")
+    to = prims["turnover"]
+    t = to.loc[date]
+    t5 = to.shift(short).loc[date]
+    t10 = to.shift(long).loc[date]
+    max_ratio = 10.0  # 3σ 裁剪上限, 来源: 华安2024
+    d5 = t / t5.replace(0, np.nan) - 1.0
+    d10 = t5 / t10.replace(0, np.nan) - 1.0
+    with np.errstate(divide='ignore', invalid='ignore'):
+        accel = np.where(np.abs(d10.values) < 1e-8, np.sign(d5.values) * max_ratio,
+                     np.clip(d5.values / d10.values, -max_ratio, max_ratio))
+    result = pd.Series(accel, index=t.index).dropna()
+    return _cs_zscore(-result).rename("turnover_accel")
+
+
+def _uret(prims: dict, date: str, window: int = 20):
+    """URet 信息分布不均 shortcut: -1 * vol_20 / |mean_log_20|.
+    来源: 东吴证券金工 (2023), IC=-5.4%, IR=2.21.
+          幻方"信息分布不均"方法论.
+    """
+    from quant.factor.registry import _cs_zscore
+    import numpy as np
+    vol_key = f"vol_{window}"
+    mean_key = f"mean_log_{window}"
+    if vol_key not in prims or mean_key not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="uret_20d")
+    vol = prims[vol_key].loc[date]
+    mean_ret = prims[mean_key].loc[date]
+    denom = mean_ret.abs().replace(0, np.nan)
+    uret = (vol / denom).replace([np.inf, -np.inf], np.nan)
+    return _cs_zscore(-uret).rename("uret_20d")
+
+FACTOR_SHORTCUT["compute_turnover_accel"] = _turnover_accel
+FACTOR_SHORTCUT["compute_uret"] = _uret

@@ -601,3 +601,35 @@ def compute_turnover_anomaly(data: "pd.DataFrame", date: str, short: int = 5,
 # avg(return/limit_up_pct, 5d), 接近涨停板有动量溢出, IC≈0.03-0.06
 # ═══════════════════════════════════════════════════════════
 
+
+
+# ═══════════════════════════════════════════════════════════
+# 21. URet 信息分布不均 — 东吴证券 (2023)
+# 幻方方法论: 信息分布不均 → 收益离散度/方向集中度
+# ═══════════════════════════════════════════════════════════
+
+def compute_uret(data: "pd.DataFrame", date: str, window: int = 20) -> "pd.Series":
+    """URet 信息分布不均因子: -1 * std(ret, window) / abs(mean(ret, window)).
+
+    算法:
+        1. 计算 window 日对数收益的标准差和均值
+        2. URet = std(log_ret) / |mean(log_ret)|
+        3. 取负号: 高 URet → 信息分布不均 → 负面信号
+
+    来源: 东吴证券金工 (2023), IC=-5.4%, IR=2.21.
+          幻方"信息分布不均"方法论: 收益离散度大但方向模糊的股票 → 未来收益低.
+    """
+    close = data["close"]
+    log_ret = np.log(close).diff()
+
+    if date not in log_ret.index:
+        return pd.Series(np.nan, index=close.columns, name="uret_20d")
+
+    idx = log_ret.index.get_loc(date)
+    start = max(0, idx - window + 1)
+    ret_slice = log_ret.iloc[start:idx + 1]
+
+    ret_std = ret_slice.std()
+    ret_mean = ret_slice.mean()
+    uret = ret_std / ret_mean.abs().replace(0, np.nan)
+    return _cs_zscore(-uret).rename("uret_20d")

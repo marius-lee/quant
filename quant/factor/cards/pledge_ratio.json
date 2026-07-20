@@ -3,8 +3,8 @@
   "display_name": "pledge_ratio",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0026,
-  "icir_12m": 0.0464,
+  "ic_mean_12m": -0.0167,
+  "icir_12m": -0.1819,
   "last_evaluated": "auto",
   "n_obs": 64
 }

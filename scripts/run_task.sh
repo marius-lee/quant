@@ -68,7 +68,7 @@ _run('$DATE')
         PYTHONPATH=. .venv/bin/python3 -c "
 from quant.utils.excepthook import setup; setup()
 from quant.scheduler.weekly import _run
-_run()
+_run('$DATE')
 "
         ;;
     daemon)

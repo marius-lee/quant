@@ -1,0 +1,32 @@
+{
+  "name": "ctr_20d",
+  "display_name": "CTR 换手率切割刀",
+  "category": "turnover",
+  "sub_category": "price",
+  "formula": "mean(turnover_chg | overnight_up) - mean(turnover_chg | overnight_down), 20d",
+  "window_days": 20,
+  "data_deps": [
+    "daily.open",
+    "daily.close",
+    "daily.turnover"
+  ],
+  "reference": "东吴证券金工 (2024), IC=-7.6%, IR=2.63",
+  "hypothesis": "上涨日放量与下跌日放量的不对称性反映筹码结构: 高位放量(主力出货) vs 低位缩量(无人接盘)",
+  "status": "registered",
+  "status_history": [
+    {
+      "from": "registered",
+      "to": "registered",
+      "date": "2026-07-20",
+      "reason": "幻方 Tier S 因子接入 — 东吴证券2024, 待评估"
+    }
+  ],
+  "ic_mean_12m": 0.0345,
+  "ic_std_12m": null,
+  "icir_12m": 0.3849,
+  "half_life_days": null,
+  "decay_trend": "unknown",
+  "correlations": {},
+  "last_evaluated": "auto",
+  "n_obs": 60
+}

@@ -3,8 +3,8 @@
   "display_name": "ep_ratio",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0187,
-  "icir_12m": 0.1428,
+  "ic_mean_12m": 0.0192,
+  "icir_12m": 0.1448,
   "last_evaluated": "auto",
   "n_obs": 64
 }

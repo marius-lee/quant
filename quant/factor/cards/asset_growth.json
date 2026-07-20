@@ -3,8 +3,8 @@
   "display_name": "asset_growth",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.0144,
-  "icir_12m": -0.1489,
+  "ic_mean_12m": -0.0241,
+  "icir_12m": -0.2139,
   "last_evaluated": "auto",
   "n_obs": 64
 }

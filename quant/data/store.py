@@ -422,7 +422,13 @@ class DataStore:
                         f"C={r[5]} V={r[6]} Amt={r[7]} To={r[8]}")
 
     def _fetch_batch_tushare(self, symbols: list, start_date: str) -> list:
-        """tushare 批量获取日线 (Token认证, 200call/min). 返回 None 表示不可用"""
+        """tushare 批量获取日线 (Token认证, 200call/min). 返回 None 表示不可用。
+
+        fields 必须显式指定 — tushare pro.daily() 默认字段不含 turnover_rate,
+        且当前 tushare 版本不传 fields 时返回空 DataFrame。
+        start_date 统一转 YYYYMMDD — tushare 不接受 YYYY-MM-DD 格式。
+        来源: 2026-07-21 debug_tushare_fields.py 实测
+        """
         if not self.token:
             return None
         import tushare as ts
@@ -430,22 +436,25 @@ class DataStore:
         pro = ts.pro_api()
         ts_codes_parts = []
         for s in symbols:
-            if s.startswith(("6", "5", "9")):
+            if s.startswith("92"):
+                ts_codes_parts.append(f"{s}.BJ")
+            elif s.startswith(("6", "5", "9")):
                 ts_codes_parts.append(f"{s}.SH")
             elif s.startswith(("0", "2", "3")):
                 ts_codes_parts.append(f"{s}.SZ")
-            elif s.startswith(("4", "8")):
-                ts_codes_parts.append(f"{s}.BJ")
         if not ts_codes_parts:
             return None
         code_str = ",".join(ts_codes_parts)
 
         _init_cache()
         _tushare_limiter.wait()
+        # start_date 统一转 YYYYMMDD — tushare 不接受 YYYY-MM-DD (实测返回空)
+        _start = to_compact(start_date) if "-" in str(start_date) else str(start_date)
         df = pro.daily(
             ts_code=code_str,
-            start_date=start_date,
+            start_date=_start,
             end_date=to_compact(datetime.today()),
+            fields="ts_code,trade_date,open,high,low,close,vol,amount,turnover_rate",
         )
         if df is None or df.empty:
             return None
@@ -456,7 +465,7 @@ class DataStore:
                 float(row.get("open", 0)), float(row.get("high", 0)),
                 float(row.get("low", 0)), float(row.get("close", 0)),
                 float(row.get("vol", 0)), float(row.get("amount", 0)),
-                float(row.get("turnover_rate", 0) or 0)))
+                float(row.get("turnover_rate", 0) or 0)))  # fields 现在包含 turnover_rate
         logger.info(f"[tushare] {code_str}: {len(rows)} rows")
         return rows
 
@@ -747,12 +756,12 @@ class DataStore:
         return rows
 
     def backfill_turnover(self, limit: int = 0):
-        """回填换手率 — 删缺口日期行 + tushare 重拉, 含 turnover_rate。
+        """回填换手率 — 用 tushare 批量获取 turnover_rate, UPDATE existing rows。
 
-        策略: 删掉 turnover 缺失日期的 daily 行 → update_daily 用 tushare 重拉。
-        _analyze_daily_gaps 检测到缺失后触发 stale_recent 模式, tushare 率
-        先返回数据(含 turnover_rate)。INSERT OR REPLACE 保证旧行被覆盖。
-        来源: coding-standards 模板5 (多源并行IO), docs/handoffs/HANDOFF.md
+        不 DELETE、不重拉 OHLCV — 仅 UPDATE turnover 列。避免 DELETE-then-repull
+        策略在 tushare 无数据时被回退源(如 tickflow)覆写为 turnover=0 的问题。
+        tushare 50 股/批, RateLimiter(200/min) 自动限流。
+        来源: 2026-07-21 debug_tushare_fields.py 实测; test-v170 修复
         """
         try:
             import tushare as ts
@@ -765,6 +774,7 @@ class DataStore:
 
         from datetime import datetime, timedelta
         ts.set_token(self.token)
+        pro = ts.pro_api()
         conn = self._connect()
 
         last_good = conn.execute(
@@ -779,35 +789,62 @@ class DataStore:
         gap_start = gap_start_dt.strftime("%Y-%m-%d")
         gap_end = gap_end_dt.strftime("%Y-%m-%d")
 
-        logger.info(f"turnover backfill: gap {gap_start} to {gap_end} via tushare batch API")
+        logger.info(f"turnover backfill: gap {gap_start} to {gap_end} via tushare UPDATE")
 
-        # SAVEPOINT 保护: DELETE 后若 update_daily 失败, 回滚 DELETE 避免数据丢失。
-        # 注意: update_daily 内会自行 commit, SAVEPOINT 只在 DELETE 阶段提供原子性。
-        # 若 update_daily 成功后进程崩溃, 数据已写入 — 可手动重跑 backfill_turnover 恢复。
-        # 来源: 2026-07-21 全链路逻辑分析 (问题6: DELETE 无事务保护)
-        conn.execute("SAVEPOINT turnover_backfill")
-        try:
-            deleted = conn.execute(
-                "DELETE FROM daily WHERE date >= ? AND date <= ?",
-                (gap_start, gap_end)
-            ).rowcount
-            conn.execute("RELEASE turnover_backfill")
-        except Exception:
-            conn.execute("ROLLBACK TO turnover_backfill")
-            raise
+        # 逐日: 取 turnover=0 的股票 → tushare 拉 turnover_rate → UPDATE
+        total_updated = 0
+        import time as _time
+        for d_offset in range((gap_end_dt - gap_start_dt).days + 1):
+            d = (gap_start_dt + timedelta(days=d_offset)).strftime("%Y-%m-%d")
+            syms = [r[0] for r in conn.execute(
+                "SELECT symbol FROM daily WHERE date=? AND (turnover=0 OR turnover IS NULL)", (d,)
+            ).fetchall()]
+            if not syms:
+                continue
+
+            # 转 tushare 代码格式
+            def _to_ts(s):
+                if s.startswith("92"): return f"{s}.BJ"
+                if s.startswith(("6","5","9")): return f"{s}.SH"
+                return f"{s}.SZ"
+
+            batch = 50
+            updated_today = 0
+            for i in range(0, len(syms), batch):
+                chunk = syms[i:i+batch]
+                codes = ",".join(_to_ts(s) for s in chunk)
+                _init_cache()
+                _tushare_limiter.wait()
+                try:
+                    df = pro.daily(
+                        ts_code=codes,
+                        start_date=to_compact(d),
+                        end_date=to_compact(d),
+                        fields="ts_code,trade_date,turnover_rate",
+                    )
+                except Exception as _e:
+                    logger.warning(f"tushare daily failed for {d} chunk {i}: {_e}")
+                    continue
+                if df is None or df.empty:
+                    continue
+                for _, row in df.iterrows():
+                    sym = row["ts_code"].split(".")[0]
+                    tv = float(row.get("turnover_rate", 0) or 0)
+                    if tv > 0:
+                        conn.execute(
+                            "UPDATE daily SET turnover=? WHERE symbol=? AND date=?",
+                            (tv, sym, d))
+                        updated_today += 1
+                conn.commit()
+
+            if updated_today > 0:
+                logger.info(f"turnover backfill: {d} → {updated_today}/{len(syms)} stocks updated")
+            total_updated += updated_today
+
         conn.commit()
-        logger.info(f"turnover backfill: deleted {deleted} gap rows ({gap_start} to {gap_end})")
-
-        # 显式传 symbols 跳过 _analyze_daily_gaps 的 full 判定
-        all_syms = [r[0] for r in conn.execute(
-            "SELECT DISTINCT symbol FROM daily"
-        ).fetchall()]
-        n = self.update_daily(symbols=all_syms, start=gap_start)
-
-        conn.commit()
-        logger.info(f"turnover backfill: {n} rows re-pulled "
+        logger.info(f"turnover backfill: {total_updated} stocks updated "
                     f"({gap_start} to {gap_end})")
-        return n
+        return total_updated
 
 
     def backfill_turnover_quotes(self, date: str = None):

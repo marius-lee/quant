@@ -1,5 +1,5 @@
 ---
-# HANDOFF — 2026-07-21 (test-v169, 数据源全线修复完成)
+# HANDOFF — 2026-07-21 (test-v172, turnover 回填可用)
 
 ## 当前运行状态
 - **tushare token**: 已写入 config.yaml (aeeb8c7d...)
@@ -7,6 +7,119 @@
 - **换手率缺口**: 07-11 ~ 07-20 turnover=0, 待跑 backfill_turnover
 - **7 源回退链**: 全部可用, tencent/akshare IP封禁置末尾
 - **因子库**: 上次物化 48 因子入库 (test-v155 按需物化后)
+
+---
+# HANDOFF — 2026-07-21 (test-v172, turnover 回填可用)
+
+## 当前运行状态
+- **tushare token**: 已配置, RateLimiter 对齐 50次/分钟免费版实际限制
+- **daily 表写入模式**: INSERT OR REPLACE
+- **7 源回退链日期格式**: 全源统一 — tushare/akshare/tencent/zzshare 用 YYYYMMDD, sina/pytdx 用 YYYY-MM-DD
+- **换手率缺口**: 待跑 backfill_turnover (tushare 50/min 限速, 预计 15min 完成)
+- **因子库**: 上次物化 48 因子入库
+
+---
+
+## test-v172 — tushare RateLimiter 对齐实际限速
+
+**根因**: `_tushare_limiter` 设 `calls_per_minute=200`, 但 tushare 免费版实际限制是 **50 次/分钟**。
+backfill_turnover 每日期 ~108 次调用, 7 日期 = 756 次 → 前 50 次透过后被服务端拒绝:
+  `抱歉，您访问接口(daily)频率超限(50次/分钟)`
+
+**修复**:
+- `store.py:38`: `calls_per_minute=200` → `50`
+- `config.yaml:65`: `tushare_batch_sec` 注释从 200次/分钟 → 50次/分钟, 间隔 0.4s → 1.2s
+- `store.py:backfill_turnover`: 加进度日志 (每 500 只打印)
+
+**影响**: RateLimiter 现在会在第 51 次调用时阻塞 60s, 确保不超限。
+backfill_turnover 全量 756 次调用 ≈ 15 分钟完成。
+
+---
+
+## test-v171 — 日期格式全盘审计 + 统一转换策略
+
+### 审计结果
+
+7 个 `_fetch_*` 方法的日期格式处理不一致, 部分存在 bug:
+
+| 方法 | 问题 | 修复 |
+|------|------|------|
+| `_fetch_batch_tushare` | start_date YYYY-MM-DD → tushare拒绝; fields 缺失 | test-v170 已修 |
+| `_fetch_tencent_daily` | 手动 `.replace("-","")` 而非 `to_compact()` | 改用 `to_compact()` |
+| `_fetch_akshare_daily` | `end_date` 已转 YYYYMMDD, **`start_date` 未转** ❌ | `to_compact(start_date)` |
+| `_fetch_zzshare_daily` | `end_date` 已转 YYYYMMDD, **`start_date` 未转** ❌ | `to_compact(start_date)` |
+| `_fetch_sina_daily` | YYYY-MM-DD 字符串比较 | ✅ 无需修改 |
+| `_fetch_tickflow_daily` | 不通过 API 参数过滤 | ✅ 无需修改 |
+| `_fetch_pytdx_daily` | YYYY-MM-DD 后过滤比较 | ✅ 无需修改 |
+
+其他文件 4 处手动 `.replace("-","")`:
+- `benchmark.py:59`: `last_date.replace("-","")` → `to_compact(last_date)`
+- `margin.py:112`: `date_str.replace("-","")` → `to_compact(date_str)`
+- `jq_valuation.py:95`: `date_str.replace("-","")` → `to_compact(date_str)`
+- `daily_sync.py:41,43`: `date_str.replace("-","")` → `to_compact(date_str)`
+
+### quant/utils/date.py 重构
+
+新增两个语义化函数 + 7 数据源格式策略文档:
+- `as_compact(d) → YYYYMMDD` — tushare / akshare / tencent / zzshare API
+- `as_iso(d) → YYYY-MM-DD` — SQLite / sina / pytdx
+- `to_compact()` 改为委托 `as_compact()` (向后兼容)
+- 模块级注释列明各数据源期望格式
+
+规则: 禁止手动 `.replace("-","")` — 一律用 `to_compact()` / `as_compact()`。
+
+### daily_sync.py 缩进修复
+
+`step2_margin` (line 39) 和 `step5_fundamentals` (line 71) 的 `from data.repos._base` 缺少 4 格缩进。
+与本次审计无关, 顺手修复。
+
+---
+
+## test-v170 — tushare turnover_rate 拉取修复 + backfill_turnover 重写
+
+### Bug A: `_fetch_batch_tushare` 两个问题
+
+**1. fields 参数缺失**
+
+`pro.daily()` 默认字段不含 `turnover_rate`。当前 tushare 版本不传 `fields` 时直接返回空 DataFrame。
+`row.get("turnover_rate", 0)` 永远取到 0。
+
+修复: 显式传 `fields="ts_code,trade_date,open,high,low,close,vol,amount,turnover_rate"`
+
+**2. start_date 格式不对**
+
+tushare API 要求 YYYYMMDD 格式。`batch_start` 从 SQLite 返回 YYYY-MM-DD, 直接传给 `pro.daily()` 导致返回空。
+
+修复: `to_compact(start_date)` 统一转换
+
+### Bug B: backfill_turnover 重写 — 去掉 DELETE-then-repull
+
+**旧策略 (test-v168)**: DELETE 缺口日期行 → `update_daily(symbols=all, start=gap_start)` → tushare 重拉
+
+**旧策略的三个致命问题**:
+1. tushare 不传 fields + 日期格式不对 → 返回空 → 回退到 tickflow → turnover=0
+2. `update_daily` 的 `batch_start_map` 取 `min(max_date)`, 删后大部分股票 max_date=07-10,
+   但有个别股票 max_date 更早 → `batch_start` 被拉回到 2020-01-01 → 拉取 894,583 行
+   (远超删除的 32,535 行), 连带覆写了 07-10 的 turnover (286 → 6)
+3. 即便 tushare 成功, 也要重拉全量 OHLCV, 浪费 API 配额
+
+**新策略**: 不 DELETE、不重拉 OHLCV — 直接调 tushare 拉 `turnover_rate` → `UPDATE daily SET turnover=?`
+
+- `_init_cache()` + `_tushare_limiter.wait()` 限流
+- `pro.daily(fields="ts_code,trade_date,turnover_rate")` 只拉 turnover, 不拉 OHLCV
+- `UPDATE daily SET turnover=? WHERE symbol=? AND date=?` 定点更新
+- 逐日期循环, 每日期 50 股/批
+
+**对比**:
+
+| | 旧 (DELETE+repull) | 新 (UPDATE only) |
+|---|---|---|
+| 删数据? | ✅ DELETE 缺口行 | ❌ 不动 OHLCV |
+| tushare失败? | 回退源覆写 turnover=0 | 跳过, OHLCV 完好 |
+| API 调用 | 全量 OHLCV (8 列) | 仅 turnover_rate (1 列) |
+| 安全性 | 崩溃可丢数据 | 崩溃无损失 |
+
+---
 
 ---
 

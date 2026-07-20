@@ -35,7 +35,7 @@ def _init_cache():
     _backend = get_backend(cfg)
     _stock_list_cache = DataCache("store:stock_list", ttl_hours=24, backend=_backend)
     _industry_cache = DataCache("store:industry", ttl_hours=24, backend=_backend)
-    _tushare_limiter = RateLimiter("tushare", calls_per_minute=200, backend=_backend)
+    _tushare_limiter = RateLimiter("tushare", calls_per_minute=50, backend=_backend)  # tushare免费版实限50次/分钟
     _akshare_limiter = RateLimiter("akshare", calls_per_minute=60, backend=_backend)
     logger.debug("cache layer initialized (backend=%s)", type(_backend).__name__)
 
@@ -837,6 +837,9 @@ class DataStore:
                         updated_today += 1
                 conn.commit()
 
+            n_done = min(i + batch, len(syms))
+            if i % 500 == 0:
+                logger.info(f"turnover backfill {d}: {n_done}/{len(syms)} stocks processed")
             if updated_today > 0:
                 logger.info(f"turnover backfill: {d} → {updated_today}/{len(syms)} stocks updated")
             total_updated += updated_today

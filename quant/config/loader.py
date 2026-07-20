@@ -108,6 +108,12 @@ def validate() -> None:
     _check(cfg, 'factor.evaluation.t_threshold', (int, float))
     _check_range(cfg, 'factor.evaluation.min_icir', (int, float), min_val=0, max_val=5.0)
 
+    _check(cfg, 'universe.exclude_st', bool)
+    _check_range(cfg, 'universe.exclude_new_stock_days', int, min_val=0)
+    _check_range(cfg, 'universe.min_price', (int, float), min_val=0)
+    _check_range(cfg, 'universe.min_daily_amount', int, min_val=0)
+    _check_range(cfg, 'universe.exclude_zero_turnover_days', int, min_val=0)
+
 
 def _check(cfg: dict, key: str, expected: type | tuple[type, ...]) -> None:
     parts = key.split('.')

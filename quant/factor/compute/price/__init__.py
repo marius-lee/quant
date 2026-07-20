@@ -2,7 +2,8 @@
 
 from quant.config.constants import *  # noqa: F401, F403
 
-from quant.factor.compute.price._momentum import (  # noqa: F401
+from quant.factor.compute.price._momentum import (
+    compute_uret,  # noqa: F401
     _log_returns,
     compute_amihud,
     compute_downside_volatility,
@@ -44,6 +45,12 @@ from quant.factor.compute.price._sentiment import (
     compute_news_volume_5d,
     compute_news_abnormal_20d,
 )
+from quant.factor.compute.price._turnover import (
+    compute_ctr,
+    compute_hl_volume,
+    compute_turnover_accel,
+)
+
 from quant.factor.compute.price._alternative import (  # noqa: F401
     _get_limit_pool,
     compute_abn_turnover,
@@ -105,6 +112,11 @@ _PRICE_FN_MAP = {
     "news_sentiment_1d":      (compute_news_sentiment_1d,   1),
     "news_volume_5d":         (compute_news_volume_5d,      5),
     "news_abnormal_20d":      (compute_news_abnormal_20d,  20),
+    # 幻方 Tier S 新因子 (2026-07-20)
+    "ctr_20d":                (compute_ctr,               20),  # 东吴2024: IC=-7.6%
+    "hl_volume_20d":          (compute_hl_volume,         20),  # 国盛2023: IC=-6.6%
+    "turnover_accel":         (compute_turnover_accel,     5),  # 华安2024: IC=-10.5% (short/long=5/10)
+    "uret_20d":               (compute_uret,              20),  # 东吴2023: IC=-5.4%
 }
 
 
@@ -155,6 +167,11 @@ __all__ = [
     "compute_volume_price_corr",
     "compute_volume_ratio",
     "compute_ztd",
+    "compute_ctr",
+    "compute_hl_volume",
+    "compute_turnover_accel",
+    "compute_uret",
+
     "compute_news_sentiment_1d",
     "compute_news_volume_5d",
     "compute_news_abnormal_20d",

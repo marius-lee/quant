@@ -3,8 +3,8 @@
   "display_name": "ma_alignment_20d",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.0265,
-  "icir_12m": -0.1756,
+  "ic_mean_12m": -0.0267,
+  "icir_12m": -0.177,
   "last_evaluated": "auto",
   "n_obs": 60
 }

@@ -1,0 +1,30 @@
+{
+  "name": "turnover_accel",
+  "display_name": "加速换手因子",
+  "category": "turnover",
+  "sub_category": "price",
+  "formula": "(turnover_t / turnover_{t-5} - 1) / (turnover_{t-5} / turnover_{t-10} - 1)",
+  "window_days": 10,
+  "data_deps": [
+    "daily.turnover"
+  ],
+  "reference": "华安证券金工 (2024), IC=-10.5%, IR=4.29; 幻方方法论: 加速/减速特征",
+  "hypothesis": "换手率二阶导数(变化速率): 加速放量→投机过热→未来跑输; 减速缩量→抛压释放→未来反弹",
+  "status": "registered",
+  "status_history": [
+    {
+      "from": "registered",
+      "to": "registered",
+      "date": "2026-07-20",
+      "reason": "幻方 Tier S 因子接入 — 华安证券2024, 待评估"
+    }
+  ],
+  "ic_mean_12m": -0.0093,
+  "ic_std_12m": null,
+  "icir_12m": -0.1405,
+  "half_life_days": null,
+  "decay_trend": "unknown",
+  "correlations": {},
+  "last_evaluated": "auto",
+  "n_obs": 55
+}

@@ -1,0 +1,30 @@
+{
+  "name": "hl_volume_20d",
+  "display_name": "高低位放量",
+  "category": "turnover",
+  "sub_category": "price",
+  "formula": "(P80_turnover - P20_turnover) / mean(turnover), 20d",
+  "window_days": 20,
+  "data_deps": [
+    "daily.turnover"
+  ],
+  "reference": "国盛证券金工 (2023), IC=-6.6%, IR=3.00",
+  "hypothesis": "换手率分位分化大反映筹码结构恶化: 高位放量(主力出货)与低位缩量(无人接盘)并存",
+  "status": "registered",
+  "status_history": [
+    {
+      "from": "registered",
+      "to": "registered",
+      "date": "2026-07-20",
+      "reason": "幻方 Tier S 因子接入 — 国盛证券2023, 待评估"
+    }
+  ],
+  "ic_mean_12m": 0.026,
+  "ic_std_12m": null,
+  "icir_12m": 0.2454,
+  "half_life_days": null,
+  "decay_trend": "unknown",
+  "correlations": {},
+  "last_evaluated": "auto",
+  "n_obs": 56
+}

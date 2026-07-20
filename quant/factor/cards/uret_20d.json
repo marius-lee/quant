@@ -1,0 +1,30 @@
+{
+  "name": "uret_20d",
+  "display_name": "URet 信息分布不均",
+  "category": "momentum",
+  "sub_category": "price",
+  "formula": "-1 * std(ret, 20d) / abs(mean(ret, 20d))",
+  "window_days": 20,
+  "data_deps": [
+    "daily.close"
+  ],
+  "reference": "东吴证券金工 (2023), IC=-5.4%, IR=2.21; 幻方方法论: 信息分布不均",
+  "hypothesis": "收益离散度大但方向模糊(高URet)→信息分布不均→未来收益低; 方向明确且离散小(低URet)→信息已定价",
+  "status": "registered",
+  "status_history": [
+    {
+      "from": "registered",
+      "to": "registered",
+      "date": "2026-07-20",
+      "reason": "幻方 Tier S 因子接入 — 东吴证券2023, 待评估"
+    }
+  ],
+  "ic_mean_12m": 0.0123,
+  "ic_std_12m": null,
+  "icir_12m": 0.152,
+  "half_life_days": null,
+  "decay_trend": "unknown",
+  "correlations": {},
+  "last_evaluated": "auto",
+  "n_obs": 55
+}

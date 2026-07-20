@@ -228,6 +228,22 @@ risk:
   atr_mult_take_profit_2: 3.0      # 止盈2: 现价≥成本+3×ATR → 卖剩余50%
   atr_mult_trailing: 1.5           # 移动锁利: 盈利超2ATR后回撤1.5ATR → 全卖
   max_hold_days: 20                # 时间止损: 持仓>20天+浮亏 → 全卖
+# ── Universe 股票池过滤 (对齐业界标准: 聚宽/米筐/BigQuant/QuantConnect) ──
+# 实盘信号生成: SQL 层过滤, 从源头排除不合格股票
+# 回测: apply_all_filters() 以当日数据点对点过滤, 避免 survivorship bias
+universe:
+  # ST/*ST 排除; 来源: 聚宽/米筐/BigQuant 默认排除 (A股退市风险, 涨跌幅仅±5%)
+  exclude_st: true
+  # 新股排除 (上市不足N天); 来源: 聚宽60天(默认), 米筐90天, BigQuant120天
+  # 新股上市初期换手率极高/连板频繁 → 量价信号失真
+  exclude_new_stock_days: 60
+  # 最低股价(元); 来源: 面值退市¥1 + 1元安全边际, BigQuant 标准
+  min_price: 2.0
+  # 最低日成交额(元); 来源: A股中小盘盘口实测(500万以下无法有效进出), BigQuant 标准
+  min_daily_amount: 500000
+  # 连续N天换手率=0排除; 来源: QuantConnect/聚宽默认排除停牌股, 僵尸股无流动性
+  exclude_zero_turnover_days: 5
+
 screening:
   backtest_end: '2026-06-30'
   backtest_start: '2025-06-30'

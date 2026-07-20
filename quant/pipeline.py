@@ -97,7 +97,19 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
 
     # ── Step 2: Load ──
     from quant.data.repos import UniverseRepo
-    symbols = UniverseRepo().get_symbols(exclude_market='BJ')
+    if not universe_size:
+        from quant.config.loader import get as _cfg_get
+        _ucfg = _cfg_get("universe")
+        symbols = UniverseRepo().get_symbols(
+            exclude_market="BJ",
+            exclude_st=_ucfg["exclude_st"],
+            exclude_new_stock_days=_ucfg["exclude_new_stock_days"],
+            min_price=_ucfg["min_price"],
+            exclude_zero_turnover_days=_ucfg["exclude_zero_turnover_days"],
+            min_daily_amount=_ucfg["min_daily_amount"],
+        )
+    else:
+        symbols = UniverseRepo().get_symbols(exclude_market="BJ")
     from quant.factor.windows import max_factor_calendar_days
     _eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(None))
     hist_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
@@ -128,6 +140,8 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
                 f"(liquidity>{_risk_limits.min_daily_amount}, price>{_risk_limits.min_price}, no ST)")
     # Feed investable universe into subsequent steps
     symbols = [s for s in symbols if s in set(investable_symbols)]
+    data = data.loc[:, data.columns.get_level_values(1).isin(symbols)]
+    fundamentals = fundamentals[fundamentals.index.isin(symbols)]
     results["steps"]["risk_pre"] = {"investable": len(symbols), "status": "ok"}
     logger.info(f"[debug] after Step 2.3: symbols={len(symbols)}")
 

@@ -3,8 +3,8 @@
   "display_name": "accruals",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.0025,
-  "icir_12m": -0.0414,
+  "ic_mean_12m": -0.0022,
+  "icir_12m": -0.0496,
   "last_evaluated": "auto",
   "n_obs": 64
 }

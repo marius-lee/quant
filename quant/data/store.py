@@ -799,6 +799,66 @@ class DataStore:
                     f"({gap_start} to {gap_end})")
         return total_new
 
+
+    def backfill_turnover_quotes(self, date: str = None):
+        """用 tickflow 全量实时行情回填当日换手率。
+
+        tickflow 免费注册版 quotes.get(universes=["CN_Equity_A"]) 一次返回 5500+ 只
+        A 股的实时行情, 含 ext.turnover_rate 字段。盘后调用, 更新 daily.turnover。
+        来源: tickflow free registered API
+        """
+        try:
+            from tickflow import TickFlow
+        except ImportError:
+            logger.warning("tickflow not installed — turnover backfill skipped")
+            return 0
+        tf_key = _require_cfg("data.tickflow_api_key")
+        if not tf_key:
+            logger.warning("tickflow api key not configured — turnover backfill skipped")
+            return 0
+
+        from datetime import datetime
+        if date is None:
+            date = datetime.today().strftime("%Y-%m-%d")
+
+        tf = TickFlow(api_key=tf_key)
+        logger.info(f"turnover backfill: pulling quotes for {date} via tickflow")
+        t0 = __import__("time").time()
+        try:
+            quotes = tf.quotes.get(universes=["CN_Equity_A"], as_dataframe=True)
+        except Exception as e:
+            logger.error(f"tickflow quotes failed: {e}")
+            return 0
+        elapsed = __import__("time").time() - t0
+        if quotes is None or quotes.empty:
+            logger.warning("tickflow quotes returned empty")
+            return 0
+        logger.info(f"tickflow quotes: {len(quotes)} stocks in {elapsed:.1f}s")
+
+        # 查找 turnover_rate 列 (ext.turnover_rate)
+        turnover_col = None
+        for col in quotes.columns:
+            if "turnover" in str(col).lower():
+                turnover_col = col
+                break
+        if turnover_col is None:
+            logger.warning("tickflow quotes: no turnover column found")
+            return 0
+
+        conn = self._connect()
+        updated = 0
+        for _, row in quotes.iterrows():
+            sym = str(row["symbol"]).split(".")[0]
+            tv = row.get(turnover_col, 0)
+            tv = float(tv) if tv and tv == tv else 0.0
+            if tv > 0:
+                conn.execute(
+                    "UPDATE daily SET turnover=? WHERE symbol=? AND date=? AND (turnover=0 OR turnover IS NULL)",
+                    (tv, sym, date))
+                updated += 1
+        conn.commit()
+        logger.info(f"turnover backfill (tickflow): {updated} stocks updated for {date}")
+        return updated
     def _sync_industry_akshare(self, conn) -> int:
         """akshare 逐只查询行业回退 — 仅针对 industry IS NULL 的股票。
 

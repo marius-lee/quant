@@ -819,7 +819,8 @@ class DataStore:
 
         from datetime import datetime
         if date is None:
-            row = conn.execute("SELECT MAX(date) FROM daily WHERE volume>0").fetchone()
+            _tmp_conn = self._connect()
+            row = _tmp_conn.execute("SELECT MAX(date) FROM daily WHERE volume>0").fetchone()
             date = row[0] if row and row[0] else datetime.today().strftime("%Y-%m-%d")
 
         tf = TickFlow(api_key=tf_key)

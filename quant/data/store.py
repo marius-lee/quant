@@ -835,8 +835,10 @@ class DataStore:
 
         batch_size = 5
         total_updated = 0
-        logger.info(f"turnover backfill: {len(all_syms)} stocks, ~{len(all_syms)//5/10:.0f}min estimated")
-        for i in range(0, len(all_syms), batch_size):
+        batch_count = (len(all_syms) + batch_size - 1) // batch_size
+        logger.info(f"turnover backfill: {len(all_syms)} stocks, {batch_count} batches, ~{batch_count*6/60:.0f}min estimated")
+        t_start = __import__('time').time()
+        for batch_idx, i in enumerate(range(0, len(all_syms), batch_size)):
             chunk = all_syms[i:i + batch_size]
             tf_symbols = [_to_tf(s) for s in chunk]
             try:
@@ -862,10 +864,12 @@ class DataStore:
                         "UPDATE daily SET turnover=? WHERE symbol=? AND date=? AND (turnover=0 OR turnover IS NULL)",
                         (tv, sym, date))
                     total_updated += 1
-            if i % 100 == 0:
-                logger.info(f"turnover backfill progress: {i}/{len(all_syms)}")
             conn.commit()
             import time; time.sleep(6)  # rate limit: 10 req/min (tickflow free tier)
+            if batch_idx % 10 == 0 or batch_idx == batch_count - 1:
+                elapsed = __import__('time').time() - t_start
+                eta = (batch_count - batch_idx - 1) * 6
+                logger.info(f"turnover backfill: {i+len(chunk)}/{len(all_syms)} ({100*(i+len(chunk))//len(all_syms)}%) elapsed={elapsed:.0f}s ETA={eta:.0f}s")
         logger.info(f"turnover backfill (tickflow): {total_updated} stocks for {date}")
         return total_updated
     def _sync_industry_akshare(self, conn) -> int:

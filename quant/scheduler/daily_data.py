@@ -20,6 +20,16 @@ def _run(today: str):
 
     elapsed = _time.time() - t0
     _log.info(f"[{today}] daily_data done: {n} new rows ({elapsed:.1f}s)")
+    # 盘后换手率回填 (tickflow quotes API)
+    import traceback
+    try:
+        s = DataStore()
+        tn = s.backfill_turnover_quotes(today)
+        s.close()
+        _log.info(f"[{today}] turnover backfill: {tn} stocks updated")
+    except Exception:
+        _log.warning(f"[{today}] turnover backfill failed: {traceback.format_exc()}")
+
     _tk_finish("daily_data", today, "ok",
                summary={"rows": n, "elapsed": round(elapsed, 1)})
     _log.info(f"[SCHEDULER] {today} | TASK=daily_data | STATUS=OK | "

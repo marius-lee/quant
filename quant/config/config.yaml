@@ -59,26 +59,22 @@ data:
   start_date: '2020-01-01'
   benchmark_start_date: '2020-01-01'  # 基准对比起始日; 来源: 沪深300可追溯日
   tushare_token: ${TUSHARE_TOKEN}
- rate_limit:
-   akshare_per_stock_sec: 1.5
-   akshare_industry_sec: 0.8
-   tushare_batch_sec: 0.4
-
-  # ── 全量拉取源策略 (2026-07-20 IP封禁事后分析) ──
+  rate_limit:
+    akshare_per_stock_sec: 1.5
+    akshare_industry_sec: 0.8
+    tushare_batch_sec: 0.4
+  # ── 全量拉取源策略 (2026-07-20 TLS 指纹封禁根因分析) ──
   source_policy:
-    # 全量拉取只使用批量源 — per-stock 源 (akshare/tencent/sina) 禁止用于 update_daily
-    # 来源: tushare 200次/分钟, 50股/批 → 112次请求覆盖 5200 股
-    #       akshare/tencent 逐股请求, 5000+次 HTTP 触发 eastmoney IP 封禁
-    full_universe_sources: [tushare, pytdx]
+    # 多源回退优先级: tushare(批量50股) > tencent(em K线) > akshare(换手率) > sina > pytdx(TCP)
+    # TLS 指纹对抗: tencent/akshare 连接 eastmoney CDN 使用 curl_cffi 模拟 Chrome 131
+    #   来源: 2026-07-20 根因分析 — curl 通/Python requests 不通 = JA3 指纹检测, 非 IP 量级封禁
+    #   eastmoney CDN 检测 Python ssl/OpenSSL 默认 TLS 指纹 → 直接断开连接 (RemoteDisconnected)
+    full_universe_sources: [tushare, tencent, akshare, sina, pytdx]
     # 每日单源最大请求数 — 超出 → 停止并告警, 不等下次 cron 重试
     # 来源: tushare 免费额度 200次/分钟 ≈ 3000次/15分钟窗口
     max_requests_per_source_per_run: 500
-    # eastmoney 子域列表 — 共享 IP 限流器, 任一子域被封 → 全部停用
-    # 来源: 2026-07-20 tencent(82子域) + akshare(主域) 同时被封
-    eastmoney_domains:
-      - 82.push2his.eastmoney.com
-      - push2his.eastmoney.com
-      - push2.eastmoney.com
+    # curl_cffi TLS 指纹模拟目标; 来源: 实测 Chrome 131 可过 eastmoney CDN JA3 检测
+    curl_impersonate: "chrome131"
   fetch:
     max_lookback_days: 2000
   http_timeout:
@@ -244,22 +240,6 @@ risk:
   atr_mult_take_profit_2: 3.0      # 止盈2: 现价≥成本+3×ATR → 卖剩余50%
   atr_mult_trailing: 1.5           # 移动锁利: 盈利超2ATR后回撤1.5ATR → 全卖
   max_hold_days: 20                # 时间止损: 持仓>20天+浮亏 → 全卖
-# ── Universe 股票池过滤 (对齐业界标准: 聚宽/米筐/BigQuant/QuantConnect) ──
-# 实盘信号生成: SQL 层过滤, 从源头排除不合格股票
-# 回测: apply_all_filters() 以当日数据点对点过滤, 避免 survivorship bias
-universe:
-  # ST/*ST 排除; 来源: 聚宽/米筐/BigQuant 默认排除 (A股退市风险, 涨跌幅仅±5%)
-  exclude_st: true
-  # 新股排除 (上市不足N天); 来源: 聚宽60天(默认), 米筐90天, BigQuant120天
-  # 新股上市初期换手率极高/连板频繁 → 量价信号失真
-  exclude_new_stock_days: 60
-  # 最低股价(元); 来源: 面值退市¥1 + 1元安全边际, BigQuant 标准
-  min_price: 2.0
-  # 最低日成交额(元); 来源: A股中小盘盘口实测(500万以下无法有效进出), BigQuant 标准
-  min_daily_amount: 500000
-  # 连续N天换手率=0排除; 来源: QuantConnect/聚宽默认排除停牌股, 僵尸股无流动性
-  exclude_zero_turnover_days: 5
-
 screening:
   backtest_end: '2026-06-30'
   backtest_start: '2025-06-30'
@@ -291,3 +271,19 @@ web:
 
 live:
   default_capital: 5000    # 实盘默认本金; 来源: 策略首次启动时自动写入 DB 的种子资金
+
+# ── Universe 股票池过滤 (对齐业界标准: 聚宽/米筐/BigQuant/QuantConnect) ──
+# 实盘信号生成: SQL 层过滤, 从源头排除不合格股票
+# 回测: apply_all_filters() 以当日数据点对点过滤, 避免 survivorship bias
+universe:
+  # ST/*ST 排除; 来源: 聚宽/米筐/BigQuant 默认排除 (A股退市风险, 涨跌幅仅±5%)
+  exclude_st: true
+  # 新股排除 (上市不足N天); 来源: 聚宽60天(默认), 米筐90天, BigQuant120天
+  # 新股上市初期换手率极高/连板频繁 → 量价信号失真
+  exclude_new_stock_days: 60
+  # 最低股价(元); 来源: 面值退市¥1 + 1元安全边际, BigQuant 标准
+  min_price: 2.0
+  # 最低日成交额(元); 来源: A股中小盘盘口实测(500万以下无法有效进出), BigQuant 标准
+  min_daily_amount: 500000
+  # 连续N天换手率=0排除; 来源: QuantConnect/聚宽默认排除停牌股, 僵尸股无流动性
+  exclude_zero_turnover_days: 5

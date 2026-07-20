@@ -449,7 +449,7 @@ class DataStore:
         _init_cache()
         _tushare_limiter.wait()
         # start_date 统一转 YYYYMMDD — tushare 不接受 YYYY-MM-DD (实测返回空)
-        _start = to_compact(start_date) if "-" in str(start_date) else str(start_date)
+        _start = to_compact(start_date)  # 统一转 YYYYMMDD (来源: date.py 策略)
         df = pro.daily(
             ts_code=code_str,
             start_date=_start,
@@ -518,7 +518,7 @@ class DataStore:
                         "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f116",
                         "ut": "7eea3edcaed734bea9cbfc24409ed989",
                         "klt": "101", "fqt": "1", "secid": code,
-                        "beg": start_date.replace("-", ""), "end": end_date.replace("-", ""),
+                        "beg": to_compact(start_date), "end": to_compact(end_date),
                     },
                     headers={"User-Agent": "Mozilla/5.0"},
                     timeout=_require_cfg("data.http_timeout.tencent"),
@@ -574,7 +574,7 @@ class DataStore:
             for sym in symbols:
                 df = ak.stock_zh_a_hist(
                     symbol=sym, period="daily",
-                    start_date=start_date, end_date=end_date, adjust="qfq")
+                    start_date=to_compact(start_date), end_date=end_date, adjust="qfq")
                 if df is None or df.empty:
                     continue
                 for _, row in df.iterrows():
@@ -605,7 +605,7 @@ class DataStore:
         end_date = to_compact(datetime.today())  # akshare API只接受YYYYMMDD
         for sym in symbols:
             ts_code = _ts_code(sym)
-            df = api.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+            df = api.daily(ts_code=ts_code, start_date=to_compact(start_date), end_date=end_date)
             if df is None or df.empty:
                 continue
             for _, row in df.iterrows():

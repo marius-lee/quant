@@ -70,10 +70,13 @@ status: living
 - **仅日线**: 无分钟级数据
 
 ### 限流
-无明显频率限制
+约 500-2000 次/日 (与 akshare 共享 eastmoney IP 限流器)
+来源: 2026-07-20 全量拉取触发 IP 封禁 (9800次 eastmoney 请求/单次 run)
 
 ### 最佳场景
-OHLCV 日线的主力回退源。当前在 `all_sources` 回退链第二位 (pytdx → tencent → akshare)。
+OHLCV 日线的备用查询源，**不用于全量拉取**。
+⚠ 注意: tencent 与 akshare 底层均为 eastmoney，共享 IP 限流器。一个源被封 → 另一个也会被封。
+不可用于全量拉取场景 (5000+ 只股票)。保留用于单股查询和 test_network.py。
 
 ---
 
@@ -99,7 +102,8 @@ OHLCV 日线的主力回退源。当前在 `all_sources` 回退链第二位 (pyt
 - **volume 单位是手, amount 单位是元**: 需转换
 
 ### 限流
-无明显频率限制, 但服务器偶发不可达
+约 500-2000 次/日 (与 akshare 共享 eastmoney IP 限流器)
+来源: 2026-07-20 全量拉取触发 IP 封禁 (9800次 eastmoney 请求/单次 run), 但服务器偶发不可达
 
 ### 最佳场景
 当前回退链第一位 (按 speed EMA 排序最快)。适合批量补充 OHLCV 缺口。
@@ -130,7 +134,8 @@ OHLCV 日线的主力回退源。当前在 `all_sources` 回退链第二位 (pyt
 - **无换手率**: 不提供 turnover
 
 ### 限流
-无明显频率限制
+约 500-2000 次/日 (与 akshare 共享 eastmoney IP 限流器)
+来源: 2026-07-20 全量拉取触发 IP 封禁 (9800次 eastmoney 请求/单次 run)
 
 ### 最佳场景
 行业分类主源 + 股票列表校验。`daily_basic.py` 已 deprecated, 不再用作 OHLCV 源。

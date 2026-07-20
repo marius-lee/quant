@@ -722,49 +722,59 @@ class DataStore:
         return rows
 
     def backfill_turnover(self, limit: int = 0):
-        """akshare 回填换手率 — 逐只下载日线，只更新 turnover=0/NULL 的行。
+        """回填换手率 — 用 tushare 批量日线重拉缺口日期, 含 turnover_rate。
 
-        baostock 在 Python 3.14 不可用，改用 akshare。
-        limit=0 表示全部（很慢, ~5000 stocks × 1.5s each ≈ 2h）。
-        默认 limit 来自 config data.gap_fill_limit, 增量同步会自然填充新数据。
+        不再使用 akshare per-stock API (2026-07-20 IP封禁分析: 5000+次HTTP触发封禁)。
+        tushare daily 接口 50股/批, 自带 turnover_rate, 112次请求覆盖全量。
+        来源: coding-standards 模板5 (多源并行IO), docs/handoffs/HANDOFF.md
         """
         try:
-            import akshare as ak
+            import tushare as ts
         except ImportError:
-            logger.warning("akshare not installed — turnover backfill skipped")
+            logger.warning("tushare not installed — turnover backfill skipped")
             return 0
-        from datetime import datetime
-        conn = self._connect()
-        sql = "SELECT DISTINCT symbol FROM daily WHERE turnover=0 OR turnover IS NULL"
-        if limit > 0:
-            sql += f" LIMIT {limit}"
-        symbols = [r[0] for r in conn.execute(sql).fetchall()]
-        if not symbols:
-            logger.info("turnover backfill: no missing data")
+        if not self.token:
+            logger.warning("tushare token not configured — turnover backfill skipped")
             return 0
 
-        logger.info(f"turnover backfill: {len(symbols)} stocks via akshare (~{len(symbols)*1.5:.0f}s estimated)")
-        filled = 0
-        end_date = datetime.today().strftime("%Y%m%d")
-        for sym in symbols:
-            df = ak.stock_zh_a_hist(
-                symbol=sym, period="daily",
-                start_date="2020-01-01", end_date=end_date, adjust="qfq")
-            if df is None or df.empty:
-                continue
-            for _, row in df.iterrows():
-                t = float(row.get("换手率", 0) or 0)
-                if t > 0:
-                    d = str(row["日期"])[:10]
-                    conn.execute(
-                        "UPDATE daily SET turnover=? WHERE symbol=? AND date=? AND (turnover=0 OR turnover IS NULL)",
-                        (round(t, 4), sym, d)
-                    )
-                    filled += 1
-            import time; time.sleep(_require_cfg("data.rate_limit.akshare_per_stock_sec"))
+        from datetime import datetime, timedelta
+        ts.set_token(self.token)
+        pro = ts.pro_api()
+        conn = self._connect()
+
+        # ── 只回填最近的缺口 — 找到最后一个 turnover>0 的日期 ──
+        last_good = conn.execute(
+            "SELECT MAX(date) FROM daily WHERE turnover>0"
+        ).fetchone()[0]
+        if last_good is None:
+            logger.info("turnover backfill: no turnover>0 data at all, cannot determine gap")
+            return 0
+
+        # ── 计算缺口日期范围 ──
+        today = datetime.today().strftime("%Y-%m-%d")
+        # 缺口从 last_good 后一天开始, 到昨天结束 (今天数据可能未就绪)
+        gap_start_dt = datetime.strptime(last_good, "%Y-%m-%d") + timedelta(days=1)
+        gap_end_dt = datetime.today() - timedelta(days=1)
+        gap_start = gap_start_dt.strftime("%Y-%m-%d")
+        gap_end = gap_end_dt.strftime("%Y-%m-%d")
+
+        logger.info(f"turnover backfill: gap {gap_start} to {gap_end} via tushare batch API")
+
+        # ── 批量拉取: 每天一次 update_daily, tushare 50股/批 ──
+        # update_daily 内部已处理 INSERT OR REPLACE (含 turnover 列)
+        total_new = 0
+        self._source_speed = {}  # 重置源速度历史 — 只用 tushare
+        for d_offset in range((gap_end_dt - gap_start_dt).days + 1):
+            d = (gap_start_dt + timedelta(days=d_offset)).strftime("%Y-%m-%d")
+            n = self.update_daily(start=d)
+            total_new += n
+            if n > 0:
+                logger.info(f"turnover backfill: {d} → {n} rows updated")
+
         conn.commit()
-        logger.info(f"turnover backfill (akshare): {filled} rows updated for {len(symbols)} stocks")
-        return filled
+        logger.info(f"turnover backfill: {total_new} total rows updated "
+                    f"({gap_start} to {gap_end})")
+        return total_new
 
     def _sync_industry_akshare(self, conn) -> int:
         """akshare 逐只查询行业回退 — 仅针对 industry IS NULL 的股票。
@@ -939,15 +949,19 @@ class DataStore:
                 self._source_speed = {}
             # P3: sina 已移除 — 返回未复权数据(除权日单日跳-34%)，tencent/akshare 均用 qfq 前复权
 
+            # ── 全量拉取源选择 (coding-standards 模板5 + 零fallback) ──
+            # 只使用批量源: tushare (50股/批, 112次请求拉完全量) > pytdx (TCP协议备用)
+            # per-stock 源 (akshare/tencent/sina) 禁止用于全量拉取:
+            #   单次 update_daily 对 5000+ 股票产生 5000+ HTTP 请求, 触达 eastmoney IP 封禁阈值
+            #   对齐业界标准 (Tushare/聚宽均使用批量接口, 不存在逐股 HTTP 拉取场景)
+            # 来源: 2026-07-20 IP封禁事后分析, docs/handoffs/HANDOFF.md
             all_sources = [
-                ("tencent",  lambda: self._fetch_tencent_daily(chunk, batch_start)),
-                ("akshare",  lambda: self._fetch_akshare_daily(chunk, batch_start)),
-                ("pytdx",    lambda: self._fetch_pytdx_daily(chunk, batch_start)),
+                ("pytdx", lambda: self._fetch_pytdx_daily(chunk, batch_start)),
             ]
-            # tushare 仅在 token 有效时加入, 避免无 token 时仍触发 API 限频
             if pro is not None:
-                all_sources.insert(1, ("tushare", lambda: self._fetch_batch_tushare(chunk, batch_start)))
-            ordered = sorted(all_sources, key=lambda x: self._source_speed.get(x[0], 999), reverse=True)
+                all_sources.insert(0, ("tushare", lambda: self._fetch_batch_tushare(chunk, batch_start)))
+            # 不按速度排序 — tushare 永远是首选, pytdx 是唯一备源
+            ordered = all_sources
             for src_name, fetch_fn in ordered:
                 if rows is not None:
                     break

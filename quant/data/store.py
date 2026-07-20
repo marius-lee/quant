@@ -913,7 +913,7 @@ class DataStore:
 
         流程:
           1. 分析哪些股票缺少数据（不浪费时间拉已有数据）
-          2. zzshare 主源 → tushare(tokened) → 腾讯财经 → akshare 兜底
+          2. tushare(批量50股) → zzshare → tickflow → tencent → akshare → sina → pytdx
           3. OHLCV 完成后，Baostock 补充换手率
 
         symbols: None 表示自动分析缺口并只拉缺失/不足的股票
@@ -973,10 +973,12 @@ class DataStore:
             # P3: sina 已移除 — 返回未复权数据(除权日单日跳-34%)，tencent/akshare 均用 qfq 前复权
 
             # ── 全量拉取源选择 (多源回退, TLS 指纹对抗) ──
-            # 优先级: tushare(批量50股) > tencent(em K线) > akshare(换手率✅) > sina > pytdx(TCP)
+            # 优先级: tushare(批量50股) > zzshare > tickflow(批量) > tencent(em K线) > akshare(换手率✅) > sina > pytdx(TCP)
             # TLS 指纹对抗: tencent/akshare 使用 curl_cffi 模拟 Chrome 131, 绕过 eastmoney JA3 检测
-            # 来源: 2026-07-20 根因分析 — 非 IP 封禁而是 TLS 指纹封禁, docs/handoffs/HANDOFF.md
+            # 来源: 2026-07-20 根因分析 + test_network.py 实测
             all_sources = [
+                ("zzshare", lambda: self._fetch_zzshare_daily(chunk, batch_start)),
+                ("tickflow", lambda: self._fetch_tickflow_daily(chunk, batch_start)),
                 ("tencent", lambda: self._fetch_tencent_daily(chunk, batch_start)),
                 ("akshare", lambda: self._fetch_akshare_daily(chunk, batch_start)),
                 ("sina", lambda: self._fetch_sina_daily(chunk, batch_start)),

@@ -1,40 +1,74 @@
 ---
-# HANDOFF — 2026-07-20 (test-v161)
+# HANDOFF — 2026-07-20 (test-v163)
 
-## test-v160 + test-v161: Universe 筛选 + 数据源限流修复
+## test-v163: TLS 指纹对抗 — curl_cffi 替换 requests, 恢复全部数据源
 
-### test-v160: Universe 股票筛选 (SQL 层)
-- 对齐聚宽/米筐/BigQuant/QuantConnect 标准
-- config.yaml 新增 `universe:` 配置节: exclude_st, exclude_new_stock_days:60, min_price:2.0, min_daily_amount:500000, exclude_zero_turnover_days:5
-- `pipeline.py` Step 2.3: symbols 过滤后同步裁剪 data + fundamentals DataFrame
-- `universe_repo.py`: get_symbols() 支持 5 层 SQL 过滤 + 参考日期回落 (避免 turnover=0 误筛)
-- 过滤结果: 5208 → 100 investable (受 07-10 后数据拉取失败影响, 正常应 ~1000-2000)
+### 根因修正
+test-v161 将问题诊断为 "IP 量级封禁", 移除 tencent/akshare 从 update_daily 回退链。
+**实际根因**: eastmoney CDN 检测 Python ssl/OpenSSL 的 TLS 指纹 (JA3 hash), 直接断开连接。
+证据: 同机同IP, curl 通 / Python requests 不通 = TLS 指纹封禁, 非 IP 封禁。
 
-### test-v161: 数据源限流修复 — IP 封禁事后分析
-**根因**: update_daily fallback 链包含两个 per-stock eastmoney 源 (tencent + akshare)
-当 tushare 超时, 剩余 98 批 × 50 只 × 2 源 = 9800 次 HTTP 请求打向 *.eastmoney.com
-eastmoney free tier 隐形日限额 ~500-2000 次 → 被 IP 封禁
+### 修改
+1. `store.py` _fetch_tencent_daily:
+   - `import requests` → `import curl_cffi.requests` (已安装 0.15.0)
+   - 新增 `impersonate="chrome131"` 模拟 Chrome TLS 指纹
+   - 域名 `82.push2his.eastmoney.com` → `push2.eastmoney.com` (82 子域被定向 DNS 封禁)
 
-**修改**:
-1. `store.py` update_daily: 移除 tencent/akshare 从回退链, 保留 tushare (50股/批) + pytdx (TCP 备用)
-2. `store.py` backfill_turnover: 不再逐股请求 akshare, 改为按日期调用 tushare 批量接口
-3. `config.yaml`: 新增 `data.source_policy` 配置节 (full_universe_sources, max_requests_per_run, eastmoney_domains)
-4. `docs/architecture/DATA-SOURCE-CHARACTERISTICS.md`: 修正 tencent 限频说明 ("无明显频率限制" → "500-2000次/日, 共享 eastmoney 限流器")
+2. `store.py` _fetch_akshare_daily:
+   - akshare 库内部使用 requests → monkey-patch `sys.modules['requests']` 为 curl_cffi
+   - `try/finally` 保证调用后恢复, 不影响其他模块
 
-**对齐标准**: coding-standards 模板 5 (多源并行 I/O 不应使用同域多源), 模板 1 (防御性编程: 外部 API 调用必须限次), 零 fallback (tushare 失败不应静默切到 per-stock 源)
+3. `store.py` update_daily all_sources:
+   - 恢复 tencent/akshare/sina 到回退链
+   - 最终顺序: tushare → tencent → akshare → sina → pytdx
+
+4. `config.yaml` source_policy:
+   - `full_universe_sources`: [tushare, pytdx] → [tushare, tencent, akshare, sina, pytdx]
+   - 删除 `eastmoney_domains` 黑名单
+   - 新增 `curl_impersonate: "chrome131"`
+
+### 用户约束
+**以后没有用户同意, 不允许移除任何可用数据源。**
 
 ### 涉及文件
 | 文件 | 改动 |
 |------|------|
-| `quant/data/store.py` | update_daily 回退链重构 + backfill_turnover 重写 |
-| `quant/pipeline.py` | Step 2.3 后 data/fundamentals 裁剪 |
-| `quant/data/repos/universe_repo.py` | 可靠参考日期 + 5 层 SQL 过滤 |
-| `quant/config/config.yaml` | universe + data.source_policy 配置节 |
-| `quant/config/loader.py` | universe 配置校验 |
-| `web/app.py` | VERSION → test-v161 |
-| `docs/architecture/DATA-SOURCE-CHARACTERISTICS.md` | tencent 限频修正 |
+| `quant/data/store.py` | _fetch_tencent: curl_cffi+impersonate; _fetch_akshare: monkey-patch; update_daily: 恢复全源 |
+| `quant/config/config.yaml` | source_policy 重写为 TLS 指纹对抗策略 |
+| `web/app.py` | VERSION → test-v163 |
+| `docs/handoffs/HANDOFF.md` | 新增 test-v162 + test-v163 条目, 清理重复版本号 |
 
-### 版本: test-v161
+---
+## test-v162: config.yaml 缩进修复 — test-v161 遗留问题
+
+**根因**: test-v161 提交时 apply_patch 破坏了 config.yaml 的 YAML 缩进:
+- `rate_limit:` 从 2 空格变成 1 空格
+- `source_policy:` / `universe:` 定位在错误层级
+
+**修复**: 基于 2d3b3de (test-v158) 的正确 config.yaml, 追加 source_policy 和 universe 配置节。
+
+**涉及文件**:
+| 文件 | 改动 |
+|------|------|
+| `quant/config/config.yaml` | 修复缩进 |
+| `web/app.py` | VERSION test-v161 → test-v162 |
+
+---
+## test-v161: 数据源限流修复 — IP 封禁事后分析 (根因后被 test-v163 修正)
+
+> **注意**: test-v161 的诊断 "IP 量级封禁" 在 test-v163 中被修正为 "TLS 指纹封禁"。
+> test-v161 移除 tencent/akshare 的操作在 test-v163 中回滚。
+
+**原修改**:
+1. `store.py` update_daily: 移除 tencent/akshare, 仅保留 tushare + pytdx
+2. `store.py` backfill_turnover: 改用 tushare 批量
+3. `config.yaml`: 新增 source_policy + eastmoney_domains
+
+---
+## test-v160: Universe 股票筛选 (SQL 层)
+- 对齐聚宽/米筐/BigQuant/QuantConnect 标准
+- config.yaml 新增 `universe:` 配置节
+- `universe_repo.py`: 5 层 SQL 过滤
 
 ---
 # HANDOFF — 2026-07-19 (test-v158)

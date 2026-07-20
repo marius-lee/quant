@@ -1,7 +1,7 @@
 ---
 document: DATA-SOURCE-CHARACTERISTICS
 version: 1.0
-date: 2026-07-05
+date: 2026-07-20
 status: living
 ---
 # 数据源特性总览
@@ -32,7 +32,9 @@ status: living
 - **换手率数据**: 唯一一个提供完整历史换手率的免费源
 
 ### 短板
-- **间歇性 ConnectionError**: `stock_zh_a_hist` 偶发 `RemoteDisconnected`, 东方财富对 OHLCV 接口有隐形反爬
+- **TLS 指纹封禁**: akshare 内部使用 Python `requests` 库, eastmoney CDN 检测 TLS 指纹 (JA3 hash) 后直接断开。
+  **已修复 (test-v163)**: 通过 monkey-patch `sys.modules['requests']` → `curl_cffi.requests` 模拟 Chrome 131 TLS 指纹。
+- **间歇性 ConnectionError**: `stock_zh_a_hist` 偶发 `RemoteDisconnected`, 已通过 curl_cffi 缓解
 - **资金流向不可用**: `stock_individual_fund_flow` 已被东方财富主动拒绝
 - **北向资金截止 2024-08**: API 硬截断, 2024年8月后无新数据
 - **大宗交易不可用**: API KeyError
@@ -40,43 +42,42 @@ status: living
 
 ### 限流
 - 约 60 calls/min (通过 Redis RateLimiter 管控)
-- 逐只查询时 200ms 间隔较安全
+- 逐只查询时 1.5s 间隔 (`data.rate_limit.akshare_per_stock_sec`)
+- TLS 指纹对抗: curl_cffi 0.15.0, impersonate=chrome131
 
 ### 最佳场景
 日常 OHLCV 同步、估值数据、龙虎榜、融资融券的主力源。不适合高频实时行情。
 
 ---
 
-## 2. tencent (腾讯财经) — 回退链主源
+## 2. tencent (东方财富 K线 API) — 回退链第2位
 
-**接入方式**: HTTP API (不需要任何包), 任意 Python 版本  
-**底层**: `web.ifzq.gtimg.cn`
+**接入方式**: HTTP API (`curl_cffi.requests`), 任意 Python 版本  
+**底层**: `push2.eastmoney.com` (东方财富 CDN)  
+**TLS 对抗**: `curl_cffi` 模拟 Chrome 131, 绕过 JA3 指纹检测
 
 ### 可用数据
 | 接口 | 用途 | 量级 |
 |------|------|------|
-| `/appstock/app/fqkline/get` | OHLCV 日线 (qfq 前复权) | 单次最多500行 |
+| `/api/qt/stock/kline/get` | OHLCV 日线 (qfq 前复权) | 逐只查询 |
 
 ### 优势
 - **免费无注册**: 零门槛
-- **前复权**: qfq 数据, 无需手动复权
-- **批量拉取**: 单次请求 500 条, 速度快
-- **稳定**: 当前最稳定的免费 HTTP 源, 无明显反爬
+- **前复权 (qfq)**: 无需手动复权
+- **TLS 指纹已对抗**: curl_cffi 0.15.0 + impersonate=chrome131, 已过 eastmoney CDN JA3 检测
+- **稳定**: eastmoney 是 A 股最大免费数据源
 
 ### 短板
 - **无换手率**: 不提供 turnover 数据, 需配合 akshare
-- **volume 单位是手**: 需在代码中 `/100` 转换为股
-- **amount 单位是千元**: 需在代码中 `*1000` 转换为元
+- **逐只查询**: 无批量接口, 全量拉取时需配合 tushare 批量源
 - **仅日线**: 无分钟级数据
 
 ### 限流
-约 500-2000 次/日 (与 akshare 共享 eastmoney IP 限流器)
-来源: 2026-07-20 全量拉取触发 IP 封禁 (9800次 eastmoney 请求/单次 run)
+eastmoney CDN 无公开频率限制文档, 实测 ~500-2000 次/日可稳定。
+⚠ 注意: 与 akshare 底层共享 eastmoney CDN, 需共同控制请求频率。
 
 ### 最佳场景
-OHLCV 日线的备用查询源，**不用于全量拉取**。
-⚠ 注意: tencent 与 akshare 底层均为 eastmoney，共享 IP 限流器。一个源被封 → 另一个也会被封。
-不可用于全量拉取场景 (5000+ 只股票)。保留用于单股查询和 test_network.py。
+tushare 失效时的第一备源。全量拉取回退链第 2 位 (tushare → tencent → akshare → sina → pytdx)。
 
 ---
 
@@ -102,8 +103,8 @@ OHLCV 日线的备用查询源，**不用于全量拉取**。
 - **volume 单位是手, amount 单位是元**: 需转换
 
 ### 限流
-约 500-2000 次/日 (与 akshare 共享 eastmoney IP 限流器)
-来源: 2026-07-20 全量拉取触发 IP 封禁 (9800次 eastmoney 请求/单次 run), 但服务器偶发不可达
+TCP 协议, 无 HTTP 限流。服务器 180.153.18.170:7709 偶发不可达。
+独立于 eastmoney CDN, 不受 TLS 指纹检测影响。
 
 ### 最佳场景
 当前回退链第一位 (按 speed EMA 排序最快)。适合批量补充 OHLCV 缺口。
@@ -134,8 +135,7 @@ OHLCV 日线的备用查询源，**不用于全量拉取**。
 - **无换手率**: 不提供 turnover
 
 ### 限流
-约 500-2000 次/日 (与 akshare 共享 eastmoney IP 限流器)
-来源: 2026-07-20 全量拉取触发 IP 封禁 (9800次 eastmoney 请求/单次 run)
+自有服务器, 无公开频率限制。
 
 ### 最佳场景
 行业分类主源 + 股票列表校验。`daily_basic.py` 已 deprecated, 不再用作 OHLCV 源。
@@ -283,7 +283,7 @@ trial 限制, 具体数额不明
 | 源 | OHLCV | PE/PB | 行业 | 换手率 | 复权 | 免费 | 稳定性 |
 |----|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
 | **akshare** | ✅ | ✅ | ✅ | ✅ | qfq | ✅ | ⚠️ 间歇 |
-| **tencent** | ✅ | — | — | — | qfq | ✅ | ✅ |
+| **tencent** | ✅ | — | — | — | qfq | ✅ | ⚠️ TLS需对抗 |
 | **pytdx** | ✅ | — | — | — | 手动 | ✅ | ✅ |
 | **baostock** | ✅ | ✅ | ✅ | — | 前复权 | ✅ | ✅ |
 | **tushare** | ✅ | ✅ | — | ✅ | 多种 | ⚠️ 需token | ✅ |
@@ -296,10 +296,15 @@ trial 限制, 具体数额不明
 ## 推荐回退链
 
 ```
-pytdx → tencent → tushare → akshare
+tushare → tencent → akshare → sina → pytdx
 ```
 
-(akshare 放末位因为它间歇性 ConnectionError; tushare 接入后放 akshare 前面作为缓冲)
+- tushare: 批量 50 股, 200 次/分钟, 首选 (token 可用时)
+- tencent: 逐股东方财富 K 线, curl_cffi TLS 对抗 (test-v163)
+- akshare: 逐股东方财富 (含历史换手率), monkey-patch requests (test-v163)
+- sina: 逐股新浪 K 线
+- pytdx: TCP 协议, 独立于 HTTP 源, 最终兜底
+
 
 ## 11. 同花顺 测试附录 (2026-07-05)
 

@@ -484,6 +484,8 @@ class DataStore:
                     round(float(bar["volume"]) / 100),  # 股→手
                     round(float(bar["volume"]) * float(bar["close"]) / 1000),  # 成交额(千元)
                     float(bar.get("turnover", 0) or 0)))  # 换手率(仅部分股票有)
+            import time as _time
+            _time.sleep(_require_cfg("data.rate_limit.sina_per_stock_sec"))
         return rows
 
     def _fetch_tencent_daily(self, symbols: list, start_date: str) -> list:
@@ -745,37 +747,33 @@ class DataStore:
         return rows
 
     def backfill_turnover(self, limit: int = 0):
-        """回填换手率 — 用 tushare 批量日线重拉缺口日期, 含 turnover_rate。
+        """回填换手率 — 删缺口日期行 + tushare 重拉, 含 turnover_rate。
 
-        不再使用 akshare per-stock API (2026-07-20 IP封禁分析: 5000+次HTTP触发封禁)。
-        tushare daily 接口 50股/批, 自带 turnover_rate, 112次请求覆盖全量。
+        策略: 删掉 turnover 缺失日期的 daily 行 → update_daily 用 tushare 重拉。
+        _analyze_daily_gaps 检测到缺失后触发 stale_recent 模式, tushare 率
+        先返回数据(含 turnover_rate)。INSERT OR REPLACE 保证旧行被覆盖。
         来源: coding-standards 模板5 (多源并行IO), docs/handoffs/HANDOFF.md
         """
         try:
             import tushare as ts
         except ImportError:
-            logger.warning("tushare not installed — turnover backfill skipped")
+            logger.warning("tushare not installed")
             return 0
         if not self.token:
-            logger.warning("tushare token not configured — turnover backfill skipped")
+            logger.warning("tushare token not configured")
             return 0
 
         from datetime import datetime, timedelta
         ts.set_token(self.token)
-        pro = ts.pro_api()
         conn = self._connect()
 
-        # ── 只回填最近的缺口 — 找到最后一个 turnover>0 的日期 ──
         last_good = conn.execute(
             "SELECT MAX(date) FROM daily WHERE turnover>0"
         ).fetchone()[0]
         if last_good is None:
-            logger.info("turnover backfill: no turnover>0 data at all, cannot determine gap")
+            logger.info("turnover backfill: no turnover>0 data")
             return 0
 
-        # ── 计算缺口日期范围 ──
-        today = datetime.today().strftime("%Y-%m-%d")
-        # 缺口从 last_good 后一天开始, 到昨天结束 (今天数据可能未就绪)
         gap_start_dt = datetime.strptime(last_good, "%Y-%m-%d") + timedelta(days=1)
         gap_end_dt = datetime.today() - timedelta(days=1)
         gap_start = gap_start_dt.strftime("%Y-%m-%d")
@@ -783,21 +781,33 @@ class DataStore:
 
         logger.info(f"turnover backfill: gap {gap_start} to {gap_end} via tushare batch API")
 
-        # ── 批量拉取: 每天一次 update_daily, tushare 50股/批 ──
-        # update_daily 内部已处理 INSERT OR REPLACE (含 turnover 列)
-        total_new = 0
-        self._source_speed = {}  # 重置源速度历史 — 只用 tushare
-        for d_offset in range((gap_end_dt - gap_start_dt).days + 1):
-            d = (gap_start_dt + timedelta(days=d_offset)).strftime("%Y-%m-%d")
-            n = self.update_daily(start=d)
-            total_new += n
-            if n > 0:
-                logger.info(f"turnover backfill: {d} → {n} rows updated")
+        # SAVEPOINT 保护: DELETE 后若 update_daily 失败, 回滚 DELETE 避免数据丢失。
+        # 注意: update_daily 内会自行 commit, SAVEPOINT 只在 DELETE 阶段提供原子性。
+        # 若 update_daily 成功后进程崩溃, 数据已写入 — 可手动重跑 backfill_turnover 恢复。
+        # 来源: 2026-07-21 全链路逻辑分析 (问题6: DELETE 无事务保护)
+        conn.execute("SAVEPOINT turnover_backfill")
+        try:
+            deleted = conn.execute(
+                "DELETE FROM daily WHERE date >= ? AND date <= ?",
+                (gap_start, gap_end)
+            ).rowcount
+            conn.execute("RELEASE turnover_backfill")
+        except Exception:
+            conn.execute("ROLLBACK TO turnover_backfill")
+            raise
+        conn.commit()
+        logger.info(f"turnover backfill: deleted {deleted} gap rows ({gap_start} to {gap_end})")
+
+        # 显式传 symbols 跳过 _analyze_daily_gaps 的 full 判定
+        all_syms = [r[0] for r in conn.execute(
+            "SELECT DISTINCT symbol FROM daily"
+        ).fetchall()]
+        n = self.update_daily(symbols=all_syms, start=gap_start)
 
         conn.commit()
-        logger.info(f"turnover backfill: {total_new} total rows updated "
+        logger.info(f"turnover backfill: {n} rows re-pulled "
                     f"({gap_start} to {gap_end})")
-        return total_new
+        return n
 
 
     def backfill_turnover_quotes(self, date: str = None):
@@ -1028,6 +1038,9 @@ class DataStore:
         batch_size = _require_cfg("data.batch_size")  # 批量大小
         sources = {}     # source → count
 
+        # total_new: INSERT OR REPLACE 语义下统计的是"写入行数"(含覆写已有行)
+        # 非传统"新增行数" — 对 stale_recent 全量刷新场景会等于全量行数
+        # 来源: 2026-07-21 全链路逻辑分析 (INSERT OR IGNORE → REPLACE)
         for i in range(0, len(symbols), batch_size):
             chunk = symbols[i:i + batch_size]
             # 每只股票独立的 start_date
@@ -1051,11 +1064,14 @@ class DataStore:
             # P3: sina 已移除 — 返回未复权数据(除权日单日跳-34%)，tencent/akshare 均用 qfq 前复权
 
             # ── 全量拉取源选择 (多源回退, 按实测速度+批量能力排序) ──
-            # 优先级: tushare(批量50股) > tickflow(批量,~5min全量) > zzshare(逐只0.2s) > pytdx(TCP) > sina(HTTP明文)
-            #         > tencent(em K线,当前封禁中) > akshare(换手率✅,当前封禁中)
+            # 优先级: tushare(批量50股, turnover✅) > tickflow(批量, 无turnover) > zzshare(逐只, 无turnover)
+            #         > pytdx(TCP, 无turnover) > sina(HTTP明文, turnover✅) > tencent(em K线,封禁中) > akshare(换手率✅,封禁中)
+            # 设计决策: 速度优先于 turnover 完整性 — tushare 首位的 99%+ 成功率保证了 turnover 覆盖率。
+            # 若 tushare 某批失败, 回退源(无 turnover)接盘 → backfill_turnover_quotes 后续补 turnover。
+            # sina/akshare 虽含 turnover 但逐只拉取极慢, 置后作为最后回退而非中间层。
             # eastmoney 系(tencent/akshare)当前IP不可用, 置末尾但不移除 — 等IP解封后自动恢复
             # TLS 指纹对抗: tencent/akshare 使用 curl_cffi 模拟 Chrome 131
-            # 来源: 2026-07-20 scripts/test_all_sources_rate.py 全源实测
+            # 来源: 2026-07-20 scripts/test_all_sources_rate.py 全源实测; 2026-07-21 全链路逻辑分析
             all_sources = [
                 ("tickflow", lambda: self._fetch_tickflow_daily(chunk, batch_start)),
                 ("zzshare", lambda: self._fetch_zzshare_daily(chunk, batch_start)),
@@ -1103,7 +1119,7 @@ class DataStore:
                     rows = _clean
             if rows:
                 conn.executemany(
-                    """INSERT OR IGNORE INTO daily
+                    """INSERT OR REPLACE INTO daily
                        (symbol,date,open,high,low,close,volume,amount,turnover)
                        VALUES (?,?,?,?,?,?,?,?,?)""", rows
                 )
@@ -1121,8 +1137,8 @@ class DataStore:
             done = min(i + batch_size, len(symbols))
             logger.info(f"daily [{source}] {done}/{len(symbols)} ({pct:.0f}%) {total_new}新行{sample_str}")
 
-            if source == "tushare" and pro is not None:
-                time.sleep(_require_cfg("data.rate_limit.tushare_batch_sec"))
+            # tushare 限流由 _fetch_batch_tushare 内 RateLimiter(200/min) 统一管控
+            # 不再额外 sleep — 避免双重限流 (来源: 2026-07-21 全链路逻辑分析)
 
         conn.commit()
 

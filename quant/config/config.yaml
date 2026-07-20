@@ -58,7 +58,7 @@ data:
   stale_days: 250
   start_date: '2020-01-01'
   benchmark_start_date: '2020-01-01'  # 基准对比起始日; 来源: 沪深300可追溯日
-  tushare_token: ${TUSHARE_TOKEN}
+  tushare_token: "aeeb8c7d0bdeb7d3e63e737490f3e8f9e97198ec6c85c6978d44f4ae"
   tickflow_api_key: "tk_868557a55bac4d1e859bf5be94087550"  # tickflow 免费注册版; 来源: tickflow.org 控制台
   rate_limit:
     # -- 批量源 --

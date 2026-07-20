@@ -59,10 +59,26 @@ data:
   start_date: '2020-01-01'
   benchmark_start_date: '2020-01-01'  # 基准对比起始日; 来源: 沪深300可追溯日
   tushare_token: ${TUSHARE_TOKEN}
-  rate_limit:
-    akshare_per_stock_sec: 1.5
-    akshare_industry_sec: 0.8
-    tushare_batch_sec: 0.4
+ rate_limit:
+   akshare_per_stock_sec: 1.5
+   akshare_industry_sec: 0.8
+   tushare_batch_sec: 0.4
+
+  # ── 全量拉取源策略 (2026-07-20 IP封禁事后分析) ──
+  source_policy:
+    # 全量拉取只使用批量源 — per-stock 源 (akshare/tencent/sina) 禁止用于 update_daily
+    # 来源: tushare 200次/分钟, 50股/批 → 112次请求覆盖 5200 股
+    #       akshare/tencent 逐股请求, 5000+次 HTTP 触发 eastmoney IP 封禁
+    full_universe_sources: [tushare, pytdx]
+    # 每日单源最大请求数 — 超出 → 停止并告警, 不等下次 cron 重试
+    # 来源: tushare 免费额度 200次/分钟 ≈ 3000次/15分钟窗口
+    max_requests_per_source_per_run: 500
+    # eastmoney 子域列表 — 共享 IP 限流器, 任一子域被封 → 全部停用
+    # 来源: 2026-07-20 tencent(82子域) + akshare(主域) 同时被封
+    eastmoney_domains:
+      - 82.push2his.eastmoney.com
+      - push2his.eastmoney.com
+      - push2.eastmoney.com
   fetch:
     max_lookback_days: 2000
   http_timeout:

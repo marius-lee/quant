@@ -1,4 +1,42 @@
 ---
+# HANDOFF — 2026-07-20 (test-v161)
+
+## test-v160 + test-v161: Universe 筛选 + 数据源限流修复
+
+### test-v160: Universe 股票筛选 (SQL 层)
+- 对齐聚宽/米筐/BigQuant/QuantConnect 标准
+- config.yaml 新增 `universe:` 配置节: exclude_st, exclude_new_stock_days:60, min_price:2.0, min_daily_amount:500000, exclude_zero_turnover_days:5
+- `pipeline.py` Step 2.3: symbols 过滤后同步裁剪 data + fundamentals DataFrame
+- `universe_repo.py`: get_symbols() 支持 5 层 SQL 过滤 + 参考日期回落 (避免 turnover=0 误筛)
+- 过滤结果: 5208 → 100 investable (受 07-10 后数据拉取失败影响, 正常应 ~1000-2000)
+
+### test-v161: 数据源限流修复 — IP 封禁事后分析
+**根因**: update_daily fallback 链包含两个 per-stock eastmoney 源 (tencent + akshare)
+当 tushare 超时, 剩余 98 批 × 50 只 × 2 源 = 9800 次 HTTP 请求打向 *.eastmoney.com
+eastmoney free tier 隐形日限额 ~500-2000 次 → 被 IP 封禁
+
+**修改**:
+1. `store.py` update_daily: 移除 tencent/akshare 从回退链, 保留 tushare (50股/批) + pytdx (TCP 备用)
+2. `store.py` backfill_turnover: 不再逐股请求 akshare, 改为按日期调用 tushare 批量接口
+3. `config.yaml`: 新增 `data.source_policy` 配置节 (full_universe_sources, max_requests_per_run, eastmoney_domains)
+4. `docs/architecture/DATA-SOURCE-CHARACTERISTICS.md`: 修正 tencent 限频说明 ("无明显频率限制" → "500-2000次/日, 共享 eastmoney 限流器")
+
+**对齐标准**: coding-standards 模板 5 (多源并行 I/O 不应使用同域多源), 模板 1 (防御性编程: 外部 API 调用必须限次), 零 fallback (tushare 失败不应静默切到 per-stock 源)
+
+### 涉及文件
+| 文件 | 改动 |
+|------|------|
+| `quant/data/store.py` | update_daily 回退链重构 + backfill_turnover 重写 |
+| `quant/pipeline.py` | Step 2.3 后 data/fundamentals 裁剪 |
+| `quant/data/repos/universe_repo.py` | 可靠参考日期 + 5 层 SQL 过滤 |
+| `quant/config/config.yaml` | universe + data.source_policy 配置节 |
+| `quant/config/loader.py` | universe 配置校验 |
+| `web/app.py` | VERSION → test-v161 |
+| `docs/architecture/DATA-SOURCE-CHARACTERISTICS.md` | tencent 限频修正 |
+
+### 版本: test-v161
+
+---
 # HANDOFF — 2026-07-19 (test-v158)
 
 ## test-v158: 文档审计 + benchmark API 修复 + CSI 300 基准数据

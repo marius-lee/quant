@@ -913,7 +913,7 @@ class DataStore:
 
         流程:
           1. 分析哪些股票缺少数据（不浪费时间拉已有数据）
-          2. tushare(批量50股) → zzshare → tickflow → tencent → akshare → sina → pytdx
+          2. tushare(批量50股) → tickflow(批量) → zzshare → pytdx(TCP) → sina → tencent → akshare
           3. OHLCV 完成后，Baostock 补充换手率
 
         symbols: None 表示自动分析缺口并只拉缺失/不足的股票
@@ -972,17 +972,19 @@ class DataStore:
                 self._source_speed = {}
             # P3: sina 已移除 — 返回未复权数据(除权日单日跳-34%)，tencent/akshare 均用 qfq 前复权
 
-            # ── 全量拉取源选择 (多源回退, TLS 指纹对抗) ──
-            # 优先级: tushare(批量50股) > zzshare > tickflow(批量) > tencent(em K线) > akshare(换手率✅) > sina > pytdx(TCP)
-            # TLS 指纹对抗: tencent/akshare 使用 curl_cffi 模拟 Chrome 131, 绕过 eastmoney JA3 检测
-            # 来源: 2026-07-20 根因分析 + test_network.py 实测
+            # ── 全量拉取源选择 (多源回退, 按实测速度+批量能力排序) ──
+            # 优先级: tushare(批量50股) > tickflow(批量,~5min全量) > zzshare(逐只0.2s) > pytdx(TCP) > sina(HTTP明文)
+            #         > tencent(em K线,当前封禁中) > akshare(换手率✅,当前封禁中)
+            # eastmoney 系(tencent/akshare)当前IP不可用, 置末尾但不移除 — 等IP解封后自动恢复
+            # TLS 指纹对抗: tencent/akshare 使用 curl_cffi 模拟 Chrome 131
+            # 来源: 2026-07-20 scripts/test_all_sources_rate.py 全源实测
             all_sources = [
-                ("zzshare", lambda: self._fetch_zzshare_daily(chunk, batch_start)),
                 ("tickflow", lambda: self._fetch_tickflow_daily(chunk, batch_start)),
+                ("zzshare", lambda: self._fetch_zzshare_daily(chunk, batch_start)),
+                ("pytdx", lambda: self._fetch_pytdx_daily(chunk, batch_start)),
+                ("sina", lambda: self._fetch_sina_daily(chunk, batch_start)),
                 ("tencent", lambda: self._fetch_tencent_daily(chunk, batch_start)),
                 ("akshare", lambda: self._fetch_akshare_daily(chunk, batch_start)),
-                ("sina", lambda: self._fetch_sina_daily(chunk, batch_start)),
-                ("pytdx", lambda: self._fetch_pytdx_daily(chunk, batch_start)),
             ]
             if pro is not None:
                 all_sources.insert(0, ("tushare", lambda: self._fetch_batch_tushare(chunk, batch_start)))

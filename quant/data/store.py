@@ -833,8 +833,9 @@ class DataStore:
             if sym.startswith(("4", "8", "92")): return sym + ".BJ"
             return sym + ".SZ"
 
-        batch_size = 500
+        batch_size = 5
         total_updated = 0
+        logger.info(f"turnover backfill: {len(all_syms)} stocks, ~{len(all_syms)//5/10:.0f}min estimated")
         for i in range(0, len(all_syms), batch_size):
             chunk = all_syms[i:i + batch_size]
             tf_symbols = [_to_tf(s) for s in chunk]
@@ -861,7 +862,10 @@ class DataStore:
                         "UPDATE daily SET turnover=? WHERE symbol=? AND date=? AND (turnover=0 OR turnover IS NULL)",
                         (tv, sym, date))
                     total_updated += 1
+            if i % 100 == 0:
+                logger.info(f"turnover backfill progress: {i}/{len(all_syms)}")
             conn.commit()
+            import time; time.sleep(6)  # rate limit: 10 req/min (tickflow free tier)
         logger.info(f"turnover backfill (tickflow): {total_updated} stocks for {date}")
         return total_updated
     def _sync_industry_akshare(self, conn) -> int:

@@ -1,15 +1,11 @@
-"""检查换手率回填进度"""
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+"""检查换手率回填结果"""
 from quant.data.store import DataStore
 s = DataStore()
 conn = s._connect()
-n21 = conn.execute("SELECT COUNT(*) FROM daily WHERE date='2026-07-21'").fetchone()[0]
-print(f"daily rows for 07-21: {n21}")
 r = conn.execute(
-    "SELECT date, COUNT(*) FROM daily WHERE turnover>0 "
-    "GROUP BY date ORDER BY date DESC LIMIT 5"
+    "SELECT date, COUNT(*) as n, SUM(CASE WHEN turnover>0 THEN 1 ELSE 0 END) as with_to "
+    "FROM daily WHERE date >= '2026-07-10' GROUP BY date ORDER BY date"
 ).fetchall()
-for d, c in r:
-    print(f"  {d}: {c} stocks with turnover>0")
-s.close()
+for row in r:
+    print(f"{row[0]}: total={row[1]}, turnover>0={row[2]}")
+conn.close()

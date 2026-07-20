@@ -76,6 +76,21 @@ This file provides guidance to Claude Code when working with code in this reposi
 | 读文档先 | 改代码前必读相关 doc |
 | 版本号 | 每次修改推进 test-vXX |
 
+### 编辑后验证（硬约束）
+- **每次文件编辑后必须**:
+  1. `python3 -c "import ast; ast.parse(open('修改文件.py').read())"` 语法检查
+  2. 新增函数: `grep -c def 函数名 文件.py` + `python3 -c "import hasattr; ..."` 确认方法存在
+  3. 修改变量顺序: 确认引用前已定义
+
+### API 假设先测（硬约束）
+- 涉及外部 API 的参数（batch_size, rate_limit, timeout等）→ **先写小脚本验证**，再写业务代码
+- 禁止拍脑袋设 batch_size / sleep 值
+
+### heredoc 深度 ≤1（硬约束）
+- **禁止嵌套 heredoc**（pyEOF 内再写 pyEOF）
+- 复杂字符串内容先写临时文件再读入替换
+
+
 ## Project overview
 
 A股量化选股系统。基于 Grinold & Kahn Fundamental Law 的 7 层架构：数据 → 因子 → Alpha → 风控 → 优化 → 执行 → 监控。¥5,000 起步，目标 ¥100 万。

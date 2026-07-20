@@ -20,13 +20,20 @@ def _run(today: str):
 
     elapsed = _time.time() - t0
     _log.info(f"[{today}] daily_data done: {n} new rows ({elapsed:.1f}s)")
-    # 盘后换手率回填 (tickflow quotes API)
+    # 盘后换手率回填 — 安全网: tushare 已配置且为首选源(turnover_rate✅),
+    # 正常情况 backfill_turnover_quotes 查询到 0 行待补 → 即时返回。
+    # 仅在 tushare 某批失败、回退源(如 tickflow)接盘写入 turnover=0 时,
+    # 才实际触发 tickflow quotes 回填 (约 60s/50只)。
+    # 来源: 2026-07-21 全链路逻辑分析 (问题3: 冗余安全网)
     import traceback
     try:
         s = DataStore()
         tn = s.backfill_turnover_quotes(today)
         s.close()
-        _log.info(f"[{today}] turnover backfill: {tn} stocks updated")
+        if tn > 0:
+            _log.info(f"[{today}] turnover backfill: {tn} stocks updated (safety net triggered)")
+        else:
+            _log.debug(f"[{today}] turnover backfill: 0 stocks needed (tushare covered all)")
     except Exception:
         _log.warning(f"[{today}] turnover backfill failed: {traceback.format_exc()}")
 

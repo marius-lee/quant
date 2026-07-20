@@ -109,7 +109,7 @@ def _sync_szse_wrapper(date_str: str, conn) -> int:
     import akshare as ak
 
     for attempt in range(3):
-        df = ak.stock_margin_detail_szse(date=date_str.replace("-", ""))
+        df = ak.stock_margin_detail_szse(date=to_compact(date_str))
         if df is None or df.empty:
             return 0
 

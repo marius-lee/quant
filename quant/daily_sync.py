@@ -38,9 +38,9 @@ def step2_margin(date_str: str):
     import sqlite3
 from data.repos._base import DatabaseManager
     conn = sqlite3.connect(MARKET_DB, timeout=_require_cfg("data.sqlite.timeout"))
-    n_sse = _sync_sse_raw(date_str.replace("-", ""), conn)
+    n_sse = _sync_sse_raw(to_compact(date_str), conn)
     time.sleep(_require_cfg("sync.daily_interval"))
-    n_szse = _sync_szse_wrapper(date_str.replace("-", ""), conn)
+    n_szse = _sync_szse_wrapper(to_compact(date_str), conn)
     conn.close()
     logger.info(f"[2] margin: SSE={n_sse}, SZSE={n_szse}")
     return n_sse + n_szse

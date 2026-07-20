@@ -92,7 +92,7 @@ def _fetch_tushare_valuation_rows(date_str):
     import tushare as ts
     ts.set_token(token)
     pro = ts.pro_api()
-    date_compact = date_str.replace("-", "")
+    date_compact = to_compact(date_str)
     df = pro.daily_basic(
         trade_date=date_compact,
         fields="ts_code,trade_date,pe_ttm,pb,ps_ttm,total_mv,turnover_rate",

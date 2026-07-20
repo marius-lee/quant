@@ -56,7 +56,7 @@ def sync_benchmark(index_code: str = "000300") -> int:
     # eastmoney API 需要 YYYYMMDD 格式的日期参数
     df = ak.stock_zh_index_daily_em(
         symbol=f"sh{index_code}",
-        start_date=last_date.replace("-", ""),
+        start_date=to_compact(last_date),
         end_date="20500101"
     )
     if df is None or df.empty:

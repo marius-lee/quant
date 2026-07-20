@@ -277,6 +277,66 @@ trial 限制, 具体数额不明
 - 复权方式
 
 ---
+## 11. zzshare — 第三方数据接口
+
+**接入方式**: Python 包 (`pip install zzshare`), Py3.14  
+**底层**: 自有 API 服务器  
+**已安装版本**: 0.4.6
+
+### 可用数据
+| 接口 | 用途 | 量级 |
+|------|------|------|
+| `DataApi().daily()` | OHLCV 日线 | 逐只查询 |
+
+### 优势
+- **独立后端**: 非 eastmoney/TDX/新浪, 不受东财 CDN TLS 指纹 / IP 限频影响
+- **数据规范**: vol=手, amt=千元, 无需换算 ✅
+- **test_network.py 实测**: 2026-07-20 正常返回数据
+- **免费**: 无需 token/注册
+
+### 短板
+- **无换手率**: 不提供 turnover
+- **逐只查询**: 无批量接口
+- **第三方依赖**: 服务可用性不透明
+
+### 限流
+未知, 依赖 zzshare 服务端策略。
+
+### 最佳场景
+tushare 不可用时的首选备源。回退链第 2 位 (tushare → zzshare → ...)。
+
+---
+
+## 12. tickflow — 批量行情接口 (可选)
+
+**接入方式**: Python 包 (`pip install tickflow`), Py3.14  
+**底层**: 自有 API 服务器  
+**安装状态**: ❌ 未安装
+
+### 可用数据
+| 接口 | 用途 | 量级 |
+|------|------|------|
+| `TickFlow.free().klines.batch()` | OHLCV 日线 | **批量查询** (多只股票一次请求) |
+
+### 优势
+- **批量接口**: 一次请求多只股票, 大幅减少 HTTP 调用次数
+- **独立后端**: 非 eastmoney 系
+- **免费版可用**: `TickFlow.free()` 提供基础日线数据
+
+### 短板
+- **需要 pip install**: 未在 requirements.txt, 需手动安装
+- **vol=手✅, amt=元❌**: 金额需 /1000 转换
+- **无换手率**
+- **第三方依赖**: 服务可用性不透明
+
+### 限流
+未知。批量接口通常比逐只接口有更高的单次调用额度。
+
+### 最佳场景
+全量拉取首选备源 (批量大幅减少请求次数)。回退链第 3 位。安装命令: `pip install tickflow`
+
+---
+
 
 ## 总结矩阵
 
@@ -289,6 +349,8 @@ trial 限制, 具体数额不明
 | **tushare** | ✅ | ✅ | — | ✅ | 多种 | ⚠️ 需token | ✅ |
 | **JQData** | — | ✅ | — | — | — | ❌ trial | ✅ |
 | **sina** | ⚠️ | — | — | — | ❌ 无 | ✅ | ✅ |
+| **zzshare** | ✅ | — | — | — | — | ✅ | ✅ |
+| **tickflow** | ✅ | — | — | — | — | ⚠️ 需安装 | — |
 | **netease** | ❌ | — | — | — | — | — | ❌ |
 | **同花顺** | ❌ | — | — | — | — | ✅ | ❌ v2/v6 404 |
 | **雪球** | ❌ | — | — | — | — | ⚠️ 需登录 | ⚠️ 股票列表可用 |
@@ -296,14 +358,16 @@ trial 限制, 具体数额不明
 ## 推荐回退链
 
 ```
-tushare → tencent → akshare → sina → pytdx
+tushare → zzshare → tickflow → tencent → akshare → sina → pytdx
 ```
 
 - tushare: 批量 50 股, 200 次/分钟, 首选 (token 可用时)
-- tencent: 逐股东方财富 K 线, curl_cffi TLS 对抗 (test-v163)
-- akshare: 逐股东方财富 (含历史换手率), monkey-patch requests (test-v163)
-- sina: 逐股新浪 K 线
-- pytdx: TCP 协议, 独立于 HTTP 源, 最终兜底
+- zzshare: 第三方 API, 独立于 eastmoney/TDX, 实测可用 (test-v164)
+- tickflow: 批量接口, 独立后端, 需 pip install (可选)
+- tencent: 东方财富 K 线, curl_cffi TLS 对抗 (test-v163)
+- akshare: 东方财富 (含历史换手率), monkey-patch requests (test-v163)
+- sina: 新浪 K 线 (未复权, 仅兜底)
+- pytdx: TCP 协议, 完全独立于 HTTP 源, 最终兜底
 
 
 ## 11. 同花顺 测试附录 (2026-07-05)

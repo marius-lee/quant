@@ -18,7 +18,7 @@ _log = get_logger("regime.detector")
 
 _MARKET_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
 
-REGIME_LABELS = {0: "bull", 1: "bear", 2: "sideways"}
+REGIME_LABELS = {0: "bull", 1: "sideways", 2: "bear"}  # 按drift降序: 0=最高=牛, 1=中间=横盘, 2=最低=熊 (2026-07-21 audit M8)
 FACTOR_REGIME_BIAS = {
     # Factor names that perform BETTER in each regime
     "bull": ["momentum", "gap", "limit_up", "residual_momentum", "max_ret",

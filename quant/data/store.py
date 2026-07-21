@@ -634,7 +634,8 @@ class DataStore:
         """
         # 当天: 直接用 API key, 跳过免费版 (免费版日K不含当天)
         _tdy = datetime.today().strftime("%Y-%m-%d")
-        if start_date and start_date >= _tdy:
+        # to_compact 归一化: 防止 YYYYMMDD vs YYYY-MM-DD 格式不匹配
+        if start_date and to_compact(start_date) >= to_compact(_tdy):
             return self._fetch_tickflow_quotes(symbols, start_date)
         try:
             from tickflow import TickFlow
@@ -697,33 +698,33 @@ class DataStore:
 
         codes = [_tickflow_code(s) for s in symbols]
 
-        try:
-            quotes_df = tf.quotes.get(symbols=codes, as_dataframe=True)
-        except Exception as _e:
-            logger.warning(f"[tickflow quotes] API failed: {_e}")
-            return []
-
-        if quotes_df is None or quotes_df.empty:
-            logger.debug(f"[tickflow quotes] empty response for {len(symbols)} symbols")
-            return []
-
+        # tickflow quotes API 单次最大 5 只, 超过分块
+        _batch_max = 5
         rows = []
-        for _, q in quotes_df.iterrows():
-            sym = str(q.get("symbol", "")).split(".")[0]
-            if not sym:
+        for _i in range(0, len(codes), _batch_max):
+            _chunk = codes[_i:_i + _batch_max]
+            try:
+                quotes_df = tf.quotes.get(symbols=_chunk, as_dataframe=True)
+            except Exception as _e:
+                logger.warning(f"[tickflow quotes] chunk {_i} API failed: {_e}")
                 continue
-            # ext 字段在 tickflow DataFrame 中是扁平列名 (ext.turnover_rate), 非嵌套 dict
-            _turnover = float(q.get("ext.turnover_rate", 0) or 0)
+            if quotes_df is None or quotes_df.empty:
+                continue
+            for _, q in quotes_df.iterrows():
+                sym = str(q.get("symbol", "")).split(".")[0]
+                if not sym:
+                    continue
+                _turnover = float(q.get("ext.turnover_rate", 0) or 0)
 
-            rows.append(self._norm_row(
-                sym, date,
-                float(q.get("open", 0) or 0),
-                float(q.get("high", 0) or 0),
-                float(q.get("low", 0) or 0),
-                float(q.get("last_price", 0) or 0),
-                float(q.get("volume", 0) or 0),
-                float(q.get("amount", 0) or 0) / 1000,  # 元→千元(与免费版对齐)
-                _turnover))
+                rows.append(self._norm_row(
+                    sym, date,
+                    float(q.get("open", 0) or 0),
+                    float(q.get("high", 0) or 0),
+                    float(q.get("low", 0) or 0),
+                    float(q.get("last_price", 0) or 0),
+                    float(q.get("volume", 0) or 0),
+                    float(q.get("amount", 0) or 0) / 1000,
+                    _turnover))
 
         if rows:
             logger.info(f"[tickflow quotes] {len(symbols)} stocks: {len(rows)} rows (vol+turnover✅)")
@@ -1199,6 +1200,12 @@ class DataStore:
             symbols = sorted(target, key=lambda s: s[:2])  # SH first (tushare benefit)
         else:
             logger.info(f"daily update: {len(symbols)} specified stocks")
+
+        # 当天快速路由: 只有 stale_recent(无 missing/stale) 时,
+        # 覆写 start 为今天 → _fetch_tickflow_daily 走 API key quotes,
+        # 跳过免费版(免费版日K不含当天, 来源: 2026-07-21 全链路逻辑分析)
+        if (gaps.get("stale_recent") and not gaps["missing"] and not gaps["stale"]):
+            start = datetime.today().strftime("%Y-%m-%d")
 
         # 2. tushare 作为首选源 (self.token 从 __init__ 三阶回退读取)
         # _fetch_batch_tushare 内部自行创建 ts.pro_api(), 此处仅做 gate 判断

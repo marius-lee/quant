@@ -115,7 +115,7 @@ def apply_all_filters(
 ) -> pd.DataFrame:
     """应用所有风险过滤。
 
-    过滤顺序: 流动性 → 股价 → ST → 行业暴露上限
+    过滤顺序: 流动性 → 股价 → ST (行业暴露上限由调用方单独检查, 2026-07-21 audit M10)
 
     当 limits 为 None 时，自动从 config/config.yaml 读取默认风险参数。
     这确保了代码中没有与配置文件不一致的硬编码数值。

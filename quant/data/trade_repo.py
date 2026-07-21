@@ -231,6 +231,21 @@ class TradeRepo:
         c.close()
         return cnt > 0
 
+    def get_open_position_cost(self, strategy: str, mode: str = "live") -> float:
+        """未平仓持仓总成本 = SUM(price*shares) for open buy positions.
+
+        等价于 index() 中手动 SQL, 但走 TradeRepo 统一入口 (2026-07-21 audit M3).
+        """
+        c = self._conn()
+        row = c.execute(
+            "SELECT COALESCE(SUM(price*shares),0) FROM sim_trades "
+            "WHERE side='buy' AND strategy=? AND mode=? "
+            "AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=? AND mode=?)",
+            (strategy, mode, strategy, mode)
+        ).fetchone()
+        c.close()
+        return float(row[0]) if row else 0.0
+
     def get_average_cost(self, strategy: str, symbol: str, mode: str = "live") -> float:
         """加权平均买入成本: 买入总额/买入总股数 (FIFO近似).
 

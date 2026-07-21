@@ -301,7 +301,10 @@ function renderICTrend(fd) {
     type: 'bar', orientation: 'h',
     x: factors.map(f => Math.abs(f.ic)),
     y: factors.map(f => f.name),
-    marker: { color: factors.map(f => f.ic >= 0 ? 'var(--up)' : 'var(--down)') },
+    marker: { color: factors.map(f => {
+      const s = getComputedStyle(document.documentElement);
+      return f.ic >= 0 ? s.getPropertyValue('--up').trim() : s.getPropertyValue('--down').trim();
+    }) },  // (2026-07-21 audit M5: resolve CSS vars for Plotly)
   }], { ...bg, margin: { l: 120, r: 20, t: 10, b: 30 }, xaxis: { title: '|IC|', ...pf } }, PLOTLY_CONFIG);
 }
 
@@ -345,7 +348,12 @@ function renderCorrelation(fd) {
   const zClean = z.map(row => row.map(v => (v == null || isNaN(v)) ? 0 : v));
   Plotly.newPlot('chart-correlation', [{
     type: 'heatmap', z: zClean, x: labels, y: labels,
-    colorscale: [[0,'var(--down)'],[0.5,'var(--bg2)'],[1,'var(--up)']],
+    colorscale: (() => {
+      const s = getComputedStyle(document.documentElement);
+      return [[0, s.getPropertyValue('--down').trim()],
+              [0.5, s.getPropertyValue('--bg2').trim()],
+              [1, s.getPropertyValue('--up').trim()]];
+    })(),  // (2026-07-21 audit M5)
     zmin: -1, zmax: 1,
   }], { ...bg, margin: { l: 120, b: 100, t: 10, r: 20 }, xaxis: { tickangle: 45, ...pf }, yaxis: { ...pf } }, PLOTLY_CONFIG);
 }
@@ -406,10 +414,15 @@ function renderRiskExposure(rd) {
   const el = document.getElementById('chart-exposure-risk');
   if (!el || !rd) return;
   const pf = plotlyFont(), bg = plotlyBg();
+  // API returns {summary: {var_95_pct, cvar_95_pct, max_dd_pct}} (2026-07-21 audit M4)
+  const s = rd.summary || rd;
+  const varPct = s.var_95_pct || s.var || 0;
+  const cvarPct = s.cvar_95_pct || s.cvar || 0;
+  const mdd = s.max_dd_pct || s.max_drawdown || 0;
   Plotly.newPlot('chart-exposure-risk', [{
     type: 'bar',
-    x: ['VaR', 'CVaR', 'MaxDD'],
-    y: [rd.var || 0, rd.cvar || 0, rd.max_drawdown || 0],
+    x: ['VaR 95%', 'CVaR 95%', 'MaxDD'],
+    y: [varPct, cvarPct, mdd],
     marker: { color: ['var(--accent)', 'var(--warn)', 'var(--down)'] },
   }], { ...bg, margin: { l: 50, r: 20, t: 10, b: 30 }, ...pf }, PLOTLY_CONFIG);
 }

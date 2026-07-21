@@ -40,18 +40,25 @@ def check_alerts(state: dict, metrics_snap: dict) -> list[dict]:
             })
 
     # ── Rule 2: 数据同步滞后 (最近日线 > 2 天前) ──
-    last_sync = state.get("last_daily_sync", "")
-    if last_sync:
-        try:
-            sync_dt = datetime.strptime(last_sync[:10], "%Y-%m-%d")
-            if datetime.now() - sync_dt > timedelta(days=2):
+    # 直接查 daily 表 MAX(date), 而非依赖从未写入的 last_daily_sync (2026-07-21 audit M7)
+    try:
+        from quant.data.store import DataStore
+        ds = DataStore()
+        row = ds._connect().execute("SELECT MAX(date) FROM daily").fetchone()
+        if row and row[0]:
+            last_date = row[0]
+            from datetime import timedelta
+            last_dt = datetime.strptime(last_date, "%Y-%m-%d") if isinstance(last_date, str) else last_date
+            if isinstance(last_dt, str): last_dt = datetime.strptime(last_dt, "%Y-%m-%d")
+            if datetime.now() - last_dt > timedelta(days=2):
                 alerts.append({
                     "rule": "stale_data",
                     "level": "warning",
-                    "msg": f"最近日线同步: {last_sync[:10]} (超过2天未更新)"
+                    "msg": f"最近日线: {last_date} (超过2天未更新)"
                 })
-        except ValueError:
-            pass
+        ds.close()
+    except Exception:
+        pass  # daily 表不可用时跳过
 
     # ── Rule 3: 连续 pipeline 失败 ──
     err_count = int(metrics_snap.get("counters", {}).get("pipeline.errors", 0))

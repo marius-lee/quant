@@ -108,6 +108,18 @@ class TradeRepo:
                 DROP TABLE strategy_config;
                 ALTER TABLE strategy_config_new2 RENAME TO strategy_config;
             ''')
+        # ── 每日权益快照 — 持久化回撤追踪 (2026-07-21 audit H3 scheme B) ──
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS daily_equity (
+                date TEXT PRIMARY KEY,
+                cash REAL,
+                position_value REAL,
+                total_equity REAL,
+                drawdown_pct REAL,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
         c.execute("UPDATE strategy_config SET initialized = 1 WHERE initialized IS NULL OR initialized = 0")
         # ── 每日信号持久化 ──
         c.execute("""
@@ -230,6 +242,42 @@ class TradeRepo:
         ).fetchone()[0]
         c.close()
         return cnt > 0
+
+    def record_daily_equity(self, date: str, cash: float, position_value: float, strategy: str = "quant"):
+        """写入每日权益快照, 含 peak-to-trough 回撤计算 (2026-07-21 audit H3).
+
+        Args:
+            date: YYYY-MM-DD
+            cash: 现金余额
+            position_value: 持仓市值
+            strategy: 策略名
+        """
+        c = self._conn()
+        total = cash + position_value
+        # 查历史最高权益计算回撤
+        peak_row = c.execute(
+            "SELECT MAX(total_equity) FROM daily_equity"
+        ).fetchone()
+        peak = max(peak_row[0] or total, total)
+        dd_pct = round((peak - total) / peak * 100, 2) if peak > 0 else 0.0
+        c.execute(
+            "INSERT OR REPLACE INTO daily_equity (date, cash, position_value, total_equity, drawdown_pct) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (date, cash, position_value, total, dd_pct)
+        )
+        c.commit()
+        c.close()
+
+    def get_max_drawdown(self, lookback_days: int = 60) -> float:
+        """最近 N 天最大回撤 (peak-to-trough %), 从 daily_equity 读取."""
+        c = self._conn()
+        row = c.execute(
+            "SELECT MAX(drawdown_pct) FROM daily_equity "
+            "WHERE date >= date('now', ? || ' days')",
+            (f"-{lookback_days}",)
+        ).fetchone()
+        c.close()
+        return float(row[0]) if row and row[0] else 0.0
 
     def get_open_position_cost(self, strategy: str, mode: str = "live") -> float:
         """未平仓持仓总成本 = SUM(price*shares) for open buy positions.

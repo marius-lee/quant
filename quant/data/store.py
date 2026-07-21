@@ -881,6 +881,13 @@ class DataStore:
                     updated_today += 1
 
                 _bs_processed += 1
+                # 每 5000 只重登, 防止 session 超时导致 Broken pipe (baostock 免费服务 ~1-2h 超时)
+                if _bs_processed % 5000 == 0:
+                    logger.info(f"turnover backfill: baostock re-login at {_bs_processed} stocks")
+                    _bs.logout()
+                    _lg = _bs.login()
+                    if _lg.error_code != '0':
+                        logger.warning(f"baostock re-login failed: {_lg.error_msg}")
                 if _bs_processed % 50 == 0:
                     _elapsed = _time.time() - _bs_t0
                     _rate = _bs_processed / _elapsed if _elapsed > 0 else 0

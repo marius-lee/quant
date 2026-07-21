@@ -139,10 +139,10 @@ class ExecutionEngine:
                     continue
                 proceeds = self.cost_model.sell_proceeds(price, shares)
                 e["cost"] = round(price * shares - proceeds, 2)
-                orig = repo.get_last_buy_price(strategy, symbol)
-                if orig and orig[0] * shares > 0:
-                    e["pnl"] = round(proceeds - orig[0] * shares, 2)
-                    e["pnl_pct"] = round(proceeds / (orig[0] * shares) - 1, 2)
+                avg_cost = repo.get_average_cost(strategy, symbol)  # FIFO (2026-07-21 audit H7)
+                if avg_cost and avg_cost * shares > 0:
+                    e["pnl"] = round(proceeds - avg_cost * shares, 2)
+                    e["pnl_pct"] = round(proceeds / (avg_cost * shares) - 1, 2)
                 else:
                     e["pnl"] = 0.0
                     e["pnl_pct"] = 0.0

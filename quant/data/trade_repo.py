@@ -231,6 +231,21 @@ class TradeRepo:
         c.close()
         return cnt > 0
 
+    def get_average_cost(self, strategy: str, symbol: str, mode: str = "live") -> float:
+        """加权平均买入成本: 买入总额/买入总股数 (FIFO近似).
+
+        替代 get_last_buy_price(LIFO), 多次买入时 PnL 更准确.
+        来源: 2026-07-21 audit H7.
+        """
+        c = self._conn()
+        row = c.execute(
+            "SELECT SUM(price * shares) / NULLIF(SUM(shares), 0) FROM sim_trades "
+            "WHERE symbol=? AND side='buy' AND strategy=? AND mode=?",
+            (symbol, strategy, mode)
+        ).fetchone()
+        c.close()
+        return float(row[0]) if row and row[0] else 0.0
+
     def get_last_buy_price(self, strategy: str, symbol: str, mode: str = "live") -> tuple | None:
         """返回最近一次买入的 (price, shares)，用于 PnL 计算。"""
         c = self._conn()

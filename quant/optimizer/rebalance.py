@@ -144,6 +144,9 @@ def compute_trades(
         sell_inflow = sum(o.price * o.shares - o.cost for o in sell_orders)
         available = available_cash + sell_inflow
         feasible = []
+        # 按 alpha 降序分配资金, 高 alpha 优先 (2026-07-21 audit H9)
+        if alpha_scores:
+            buy_orders.sort(key=lambda o: alpha_scores.get(o.symbol, 0), reverse=True)
         for o in buy_orders:
             if available >= o.cost:
                 feasible.append(o)

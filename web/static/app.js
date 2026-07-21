@@ -446,17 +446,25 @@ async function loadPerformance() {
         <div class="kpi"><div class="label">总资产</div><div class="value">${fmtMoney(perf.total_asset||0)}</div></div>
       `;
     }
+    const sideLabel = { buy: '买入', sell: '卖出' };
     const tradesList = trades?.trades || [];
     renderTable('table-trades', tradesList.slice(0, 50), [
       { key: 'date', label: '日期' },
       { key: 'symbol', label: '代码' },
+      { key: 'name', label: '名称' },
       { key: 'side', label: '方向' },
       { key: 'price', label: '价格' },
       { key: 'shares', label: '股数' },
       { key: 'pnl', label: 'PnL' },
       { key: 'pnl_pct', label: '收益%' },
     ], {
-      fmtMap: { price: v => fmtNum(v, 2), pnl: v => fmtMoney(v), pnl_pct: v => fmtPct(v) }
+      fmtMap: {
+        date: v => (v||'').replace('T',' ').slice(0,19),
+        side: v => sideLabel[v] || v,
+        price: v => fmtNum(v, 2),
+        pnl: v => fmtMoney(v),
+        pnl_pct: v => fmtPct(v)
+      }
     });
   } catch (e) { console.warn('performance error:', e.message); }
 }

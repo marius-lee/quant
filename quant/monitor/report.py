@@ -34,19 +34,44 @@ def generate_report(
       "trades": list[dict],
     }
     """
-    # 从交易历史估算收益率序列 (简化: 用每日 capital_after 推算)
-    daily_returns = []
-    if trades:
-        prev_cap = initial_capital
-        for t in sorted(trades, key=lambda x: x.get("date", "")):
-            cap_after = t.get("capital_after", prev_cap)
-            if prev_cap > 0:
-                daily_returns.append(cap_after / prev_cap - 1)
-            prev_cap = cap_after
-
     import pandas as pd
-    if daily_returns:
-        ret_series = pd.Series(daily_returns)
+
+    # Sharpe/MDD 优先用 daily_equity (每日估值权益曲线, 更准确)
+    # 回退到逐笔交易估算 (2026-07-22: audit "Sharpe计算" 项)
+    ret_series = None
+    try:
+        from quant.data.trade_repo import TradeRepo
+        repo = TradeRepo()
+        eq_rows = repo.get_connection().execute(
+            "SELECT date, total_equity FROM daily_equity ORDER BY date"
+        ).fetchall()
+        if len(eq_rows) >= 20:
+            eq_series = pd.Series(
+                [r[1] for r in eq_rows],
+                index=[r[0] for r in eq_rows]
+            )
+            ret_series = eq_series.pct_change().dropna()
+            logger.debug(f"[report] Sharpe from daily_equity: {len(ret_series)} daily returns")
+    except Exception:
+        logger.debug("[report] daily_equity unavailable, fallback to trade-based returns")
+
+    if ret_series is None or len(ret_series) < 5:
+        # Fall back: 从逐笔交易 capital_after 估算
+        daily_returns = []
+        if trades:
+            prev_cap = initial_capital
+            for t in sorted(trades, key=lambda x: x.get("date", "")):
+                cap_after = t.get("capital_after", prev_cap)
+                if prev_cap > 0:
+                    daily_returns.append(cap_after / prev_cap - 1)
+                prev_cap = cap_after
+        if daily_returns:
+            ret_series = pd.Series(daily_returns)
+            logger.debug(f"[report] Sharpe from trades: {len(ret_series)} returns")
+        else:
+            ret_series = pd.Series(dtype=float)
+
+    if len(ret_series) >= 5:
         sharpe = compute_sharpe(ret_series)
         mdd = compute_max_drawdown(ret_series)
     else:

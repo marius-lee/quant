@@ -108,16 +108,49 @@ _detector = None
 
 
 def get_current_regime():
-    """Get current market regime using CSI 300 data. Called daily."""
+    """Get current market regime using CSI 300 data. Called daily.
+
+    持久化策略 (2026-07-22: audit "HMM跨天一致性" 项):
+    - 首次运行: 训练 HMM → 保存到 quant/data/hmm_regime.pkl
+    - 后续运行: 加载持久化模型, 不重训练 (确保跨天标签一致)
+    - 每周一 (or 距上次训练 >retrain_days): 重训练 + 更新持久化
+    - retrain_days 默认 7, 可通过 config.yaml 调整
+    """
     global _detector
+    import pickle as _pkl
+    from datetime import date as _d, timedelta as _td
+    from quant.config.constants import _require_cfg
+
+    _MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "hmm_regime.pkl")
+    retrain_days = _require_cfg("regime.retrain_days") if _require_cfg("regime.retrain_days") else 7
+
+    should_train = True
+    if os.path.exists(_MODEL_PATH):
+        try:
+            with open(_MODEL_PATH, "rb") as f:
+                saved = _pkl.load(f)
+            age = (_d.today() - _d.fromisoformat(saved["date"])).days
+            if age < retrain_days:
+                _detector = saved["detector"]
+                should_train = False
+                _log.debug(f"regime HMM loaded from cache (age={age}d, retrain={retrain_days}d)")
+        except Exception:
+            _log.warning("regime HMM cache corrupted, retraining")
+
+    if should_train:
+        from quant.data.benchmark import get_benchmark_returns
+        returns = get_benchmark_returns("000300", start="2024-01-01")
+        _detector = RegimeDetector()
+        _detector.train(returns)
+        try:
+            with open(_MODEL_PATH, "wb") as f:
+                _pkl.dump({"detector": _detector, "date": _d.today().isoformat()}, f)
+            _log.info(f"regime HMM saved to {_MODEL_PATH}")
+        except Exception as e:
+            _log.warning(f"regime HMM save failed (non-fatal): {e}")
 
     from quant.data.benchmark import get_benchmark_returns
     returns = get_benchmark_returns("000300", start="2024-01-01")
-
-    if _detector is None:
-        _detector = RegimeDetector()
-        _detector.train(returns)
-
     return _detector.predict_proba(returns)
 
 

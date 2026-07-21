@@ -462,3 +462,30 @@ task_runs 表 74,382 行中 monitor 占 74,184 行 (99.7%)。根因: monitor 进
 - quant/scheduler/monitor.py (1行 dedup=True)
 - web/app.py (VERSION → test-v193)
 - docs/handoffs/HANDOFF.md (本记录)
+
+---
+## test-v194 — orchestrator._monitor_daemon 去除外层 while (2026-07-22)
+
+### 背景
+test-v193 用 `dedup=True` 缓解 monitor task_runs 膨胀 (74,184行/6天)，
+但这是治标。根因在 `_monitor_daemon` 的外层 while 在 14:55 形成死循环:
+`_run_continuous` 正常退出 → 外层 while 检测到 14:55 仍在交易时段
+→ 重新拉起 → `_run_continuous` 发现 >=14:55 瞬间退出 → 循环。
+
+### 变更
+1. **orchestrator.py** — `_monitor_daemon` 去掉外层 while
+   - 旧: while not stop → if 09:35-14:55 → _run_continuous → 循环
+   - 新: 直接调用 _run_continuous(current_day) 一次
+   - _run_continuous 内部已有完整 while 循环 (每30s, 到14:55退出)
+   - 崩溃恢复: orchestrator 主循环每30s 检测 _monitor_thread is None → 重建
+
+2. **monitor.py** — 回退 `dedup=True`
+   - 不再需要 — 正常流只调用一次 start/finish
+
+3. **task_log.py** — 保留 `dedup` 参数 (防御性)
+
+### 涉及文件
+- quant/scheduler/orchestrator.py (_monitor_daemon 7行→4行)
+- quant/scheduler/monitor.py (1行回退)
+- web/app.py (VERSION → test-v194)
+- docs/handoffs/HANDOFF.md (本记录)

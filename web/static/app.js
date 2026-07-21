@@ -443,7 +443,7 @@ async function loadPerformance() {
       { key: 'pnl', label: 'PnL' },
       { key: 'pnl_pct', label: '收益%' },
     ], {
-      fmtMap: { price: v => fmtMoney(v), pnl: v => fmtMoney(v), pnl_pct: v => fmtPct(v) }
+      fmtMap: { price: v => fmtNum(v, 2), pnl: v => fmtMoney(v), pnl_pct: v => fmtPct(v) }
     });
   } catch (e) { console.warn('performance error:', e.message); }
 }

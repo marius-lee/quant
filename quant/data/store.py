@@ -863,7 +863,7 @@ class DataStore:
                             while _rs.next():
                                 row = _rs.get_row_data()
                                 if row[0] == d:
-                                    tv_str = row[2] if len(row) > 2 else ''
+                                    tv_str = row[1] if len(row) > 1 else ''
                                     tv = float(tv_str) if tv_str and tv_str.strip() else 0.0
                                     break
                         break  # 成功, 跳出重试循环

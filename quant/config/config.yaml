@@ -297,4 +297,4 @@ universe:
   # 最低日成交额(元); 来源: A股中小盘盘口实测(500万以下无法有效进出), BigQuant 标准
   min_daily_amount: 500000
   # 连续N天换手率=0排除; 来源: QuantConnect/聚宽默认排除停牌股, 僵尸股无流动性
-  exclude_zero_turnover_days: 5
+  exclude_zero_turnover_days: 0  # 临时关闭 — 2026-07-21: sina/tickflow 均无 turnover 字段, tushare daily_basic 限1次/分钟无法批量回填。待找到批量 turnover 源后回填并改回 5

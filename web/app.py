@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v199"
+VERSION = "test-v200"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 def _log_exit(reason: str = ""):
@@ -432,6 +432,27 @@ def api_performance():
     total_asset = round(capital + position_market_value, 2)
     total_pnl = round(total_asset - base, 2)
     tc.close()
+
+    # 计算 Sharpe 和最大回撤: 用 sim_trades 的 capital_after 构建日收益序列
+    sharpe = 0.0
+    max_drawdown = 0.0
+    from quant.data.trade_repo import TradeRepo as _TR
+    _trades = _TR().get_trades(strategy, mode="live", limit=10000)
+    if _trades:
+        import pandas as _pd
+        from quant.monitor.attribution import compute_sharpe, compute_max_drawdown
+        rets = []
+        prev = base
+        for t in sorted(_trades, key=lambda x: x.get("date", "")):
+            ca = t.get("capital_after", 0) or prev
+            if prev > 0 and ca != prev:
+                rets.append(ca / prev - 1)
+            prev = ca
+        if len(rets) >= 3:
+            sr = _pd.Series(rets)
+            sharpe = compute_sharpe(sr)
+            max_drawdown = compute_max_drawdown(sr)
+
     result = {
         "realized_pnl": round(realized_pnl, 2),
         "total_pnl": total_pnl,
@@ -443,6 +464,8 @@ def api_performance():
         "total_buys": buys,
         "capital": round(capital, 2),
         "valuation_method": valuation_method,
+        "sharpe": round(sharpe, 2),
+        "max_drawdown": round(max_drawdown, 4),
     }
     return _api_response(data=result)
 

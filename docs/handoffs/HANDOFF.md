@@ -10,6 +10,25 @@
 - **baostock**: 新增依赖, 免费无需注册, turn值与tushare一致
 
 ---
+## test-v175 — 回填进度日志改进 + CLAUDE.md 编辑规则强化 (2026-07-21)
+
+### 背景
+- config.yaml 多次因 apply_patch 产生缩进错误 (4空格→3空格混排)
+- backfill_turnover 首批 50 只处理完才出现第一条进度, 用户以为卡住
+
+### 变更
+1. **store.py:852** — 新增即时起始日志: "starting, first progress at 50 stocks (~Xs)"
+2. **CLAUDE.md** — 编辑工具新增硬约束:
+   - YAML 文件禁止 apply_patch, 必须用 yaml.safe_load/dump
+   - VERSION 行禁止 apply_patch, 必须用 re.sub
+   - 速查表新增 "重启" 规则: Agent 只给命令文本
+
+### 涉及文件
+- quant/data/store.py
+- web/app.py (VERSION → test-v175)
+- CLAUDE.md
+
+---
 
 ## test-v174 — baostock turnover 回填重写 (2026-07-21)
 

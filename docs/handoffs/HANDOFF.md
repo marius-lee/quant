@@ -535,3 +535,16 @@ turnover 回填期间临时设为 0 防止误过滤。baostock 回填已于 07-2
 - quant/config/config.yaml (regime.retrain_days)
 - web/app.py (VERSION → test-v196)
 - docs/handoffs/HANDOFF.md (本记录)
+
+---
+## test-v197 — 绩效页布局重排 (2026-07-22)
+
+### 变更
+- 绩效 tab 布局调整为业界标准顺序: 累计统计 → 交易记录 → Brinson 归因
+- 累计统计从右侧 2 列窄格 → 全宽 3 列网格 (归类清晰)
+- 去除 grid-2 布局, 三个区块自上而下排列
+
+### 涉及文件
+- web/templates/index.html (布局重排)
+- web/app.py (VERSION → test-v197)
+- docs/handoffs/HANDOFF.md (本记录)

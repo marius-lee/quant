@@ -187,7 +187,7 @@ class PortfolioConstructor:
         )
 
         if tier == "nano":
-            return self._equal_weight_greedy(a, p, capital)
+            return self._rank_concentrated(a, p, capital)
         elif tier == "micro":
             result = self._score_weighted_rounding(a, p, capital)
             if result.lots.sum() == 0:
@@ -244,6 +244,57 @@ class PortfolioConstructor:
                 f"cheapest_lot={prices.loc[alpha.index[:n_stocks]].min() * LOT_SIZE:,.0f}"
             )
         return TargetPortfolio(lots, cash, "kelly_greedy", total_value)
+
+    def _rank_concentrated(
+        self, alpha: pd.Series, prices: pd.Series, capital: float,
+    ) -> TargetPortfolio:
+        """排名集中: 按 alpha 降序逐只满仓买入, 直至资金不足买下一手。
+
+        算法:
+          for sym in alpha_rank_order:
+              买入 max_lots = int(cash // (price × LOT_SIZE))
+              扣减 cash
+              if 剩余资金 < 最便宜候选 × LOT_SIZE: break
+
+        适用: Nano 层 (capital < nano_cap).
+        设计依据:
+          - Grinold & Kahn (2000) 基本面法则: N=1-2 时需最大化 IC, 降低佣金侵蚀
+          - Kirby & Ostdiek (2012): 换手成本 > 分散化收益时, 应集中持仓
+          - capital-segmentation-analysis-2026-07-15 C3: 单笔<¥10K 交易成本占比>100% alpha,
+            集中持仓减少交易笔数是唯一解
+          - 与 _equal_weight_greedy 的区别: 本方法按排名依次满仓 (alpha优先),
+            而非轮转均分 (分散化优先)
+        """
+        n_candidates = min(self.max_positions, len(alpha))
+        if n_candidates == 0:
+            return TargetPortfolio(pd.Series(dtype=int), capital, "rank_concentrated", 0.0)
+
+        # 最便宜候选的一手成本 — 提前终止条件
+        cheapest_lot = prices.loc[alpha.index[:n_candidates]].min() * LOT_SIZE
+
+        lots = pd.Series(0, index=alpha.index, dtype=int)
+        cash = capital
+        symbol_order = list(alpha.index[:n_candidates])
+
+        for sym in symbol_order:
+            cost_per_lot = prices[sym] * LOT_SIZE
+            if cash < cost_per_lot:
+                continue  # 买不起这只, 试下一只
+            max_lots = int(cash // cost_per_lot)
+            lots[sym] = max_lots
+            cash -= max_lots * cost_per_lot
+            if cash < cheapest_lot:
+                break  # 剩余资金不够买任何候选
+
+        total_value = (lots * prices * LOT_SIZE).sum()
+        if lots.sum() == 0:
+            raise ValueError(
+                f"rank_concentrated produced 0 lots: "
+                f"n_candidates={n_candidates} capital={capital:,.0f} "
+                f"cheapest_lot={cheapest_lot:,.0f} "
+                f"top3_prices={prices.loc[alpha.index[:min(3,n_candidates)]].tolist()}"
+            )
+        return TargetPortfolio(lots[lots > 0], round(cash, 2), "rank_concentrated", total_value)
 
     def _equal_weight_greedy(
         self, alpha: pd.Series, prices: pd.Series, capital: float,

@@ -29,8 +29,8 @@
 
 | 参数 | 值 | 含义 |
 |------|-----|------|
-| `optimizer.greedy_cap` | ¥20,000 | 低于此: 贪心逐手买入 (1-2 只股票) |
-| `optimizer.weighted_cap` | ¥100,000 | 低于此: 得分配比; 高于此: 均值-方差 |
+| `optimizer.greedy_cap` | ¥20,000 | ⛔ 已弃用 → `nano_cap: 30000` (2026-07-15 ADR 032/033) |
+| `optimizer.weighted_cap` | ¥100,000 | ⛔ 已弃用 → `micro_cap: 100000` (2026-07-15 ADR 032/033) |
 
 kelly_fraction = 4.0 (四分之一凯利，保守)。
 

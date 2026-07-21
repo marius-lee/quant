@@ -305,14 +305,14 @@ class Order:
 
 class PortfolioConstructor:
     def __init__(self, config: dict):
-        self.equal_weight_cap = config.get("equal_weight_cap", 20000)
-        self.weighted_cap = config.get("weighted_cap", 100000)
+        self.nano_cap = config.get("nano_cap", 30000)       # (已弃用: equal_weight_cap -> nano_cap)
+        self.micro_cap = config.get("micro_cap", 100000)    # (已弃用: weighted_cap -> micro_cap)
 
     def construct(self, alpha, limits, capital) -> TargetPortfolio:
         """资本自适应分配:
-        if capital < equal_weight_cap: _equal_weight_greedy()
-        elif capital < weighted_cap: _score_weighted_rounding()
-        else: _mean_variance_lot()
+        if capital < nano_cap: _rank_concentrated()           # Nano: 排名集中 1-3只
+        elif capital < micro_cap: _score_weighted_rounding()  # Micro: 得分倾斜 3-8只
+        else: _mean_variance_lot() / _kelly_greedy()          # Small: MV/Kelly 8-20只
         """
         ...
 

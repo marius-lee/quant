@@ -65,6 +65,11 @@ def _run_continuous(today: str):
         alerts = []
         # ── P6-a: 加载集中度和 VaR 阈值 ──
         single_conc_limit = _require_cfg("monitor.max_single_concentration")
+        # Nano 层豁免: 资本 < nano_cap 时集中持仓是唯一解 (capital-segmentation-analysis C3),
+        # 90%+ 单票集中度是预期行为, 非风险事件 (Kirby & Ostdiek 2012)
+        nano_cap = _require_cfg("optimizer.nano_cap")
+        if total < nano_cap:
+            single_conc_limit = 1.0  # 实质关闭单票集中度告警
         sector_conc_limit = _require_cfg("monitor.max_sector_concentration")
         liquidity_min = _require_cfg("monitor.min_daily_turnover_amount")
         var_conf = _require_cfg("monitor.var_confidence")

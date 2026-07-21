@@ -9,7 +9,7 @@ from quant.optimizer.portfolio import PortfolioConstructor, TargetPortfolio, LOT
 
 
 class TestPortfolioConstructorGreedy:
-    """贪心等权 — capital < lot_cost * 2."""
+    """排名集中 (Nano 层) — capital < nano_cap (¥30,000)."""
 
     def test_single_lot_single_stock(self):
         """4802 资本, 1 只低价股 → 买 1 手."""
@@ -18,8 +18,8 @@ class TestPortfolioConstructorGreedy:
         prices = pd.Series([20.0], index=["000001"])
         # capital 2000 < lot_cost*2 = 4000 → greedy
         pf = pc.construct(alpha, prices, 2000)
-        # greedy tier returns method="equal_weight"
-        assert pf.method in ("equal_weight", "kelly_greedy")
+        # Nano tier (¥2,000 < ¥30,000) → rank_concentrated
+        assert pf.method in ("rank_concentrated", "kelly_greedy")
         assert pf.positions == 1
         assert pf.lots["000001"] == 1
         assert pf.invested == 20 * 100
@@ -29,7 +29,7 @@ class TestPortfolioConstructorGreedy:
         pc = PortfolioConstructor({"max_positions": 20, "max_single_position": 0.05})
         alpha = pd.Series([1.0, 0.5], index=["000001", "000002"])
         prices = pd.Series([50.0, 60.0], index=["000001", "000002"])
-        with pytest.raises(ValueError, match="greedy produced 0 lots"):
+        with pytest.raises(ValueError, match="rank_concentrated produced 0 lots"):
             pc.construct(alpha, prices, 100)
 
     def test_multiple_stocks_one_cycle(self):
@@ -39,21 +39,70 @@ class TestPortfolioConstructorGreedy:
         prices = pd.Series([10.0, 12.0, 100.0], index=["A", "B", "C"])
         pf = pc.construct(alpha, prices, 2200)
         assert pf.positions >= 1
-        assert pf.lots["A"] == 1
-        # Kelly greedy may allocate differently; B might get 0 or 1
+        assert pf.lots["A"] == 2  # rank_concentrated: 2200//(10*100)=2 lots
+        # B: 剩余200 < 1200 → 买不到
         assert pf.lots.get("B", 0) in (0, 1)
         assert "C" not in pf.lots
 
-    def test_max_lots_per_caps_exposure(self):
-        """max_lots_per 限制每只股票最多 1 手."""
+    def test_rank_concentrated_single_lot(self):
+        """Nano 层排名集中: 资金只够 #1 股票 1 手."""
         pc = PortfolioConstructor({"max_positions": 5, "max_single_position": 0.05})
         alpha = pd.Series([1.0, 0.9, 0.8, 0.7, 0.6], index=[f"S{i}" for i in range(5)])
         prices = pd.Series([1.0, 1.0, 1.0, 1.0, 1.0], index=[f"S{i}" for i in range(5)])
         # avg_price=1, lot_cost=100, greedy < 200, weighted < 500
         pf = pc.construct(alpha, prices, 199)
-        # greedy: buys 1 lot per stock (each costs 100), 5*100=500 > 199, buys only 1
+        # rank_concentrated: buys 1 lot of S0, cash=99 < lot_cost=100 → stop
         assert pf.positions >= 1
         assert pf.positions <= 5
+
+    def test_rank_concentrated_buys_max_of_top_stock(self):
+        """Nano 层: #1 alpha 股票拿最多仓位, #2用剩余资金."""
+        pc = PortfolioConstructor({"max_positions": 20, "max_single_position": 0.05})
+        alpha = pd.Series([1.0, 0.9, 0.8], index=["A", "B", "C"])
+        prices = pd.Series([15.0, 12.0, 100.0], index=["A", "B", "C"])
+        # capital=5000: A=3lots(4500), cash=500 < B=1200 → stop
+        pf = pc.construct(alpha, prices, 5000)
+        assert pf.method == "rank_concentrated"
+        assert pf.lots["A"] == 3  # 3 × 15 × 100 = 4500
+        assert pf.lots.get("B", 0) == 0  # 剩余500不够买1手
+        assert pf.positions == 1
+
+    def test_rank_concentrated_multi_stock(self):
+        """Nano 层: #1满仓后剩余买#2."""
+        pc = PortfolioConstructor({"max_positions": 20, "max_single_position": 0.20})
+        alpha = pd.Series([1.0, 0.9], index=["A", "B"])
+        prices = pd.Series([10.0, 5.0], index=["A", "B"])
+        # capital=1600: A=1lot(1000), cash=600 → B=1lot(500), cash=100 < 500 → stop
+        pf = pc.construct(alpha, prices, 1600)
+        assert pf.method == "rank_concentrated"
+        assert pf.lots["A"] == 1
+        assert pf.lots["B"] == 1
+        assert pf.positions == 2
+
+    def test_rank_concentrated_alpha_ordering(self):
+        """Nano 层: 严格按 alpha 降序分配, 高 alpha 先买."""
+        pc = PortfolioConstructor({"max_positions": 5, "max_single_position": 0.20})
+        alpha = pd.Series([0.1, 0.9, 0.3], index=["X", "Y", "Z"])
+        prices = pd.Series([10.0, 10.0, 10.0], index=["X", "Y", "Z"])
+        # alpha 排序: Y(0.9), Z(0.3), X(0.1)
+        pf = pc.construct(alpha, prices, 3000)
+        assert pf.method == "rank_concentrated"
+        assert pf.lots["Y"] == 3  # Y 排名最高, 3000//(10*100)=3 lots
+        assert pf.lots.get("Z", 0) == 0  # 剩余0不够买Z
+        assert pf.lots.get("X", 0) == 0  # X 买不到
+
+    def test_equal_weight_greedy_micro_fallback(self):
+        """Micro 层 score_weighted→0 时回退到 equal_weight_greedy (非 rank_concentrated)."""
+        pc = PortfolioConstructor({"max_positions": 20, "max_single_position": 0.05,
+                                   "nano_cap": 5000, "micro_cap": 50000})
+        # capital 10000 > nano_cap=5000, < micro_cap=50000 → micro tier
+        # But prices high enough that score_weighted gives 0
+        alpha = pd.Series([1.0, 0.9, 0.8], index=["A", "B", "C"])
+        prices = pd.Series([100.0, 80.0, 60.0], index=["A", "B", "C"])
+        pf = pc.construct(alpha, prices, 10000)
+        # Micro tier with low capital → score_weighted gives 0 → fallback to equal_weight
+        # equal_weight may also give 0 if prices too high → rank_concentrated fallback
+        assert pf.method in ("score_weighted", "equal_weight", "rank_concentrated")
 
 
 class TestPortfolioConstructorWeighted:

@@ -18,7 +18,8 @@ _log = get_logger("monitor.notify")
 
 # ── 配置读取 ──
 def _telegram_token():
-    return ""  # optional, set monitor.telegram_bot_token in config.yaml to enable
+    from quant.config.constants import _require_cfg
+    return _require_cfg("monitor.telegram_bot_token")  # (2026-07-21 audit H4)
 
 def _telegram_chat_id():
     return cfg("monitor.telegram_chat_id") or ""

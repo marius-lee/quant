@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v197"
+VERSION = "test-v198"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 def _log_exit(reason: str = ""):
@@ -182,8 +182,26 @@ def api_trades():
         else:
             raw_trades = repo.get_trades(None, limit=10000)  # 前端展示上限, 防止浏览器卡死, 非业务参数
             raw_positions = repo.get_positions(None)
-        trades = [{"date": (t.get("date") or "")[:19] if t.get("date") else "",
-                    "symbol": t["symbol"], "side": t["side"], "price": t["price"],
+        # enrich with stock names from market.db
+        _names = {}
+        try:
+            import sqlite3, os
+            _mdb = os.path.join(os.path.dirname(__file__), "..", "quant", "data", "market.db")
+            _mc = sqlite3.connect(_mdb)
+            _mc.execute("PRAGMA busy_timeout=3000")
+            _syms = list(set(t["symbol"] for t in (raw_trades or [])))
+            if _syms:
+                _ph = ",".join("?" * len(_syms))
+                _names = {r[0]: r[1] for r in _mc.execute(
+                    f"SELECT code, name FROM stocks WHERE code IN ({_ph})", _syms
+                ).fetchall()}
+            _mc.close()
+        except Exception:
+            pass
+
+        trades = [{"date": (t.get("created_at") or t.get("date") or "")[:19],
+                    "symbol": t["symbol"], "name": _names.get(t["symbol"], ""),
+                    "side": t["side"], "price": t["price"],
                     "shares": t["shares"], "pnl": t.get("pnl") or 0, "pnl_pct": t.get("pnl_pct") or 0}
                    for t in (raw_trades or [])]
         positions = [{"symbol": p["symbol"], "price": p.get("price", 0),

@@ -213,11 +213,11 @@ class TradeRepo:
     def get_trades(self, strategy: str = "", mode: str = "live", limit: int = 20) -> list[dict]:
         c = self._conn()
         if strategy:
-            rows = c.execute("SELECT date,symbol,side,price,shares,pnl,pnl_pct FROM sim_trades WHERE strategy=? AND mode=? ORDER BY id DESC LIMIT ?", (strategy, mode, limit)).fetchall()
+            rows = c.execute("SELECT date,symbol,side,price,shares,pnl,pnl_pct,created_at FROM sim_trades WHERE strategy=? AND mode=? ORDER BY id DESC LIMIT ?", (strategy, mode, limit)).fetchall()
         else:
-            rows = c.execute("SELECT date,symbol,side,price,shares,pnl,pnl_pct FROM sim_trades ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            rows = c.execute("SELECT date,symbol,side,price,shares,pnl,pnl_pct,created_at FROM sim_trades ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         c.close()
-        return [{"date": r[0], "symbol": r[1], "side": r[2], "price": r[3], "shares": r[4], "pnl": r[5], "pnl_pct": r[6]} for r in rows]
+        return [{"date": r[0], "symbol": r[1], "side": r[2], "price": r[3], "shares": r[4], "pnl": r[5], "pnl_pct": r[6], "created_at": r[7]} for r in rows]
 
     def get_sells(self, strategy: str, mode: str = "live") -> list:
         c = self._conn()

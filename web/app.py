@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v198"
+VERSION = "test-v199"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 def _log_exit(reason: str = ""):
@@ -193,11 +193,11 @@ def api_trades():
             if _syms:
                 _ph = ",".join("?" * len(_syms))
                 _names = {r[0]: r[1] for r in _mc.execute(
-                    f"SELECT code, name FROM stocks WHERE code IN ({_ph})", _syms
+                    f"SELECT symbol, name FROM stocks WHERE symbol IN ({_ph})", _syms
                 ).fetchall()}
             _mc.close()
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.warning(f"api_trades: stock name lookup failed (non-fatal): {_e}")
 
         trades = [{"date": (t.get("created_at") or t.get("date") or "")[:19],
                     "symbol": t["symbol"], "name": _names.get(t["symbol"], ""),

@@ -866,7 +866,10 @@ class DataStore:
                                     tv_str = row[1] if len(row) > 1 else ''
                                     tv = float(tv_str) if tv_str and tv_str.strip() else 0.0
                                     break
-                        break  # 成功, 跳出重试循环
+                        else:
+                            if _retry == 0 and _bs_processed < 5:
+                                logger.warning(f"turnover backfill {d}: baostock {code} error — {_rs.error_msg}")
+                        break  # 跳出重试循环
                     except Exception as _e:
                         if _retry < 2:
                             _time.sleep(2 * (_retry + 1))  # 退避: 2s/4s/6s
@@ -883,7 +886,7 @@ class DataStore:
                     _rate = _bs_processed / _elapsed if _elapsed > 0 else 0
                     _eta = (total_stocks - _bs_processed) / _rate if _rate > 0 else 0
                     logger.info(f"turnover backfill: {_bs_processed}/{total_stocks} ({100*_bs_processed//total_stocks}%) "
-                                f"{_rate:.1f}stocks/s ETA={_eta/60:.0f}min updated={total_updated}")
+                                f"{_rate:.1f}stocks/s ETA={_eta/60:.0f}min today={updated_today} total={total_updated}")
                 if _bs_processed % 100 == 0:
                     conn.commit()  # 每100只提交一次, 防数据丢失
                 _time.sleep(_BS_INTERVAL)

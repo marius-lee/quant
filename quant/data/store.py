@@ -835,8 +835,10 @@ class DataStore:
         # ── baostock K线拉取间隔 ──
         _BS_INTERVAL = _require_cfg("data.rate_limit.baostock_per_stock_sec")  # 来源: config.yaml, 默认0.3s
 
+        _bs_t0 = _time.time()
         total_updated = 0
         _bs_processed = 0
+        logger.info(f"turnover backfill: starting, first progress at 50 stocks (~{_BS_INTERVAL * 50 + 7.5:.0f}s)")
         for d_offset in range((gap_end_dt - gap_start_dt).days + 1):
             d = (gap_start_dt + timedelta(days=d_offset)).strftime("%Y-%m-%d")
             if not is_trading_day(datetime.strptime(d, "%Y-%m-%d").date()):
@@ -876,9 +878,12 @@ class DataStore:
                     updated_today += 1
 
                 _bs_processed += 1
-                if _bs_processed % 500 == 0:
-                    logger.info(f"turnover backfill: {_bs_processed}/{total_stocks} stocks processed, "
-                                f"{total_updated} updated so far")
+                if _bs_processed % 50 == 0:
+                    _elapsed = _time.time() - _bs_t0
+                    _rate = _bs_processed / _elapsed if _elapsed > 0 else 0
+                    _eta = (total_stocks - _bs_processed) / _rate if _rate > 0 else 0
+                    logger.info(f"turnover backfill: {_bs_processed}/{total_stocks} ({100*_bs_processed//total_stocks}%) "
+                                f"{_rate:.1f}stocks/s ETA={_eta/60:.0f}min updated={total_updated}")
                 if _bs_processed % 100 == 0:
                     conn.commit()  # 每100只提交一次, 防数据丢失
                 _time.sleep(_BS_INTERVAL)

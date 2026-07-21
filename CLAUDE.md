@@ -32,6 +32,24 @@ This file provides guidance to Claude Code when working with code in this reposi
 - **只用 heredoc 或 apply_patch 编辑文件**。严禁用 sed 按行号修改（行号总会漂移）。
 - heredoc 模板: `cat > file.py << 'PYEOF' ... PYEOF`
 
+- **YAML 文件禁止 apply_patch** — context 行空格前缀叠加 YAML 缩进会产生偏移。必须用:
+  ```bash
+  python3 << 'PYEOF'
+  import yaml
+  with open('path.yaml') as f: cfg = yaml.safe_load(f)
+  cfg['key'] = value
+  with open('path.yaml', 'w') as f: yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+  PYEOF
+  ```
+- **VERSION 行禁止 apply_patch** — 改用 re.sub 精确替换:
+  ```bash
+  python3 << 'PYEOF'
+  import re; src = open('web/app.py').read()
+  src = re.sub(r'VERSION = "test-v\d+"', 'VERSION = "test-v{N}"', src)
+  open('web/app.py', 'w').write(src)
+  PYEOF
+  ```
+
 ### 零 Fallback（硬约束）
 - **严禁 fallback**。任何 `try/except` 捕获后不允许降级返回默认值或跳过错误。
 - 配置读取统一用 `_require_cfg("key")`，key 缺失 → KeyError → fail-fast。示范:
@@ -72,9 +90,10 @@ This file provides guidance to Claude Code when working with code in this reposi
 | 规则 | 说明 |
 |------|------|
 | 零 fallback | try/except 不降级，不吞错误 |
-| heredoc/edit | 不用 sed 按行号 |
+| heredoc/edit | 不用 sed 按行号；YAML/VERSION 禁 apply_patch |
 | 读文档先 | 改代码前必读相关 doc |
-| 版本号 | 每次修改推进 test-vXX |
+| 版本号 | 每次修改推进 test-vXX；用 re.sub，禁 apply_patch |
+| 重启 | Agent 只给命令文本，用户执行 |
 
 ### 编辑后验证（硬约束）
 - **每次文件编辑后必须**:

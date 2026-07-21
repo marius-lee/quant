@@ -40,7 +40,7 @@ def sync_date(date_str, conn=None):
             rs = bs.query_history_k_data_plus(
                 bs_code,
                 "date,code,close,peTTM,pbMRQ",
-                start_date=date_str.replace('-', '-'), end_date=date_str.replace('-', '-'),
+                start_date=date_str, end_date=date_str,
                 frequency="d", adjustflag="2")
             rows = []
             while rs.next():

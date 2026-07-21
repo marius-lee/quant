@@ -857,12 +857,12 @@ class DataStore:
                     try:
                         _rs = _bs.query_history_k_data_plus(
                             code, "date,turn",
-                            start_date=d.replace('-', ''), end_date=d.replace('-', ''),
+                            start_date=d, end_date=d,
                             frequency="d", adjustflag="2")
                         if _rs.error_code == '0':
                             while _rs.next():
                                 row = _rs.get_row_data()
-                                if row[0] == d.replace('-', ''):
+                                if row[0] == d:
                                     tv_str = row[2] if len(row) > 2 else ''
                                     tv = float(tv_str) if tv_str and tv_str.strip() else 0.0
                                     break

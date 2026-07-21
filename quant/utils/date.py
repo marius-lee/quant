@@ -77,11 +77,13 @@ def to_compact(d) -> str:
 #   sina:       YYYY-MM-DD (后过滤比较, API 返回此格式)
 #   tencent:    YYYYMMDD  (beg, end 参数)
 #   akshare:    YYYYMMDD  (start_date, end_date)
+#   baostock:   YYYY-MM-DD (start_date, end_date)
+#   eastmoney:  YYYYMMDD   (K线/行情 API)
 #
 # 规则:
-#   1. 所有对 tushare/akshare/tencent/zzshare API 的日期参数,
+#   1. 所有对 tushare/akshare/tencent/zzshare/eastmoney API 的日期参数,
 #      必须通过 as_compact() 转换. 禁止手动 .replace("-", "").
-#   2. 所有对 sina/pytdx 的后过滤日期比较, 使用 YYYY-MM-DD 格式,
+#   2. 所有对 sina/pytdx/baostock 的日期参数或后过滤比较, 使用 YYYY-MM-DD 格式,
 #      通过 as_iso() 或 to_str() 转换.
 #   3. SQLite 存取统一 YYYY-MM-DD — 由 store.py 的 _date_ok regex 保证.
 

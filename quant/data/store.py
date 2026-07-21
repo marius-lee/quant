@@ -762,14 +762,16 @@ class DataStore:
         return rows
 
     def backfill_turnover(self, limit: int = 0):
-        """回填换手率 — 用 sina HTTP 明文字段 turnover (来源: 2026-07-21 tushare daily 无 turnover_rate 实测)。
+        """回填换手率 — baostock 逐只拉取 K 线, 取 turn 字段 UPDATE daily。
 
-        sina K线接口: 免费、逐只、含 turnover 列, 0.05s/只 可承受 (HTTP明文, 实测无限流)。
-        来源: _fetch_sina_daily 已验证 turnover 字段可用; tushare daily 不含 turnover_rate
+        baostock 免费无需注册, 无硬限速, 建议 0.3s/只间隔 (来源: 2026-07-21 实测)。
+        turn 值与 tushare daily_basic turnover_rate 完全一致 (600519: 0.8492%)。
+        来源: scripts/check_turnover_sources.py 实测 + baostock 官方文档。
         """
-        import urllib.request, json as _json, time as _time, socket as _socket
+        import time as _time
         conn = self._connect()
 
+        # ── 确定回填日期范围 ──
         last_good = conn.execute("SELECT MAX(date) FROM daily WHERE turnover>0").fetchone()[0]
         if last_good is None:
             logger.info("turnover backfill: no turnover>0 data")
@@ -777,68 +779,120 @@ class DataStore:
 
         from datetime import datetime, timedelta
         from quant.execution.calendar import is_trading_day
-        gap_start_dt = datetime.strptime(last_good, "%Y-%m-%d") + timedelta(days=1)
-        gap_end_dt = datetime.today() - timedelta(days=1)
+        _today = datetime.today()
+        gap_start_dt = datetime.strptime(last_good, "%Y-%m-%d")
+        gap_end_dt = _today - timedelta(days=1)
 
-        logger.info(f"turnover backfill: gap {gap_start_dt.strftime('%Y-%m-%d')} to {gap_end_dt.strftime('%Y-%m-%d')} via sina")
+        # 收集所有缺口日期 (含 last_good 当天 — 只有6只BJ有turnover, 其余5421只需补)
+        gap_dates = []
+        for d_offset in range((gap_end_dt - gap_start_dt).days + 1):
+            d = (gap_start_dt + timedelta(days=d_offset)).strftime("%Y-%m-%d")
+            if is_trading_day(datetime.strptime(d, "%Y-%m-%d").date()):
+                gap_dates.append(d)
 
-        def _sina_code(sym):
-            if sym.startswith('920'): return f"bj{sym}"
-            if sym.startswith(('6','9')): return f"sh{sym}"
-            return f"sz{sym}"
+        if not gap_dates:
+            logger.info("turnover backfill: no trading days in gap, nothing to do")
+            return 0
+
+        logger.info(f"turnover backfill: gap {gap_dates[0]} to {gap_dates[-1]} "
+                    f"({len(gap_dates)} trading days) via baostock")
+
+        # ── baostock 标的代码映射 ──
+        def _bs_code(sym):
+            if sym.startswith('920'): return f"bj.{sym}"
+            if sym.startswith(('6','9')): return f"sh.{sym}"
+            return f"sz.{sym}"
+
+        # ── 收集需回填的 (symbol, date) ──
+        needs_fill = {}  # date -> [symbol, ...]
+        for d in gap_dates:
+            syms = [r[0] for r in conn.execute(
+                "SELECT symbol FROM daily WHERE date=? AND (turnover=0 OR turnover IS NULL)", (d,)
+            ).fetchall()]
+            if syms:
+                needs_fill[d] = syms
+
+        if not needs_fill:
+            logger.info("turnover backfill: all dates have complete turnover, nothing to do")
+            return 0
+
+        total_stocks = sum(len(v) for v in needs_fill.values())
+        _est_sec = total_stocks * 0.3 + total_stocks * 0.15  # 0.3s间隔 + ~0.15s/只 baostock查询
+        logger.info(f"turnover backfill: {total_stocks} stock×dates via baostock, ~{_est_sec/60:.0f}min estimated")
+
+        # ── baostock login ──
+        import baostock as _bs
+        try:
+            _lg = _bs.login()
+            if _lg.error_code != '0':
+                logger.error(f"baostock login failed: {_lg.error_msg}")
+                return 0
+            logger.info(f"baostock login: {_lg.error_msg}")
+        except Exception as _e:
+            logger.error(f"baostock import/login failed: {_e}")
+            return 0
+
+        # ── baostock K线拉取间隔 ──
+        _BS_INTERVAL = _require_cfg("data.rate_limit.baostock_per_stock_sec")  # 来源: config.yaml, 默认0.3s
 
         total_updated = 0
+        _bs_processed = 0
         for d_offset in range((gap_end_dt - gap_start_dt).days + 1):
             d = (gap_start_dt + timedelta(days=d_offset)).strftime("%Y-%m-%d")
             if not is_trading_day(datetime.strptime(d, "%Y-%m-%d").date()):
                 continue
-            syms = [r[0] for r in conn.execute(
-                "SELECT symbol FROM daily WHERE date=? AND (turnover=0 OR turnover IS NULL)", (d,)
-            ).fetchall()]
+            syms = needs_fill.get(d, [])
             if not syms:
                 continue
 
-            logger.info(f"turnover backfill {d}: {len(syms)} stocks via sina, ~{len(syms)*0.05:.0f}s estimated")
+            logger.info(f"turnover backfill {d}: {len(syms)} stocks via baostock")
             updated_today = 0
             for i, sym in enumerate(syms):
-                code = _sina_code(sym)
-                url = (f"http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
-                       f"CN_MarketData.getKLineData?symbol={code}&scale=240&datalen=2000")
-                try:
-                    _socket.setdefaulttimeout(_require_cfg("data.http_timeout.sina"))  # 防止 HTTP read 阶段挂起 (来源: 2026-07-21 sina hang 实测)
-                    req = urllib.request.Request(url, headers={
-                        "User-Agent": "Mozilla/5.0",
-                        "Referer": "https://finance.sina.com.cn",
-                    })
-                    data = _json.loads(urllib.request.urlopen(
-                        req, timeout=_require_cfg("data.http_timeout.sina")).read().decode("utf-8"))
-                except Exception as _e:
-                    if (i + 1) % 10 == 0:
-                        logger.warning(f"turnover backfill {d}: sina failed at stock {i+1}/{len(syms)} — {_e}")
-                    continue
-
+                code = _bs_code(sym)
+                # ── baostock 查询, 3次重试 ──
                 tv = 0.0
-                for bar in data:
-                    if bar.get("day") == d:
-                        tv = float(bar.get("turnover", 0) or 0)
-                        break
+                for _retry in range(3):
+                    try:
+                        _rs = _bs.query_history_k_data_plus(
+                            code, "date,turn",
+                            start_date=d.replace('-', ''), end_date=d.replace('-', ''),
+                            frequency="d", adjustflag="2")
+                        if _rs.error_code == '0':
+                            while _rs.next():
+                                row = _rs.get_row_data()
+                                if row[0] == d.replace('-', ''):
+                                    tv_str = row[2] if len(row) > 2 else ''
+                                    tv = float(tv_str) if tv_str and tv_str.strip() else 0.0
+                                    break
+                        break  # 成功, 跳出重试循环
+                    except Exception as _e:
+                        if _retry < 2:
+                            _time.sleep(2 * (_retry + 1))  # 退避: 2s/4s/6s
+                        else:
+                            logger.warning(f"turnover backfill {d}: baostock {code} failed after 3 retries — {_e}")
+
                 if tv > 0:
-                    conn.execute(
-                        "UPDATE daily SET turnover=? WHERE symbol=? AND date=?",
-                        (tv, sym, d))
+                    conn.execute("UPDATE daily SET turnover=? WHERE symbol=? AND date=?", (tv, sym, d))
                     updated_today += 1
 
-                if (i + 1) % 10 == 0:
-                    logger.info(f"turnover backfill {d}: {i+1}/{len(syms)} stocks, {updated_today} updated so far")
-                    conn.commit()
-                _time.sleep(0.05)  # sina HTTP明文, 实测无明确限流 (来源: 2026-07-21)
+                _bs_processed += 1
+                if _bs_processed % 500 == 0:
+                    logger.info(f"turnover backfill: {_bs_processed}/{total_stocks} stocks processed, "
+                                f"{total_updated} updated so far")
+                if _bs_processed % 100 == 0:
+                    conn.commit()  # 每100只提交一次, 防数据丢失
+                _time.sleep(_BS_INTERVAL)
 
             conn.commit()
             logger.info(f"turnover backfill {d}: done — {updated_today}/{len(syms)} updated")
             total_updated += updated_today
 
+        # ── baostock logout ──
+        _bs.logout()
+        logger.info("baostock logout")
+
         conn.commit()
-        logger.info(f"turnover backfill: {total_updated} stocks updated total")
+        logger.info(f"turnover backfill: {total_updated}/{total_stocks} stocks updated total")
         return total_updated
 
     def backfill_turnover_quotes(self, date: str = None):

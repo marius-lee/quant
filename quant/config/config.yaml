@@ -71,8 +71,9 @@ data:
     zzshare_per_stock_sec: 0.3        # zzshare 逐只间隔; 来源: 实测 0.2s, 加 0.1s 安全边际
     pytdx_per_stock_sec: 1.0          # pytdx TCP 逐只间隔; 来源: TCP 连接开销大(connect+disconnect), 保守 1s
     sina_per_stock_sec: 0.5           # sina HTTP 逐只间隔; 来源: 免费 HTTP 明文接口, 保守间隔
-    tencent_per_stock_sec: 0.5         # tencent em K线 逐只间隔; 来源: eastmoney CDN, 保守 (当前IP不可用)
-    akshare_per_stock_sec: 1.5        # akshare 逐只间隔 (含换手率); 来源: 历史实测稳定值
+   tencent_per_stock_sec: 0.5         # tencent em K线 逐只间隔; 来源: eastmoney CDN, 保守 (当前IP不可用)
+   akshare_per_stock_sec: 1.5        # akshare 逐只间隔 (含换手率); 来源: 历史实测稳定值
+    baostock_per_stock_sec: 0.3       # baostock 逐只间隔; 来源: 官方建议0.3s避免服务端断开, 实测稳定
     akshare_industry_sec: 0.8
   # ── 全量拉取源策略 (2026-07-20 TLS 指纹封禁根因分析) ──
   source_policy:

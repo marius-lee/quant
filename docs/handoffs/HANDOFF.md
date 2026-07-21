@@ -1,124 +1,152 @@
 ---
-# HANDOFF — 2026-07-21 (test-v173, turnover 数据链防御体系)
+# HANDOFF — 2026-07-21 (test-v174, baostock turnover 回填)
 
 ## 当前运行状态
-- **tushare token**: 已配置
+- **turnover 回填**: baostock 重写完成, 待手动跑
+- **exclude_zero_turnover_days**: 0 (临时关闭, 待回填完成后恢复5)
 - **daily 写入模式**: INSERT ... ON CONFLICT DO UPDATE (turnover 受 CASE WHEN 保护)
-- **_fetch_batch_tushare**: fields 不含 turnover_rate (API 不支持该字段)
-- **backfill_turnover**: sina 源 + socket 超时防护
-- **7 源回退链**: 全部可用, tencent/akshare IP封禁置末尾
+- **7 源回退链**: 全部可用
 - **因子库**: 上次物化 48 因子入库
+- **baostock**: 新增依赖, 免费无需注册, turn值与tushare一致
 
 ---
 
-## test-v173 — turnover 数据链三重防御 (2026-07-21)
+## test-v174 — baostock turnover 回填重写 (2026-07-21)
 
-### 根因链
+### 背景
 
-信号生成崩溃 direct cause: `pipeline.py:134` KeyError 'close' — get_symbols() 返回 0 只股票。
+test-v173 用 sina 做 backfill_turnover, 但 sina K线接口不含 turnover 字段 (实测确认)。
+诊断所有可用数据源后, baostock 是唯一满足条件的:
 
-完整因果链 (5 层):
-1. `_fetch_batch_tushare` 传 `turnover_rate` 字段 → tushare daily API 不支持 → 返回空
-2. Fallback 源 (tickflow/zzshare/pytdx) 无 turnover 字段 → INSERT OR REPLACE 覆写 turnover=0
-3. test-v168 DELETE-then-repull → batch_start 拉到 2020 → 89 万行被覆写
-4. UniverseRepo get_symbols() `_ref_turnover`='2026-07-10' (仅 6 只 BJ 股有 turnover>0)
-5. BJ 市场被 exclude_market 排除 → 0 只股票 → 空 DataFrame → KeyError
+| 源 | turnover字段 | 限速 | 批量 |
+|----|-------------|------|------|
+| sina K线 | ❌ 无 | 逐只 0.05s | N/A |
+| tickflow 行情(免费) | ❌ 无 | 5只/批 10次/分钟 | 5只 |
+| tushare daily_basic | ✅ turnover_rate | 1次/分钟 | 支持但限速无用 |
+| **baostock** | ✅ **turn** | **0.3s/只 无硬限** | 逐只 |
 
-数据验证:
-- turnover 覆盖率历史: 2025-11=17.9% (965只) → 2026-01=0.6% (35只全BJ) → 07-10=0.1% (6只BJ)
-- akshare IP 封禁后 turnover 覆盖断崖式下跌; tushare 因字段错误从未成功提供 turnover
-- 07-11~07-20 所有股票 turnover=0
+baostock turn 值与 tushare daily_basic turnover_rate 完全一致 (600519: 0.8492%)。
+来源: scripts/check_turnover_sources.py 实测。
 
-### 修改 1: _fetch_batch_tushare — 移除 turnover_rate 字段
+### backfill_turnover 重写
 
-**文件**: quant/data/store.py:463
+**文件**: quant/data/store.py:764-842
 
-**改前**: `fields="ts_code,trade_date,open,high,low,close,vol,amount,turnover_rate"`
-**改后**: `fields="ts_code,trade_date,open,high,low,close,vol,amount"`
+**旧策略**: sina HTTP K线, 逐只 urlopen, 读  字段 → 字段不存在 → 永远0 updated
+**新策略**: baostock login → 逐只 query_history_k_data_plus(date,turn) → UPDATE daily SET turnover
 
-**原因**: tushare `daily` API 不含 `turnover_rate` 字段 — 该字段仅在 `daily_basic` API 存在 (免费版 1 次/分钟, 无法批量用)。传不存在字段导致 API 返回空 DataFrame → fallback 源接盘 → turnover=0。
+设计要点:
+- 一次 login() 全量循环 logout(), 避免反复登录开销
+- 每只 0.3s 间隔 (config: rate_limit.baostock_per_stock_sec)
+- 3 次重试 + 指数退避 (2s/4s/6s)
+- 每 100 只 commit, 每 500 只打进度日志
+- 只写 turnover, 不碰 OHLCV (UPDATE daily SET turnover=? WHERE symbol=? AND date=?)
+- 覆盖 last_good 当天也包括 (07-10只有6只BJ有turnover, 其余5421只需补)
 
-**来源**: 2026-07-21 `scripts/test_tushare_turnover.py` 实测 — `pro.daily()` 返回列不含 `turnover_rate`。
+时间估算: 5400只 × 0.15s查询 + 0.3s间隔 ≈ 30分钟
 
-连带: `_norm_row` 的 turnover 参数从 `row.get("turnover_rate", 0)` 改为 `float(0.0)`, 注释说明 tushare 不提供 turnover, 由 backfill 补充。
+### .gitignore 修复
 
-### 修改 2: INSERT OR REPLACE → INSERT ... ON CONFLICT DO UPDATE
+**文件**: .gitignore
+ →  +  + 
+之前  匹配所有名为 data 的目录, 导致  源码也被 gitignore 屏蔽。
 
-**文件**: quant/data/store.py:1149
+### 诊断脚本
 
-**改前**:
-```sql
-INSERT OR REPLACE INTO daily
-(symbol,date,open,high,low,close,volume,amount,turnover)
-VALUES (?,?,?,?,?,?,?,?,?)
-```
-
-**改后**:
-```sql
-INSERT INTO daily
-(symbol,date,open,high,low,close,volume,amount,turnover)
-VALUES (?,?,?,?,?,?,?,?,?)
-ON CONFLICT(symbol, date) DO UPDATE SET
-open=excluded.open, high=excluded.high, low=excluded.low,
-close=excluded.close, volume=excluded.volume, amount=excluded.amount,
-turnover=CASE WHEN excluded.turnover > 0 THEN excluded.turnover ELSE turnover END
-```
-
-**原因**: INSERT OR REPLACE = DELETE + INSERT, 整行替换无法选择性保留列。fallback 源 (无 turnover) 写入时覆写 turnover=0, 破坏已有数据。ON CONFLICT DO UPDATE 允许 `CASE WHEN` 逐列判断: 新源 turnover=0 时保留旧值, turnover>0 时更新。
-
-**来源**: SQLite 3.24+ UPSERT 语法; daily 表已有 PRIMARY KEY (symbol, date)。
-
-### 修改 3: backfill_turnover — sina socket 超时防护
-
-**文件**: quant/data/store.py:808
-
-**改前**: `urllib.request.urlopen(req, timeout=_require_cfg("data.http_timeout.tushare"))`
-**改后**: `_socket.setdefaulttimeout(_require_cfg("data.http_timeout.sina"))` 在每次 urlopen 前设置 socket 级超时
-
-**原因**: `urllib.request.urlopen` 的 timeout 仅覆盖连接阶段, 不覆盖 HTTP response read 阶段。sina 某些请求在 read 阶段永久挂起 (实测), 导致 backfill 卡死。`socket.setdefaulttimeout` 设置 socket 级超时覆盖 read 阶段。
-
-**来源**: 2026-07-21 backfill_turnover hang 实测 (KeyboardInterrupt at `http.client` read 阶段)。
-
-**配置**: `config.yaml` 已有 `http_timeout.sina: 10` (秒)。
-
----
-
-## 当前数据源状态
-
-回退链: tushare(50股/批, ❌无turnover, 50/min) -> tickflow(批量, ❌) -> zzshare(逐只, ❌)
-       -> pytdx(TCP, ❌) -> sina(逐只, ✅turnover, 0.5s/只) -> tencent(em, ❌, IP封禁)
-       -> akshare(✅, IP封禁)
-
-限流:
-  tushare:    RateLimiter(50/min) — _fetch_batch_tushare 内 _tushare_limiter.wait()
-  tickflow:   config rate_limit.tickflow_batch_sec = 1.5s
-  zzshare:    config rate_limit.zzshare_per_stock_sec = 0.3s
-  pytdx:      config rate_limit.pytdx_per_stock_sec = 1.0s
-  sina:       config rate_limit.sina_per_stock_sec = 0.5s + socket timeout 10s
-  tencent:    IP 封禁中
-  akshare:    IP 封禁中
-
-API Key:
-  tushare:    token 已配置 ✅
-  tickflow:   api_key tk_868557a55bac4d1e859bf5be94087550
+新增 3 个 turnover 数据源诊断脚本:
+-  — sina K线返回字段
+-  — tickflow 行情 turnover 字段
+-  — tushare daily_basic 批量支持
+-  — 全数据源对比
 
 ---
 
 ## 下一步
 
-1. 重启 web 服务 (用户执行)
-2. 跑 sina backfill_turnover 补 07-11~07-20 换手率:
-   ```bash
-   cd /Users/mariusto/project/quant && PYTHONPATH=. .venv/bin/python3 -c "
-   from quant.data.store import DataStore
-   s = DataStore()
-   n = s.backfill_turnover()
-   s.close()
-   print(f'Updated: {n} rows')
-   "
-   ```
-3. 验证 turnover:
-   ```bash
-   PYTHONPATH=. .venv/bin/python3 scripts/check_turnover_progress.py
-   ```
-4. 手动跑信号生成验证不再崩溃
+1. 跑 baostock backfill_turnover:
+   [07-21 10:43:06] CRITICAL quant | 未捕获异常: ParserError: while parsing a block mapping
+  in "/Users/mariusto/project/quant/quant/config/config.yaml", line 53, column 3
+expected <block end>, but found '<block mapping start>'
+  in "/Users/mariusto/project/quant/quant/config/config.yaml", line 74, column 4
+  File "<string>", line 2, in <module>
+    from quant.data.store import DataStore
+  File "/Users/mariusto/project/quant/quant/data/store.py", line 18, in <module>
+    from quant.config.loader import load as _load_config
+  File "/Users/mariusto/project/quant/quant/config/loader.py", line 199, in <module>
+    validate()
+    ~~~~~~~~^^
+  File "/Users/mariusto/project/quant/quant/config/loader.py", line 65, in validate
+    cfg = load()
+  File "/Users/mariusto/project/quant/quant/config/loader.py", line 58, in load
+    _config = yaml.safe_load(f)
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/__init__.py", line 125, in safe_load
+    return load(stream, SafeLoader)
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/__init__.py", line 81, in load
+    return loader.get_single_data()
+           ~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/constructor.py", line 49, in get_single_data
+    node = self.get_single_node()
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/composer.py", line 36, in get_single_node
+    document = self.compose_document()
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/composer.py", line 55, in compose_document
+    node = self.compose_node(None, None)
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/composer.py", line 84, in compose_node
+    node = self.compose_mapping_node(anchor)
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/composer.py", line 133, in compose_mapping_node
+    item_value = self.compose_node(node, item_key)
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/composer.py", line 84, in compose_node
+    node = self.compose_mapping_node(anchor)
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/composer.py", line 127, in compose_mapping_node
+    while not self.check_event(MappingEndEvent):
+              ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/parser.py", line 98, in check_event
+    self.current_event = self.state()
+                         ~~~~~~~~~~^^
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/parser.py", line 438, in parse_block_mapping_key
+    raise ParserError("while parsing a block mapping", self.marks[-1],
+            "expected <block end>, but found %r" % token.id, token.start_mark)
+
+2. 验证 turnover:
+   [07-21 10:43:06] CRITICAL quant | 未捕获异常: ParserError: while parsing a block mapping
+  in "/Users/mariusto/project/quant/quant/config/config.yaml", line 53, column 3
+expected <block end>, but found '<block mapping start>'
+  in "/Users/mariusto/project/quant/quant/config/config.yaml", line 74, column 4
+  File "/Users/mariusto/project/quant/scripts/check_turnover_progress.py", line 2, in <module>
+    from quant.data.store import DataStore
+  File "/Users/mariusto/project/quant/quant/data/store.py", line 18, in <module>
+    from quant.config.loader import load as _load_config
+  File "/Users/mariusto/project/quant/quant/config/loader.py", line 199, in <module>
+    validate()
+    ~~~~~~~~^^
+  File "/Users/mariusto/project/quant/quant/config/loader.py", line 65, in validate
+    cfg = load()
+  File "/Users/mariusto/project/quant/quant/config/loader.py", line 58, in load
+    _config = yaml.safe_load(f)
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/__init__.py", line 125, in safe_load
+    return load(stream, SafeLoader)
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/__init__.py", line 81, in load
+    return loader.get_single_data()
+           ~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/constructor.py", line 49, in get_single_data
+    node = self.get_single_node()
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/composer.py", line 36, in get_single_node
+    document = self.compose_document()
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/composer.py", line 55, in compose_document
+    node = self.compose_node(None, None)
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/composer.py", line 84, in compose_node
+    node = self.compose_mapping_node(anchor)
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/composer.py", line 133, in compose_mapping_node
+    item_value = self.compose_node(node, item_key)
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/composer.py", line 84, in compose_node
+    node = self.compose_mapping_node(anchor)
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/composer.py", line 127, in compose_mapping_node
+    while not self.check_event(MappingEndEvent):
+              ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/parser.py", line 98, in check_event
+    self.current_event = self.state()
+                         ~~~~~~~~~~^^
+  File "/Users/mariusto/project/quant/.venv/lib/python3.14/site-packages/yaml/parser.py", line 438, in parse_block_mapping_key
+    raise ParserError("while parsing a block mapping", self.marks[-1],
+            "expected <block end>, but found %r" % token.id, token.start_mark)
+
+3. 回填完成后恢复 config: exclude_zero_turnover_days: 0 → 5

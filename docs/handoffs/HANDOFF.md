@@ -217,3 +217,42 @@ Kirby & Ostdiek (2012)、分析报告 C1/C3 结论一致。
 - docs/reports/capital-segmentation-analysis-2026-07-15.md (弃用标记)
 - CHANGELOG.md (弃用标记)
 - docs/handoffs/HANDOFF.md (本记录)
+---
+## test-v182 — tickflow API key 实时行情接入 + 当天日线数据路由 (2026-07-21)
+
+### 背景
+test-v181 修复了 Nano 层策略问题, 但 daily_data 任务对 07-21 拉取到 0 行。
+诊断发现: 全部 7 个数据源都返回 0 行 — tickflow 免费版 "日K为历史数据, 盘中不会实时更新",
+tushare 同理, pytdx/zzshare 也未入库当天数据, 腾讯/akshare TLS 指纹被封。
+
+用户在 tickflow.org 已注册并获取 API key, API key 支持 `tf.quotes.get()` 实时行情
+(含 OHLCV + turnover_rate), 但 _fetch_tickflow_daily 一直硬编码使用 TickFlow.free()。
+
+### 变更
+
+**1. store.py — 新增 _fetch_tickflow_quotes() 方法 (L670)**
+- 使用 `TickFlow(api_key=_require_cfg("data.tickflow_api_key"))` 拉实时行情
+- 映射 tickflow 行情字段 → 日线行格式: open/high/low/last_price/volume/amount/ext.turnover_rate
+- amount 元→千元 (与免费版 klines 对齐)
+- ext 字段兼容 Series/dict 两种返回格式 (tickflow SDK version variance)
+
+**2. store.py — _fetch_tickflow_daily() 当天路由 (L634-637)**
+- `datetime.today().strftime("%Y-%m-%d")` 判断当天日期
+- start_date >= 当天时 → 路由到 `_fetch_tickflow_quotes()` (API key 实时行情)
+- 历史日期 → 维持原逻辑 `TickFlow.free().klines.batch()` (历史K线)
+
+**3. 注释对齐**
+- _fetch_tickflow_daily docstring 补充路由说明 + 来源
+- _fetch_tickflow_quotes docstring 标注 "tickflow 免费版日K仅历史数据" + 来源
+- 回退链注释 (L1170-1176) 已正确标注 tickflow 为第一优先源
+
+### 影响
+- 当天日线数据现在可通过 tickflow API key 实时行情获取 (含 turnover_rate)
+- 历史数据拉取不受影响 (继续用免费版 klines.batch)
+- 回退链: tickflow(当天用API key) → zzshare → pytdx → sina → tencent → akshare → tushare(如有token)
+- 腾讯/akshare 仍在 TLS 指纹封禁中, 不影响 (tickflow 在链首即命中)
+
+### 涉及文件
+- quant/data/store.py (_fetch_tickflow_daily 路由 + _fetch_tickflow_quotes 新方法)
+- web/app.py (VERSION → test-v182)
+- docs/handoffs/HANDOFF.md (本记录)

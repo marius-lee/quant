@@ -175,7 +175,7 @@ def test_tushare():
     """TuShare Pro — 需要 token"""
     try:
         from quant.config.constants import _require_cfg
-        tok = _require_cfg("data.api.tushare_token")
+        tok = _require_cfg("data.tushare_token")
         import tushare as ts
         pro = ts.pro_api(tok)
         df = pro.daily(ts_code="600519.SH", start_date="20260715", end_date="20260720")
@@ -195,8 +195,6 @@ def test_tushare():
 if __name__ == "__main__":
     print(f"数据源连通性诊断 — 2026-07-20")
     print(f"公网IP: 39.144.89.6 (中国移动)")
-    print(f"诊断: eastmoney K线 API 触发单IP频率限制 → 空响应")
-    print(f"      实时行情API正常 → 非IP全站封禁, 是K线端点限频")
     print()
 
     results = {}
@@ -216,17 +214,26 @@ if __name__ == "__main__":
     print("\n── TuShare ──")
     results["tushare"]   = test_tushare()
 
-    # 汇总
+    # 汇总 — 根据实际测试结果输出
     print(f"\n{'='*60}")
     ok = sum(1 for v in results.values() if v is True)
     total = len(results)
     print(f"可用: {ok}/{total}")
     print()
-    print("当前可用数据管线:")
-    print("  实时行情: eastmoney stock/get ✅ | 腾讯 qt.gtimg.cn ✅")
-    print("  K线(历史): pytdx ✅ | zzshare ✅ | 新浪(未复权) ✅")
-    print("  阻塞中: eastmoney stock/kline/get — 单IP限频, 换IP或等待解封")
+    print("数据管线汇总:")
+    name_map = {
+        "em_quote": "eastmoney实时行情", "em_kline": "eastmoney K线",
+        "pytdx": "pytdx通达信", "sina": "新浪K线", "zzshare": "zzshare",
+        "tencent": "腾讯行情", "tushare": "tushare"
+    }
+    for name, ok_flag in results.items():
+        label = name_map.get(name, name)
+        mark = "\u2705" if ok_flag else "\u274c"
+        print(f"  {mark} {label}")
     print()
-    print("建议: eastmoney 限频通常 30min~2h 自动解除。如持续被封,")
-    print("      切到 pytdx(通达信TCP) + zzshare 维持 K线同步。")
+    if not results.get("em_kline") and not results.get("tushare"):
+        print("建议: K线源全不可用, 检查网络或稍后重试")
+    elif not results.get("em_kline"):
+        print("建议: eastmoney K线被封, 用 tushare/pytdx/sina/zzshare 维持 K线同步")
     print(f"{'='*60}")
+

@@ -35,8 +35,8 @@ def _init_cache():
     _backend = get_backend(cfg)
     _stock_list_cache = DataCache("store:stock_list", ttl_hours=24, backend=_backend)
     _industry_cache = DataCache("store:industry", ttl_hours=24, backend=_backend)
-    _tushare_limiter = RateLimiter("tushare", calls_per_minute=50, backend=_backend)  # tushare免费版实限50次/分钟
-    _akshare_limiter = RateLimiter("akshare", calls_per_minute=60, backend=_backend)
+    _tushare_limiter = RateLimiter("tushare", calls_per_minute=_require_cfg("data.rate_limit.tushare_calls_per_minute"), burst=2, backend=_backend)  # burst=2: 防初始爆发触发服务端封禁 (来源: 2026-07-21 根因分析)  # 来源: config.yaml data.rate_limit.tushare_calls_per_minute
+    _akshare_limiter = RateLimiter("akshare", calls_per_minute=_require_cfg("data.rate_limit.akshare_calls_per_minute"), burst=2, backend=_backend)  # burst=2 同上  # 来源: config.yaml data.rate_limit.akshare_calls_per_minute
     logger.debug("cache layer initialized (backend=%s)", type(_backend).__name__)
 
 def _ts_code(sym: str) -> str:
@@ -63,7 +63,13 @@ class DataStore:
     def __init__(self, db_path: str = "quant/data/market.db",
                  tushare_token: str = None):
         self.db_path = db_path
-        self.token = tushare_token if tushare_token is not None else os.environ.get("TUSHARE_TOKEN", "")
+        # tushare token 优先级: 显式传参 > 环境变量 > config.yaml (来源: HANDOFF test-v168)
+        _token = tushare_token
+        if not _token:
+            _token = os.environ.get("TUSHARE_TOKEN", "")
+        if not _token:
+            _token = _require_cfg("data.tushare_token")
+        self.token = _token
         self._conn = None
         self._local = threading.local()  # thread-local connections for WAL concurrent reads
         self._lock = threading.Lock()     # guard shared _conn creation (P71)
@@ -433,7 +439,7 @@ class DataStore:
             return None
         import tushare as ts
         ts.set_token(self.token)
-        pro = ts.pro_api()
+        pro = ts.pro_api(timeout=_require_cfg("data.http_timeout.tushare"))  # 来源: config.yaml
         ts_codes_parts = []
         for s in symbols:
             if s.startswith("92"):
@@ -452,9 +458,9 @@ class DataStore:
         _start = to_compact(start_date)  # 统一转 YYYYMMDD (来源: date.py 策略)
         df = pro.daily(
             ts_code=code_str,
-            start_date=_start,
-            end_date=to_compact(datetime.today()),
-            fields="ts_code,trade_date,open,high,low,close,vol,amount,turnover_rate",
+           start_date=_start,
+           end_date=to_compact(datetime.today()),
+            fields="ts_code,trade_date,open,high,low,close,vol,amount",
         )
         if df is None or df.empty:
             return None
@@ -465,7 +471,7 @@ class DataStore:
                 float(row.get("open", 0)), float(row.get("high", 0)),
                 float(row.get("low", 0)), float(row.get("close", 0)),
                 float(row.get("vol", 0)), float(row.get("amount", 0)),
-                float(row.get("turnover_rate", 0) or 0)))  # fields 现在包含 turnover_rate
+                float(0.0)))  # tushare daily API 不含 turnover_rate (来源: 2026-07-21 实测)
         logger.info(f"[tushare] {code_str}: {len(rows)} rows")
         return rows
 
@@ -482,7 +488,7 @@ class DataStore:
                 "User-Agent": "Mozilla/5.0",
                 "Referer": "https://finance.sina.com.cn",
             })
-            data = _json.loads(urllib.request.urlopen(req, timeout=_require_cfg("data.http_timeout.tushare")).read().decode("utf-8"))
+            data = _json.loads(urllib.request.urlopen(req, timeout=_require_cfg("data.http_timeout.sina")).read().decode("utf-8"))
             for bar in data:
                 d = bar["day"]
                 if d < start_date:
@@ -756,99 +762,84 @@ class DataStore:
         return rows
 
     def backfill_turnover(self, limit: int = 0):
-        """回填换手率 — 用 tushare 批量获取 turnover_rate, UPDATE existing rows。
+        """回填换手率 — 用 sina HTTP 明文字段 turnover (来源: 2026-07-21 tushare daily 无 turnover_rate 实测)。
 
-        不 DELETE、不重拉 OHLCV — 仅 UPDATE turnover 列。避免 DELETE-then-repull
-        策略在 tushare 无数据时被回退源(如 tickflow)覆写为 turnover=0 的问题。
-        tushare 50 股/批, RateLimiter(200/min) 自动限流。
-        来源: 2026-07-21 debug_tushare_fields.py 实测; test-v170 修复
+        sina K线接口: 免费、逐只、含 turnover 列, 0.05s/只 可承受 (HTTP明文, 实测无限流)。
+        来源: _fetch_sina_daily 已验证 turnover 字段可用; tushare daily 不含 turnover_rate
         """
-        try:
-            import tushare as ts
-        except ImportError:
-            logger.warning("tushare not installed")
-            return 0
-        if not self.token:
-            logger.warning("tushare token not configured")
-            return 0
-
-        from datetime import datetime, timedelta
-        ts.set_token(self.token)
-        pro = ts.pro_api()
+        import urllib.request, json as _json, time as _time, socket as _socket
         conn = self._connect()
 
-        last_good = conn.execute(
-            "SELECT MAX(date) FROM daily WHERE turnover>0"
-        ).fetchone()[0]
+        last_good = conn.execute("SELECT MAX(date) FROM daily WHERE turnover>0").fetchone()[0]
         if last_good is None:
             logger.info("turnover backfill: no turnover>0 data")
             return 0
 
+        from datetime import datetime, timedelta
+        from quant.execution.calendar import is_trading_day
         gap_start_dt = datetime.strptime(last_good, "%Y-%m-%d") + timedelta(days=1)
         gap_end_dt = datetime.today() - timedelta(days=1)
-        gap_start = gap_start_dt.strftime("%Y-%m-%d")
-        gap_end = gap_end_dt.strftime("%Y-%m-%d")
 
-        logger.info(f"turnover backfill: gap {gap_start} to {gap_end} via tushare UPDATE")
+        logger.info(f"turnover backfill: gap {gap_start_dt.strftime('%Y-%m-%d')} to {gap_end_dt.strftime('%Y-%m-%d')} via sina")
 
-        # 逐日: 取 turnover=0 的股票 → tushare 拉 turnover_rate → UPDATE
+        def _sina_code(sym):
+            if sym.startswith('920'): return f"bj{sym}"
+            if sym.startswith(('6','9')): return f"sh{sym}"
+            return f"sz{sym}"
+
         total_updated = 0
-        import time as _time
         for d_offset in range((gap_end_dt - gap_start_dt).days + 1):
             d = (gap_start_dt + timedelta(days=d_offset)).strftime("%Y-%m-%d")
+            if not is_trading_day(datetime.strptime(d, "%Y-%m-%d").date()):
+                continue
             syms = [r[0] for r in conn.execute(
                 "SELECT symbol FROM daily WHERE date=? AND (turnover=0 OR turnover IS NULL)", (d,)
             ).fetchall()]
             if not syms:
                 continue
 
-            # 转 tushare 代码格式
-            def _to_ts(s):
-                if s.startswith("92"): return f"{s}.BJ"
-                if s.startswith(("6","5","9")): return f"{s}.SH"
-                return f"{s}.SZ"
-
-            batch = 50
+            logger.info(f"turnover backfill {d}: {len(syms)} stocks via sina, ~{len(syms)*0.05:.0f}s estimated")
             updated_today = 0
-            for i in range(0, len(syms), batch):
-                chunk = syms[i:i+batch]
-                codes = ",".join(_to_ts(s) for s in chunk)
-                _init_cache()
-                _tushare_limiter.wait()
+            for i, sym in enumerate(syms):
+                code = _sina_code(sym)
+                url = (f"http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+                       f"CN_MarketData.getKLineData?symbol={code}&scale=240&datalen=2000")
                 try:
-                    df = pro.daily(
-                        ts_code=codes,
-                        start_date=to_compact(d),
-                        end_date=to_compact(d),
-                        fields="ts_code,trade_date,turnover_rate",
-                    )
+                    _socket.setdefaulttimeout(_require_cfg("data.http_timeout.sina"))  # 防止 HTTP read 阶段挂起 (来源: 2026-07-21 sina hang 实测)
+                    req = urllib.request.Request(url, headers={
+                        "User-Agent": "Mozilla/5.0",
+                        "Referer": "https://finance.sina.com.cn",
+                    })
+                    data = _json.loads(urllib.request.urlopen(
+                        req, timeout=_require_cfg("data.http_timeout.sina")).read().decode("utf-8"))
                 except Exception as _e:
-                    logger.warning(f"tushare daily failed for {d} chunk {i}: {_e}")
+                    if (i + 1) % 10 == 0:
+                        logger.warning(f"turnover backfill {d}: sina failed at stock {i+1}/{len(syms)} — {_e}")
                     continue
-                if df is None or df.empty:
-                    continue
-                for _, row in df.iterrows():
-                    sym = row["ts_code"].split(".")[0]
-                    tv = float(row.get("turnover_rate", 0) or 0)
-                    if tv > 0:
-                        conn.execute(
-                            "UPDATE daily SET turnover=? WHERE symbol=? AND date=?",
-                            (tv, sym, d))
-                        updated_today += 1
-                conn.commit()
 
-            n_done = min(i + batch, len(syms))
-            if i % 500 == 0:
-                logger.info(f"turnover backfill {d}: {n_done}/{len(syms)} stocks processed")
-            if updated_today > 0:
-                logger.info(f"turnover backfill: {d} → {updated_today}/{len(syms)} stocks updated")
+                tv = 0.0
+                for bar in data:
+                    if bar.get("day") == d:
+                        tv = float(bar.get("turnover", 0) or 0)
+                        break
+                if tv > 0:
+                    conn.execute(
+                        "UPDATE daily SET turnover=? WHERE symbol=? AND date=?",
+                        (tv, sym, d))
+                    updated_today += 1
+
+                if (i + 1) % 10 == 0:
+                    logger.info(f"turnover backfill {d}: {i+1}/{len(syms)} stocks, {updated_today} updated so far")
+                    conn.commit()
+                _time.sleep(0.05)  # sina HTTP明文, 实测无明确限流 (来源: 2026-07-21)
+
+            conn.commit()
+            logger.info(f"turnover backfill {d}: done — {updated_today}/{len(syms)} updated")
             total_updated += updated_today
 
         conn.commit()
-        logger.info(f"turnover backfill: {total_updated} stocks updated "
-                    f"({gap_start} to {gap_end})")
+        logger.info(f"turnover backfill: {total_updated} stocks updated total")
         return total_updated
-
 
     def backfill_turnover_quotes(self, date: str = None):
         """用 tickflow 实时行情回填当日换手率。
@@ -920,7 +911,7 @@ class DataStore:
                         (tv, sym, date))
                     total_updated += 1
             conn.commit()
-            import time; time.sleep(6)  # rate limit: 10 req/min (tickflow free tier)
+            import time; time.sleep(_require_cfg("data.rate_limit.tickflow_quote_batch_sec"))  # tickflow 免费版 10次/分钟; 来源: test-v169 实测
             if batch_idx % 10 == 0 or batch_idx == batch_count - 1:
                 elapsed = __import__('time').time() - t_start
                 eta = (batch_count - batch_idx - 1) * 6
@@ -1068,19 +1059,16 @@ class DataStore:
         else:
             logger.info(f"daily update: {len(symbols)} specified stocks")
 
-        # 2. 初始化 tushare（有 token 时作为备源）
-        pro = None
-        if self.token:
-            import tushare as ts
-            ts.set_token(self.token)
-            pro = ts.pro_api()
+        # 2. tushare 作为首选源 (self.token 从 __init__ 三阶回退读取)
+        # _fetch_batch_tushare 内部自行创建 ts.pro_api(), 此处仅做 gate 判断
+        # 来源: 2026-07-21 消除冗余 pro_api() 创建
         total_new = 0
         batch_size = _require_cfg("data.batch_size")  # 批量大小
         sources = {}     # source → count
 
-        # total_new: INSERT OR REPLACE 语义下统计的是"写入行数"(含覆写已有行)
+        # total_new: INSERT ... ON CONFLICT DO UPDATE 语义下统计的是"受影响行数"(INSERT+UPDATE)
         # 非传统"新增行数" — 对 stale_recent 全量刷新场景会等于全量行数
-        # 来源: 2026-07-21 全链路逻辑分析 (INSERT OR IGNORE → REPLACE)
+        # turnover 列受 CASE WHEN 保护: 新源 turnover=0 时保留旧值 (来源: 2026-07-21)
         for i in range(0, len(symbols), batch_size):
             chunk = symbols[i:i + batch_size]
             # 每只股票独立的 start_date
@@ -1120,7 +1108,7 @@ class DataStore:
                 ("tencent", lambda: self._fetch_tencent_daily(chunk, batch_start)),
                 ("akshare", lambda: self._fetch_akshare_daily(chunk, batch_start)),
             ]
-            if pro is not None:
+            if self.token:
                 all_sources.insert(0, ("tushare", lambda: self._fetch_batch_tushare(chunk, batch_start)))
             ordered = all_sources
             for src_name, fetch_fn in ordered:
@@ -1157,14 +1145,18 @@ class DataStore:
                     rows = None
                 else:
                     rows = _clean
-            if rows:
-                conn.executemany(
-                    """INSERT OR REPLACE INTO daily
+                if rows:
+                    conn.executemany(
+                        """INSERT INTO daily
                        (symbol,date,open,high,low,close,volume,amount,turnover)
-                       VALUES (?,?,?,?,?,?,?,?,?)""", rows
-                )
-                total_new += len(rows)
-                sources[source] = sources.get(source, 0) + 1
+                       VALUES (?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(symbol, date) DO UPDATE SET
+                       open=excluded.open, high=excluded.high, low=excluded.low,
+                       close=excluded.close, volume=excluded.volume, amount=excluded.amount,
+                       turnover=CASE WHEN excluded.turnover > 0 THEN excluded.turnover ELSE turnover END""", rows
+                    )
+                    total_new += len(rows)
+                    sources[source] = sources.get(source, 0) + 1
 
             # 每批打印进度 + 样本日志 (每批50只)
             conn.commit()
@@ -1177,7 +1169,7 @@ class DataStore:
             done = min(i + batch_size, len(symbols))
             logger.info(f"daily [{source}] {done}/{len(symbols)} ({pct:.0f}%) {total_new}新行{sample_str}")
 
-            # tushare 限流由 _fetch_batch_tushare 内 RateLimiter(200/min) 统一管控
+            # tushare 限流由 _fetch_batch_tushare 内 RateLimiter 统一管控 (calls_per_minute 来自 config)
             # 不再额外 sleep — 避免双重限流 (来源: 2026-07-21 全链路逻辑分析)
 
         conn.commit()

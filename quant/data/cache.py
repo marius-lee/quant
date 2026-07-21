@@ -60,19 +60,28 @@ class NoopBackend(CacheBackend):
     def delete(self, key: str):
         self._cache.pop(key, None)
 
-    def check_rate_limit(self, namespace: str, max_calls: int, window_sec: int) -> bool:
-        """线程本地令牌桶 — 滑动窗口计数。"""
+    def check_rate_limit(self, namespace: str, max_calls: int, window_sec: int, burst: int = None) -> bool:
+        """线程本地令牌桶 — 滑动窗口计数。
+
+        max_calls: 每分钟允许调用数, 控制 refill 速率 (tokens/s = max_calls/window_sec)
+        burst:     桶容量上限 (默认 = max_calls), 限制突发并发数
+        来源: 2026-07-21 burst=2 导制 refill 速率降至 2/60 tokens/s 的根因分析
+        """
+        cap = burst if burst is not None else max_calls
         now = time.time()
         bucket = self._buckets.get(namespace)
         if not bucket:
-            self._buckets[namespace] = (max_calls - 1, now)
+            self._buckets[namespace] = (cap - 1, now)
             return True
         tokens, last = bucket
         elapsed = now - last
-        tokens = min(max_calls, tokens + int(elapsed / window_sec * max_calls))
+        tokens = min(cap, tokens + int(elapsed / window_sec * max_calls))
         if tokens > 0:
             self._buckets[namespace] = (tokens - 1, now)
             return True
+        # 被拒绝时依然更新 last — 防止 last 冻结导致 elapsed 不增加，tokens 永不 refill。
+        # 来源: 2026-07-21 tushare 超限全链路根因分析
+        self._buckets[namespace] = (tokens, now)
         return False
 
     def acquire_lock(self, lock_name: str, ttl: int) -> bool:
@@ -121,8 +130,10 @@ class RateLimiter:
         self._backend = backend or _backend
 
     def is_allowed(self) -> bool:
+        # max_calls=calls_per_minute 控制 refill 速率, burst 限制桶容量上限
+        # 来源: 2026-07-21 burst=2 导制 refill 降至 2/60 tokens/s 的根因分析
         return self._backend.check_rate_limit(
-            self.namespace, self.burst, 60)
+            self.namespace, self.calls_per_minute, 60, self.burst)
 
     def wait_if_needed(self, timeout: float = 60.0):
         """阻塞等待直到允许调用 (最多 timeout 秒)。"""

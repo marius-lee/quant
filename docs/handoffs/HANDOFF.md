@@ -505,3 +505,33 @@ turnover 回填期间临时设为 0 防止误过滤。baostock 回填已于 07-2
 - quant/config/config.yaml (1行)
 - web/app.py (VERSION → test-v195)
 - docs/handoffs/HANDOFF.md (本记录)
+
+---
+## test-v196 — Sharpe 日频权益曲线 + HMM 跨天一致性 (2026-07-22)
+
+### 背景
+审计报告两项算法改进:
+1. Sharpe 计算: 从逐笔交易 capital_after 推算日收益 → 不准确 (非每日估值)
+2. HMM 市场状态: 每天重训练, 随机初始化导致跨天标签不一致
+
+### 变更
+
+**1. report.py — Sharpe 改用 daily_equity 日频权益曲线**
+- 优先从 `daily_equity` 表读取每日 `total_equity` → pct_change → 日收益序列
+- `daily_equity` 由 state_broker 每次更新时写入 (test-v190 已建表)
+- 回退: daily_equity 不足 20 条时用旧方法 (逐笔交易 capital_after)
+
+**2. detector.py — HMM 模型持久化 + 周频重训练**
+- 首次训练后保存到 `quant/data/hmm_regime.pkl`
+- 后续调用加载缓存模型 (不重训) → 跨天标签一致
+- 距上次训练超过 `regime.retrain_days` (默认7天) 才重训练
+- 缓存损坏时自动回退到全量重训
+
+**3. config.yaml — 新增 `regime.retrain_days: 7`**
+
+### 涉及文件
+- quant/monitor/report.py (Sharpe from daily_equity)
+- quant/regime/detector.py (HMM persist + retrain_days)
+- quant/config/config.yaml (regime.retrain_days)
+- web/app.py (VERSION → test-v196)
+- docs/handoffs/HANDOFF.md (本记录)

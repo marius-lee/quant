@@ -264,3 +264,5 @@ universe:
   min_price: 2.0
   min_daily_amount: 500000
   exclude_zero_turnover_days: 5
+regime:
+  retrain_days: 7

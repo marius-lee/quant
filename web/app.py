@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v188"
+VERSION = "test-v189"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 def _log_exit(reason: str = ""):
@@ -80,17 +80,11 @@ from web.shared import get_state, update_state  # deprecated, kept for compat
 def index():
     """首页 — 传递 perf 数据供服务端渲染仪表盘."""
     try:
-        import sqlite3, os
-        TRADE_DB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "quant", "data", "trades.db")
-        tc = sqlite3.connect(TRADE_DB)
         from quant.data.trade_repo import TradeRepo
-        base = TradeRepo().get_initial_capital("quant")
-        capital = TradeRepo().get_cash("quant") or base
-        position_cost = tc.execute(
-            "SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy='quant' AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy='quant')"
-        ).fetchone()[0]
-        tc.close()
-        # use book cost for initial render (no quotes)
+        repo = TradeRepo()
+        base = repo.get_initial_capital("quant")
+        capital = repo.get_cash("quant") or base
+        position_cost = repo.get_open_position_cost("quant")  # (2026-07-21 audit M3)
         total_asset = round(capital + position_cost, 2)
         total_pnl = round(total_asset - base, 2)
         perf = {"total_pnl": total_pnl, "total_asset": total_asset, "initial_capital": base}

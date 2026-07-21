@@ -55,12 +55,32 @@ def generate_report(
 
     win_rate = compute_win_rate(trades)
 
-    # 计算未实现盈亏 (简化: 当前持仓市值 vs 成本)
+    # 计算未实现盈亏: 当前持仓(close - buy_price) * shares
     unrealized = 0.0
     realized = 0.0
     for t in trades:
         if t.get("pnl", 0):
             realized += t.get("pnl", 0)
+    # 从日线取最新收盘价估算未实现盈亏 (2026-07-21 audit M6)
+    if positions:
+        from quant.data.store import DataStore
+        try:
+            ds = DataStore()
+            syms = [p.get("symbol") for p in positions if p.get("symbol")]
+            if syms:
+                last_date = ds._connect().execute("SELECT MAX(date) FROM daily").fetchone()[0]
+                if last_date:
+                    closes = {r[0]: r[1] for r in ds._connect().execute(
+                        f"SELECT symbol, close FROM daily WHERE date='{last_date}' AND symbol IN ({','.join('?'*len(syms))})",
+                        syms
+                    )}
+                    for p in positions:
+                        sym = p.get("symbol", "")
+                        cur = closes.get(sym, p.get("price", 0))
+                        unrealized += (cur - p.get("price", 0)) * p.get("shares", 0)
+            ds.close()
+        except Exception:
+            pass  # 日线不可用时不阻塞报告生成
 
     # 计算持仓市值
     positions_value = sum(

@@ -69,8 +69,11 @@ def compute_kelly_fractions(
     # 使用 alpha 得分的标准化值作为 μ 的代理
     mu = alpha / alpha.abs().max() * med_ic if alpha.abs().max() > 0 else alpha
 
-    # σ² 用得分方差代理
-    var = alpha.var() if alpha.var() > 0 else 0.01
+    # σ²: A股日收益率典型方差 ≈ 0.0004 (σ_daily ≈ 2%)
+    # 来源: CSRC 2025年度报告 + 2026-07-21 audit C5
+    # alpha.var() 是截面方差(~1.0), 非收益率方差, 会导致 Kelly ~0
+    DEFAULT_RETURN_VAR = 0.0004
+    var = DEFAULT_RETURN_VAR
 
     # Kelly: f = (μ - r_f) / σ², r_f=0 (A股无风险利率极低)
     kelly_raw = mu / max(var, 1e-8)

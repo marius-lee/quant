@@ -169,8 +169,9 @@ def get_tracking_summary():
             "benchmark_equity": round(b_eq, 6),
         })
 
-    strat_cum_pct = round((strat_cum - 1) * 100, 2)
-    bench_cum_pct = round((bench_cum - 1) * 100, 2)
+    # s_eq/b_eq 在循环中正确累积; strat_cum/bench_cum 从未更新 (bugfix: 2026-07-21 audit)
+    strat_cum_pct = round((s_eq - 1) * 100, 2)
+    bench_cum_pct = round((b_eq - 1) * 100, 2)
 
     # Latest rolling metrics
     latest = conn = sqlite3.connect(_TRADES_DB)

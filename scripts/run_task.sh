@@ -78,7 +78,7 @@ from quant.utils.excepthook import setup; setup()
 from quant.scheduler.orchestrator import start
 start()
 import time
-while true:
+while True:
     time.sleep(60)
 "
         ;;

@@ -1463,7 +1463,7 @@ class DataStore:
             sym = str(row.get("代码", "")).zfill(6)
             if len(sym) != 6:
                 continue
-            trade_date = trade_date
+            # trade_date = trade_date  # no-op removed (2026-07-21 audit)
             if not validate_date_format(trade_date, 'lhb_detail'):
                 continue
             conn.execute(

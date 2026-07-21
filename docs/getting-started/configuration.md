@@ -27,7 +27,7 @@
  | `factor` | Factor configuration | `windows.*`, `evaluation.*`, `compute.*` |
  | `alpha` | Alpha model | `method`, `train_window`, `retrain_freq` |
  | `risk` | Risk limits | `max_single_position`, `max_positions`, `covariance_method` |
- | `optimizer` | Portfolio construction | `equal_weight_cap`, `weighted_cap`, `rebalance_freq` |
+ | `optimizer` | Portfolio construction | `nano_cap`, `micro_cap`, `kelly_fraction`, `rebalance_freq` |
  | `execution` | Cost model | `commission`, `stamp_tax`, `slippage` |
  | `backtest` | Backtest params | `initial_capital`, `benchmark` |
  | `web` | Web server | `host`, `port`, `debug` |

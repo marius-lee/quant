@@ -169,3 +169,51 @@ expected <block end>, but found '<block mapping start>'
             "expected <block end>, but found %r" % token.id, token.start_mark)
 
 3. 回填完成后恢复 config: exclude_zero_turnover_days: 0 → 5
+---
+## test-v181 — Nano 层排名集中策略 + docs 统一弃用标记 (2026-07-21)
+
+### 背景
+资本 ¥5,000 下每只股票只买 100 股（3 只 × 1 手），佣金 ¥15 占 0.33% 本金。
+分析报告 C3 明确写"集中持仓减少交易笔数是唯一解"，但代码的 `_equal_weight_greedy`
+用轮转均分实现，与报告结论矛盾。
+
+用户提议: alpha 排名第一全仓 → 剩余买第二 → 直到没钱。这与 Grinold & Kahn 框架、
+Kirby & Ostdiek (2012)、分析报告 C1/C3 结论一致。
+
+### 变更
+
+**1. portfolio.py — 新增 _rank_concentrated() + Nano 路由**
+- 新方法 `_rank_concentrated()`: 按 alpha 降序逐只满仓买入，剩余资金不买碎股
+  设计依据: Grinold & Kahn (2000) N=1-2 时最大化 IC; Kirby & Ostdiek (2012) 换手成本>分散化; C3 单笔<¥10K 集中是唯一解
+- `construct()` Nano 分支: `_equal_weight_greedy` → `_rank_concentrated(a, p, capital)`
+- `_equal_weight_greedy` 保留不动 — 仍是 Micro 层 fallback
+
+**2. monitor.py — Nano 层豁免单票集中度告警**
+- total < nano_cap → single_conc_limit = 1.0 (实质关闭)
+  Nano 层 90%+ 单票集中度是预期行为，非风险事件
+
+**3. config.yaml 注释对齐**
+- nano_cap 注释: 补充豁免说明 + 文献来源
+- max_single_concentration 注释: 注明 Nano 层自动豁免
+
+**4. 文档全量对齐 — 旧参数名/旧值弃用标记**
+- ARCHITECTURE.md: 旧代码示例 `equal_weight_cap: 20000` → 当前 3 层架构
+- configuration.md: `equal_weight_cap, weighted_cap` → `nano_cap, micro_cap`
+- capital-segmentation-analysis: greedy_cap/weighted_cap 加 ⛔ 已弃用标记
+- CHANGELOG.md: P63 equal_weight_cap 加弃用注释
+
+**5. test_portfolio.py — 4 新测试 + 兼容更新**
+- 新增 test_rank_concentrated_buys_max_of_top_stock / _multi_stock / _alpha_ordering / _micro_fallback
+- 旧 Nano 测试 method 断言更新为 "rank_concentrated"
+
+### 涉及文件
+- quant/optimizer/portfolio.py (新方法 _rank_concentrated, Nano 路由改)
+- quant/scheduler/monitor.py (Nano 集中度豁免)
+- quant/config/config.yaml (注释对齐)
+- web/app.py (VERSION → test-v181)
+- test/test_portfolio.py (4 新测试 + 兼容)
+- docs/architecture/ARCHITECTURE.md (旧代码示例→当前)
+- docs/getting-started/configuration.md (参数名对齐)
+- docs/reports/capital-segmentation-analysis-2026-07-15.md (弃用标记)
+- CHANGELOG.md (弃用标记)
+- docs/handoffs/HANDOFF.md (本记录)

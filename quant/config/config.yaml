@@ -200,9 +200,7 @@ optimizer:
   method: equal_weight
   min_holding_days: 5
   rebalance_freq: weekly
-  nano_cap: 30000          # 低于此资金: Nano 层 — 排名集中, 1-3 只 (来源: capital-segmentation-analysis C1/C3)
-                           #   Nano 层豁免 max_single_position (5%) 和 max_single_concentration (15%) —
-                           #   微账户下集中持仓是唯一解 (Kirby & Ostdiek 2012; 分析报告 C3)
+  nano_cap: 30000
   micro_cap: 100000
   kelly_fraction: 4.0
 risk:
@@ -240,7 +238,7 @@ monitor:
   telegram_bot_token: ''
   telegram_chat_id: ''
   wechat_webhook: ''
-  max_single_concentration: 0.15    # 单票集中度上限 (仓位价值/总资产); Nano 层自动豁免 (monitor.py 内判断)
+  max_single_concentration: 0.15
   max_sector_concentration: 0.4
   min_daily_turnover_amount: 30000000
   var_confidence: 0.95
@@ -265,4 +263,4 @@ universe:
   exclude_new_stock_days: 60
   min_price: 2.0
   min_daily_amount: 500000
-  exclude_zero_turnover_days: 0
+  exclude_zero_turnover_days: 5

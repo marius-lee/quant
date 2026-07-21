@@ -489,3 +489,19 @@ test-v193 用 `dedup=True` 缓解 monitor task_runs 膨胀 (74,184行/6天)，
 - quant/scheduler/monitor.py (1行回退)
 - web/app.py (VERSION → test-v194)
 - docs/handoffs/HANDOFF.md (本记录)
+
+---
+## test-v195 — exclude_zero_turnover_days 恢复为 5 (2026-07-22)
+
+### 背景
+turnover 回填期间临时设为 0 防止误过滤。baostock 回填已于 07-21 完成，
+07-10~07-21 全部交易日 turnover>0 覆盖 95%+ 股票。恢复为 5 天过滤器
+(连续5天换手率为0 → 停牌/僵尸股, 从候选池排除)。
+
+### 变更
+- config.yaml: `universe.exclude_zero_turnover_days: 0 → 5`
+
+### 涉及文件
+- quant/config/config.yaml (1行)
+- web/app.py (VERSION → test-v195)
+- docs/handoffs/HANDOFF.md (本记录)

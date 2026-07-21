@@ -1198,14 +1198,14 @@ class DataStore:
                 logger.info("daily data complete, nothing to pull")
                 return 0
             symbols = sorted(target, key=lambda s: s[:2])  # SH first (tushare benefit)
+
+            # 当天快速路由: 只有 stale_recent(无 missing/stale) 时,
+            # 覆写 start 为今天 → _fetch_tickflow_daily 走 API key quotes,
+            # 跳过免费版(免费版日K不含当天, 来源: 2026-07-21 全链路逻辑分析)
+            if (gaps.get("stale_recent") and not gaps["missing"] and not gaps["stale"]):
+                start = datetime.today().strftime("%Y-%m-%d")
         else:
             logger.info(f"daily update: {len(symbols)} specified stocks")
-
-        # 当天快速路由: 只有 stale_recent(无 missing/stale) 时,
-        # 覆写 start 为今天 → _fetch_tickflow_daily 走 API key quotes,
-        # 跳过免费版(免费版日K不含当天, 来源: 2026-07-21 全链路逻辑分析)
-        if (gaps.get("stale_recent") and not gaps["missing"] and not gaps["stale"]):
-            start = datetime.today().strftime("%Y-%m-%d")
 
         # 2. tushare 作为首选源 (self.token 从 __init__ 三阶回退读取)
         # _fetch_batch_tushare 内部自行创建 ts.pro_api(), 此处仅做 gate 判断

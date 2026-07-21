@@ -625,7 +625,17 @@ class DataStore:
         return rows
 
     def _fetch_tickflow_daily(self, symbols: list, start_date: str = None) -> list:
-        """TickFlow 批量日线: vol=手✅, amt=元❌→/1000→千元"""
+        """TickFlow 批量日线: vol=手✅, amt=元❌→/1000→千元。
+
+        当天数据路由到 _fetch_tickflow_quotes (API key 实时行情),
+        历史数据使用免费版 TickFlow.free().klines.batch()。
+        来源: tickflow 免费版日K仅历史数据; API key 支持实时行情含 turnover_rate
+        """
+        # 当天数据: API key 实时行情 (免费版 "日K为历史数据, 盘中不会实时更新")
+        _today = datetime.today().strftime("%Y-%m-%d")
+        if start_date and start_date >= _today:
+            return self._fetch_tickflow_quotes(symbols, start_date)
+
         try:
             from tickflow import TickFlow
             tf = TickFlow.free()
@@ -655,6 +665,59 @@ class DataStore:
                     0.0))
         if rows:
             logger.info(f"[tickflow] {len(symbols)} stocks: {len(rows)} rows (vol=手✅, amt/1000→千元)")
+        return rows
+
+    def _fetch_tickflow_quotes(self, symbols: list, date: str) -> list:
+        """TickFlow API key 实时行情 → 日线行格式, 含 turnover_rate。
+
+        当天数据源 — TickFlow.free().klines.batch() 不含当天K线
+        ("日K数据为历史数据, 盘中不会实时更新")。
+        注册 API key 支持 tf.quotes.get() 实时行情, 含 turnover_rate。
+        来源: tickflow.org 注册文档; config data.tickflow_api_key
+        """
+        from tickflow import TickFlow
+        _api_key = _require_cfg("data.tickflow_api_key")
+        tf = TickFlow(api_key=_api_key)
+
+        def _tickflow_code(s):
+            if s.startswith('920'): return f"{s}.BJ"
+            if s.startswith(('6','9','68')): return f"{s}.SH"
+            return f"{s}.SZ"
+
+        codes = [_tickflow_code(s) for s in symbols]
+
+        try:
+            quotes_df = tf.quotes.get(symbols=codes, as_dataframe=True)
+        except Exception as _e:
+            logger.warning(f"[tickflow quotes] API failed: {_e}")
+            return []
+
+        if quotes_df is None or quotes_df.empty:
+            logger.debug(f"[tickflow quotes] empty response for {len(symbols)} symbols")
+            return []
+
+        rows = []
+        for _, q in quotes_df.iterrows():
+            sym = str(q.get("symbol", "")).split(".")[0]
+            if not sym:
+                continue
+            _ext = q.get("ext", {}) or {}
+            if hasattr(_ext, "to_dict"):
+                _ext = _ext.to_dict()
+            _turnover = float(_ext.get("turnover_rate", 0) or 0)
+
+            rows.append(self._norm_row(
+                sym, date,
+                float(q.get("open", 0) or 0),
+                float(q.get("high", 0) or 0),
+                float(q.get("low", 0) or 0),
+                float(q.get("last_price", 0) or 0),
+                float(q.get("volume", 0) or 0),
+                float(q.get("amount", 0) or 0) / 1000,  # 元→千元(与免费版对齐)
+                _turnover))
+
+        if rows:
+            logger.info(f"[tickflow quotes] {len(symbols)} stocks: {len(rows)} rows (vol+turnover✅)")
         return rows
 
 

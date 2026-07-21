@@ -383,7 +383,7 @@ FACTOR_SHORTCUT = {
     # compute_intraday_range — 已移除: 需要 high/low 原始数据, 不在 primitives 中
     # 换手率 — 从预计算取
     "compute_turnover_reversal":    _turnover_reversal,
-    "compute_turnover_change":      _turnover_reversal,
+    # "compute_turnover_change": removed — mapped to wrong fn; correct impl TBD (2026-07-21 audit M1)
     # 资金流 — 从预计算 money_flow_N 取
     "compute_money_flow":           _money_flow,
     # 均线排列 — 从预计算 ma_N 取
@@ -397,7 +397,7 @@ FACTOR_SHORTCUT = {
     "compute_turnover_anomaly":     _turnover_anomaly,
     "compute_trcf":                 _trcf,
     "compute_str":                  _str,
-    "compute_abn_turnover":         _abn_turnover,
+    # "compute_abn_turnover": removed — conflicts with full OLS in _alternative.py (2026-07-21 audit M2)
 }
 
 # ═══════════════════════════════════════════════════════════

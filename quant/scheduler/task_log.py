@@ -59,26 +59,30 @@ def _ensure_table():
 _ensure_table()
 
 
-def start(task_name: str, date: str) -> int:
-    """任务启动时调用。返回插入的 row id。
+def start(task_name: str, date: str, dedup: bool = False) -> int:
+    """任务启动时调用。返回 row id。
     
     Args:
         task_name: 'signals' | 'execute' | 'monitor' | 'attribution' | 'weekly_eval'
         date: '2026-07-15'
+        dedup: 如果 True，同任务同日期仅保留一行（DELETE 旧行 + INSERT 新行）。
+               适用于高频重复任务（如 monitor 每30s一次），防止 task_runs 膨胀。
     """
     conn = _conn()
     try:
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-        # 自动清理同任务同日期的旧 running 僵尸行 → aborted
+        # 自动清理旧 running 僵尸行 → aborted
         conn.execute(
             "UPDATE task_runs SET status='aborted', finished_at=?, error='上次运行未正常结束 (auto-abort)' "
             "WHERE task_name=? AND date=? AND status='running'",
             (now, task_name, date)
         )
+        if dedup:
+            # 每天每任务最多一行 (2026-07-22: monitor防膨胀)
+            conn.execute("DELETE FROM task_runs WHERE task_name=? AND date=?", (task_name, date))
         cur = conn.execute(
             "INSERT INTO task_runs (task_name, date, started_at, status) VALUES (?, ?, ?, 'running')",
-            (task_name, date, now)
-        )
+            (task_name, date, now))
         conn.commit()
         return cur.lastrowid
     finally:

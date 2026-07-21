@@ -63,7 +63,10 @@ data:
   rate_limit:
     # -- 批量源 --
     tushare_batch_sec: 1.2            # tushare 批量间隔; 来源: 50次/分钟免费额度 → 50批/分钟需≥1.2s/批
+    tushare_calls_per_minute: 50     # tushare 免费版接口调用限制; 来源: https://tushare.pro/document/1?doc_id=108
+    akshare_calls_per_minute: 60     # akshare/eastmoney 接口调用限制; 来源: 实测 eastmoney CDN 免费端约 60次/分钟
     tickflow_batch_sec: 1.5           # tickflow 批量间隔; 来源: 实测 20只/1.2s, 加 0.3s 安全边际
+    tickflow_quote_batch_sec: 6       # tickflow 实时行情(换手率回填)批次间隔; 来源: 免费版 10次/分钟限速, 5只/批→6s/批
     # -- 逐只源 --
     zzshare_per_stock_sec: 0.3        # zzshare 逐只间隔; 来源: 实测 0.2s, 加 0.1s 安全边际
     pytdx_per_stock_sec: 1.0          # pytdx TCP 逐只间隔; 来源: TCP 连接开销大(connect+disconnect), 保守 1s

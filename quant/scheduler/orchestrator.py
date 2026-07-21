@@ -40,16 +40,15 @@ def _run():
     _monitor_stop = _thr.Event()
 
     def _monitor_daemon(current_day):
-        """子线程: 盘中风控守护 (09:35-14:55 循环)."""
+        """子线程: 盘中风控守护 (09:35-14:55 单次运行).
+        
+        _run_continuous 内部已有完整 while 循环 (每30s检查一次，到14:55自动退出)。
+        外层无需再包 while — 崩溃恢复由 orchestrator 主循环负责
+        (检测 _monitor_thread is None → 重建线程)。
+        """
         from quant.scheduler.monitor import _run_continuous
         _log.info(f"[{current_day}] monitor daemon started (09:35-14:55)")
-        while not _monitor_stop.is_set():
-            now = datetime.now()
-            hhmm = time(now.hour, now.minute)
-            if time(9, 35) <= hhmm <= time(14, 55):
-                _run_continuous(current_day)
-            else:
-                _monitor_stop.wait(timeout=POLL)
+        _run_continuous(current_day)
         _log.info(f"[{current_day}] monitor daemon stopped")
 
     def _run_task(name, fn, task_today):

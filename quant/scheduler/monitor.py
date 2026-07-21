@@ -34,7 +34,7 @@ def _run_continuous(today: str):
 
     register("monitor", "09:35-14:55", has_multiprocess=False)
 
-    _tk_start("monitor", today, dedup=True)
+    _tk_start("monitor", today)
     _log.info(f"[{today}] monitor started — interval={CHECK_INTERVAL_SEC}s")
     quotes = {}  # 初始化, 由行情拉取块更新
 

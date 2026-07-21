@@ -32,9 +32,9 @@ def t_h6():
     w = _iterative_clip(np.array([0.1, 0.1, 0.8]), 0.05)
     assert abs(w.sum() - 1.0) < 0.001, f"sum != 1: {w.sum()}"
     assert (w == w[0]).all(), f"all-over should be equal weight, got {w}"
-    # Case 2: some within limit → should be enforced
-    w2 = _iterative_clip(np.array([0.04, 0.06, 0.9]), 0.05)
-    assert (w2 <= 0.0501).all(), f"clip failed: {w2}"
+    # Case 2: 10 stocks, one at 82%, cap at 15% → mathematically solvable
+    w2 = _iterative_clip(np.array([0.02]*9 + [0.82]), 0.15)
+    assert (w2 <= 0.1501).all(), f"clip failed: {w2}"
     assert abs(w2.sum() - 1.0) < 0.001
     # Case 3: all within limit → no-op
     w3 = _iterative_clip(np.array([0.3, 0.3, 0.4]), 0.5)

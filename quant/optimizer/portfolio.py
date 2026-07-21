@@ -80,8 +80,8 @@ def calibrate_risk_aversion(
     try:
         inv_Sigma = np.linalg.inv(Sigma)
     except np.linalg.LinAlgError:
-        logger.warning("[calibrate] singular covariance matrix — returning conservative λ=2.0")
-        return 2.0
+        inv_Sigma = np.linalg.pinv(Sigma)
+        logger.warning("[calibrate] near-singular covariance, using pseudo-inverse")
 
     best_lambda = 2.0
     best_sharpe = -np.inf
@@ -392,17 +392,17 @@ class PortfolioConstructor:
                 Sigma = covariance.loc[common_cov, common_cov].values
                 try:
                     inv_Sigma = np.linalg.inv(Sigma)
-                    w_raw = inv_Sigma @ alpha_vec / risk_aversion
-                    w_raw = np.maximum(w_raw, 0)
-                    if w_raw.sum() > 0:
-                        w_cont = w_raw / w_raw.sum()
-                        w_cont = _iterative_clip(w_cont, self.max_single)  # (2026-07-21 audit H6)
-                    else:
-                        w_cont = np.ones(len(common_cov)) / len(common_cov)
-                    symbols = common_cov
                 except np.linalg.LinAlgError:
+                    inv_Sigma = np.linalg.pinv(Sigma)
+                    logger.warning("[mean_variance_lot] near-singular covariance, using pseudo-inverse")
+                w_raw = inv_Sigma @ alpha_vec / risk_aversion
+                w_raw = np.maximum(w_raw, 0)
+                if w_raw.sum() > 0:
+                    w_cont = w_raw / w_raw.sum()
+                    w_cont = _iterative_clip(w_cont, self.max_single)
+                else:
                     w_cont = np.ones(len(common_cov)) / len(common_cov)
-                    symbols = common_cov
+                symbols = common_cov
             else:
                 w_cont = np.ones(n_stocks) / n_stocks
                 symbols = top.index.tolist()

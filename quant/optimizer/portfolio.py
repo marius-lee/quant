@@ -121,6 +121,8 @@ def _iterative_clip(w, max_single, max_iter=20):
         over = w > max_single
         if not over.any():
             break
+        if over.all():  # 全超限 → 等权 (避免死循环)
+            return np.ones(len(w)) / len(w)
         w[over] = max_single
         s = w.sum()
         if s <= 0:

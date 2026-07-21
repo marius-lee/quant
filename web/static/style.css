@@ -287,6 +287,13 @@ tbody td {
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover td { background: var(--accent-dim); }
 
+/* 交易记录表: 日期列收缩到内容宽度 */
+#table-trades td:first-child,
+#table-trades th:first-child {
+  white-space: nowrap;
+  width: 1%;
+}
+
 td.up { color: var(--up); }
 td.down { color: var(--down); }
 .rank { color: var(--text2); font-size: .8rem; width: 28px; }

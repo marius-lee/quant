@@ -92,8 +92,7 @@ def calibrate_risk_aversion(
         if w_raw.sum() <= 0:
             continue
         w = w_raw / w_raw.sum()
-        w = np.minimum(w, max_single)
-        w = w / w.sum()
+        w = _iterative_clip(w, max_single)  # (2026-07-21 audit H6)
 
         mu_p = np.dot(w, alpha_vec)
         sigma_p = np.sqrt(np.dot(w.T, np.dot(Sigma, w)))
@@ -108,6 +107,26 @@ def calibrate_risk_aversion(
         "from grid %s", best_lambda, best_sharpe, _CALIBRATION_GRID
     )
     return best_lambda
+
+
+def _iterative_clip(w, max_single, max_iter=20):
+    """迭代裁剪+重归一化: 保证所有权重 ≤ max_single 且 sum=1。
+
+    算法: 反复裁剪超限权重, 剩余分配给未超限的。超限数单调递减, 保证收敛。
+    来源: 2026-07-21 audit H6; De Prado & Lewis (2019) Ch.3.
+    """
+    import numpy as np
+    w = np.asarray(w, dtype=float).copy()
+    for _ in range(max_iter):
+        over = w > max_single
+        if not over.any():
+            break
+        w[over] = max_single
+        s = w.sum()
+        if s <= 0:
+            return np.ones(len(w)) / len(w)
+        w = w / s
+    return w
 
 
 class PortfolioConstructor:
@@ -335,8 +354,7 @@ class PortfolioConstructor:
         if scores.sum() == 0:
             scores = np.ones(n_stocks)
         weights = scores / scores.sum()
-        weights = np.minimum(weights, self.max_single)
-        weights = weights / weights.sum()
+        weights = _iterative_clip(weights, self.max_single)  # (2026-07-21 audit H6)
         lots = pd.Series(0, index=top.index, dtype=int)
         cash = capital
         for i, sym in enumerate(top.index):
@@ -376,8 +394,7 @@ class PortfolioConstructor:
                     w_raw = np.maximum(w_raw, 0)
                     if w_raw.sum() > 0:
                         w_cont = w_raw / w_raw.sum()
-                        w_cont = np.minimum(w_cont, self.max_single)
-                        w_cont = w_cont / w_cont.sum()
+                        w_cont = _iterative_clip(w_cont, self.max_single)  # (2026-07-21 audit H6)
                     else:
                         w_cont = np.ones(len(common_cov)) / len(common_cov)
                     symbols = common_cov
@@ -415,8 +432,7 @@ class PortfolioConstructor:
         if sigmas.empty or sigmas.sum() == 0:
             return self._kelly_greedy(alpha, prices, capital)
         w = (1.0 / sigmas) / (1.0 / sigmas).sum()
-        w = w.clip(upper=self.max_single)
-        w = w / w.sum()
+        w = _iterative_clip(w, self.max_single)  # (2026-07-21 audit H6)
         lots = pd.Series(0, index=top, dtype=int)
         cash = capital
         for sym in top:

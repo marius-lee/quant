@@ -19,25 +19,28 @@ def check_alerts(state: dict, metrics_snap: dict) -> list[dict]:
     """
     alerts = []
 
-    # ── Rule 1: 回撤告警 (阈值来自 config.yaml monitor.alert) ──
+    # ── Rule 1: 回撤告警 — peak-to-trough drawdown (2026-07-21 audit H3) ──
+    # 旧逻辑 total_pnl/capital 是累计收益率, 非真正的回撤
+    # 新逻辑从 daily_equity 表读取持久化的滚动最大回撤
     critical_pct = _require_cfg("monitor.alert.drawdown_critical")
     warning_pct = _require_cfg("monitor.alert.drawdown_warning")
-    capital = float(state.get("capital", 0) or 0)
-    total_pnl = float(state.get("total_pnl", 0) or 0)
-    if capital > 0:
-        pnl_pct = total_pnl / capital
-        if pnl_pct < -critical_pct:
+    try:
+        from quant.data.trade_repo import TradeRepo
+        dd_pct = TradeRepo().get_max_drawdown()
+        if dd_pct >= critical_pct * 100:
             alerts.append({
                 "rule": "drawdown",
                 "level": "critical",
-                "msg": f"累计亏损 {pnl_pct*100:.1f}% (¥{total_pnl:,.0f})"
+                "msg": f"最大回撤 {dd_pct:.1f}% (peak-to-trough, 60日窗口)"
             })
-        elif pnl_pct < -warning_pct:
+        elif dd_pct >= warning_pct * 100:
             alerts.append({
                 "rule": "drawdown",
                 "level": "warning",
-                "msg": f"累计亏损 {pnl_pct*100:.1f}% (¥{total_pnl:,.0f})"
+                "msg": f"最大回撤 {dd_pct:.1f}% (peak-to-trough, 60日窗口)"
             })
+    except Exception:
+        pass  # daily_equity 表不存在时跳过
 
     # ── Rule 2: 数据同步滞后 (最近日线 > 2 天前) ──
     # 直接查 daily 表 MAX(date), 而非依赖从未写入的 last_daily_sync (2026-07-21 audit M7)

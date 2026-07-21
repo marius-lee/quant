@@ -34,4 +34,6 @@ data/metrics.db
 # Redis 持久化文件
 dump.rdb
 appendonly.aof
-data/
+ data/*.db
+ data/*.db-shm
+ data/*.db-wal

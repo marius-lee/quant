@@ -627,15 +627,15 @@ class DataStore:
     def _fetch_tickflow_daily(self, symbols: list, start_date: str = None) -> list:
         """TickFlow 批量日线: vol=手✅, amt=元❌→/1000→千元。
 
-        当天数据路由到 _fetch_tickflow_quotes (API key 实时行情),
-        历史数据使用免费版 TickFlow.free().klines.batch()。
-        来源: tickflow 免费版日K仅历史数据; API key 支持实时行情含 turnover_rate
+        历史K线用免费版 TickFlow.free().klines.batch(),
+        当天数据用 API key _fetch_tickflow_quotes() 补充。
+        来源: tickflow 免费版 "日K为历史数据, 盘中不会实时更新";
+              API key 支持 tf.quotes.get() 实时行情含 turnover_rate
         """
-        # 当天数据: API key 实时行情 (免费版 "日K为历史数据, 盘中不会实时更新")
-        _today = datetime.today().strftime("%Y-%m-%d")
-        if start_date and start_date >= _today:
+        # 当天: 直接用 API key, 跳过免费版 (免费版日K不含当天)
+        _tdy = datetime.today().strftime("%Y-%m-%d")
+        if start_date and start_date >= _tdy:
             return self._fetch_tickflow_quotes(symbols, start_date)
-
         try:
             from tickflow import TickFlow
             tf = TickFlow.free()
@@ -663,6 +663,15 @@ class DataStore:
                     float(row.get("volume", 0) or 0),          # 手 ✅
                     float(row.get("amount", 0) or 0) / 1000,   # 元→千元
                     0.0))
+        # 当天数据用 API key 补充 (免费版日K不含当天)
+        from datetime import datetime as _dt
+        _td = _dt.today().strftime('%Y-%m-%d')
+        _qd = [r[1] for r in rows]
+        if _td not in _qd:
+            _qr = self._fetch_tickflow_quotes(symbols, _td)
+            if _qr:
+                rows.extend(_qr)
+                logger.info(f'[tickflow] +{len(_qr)} today rows from API key quotes')
         if rows:
             logger.info(f"[tickflow] {len(symbols)} stocks: {len(rows)} rows (vol=手✅, amt/1000→千元)")
         return rows
@@ -680,6 +689,8 @@ class DataStore:
         tf = TickFlow(api_key=_api_key)
 
         def _tickflow_code(s):
+            # 幂等: 已带后缀不再加
+            if '.' in s: return s
             if s.startswith('920'): return f"{s}.BJ"
             if s.startswith(('6','9','68')): return f"{s}.SH"
             return f"{s}.SZ"
@@ -701,10 +712,8 @@ class DataStore:
             sym = str(q.get("symbol", "")).split(".")[0]
             if not sym:
                 continue
-            _ext = q.get("ext", {}) or {}
-            if hasattr(_ext, "to_dict"):
-                _ext = _ext.to_dict()
-            _turnover = float(_ext.get("turnover_rate", 0) or 0)
+            # ext 字段在 tickflow DataFrame 中是扁平列名 (ext.turnover_rate), 非嵌套 dict
+            _turnover = float(q.get("ext.turnover_rate", 0) or 0)
 
             rows.append(self._norm_row(
                 sym, date,

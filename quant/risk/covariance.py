@@ -95,7 +95,7 @@ def ledoit_wolf_cov(
         for t in range(T):
             diff = np.outer(X[t], X[t]) - S
             pi_mat += diff ** 2
-        pi_mat *= T / ((T - 1) ** 3)  # 渐近方差修正
+        pi_mat /= T  # Ledoit-Wolf(2004) eq.(17): AsyVar = (1/T) * Σ(x_i·x_j - s_ij)²
         pi_hat = pi_mat.sum()
 
         # γ: 样本协方差与目标的距离

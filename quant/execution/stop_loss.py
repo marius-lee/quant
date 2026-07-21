@@ -98,6 +98,7 @@ class RiskManager:
             # ── 已触发的目标标记 (从持仓额外字段或缓存读) ──
             tp1_hit = p.get("_tp1_hit", False)
             peak = max(p.get("_peak", cost), cur)
+            p["_peak"] = peak  # 持久化peak, trailing stop需要历史峰值 (2026-07-21 audit H8)
 
             # ════════════════════════════════
             # 止盈
@@ -107,6 +108,7 @@ class RiskManager:
                 results.append({"symbol": sym, "action": "sell", "shares": sell_shares,
                                 "price": cur, "reason": "TP1(+{:.1f}ATR)".format(self.atr_mult_tp1)})
                 tp1_hit = True
+                p["_tp1_hit"] = True  # 持久化, 防止同轮次重复触发 (2026-07-21 audit C6)
 
             elif tp1_hit and gain >= self.atr_mult_tp2 * atr:
                 results.append({"symbol": sym, "action": "sell", "shares": shares - shares // 2,

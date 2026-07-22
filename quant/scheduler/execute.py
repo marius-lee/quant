@@ -27,6 +27,7 @@ def _run(today: str):
     t0 = _time.time()
 
     from quant.data.trade_repo import TradeRepo
+    repo = TradeRepo()
     LOT_SIZE = _require_cfg("backtest.lot_size")
     strategy = "quant"
 

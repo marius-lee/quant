@@ -548,3 +548,36 @@ turnover 回填期间临时设为 0 防止误过滤。baostock 回填已于 07-2
 - web/templates/index.html (布局重排)
 - web/app.py (VERSION → test-v197)
 - docs/handoffs/HANDOFF.md (本记录)
+---
+## test-v201 — 绩效页 Sharpe/MDD 修复 + 概览/绩效总资产口径统一 (2026-07-22)
+
+### 背景
+
+test-v200 的 Sharpe/MDD 计算依赖 `sim_trades.capital_after` 字段构建日收益序列。
+但 `record_trade` 从未写入 `capital_after`（INSERT 语句不含此列），值恒为 0。
+导致 `rets` 始终空 → Sharpe=0, MDD=0。
+
+同时概览页和绩效页总资产计算口径不一致：
+- 概览页：`capital + position_cost`（账面成本）
+- 绩效页：`capital + position_market_value`（市价 → 最新收盘 → 账面成本）
+
+### 变更
+
+1. **web/app.py:436-483 — Sharpe/MDD 改用 daily_equity 表**
+   - 优先级1: 从 `daily_equity` 读权益序列，计算日收益 → Sharpe + MDD
+   - 优先级2 (fallback): daily_equity < 3 行时，从卖出 PnL 按日期累积构建近似权益曲线
+   - 删除了 `capital_after` 遍历逻辑（从未生效，字段永远为 0）
+
+2. **web/app.py:83-107 — 概览页增加最新收盘估值**
+   - 在 `position_cost`（账面成本）基础上，尝试从 `market.db daily` 表取最新收盘价
+   - 成功则用收盘市值替代账面成本，失败则沿用 cost
+   - 与绩效页的 `latest_close` 回退逻辑对齐
+
+### 涉及文件
+- web/app.py (VERSION → test-v201)
+
+### 根因
+`quant/data/trade_repo.py:337` 的 `record_trade` INSERT 语句不包含 `capital_after` 列。
+该列为 schema DEFAULT 0，从未被赋值。`capital_after` 的填充需要知道交易时刻的总资产（现金 + 持仓市值），
+这需要后续在 `execution/engine.py` 中每次下单后调用估值逻辑写入。
+当前通过 `daily_equity` 表绕开此问题。

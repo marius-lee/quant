@@ -1,3 +1,54 @@
+# HANDOFF — 2026-07-22 test-v231
+
+## 本次改动 (v225 → v226 → v227 → v228 → v229 → v230 → v231)
+
+### v226 — daily_data turnover 回填改 baostock
+- `daily_data.py`: `backfill_turnover_quotes`(tickflow,5只/批) → `backfill_turnover`(baostock,0.3s/只)
+- tickflow 5457只需109min vs baostock 2622只需27min，来源: 2026-07-21 实测
+
+### v227 — backfill_turnover 日期范围包含今天
+- `store.py`: `gap_end_dt = _today` (废止 `_today-1`)，盘后当天 turnover 也能回填
+
+### v228 — baostock 断连自动重登
+- 重登阈值 5000→200 (实测 session ~240 只断连)
+- Broken pipe 时检测并 `logout → login` 重连，不跳过后续股票
+
+### v229 — 移除所有调度任务超时限制
+- signals/execute/attribution/weekly_eval 全部 → None
+- `_TIMEOUTS` 全线归零，每个任务自有逐阶段埋点日志判断死活
+
+### v230 — monitor 午休跳过
+- `monitor.py`: 循环内加 `11:30 ≤ t < 13:00 → sleep → continue`
+- 时段标注统一为 `"09:35-11:30, 13:00-14:55 (午休跳过)"`
+- 范围: monitor.py, orchestrator.py, __init__.py, status.py, CLAUDE.md
+
+### v231 — attribution.py 全部 except Exception 吞错移除
+- 11 个 `try/except Exception (non-fatal)` 全部删除，异常自然上抛
+- 覆盖: Brinson, IC snapshot, promotion, OOS, G1-G4, R3-R4, benchmark
+- 此前 `bc034e9` 声称消除但只加了 `raise` 未移除吞错，本次彻底清理
+
+## 当前交易日业务流程
+```
+08:30  signals     Pipeline→因子→排名→_rank_concentrated分配→daily_signals
+09:30  execute     读信号→涨停预检→封板重分配→compute_trades→挂限价单
+09:35-11:30,13:00-14:55  monitor  每30s: 订单管理+止盈止损+集中度/VaR/流动性 (午休跳过)
+19:00  daily_data  update_daily(OHLCV,tushare50只/批) → backfill_turnover(baostock,补turnover)
+20:00  attribution Brinson→IC衰减→OOS→DSR→PnL→换手率→信号衰减 — 无超时无吞错
+21:00  factor_cache 因子缓存刷新
+```
+
+## 关键文件
+
+| 文件 | 最近改动 |
+|------|----------|
+| `quant/scheduler/orchestrator.py` | 全部超时 → None |
+| `quant/scheduler/monitor.py` | 午休跳过 (11:30-13:00) |
+| `quant/scheduler/daily_data.py` | turnover 回填 tickflow→baostock |
+| `quant/scheduler/attribution.py` | 11 个吞错移除 |
+| `quant/data/store.py` | gap_end_dt→_today; 断连重登; 进度+ETA |
+| `web/app.py` | VERSION = "test-v231" |
+
+---
 # HANDOFF — 2026-07-22 test-v225
 
 ## 本次改动 (v224 → v225)

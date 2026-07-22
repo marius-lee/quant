@@ -204,6 +204,7 @@ function renderSignals(state) {
     { key: 'score', label: '得分' },
     { key: 'industry', label: '行业' },
     { key: 'reason', label: '信号' },
+    { key: 'exec_note', label: '状态' },
   ], {
     fmtMap: { score: v => fmtNum(v, 3) },
     rank: true

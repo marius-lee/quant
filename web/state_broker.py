@@ -140,6 +140,20 @@ class InProcessBroker:
                 ).fetchone()
                 if sig_row and sig_row["signals_json"]:
                     signals = _json_sig.loads(sig_row["signals_json"])
+                    # exec_notes: monitor 回写的执行状态 (test-v210)
+                    exec_notes_str = sig_row.get("exec_notes") if hasattr(sig_row, "get") else None
+                    if not exec_notes_str:
+                        en_row = sc_sig.execute(
+                            "SELECT exec_notes FROM daily_signals WHERE date=? AND mode='live' ORDER BY generated_at DESC LIMIT 1",
+                            (today,)
+                        ).fetchone()
+                        exec_notes_str = en_row["exec_notes"] if en_row else "{}"
+                    try:
+                        exec_notes = _json_sig.loads(exec_notes_str) if exec_notes_str else {}
+                    except Exception:
+                        exec_notes = {}
+                    for s in signals:
+                        s["exec_note"] = exec_notes.get(s.get("symbol", ""), "")
                     # 从 market.db stocks 表补充名称 (test-v205)
                     try:
                         mdb = _sql2.connect(_os.path.join(_root, "quant", "data", "market.db"))

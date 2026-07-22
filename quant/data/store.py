@@ -241,7 +241,13 @@ class DataStore:
                 logger.info(f"stock list (tushare): {total} total")
                 return total
         import akshare as ak
-        df = ak.stock_info_a_code_name()
+        from quant.data.datasource_retry import datasource_retry
+
+        @datasource_retry
+        def _fetch_stock_list():
+            return ak.stock_info_a_code_name()
+
+        df = _fetch_stock_list()
         new_count = 0
         for _, row in df.iterrows():
             sym = str(row.get("code", row.get("item_code", ""))).zfill(6)
@@ -275,13 +281,19 @@ class DataStore:
             ).fetchall()
         )
         import akshare as ak
-        try:
-            df = ak.stock_info_a_delist()
-        except AttributeError:
-            import pandas as _pd2
-            df_sh = ak.stock_info_sh_delist()
-            df_sz = ak.stock_info_sz_delist()
-            df = _pd2.concat([df_sh, df_sz], ignore_index=True)
+        from quant.data.datasource_retry import datasource_retry
+
+        @datasource_retry
+        def _fetch_delist():
+            try:
+                return ak.stock_info_a_delist()
+            except AttributeError:
+                import pandas as _pd2
+                df_sh = ak.stock_info_sh_delist()
+                df_sz = ak.stock_info_sz_delist()
+                return _pd2.concat([df_sh, df_sz], ignore_index=True)
+
+        df = _fetch_delist()
         if df is None or df.empty:
             return 0
         new_count = 0
@@ -456,12 +468,18 @@ class DataStore:
         _tushare_limiter.wait()
         # start_date 统一转 YYYYMMDD — tushare 不接受 YYYY-MM-DD (实测返回空)
         _start = to_compact(start_date)  # 统一转 YYYYMMDD (来源: date.py 策略)
-        df = pro.daily(
-            ts_code=code_str,
-           start_date=_start,
-           end_date=to_compact(datetime.today()),
-            fields="ts_code,trade_date,open,high,low,close,vol,amount",
-        )
+        from quant.data.datasource_retry import datasource_retry
+
+        @datasource_retry
+        def _call_tushare(code_str, start_date, end_date):
+            return pro.daily(
+                ts_code=code_str,
+                start_date=start_date,
+                end_date=end_date,
+                fields="ts_code,trade_date,open,high,low,close,vol,amount",
+            )
+
+        df = _call_tushare(code_str, _start, to_compact(datetime.today()))
         if df is None or df.empty:
             return None
         rows = []
@@ -576,11 +594,22 @@ class DataStore:
 
         # Monkey-patch: 替换 requests 为 curl_cffi, 绕过 TLS 指纹检测
         sys.modules['requests'] = _curl_requests
+        from quant.data.datasource_retry import datasource_retry
+
+        @datasource_retry(delay=3)
+        def _fetch_one(sym, s, e):
+            # delay=3: akshare(东方财富)默认1s偏激进, 3s给服务器冷却窗口
+            return ak.stock_zh_a_hist(symbol=sym, period="daily",
+                                      start_date=s, end_date=e, adjust="qfq")
+
         try:
             for sym in symbols:
-                df = ak.stock_zh_a_hist(
-                    symbol=sym, period="daily",
-                    start_date=to_compact(start_date), end_date=end_date, adjust="qfq")
+                try:
+                    df = _fetch_one(sym, to_compact(start_date), end_date)
+                except Exception as _e:
+                    _retry_tries, _retry_delay = 4, 3
+                    logger.warning(f"[akshare] {sym} retry exhausted ({_retry_tries} attempts, delay={_retry_delay}s): {type(_e).__name__}: {_e}")
+                    continue
                 if df is None or df.empty:
                     continue
                 for _, row in df.iterrows():
@@ -648,7 +677,13 @@ class DataStore:
             if s.startswith(('6','9','68')): return f"{s}.SH"  # 上海
             return f"{s}.SZ"                               # 深圳
         codes = [_tickflow_code(s) for s in symbols]
-        dfs = tf.klines.batch(codes, period="1d", count=10000, as_dataframe=True, show_progress=False)
+        from quant.data.datasource_retry import datasource_retry
+
+        @datasource_retry
+        def _call_tickflow_batch(codes):
+            return tf.klines.batch(codes, period="1d", count=10000, as_dataframe=True, show_progress=False)
+
+        dfs = _call_tickflow_batch(codes)
         for code, df in dfs.items():
             if df.empty:
                 continue
@@ -703,10 +738,16 @@ class DataStore:
         rows = []
         for _i in range(0, len(codes), _batch_max):
             _chunk = codes[_i:_i + _batch_max]
+            from quant.data.datasource_retry import datasource_retry
+
+            @datasource_retry
+            def _call_tickflow_quotes(chunk):
+                return tf.quotes.get(symbols=chunk, as_dataframe=True)
+
             try:
-                quotes_df = tf.quotes.get(symbols=_chunk, as_dataframe=True)
+                quotes_df = _call_tickflow_quotes(_chunk)
             except Exception as _e:
-                logger.warning(f"[tickflow quotes] chunk {_i} API failed: {_e}")
+                logger.warning(f"[tickflow quotes] chunk {_i} retry exhausted (4 attempts, 1-2-4-8s): {_e}")
                 continue
             if quotes_df is None or quotes_df.empty:
                 continue
@@ -1080,9 +1121,14 @@ class DataStore:
             return 0
         logger.info(f"industry sync: {len(missing)} unclassified stocks via akshare individual")
         import time
+        from quant.data.datasource_retry import datasource_retry
         updated = 0
         for idx, sym in enumerate(missing):
-            info = ak.stock_individual_info_em(symbol=sym)
+            @datasource_retry
+            def _fetch_industry(sym=sym):
+                return ak.stock_individual_info_em(symbol=sym)
+
+            info = _fetch_industry()
             if info is None or info.empty:
                 continue
             # stock_individual_info_em 返回 行×列 格式, industry在'值'列中
@@ -1452,7 +1498,13 @@ class DataStore:
         end = to_compact(datetime.today())
 
         logger.info(f"syncing LHB data: {start} → {end}")
-        df = ak.stock_lhb_detail_em(start_date=start, end_date=end)
+        from quant.data.datasource_retry import datasource_retry
+
+        @datasource_retry
+        def _fetch_lhb(s, e):
+            return ak.stock_lhb_detail_em(start_date=s, end_date=e)
+
+        df = _fetch_lhb(start, end)
         if df is None or df.empty:
             logger.info("no new LHB records")
             return 0

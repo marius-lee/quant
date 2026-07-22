@@ -116,9 +116,11 @@ def _run(today: str):
     # ── Step 5: 计算 delta ──
     current_lots_series = pd.Series(current_lots, dtype=int)
     target_lots_series = pd.Series(target_lots, dtype=int)
+    # test-v213: skip_cash_feasibility=True — pipeline 已分配完毕, execute 仅执行 delta
     orders = compute_trades(
         target_lots_series, current_lots_series, prices, cost_model,
         capital=total_capital, cash=engine.get_cash(strategy),
+        skip_cash_feasibility=True,
     )
     if orders:
         is_valid, msg = validate_orders(orders, engine.get_cash(strategy))

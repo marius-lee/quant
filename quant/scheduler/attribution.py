@@ -274,6 +274,10 @@ def _run(today: str):
                 f"significant={dsr_result['is_significant']}, n_obs={dsr_result['n_obs']}"
             )
             _m.gauge("scheduler.attribution.dsr", dsr_result["dsr"])
+        else:
+            _log.info(f"[{today}] G3 DSR: {len(daily_returns)} trading days, need >=20, skip")
+    else:
+        _log.info(f"[{today}] G3 DSR: no trades yet, skip")
     # ═══════════════════════════════════════════════════════
     # G4: 因子 PnL 归因
     # ═══════════════════════════════════════════════════════
@@ -289,6 +293,8 @@ def _run(today: str):
                 summaries.append(f"{fname}: {info['contribution_bps']:+.1f}bps ({info['direction']})")
             _log.info(f"[{today}] G4 factor PnL: {len(factor_attr)} factors, top: {'; '.join(summaries)}")
             _m.gauge("scheduler.attribution.factor_pnl_factors", len(factor_attr))
+    else:
+        _log.info(f"[{today}] G4 factor PnL: no positions, skip")
     # ═══════════════════════════════════════════════════════
     # R3: 换手率归因 — 换手 vs alpha 收益
     # ═══════════════════════════════════════════════════════
@@ -314,6 +320,8 @@ def _run(today: str):
                     f"consider increasing rebalance interval or trade size threshold"
                 )
             _m.gauge("scheduler.attribution.daily_turnover_pct", round(turnover_pct * 100, 2))
+    else:
+        _log.info(f"[{today}] R3 turnover: no trades+positions, skip (trades_today={len(trades_today)} positions={len(positions)})")
     # ═══════════════════════════════════════════════════════
     # R4: 信号衰减归因 — 信号 alpha vs 执行价滑点
     # ═══════════════════════════════════════════════════════
@@ -344,6 +352,8 @@ def _run(today: str):
                         f"check execution timing or quote quality"
                     )
                 _m.gauge("scheduler.attribution.signal_slippage_pct", round(avg_slip * 100, 2))
+    else:
+        _log.info(f"[{today}] R4 signal decay: no signal data for today, skip")
     elapsed = _time.time() - t0
     _tk_finish("attribution", today, "ok", summary={"elapsed": round(elapsed, 1)})
     _log.info(f"[SCHEDULER] {today} | TASK=attribution | STATUS=OK | elapsed={elapsed:.1f}s")

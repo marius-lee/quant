@@ -94,7 +94,11 @@ def _run_continuous(today: str):
             _pending_list = OrderManager().get_pending(today, strategy="quant")
             _pending_syms = [po.symbol for po in _pending_list]
             all_syms = list(set(_pos_syms + _pending_syms))
-            quotes = fetch_quotes(all_syms) if all_syms else {}
+            try:
+                quotes = fetch_quotes(all_syms) if all_syms else {}
+            except Exception as _qe:
+                _log.warning(f"[{today}] quote fetch failed: {_qe}, using empty quotes")
+                quotes = {}
 
             # 限价单管理 (无持仓时也会执行)
             if _pending_list:

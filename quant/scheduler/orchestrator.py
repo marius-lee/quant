@@ -52,13 +52,19 @@ def _run():
         _log.info(f"[{current_day}] monitor daemon stopped")
 
     def _run_task(name, fn, task_today):
-        """执行单个任务 → 更新 scheduler 状态。"""
+        """执行单个任务 → 更新 scheduler 状态。
+        
+        单个任务失败不杀死编排线程 — 记录错误后继续下一任务。
+        """
         t0 = _time.time()
-        fn(task_today)
-        elapsed = _time.time() - t0
-   
-        _log.info(f"[SCHEDULER] {task_today} | TASK={name} | STATUS=OK | elapsed={elapsed:.1f}s")
-        _m.inc(f"scheduler.{name}.ok")
+        try:
+            fn(task_today)
+            elapsed = _time.time() - t0
+            _log.info(f"[SCHEDULER] {task_today} | TASK={name} | STATUS=OK | elapsed={elapsed:.1f}s")
+            _m.inc(f"scheduler.{name}.ok")
+        except Exception as e:
+            elapsed = _time.time() - t0
+            _log.error(f"[SCHEDULER] {task_today} | TASK={name} | STATUS=FAILED | elapsed={elapsed:.1f}s | error={e}")
 
     while True:
         now = datetime.now()
@@ -123,6 +129,14 @@ def _run():
         # ═══════════════════════════════════════════
         if done["signals"]:
             if _monitor_thread is None and time(9, 35) <= hhmm <= time(14, 55):
+                _monitor_stop.clear()
+                _monitor_thread = _thr.Thread(
+                    target=_monitor_daemon, args=(today,),
+                    daemon=True, name="monitor-daemon"
+                )
+                _monitor_thread.start()
+            elif _monitor_thread is not None and not _monitor_thread.is_alive() and time(9, 35) <= hhmm <= time(14, 55):
+                _log.warning(f"[{today}] monitor daemon died, restarting")
                 _monitor_stop.clear()
                 _monitor_thread = _thr.Thread(
                     target=_monitor_daemon, args=(today,),

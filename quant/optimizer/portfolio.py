@@ -156,11 +156,13 @@ class PortfolioConstructor:
         if config is None:
             config = {
                 "max_positions": _require_cfg("risk.max_positions"),
+                "positions_per_factor": _require_cfg("sleeve.positions_per_factor"),
                 "max_single_position": _require_cfg("risk.max_single_position"),
                 "nano_cap": _require_cfg("optimizer.nano_cap"),
                 "micro_cap": _require_cfg("optimizer.micro_cap"),
             }
         self.max_positions = config.get("max_positions")
+        self.positions_per_factor = config.get("positions_per_factor", _require_cfg("sleeve.positions_per_factor"))
         self.max_single = config.get("max_single_position")
         self.nano_cap = config.get("nano_cap", _require_cfg("optimizer.nano_cap"))
         self.micro_cap = config.get("micro_cap", _require_cfg("optimizer.micro_cap"))

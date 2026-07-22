@@ -595,3 +595,52 @@ test-v200 的 Sharpe/MDD 计算依赖 `sim_trades.capital_after` 字段构建日
 ### 涉及文件
 - web/static/app.js
 - web/app.py (VERSION → test-v202)
+
+---
+## test-v207 — orchestrator 韧性修复 + PortfolioConstructor 补字段 (2026-07-22)
+
+### 背景
+08:53 重启后 orchestrator 在 08:54 崩溃：`PortfolioConstructor` 缺少 `positions_per_factor`
+→ `_run_task` 无 try/except → 编排线程死亡。08:45 的旧 orchestrator 意外存活，
+在 09:30 执行了下单，但 09:37 monitor 被误杀的 `include_ask_bid` 异常退出
+（该异常不是代码缺陷：代码库中无此关键字，来自用户交互式 Python 终端的误输入）。
+
+### 修复 1: PortfolioConstructor 补充 positions_per_factor
+
+**文件**: quant/optimizer/portfolio.py
+
+- `__init__` config dict 新增 `"positions_per_factor": _require_cfg("sleeve.positions_per_factor")`
+- 新增实例属性 `self.positions_per_factor = config.get("positions_per_factor", ...)`
+- 消除 `pipeline.py:301` 的 `AttributeError`
+
+### 修复 2: orchestrator._run_task 异常兜底
+
+**文件**: quant/scheduler/orchestrator.py
+
+- `_run_task` 内 `fn(task_today)` 包裹 try/except
+- 任务失败记录 ERROR 日志 + metrics counter → 编排线程继续下一任务，不死
+
+### 修复 3: monitor 行情拉取防崩
+
+**文件**: quant/scheduler/monitor.py
+
+- `fetch_quotes(all_syms)` 包裹 try/except → 网络波动不杀 monitor daemon
+- 异常时 quotes={}，限价单本轮跳过，30s 后自动重试
+
+### 修复 4: orchestrator 监控线程死亡检测
+
+**文件**: quant/scheduler/orchestrator.py
+
+- 新增分支: `elif _monitor_thread is not None and not _monitor_thread.is_alive() and 09:35-14:55`
+- monitor daemon 意外死亡时自动重建线程
+
+### 误报排除
+- 09:37:15 `fetch_quotes() got an unexpected keyword argument 'include_ask_bid'`
+  → 代码库 0 处匹配，确认来自 `<stdin>`（用户交互式 Python），非代码缺陷
+
+### 涉及文件
+- quant/optimizer/portfolio.py (+2行)
+- quant/scheduler/orchestrator.py (_run_task try/except + dead-thread detection)
+- quant/scheduler/monitor.py (fetch_quotes try/except)
+- web/app.py (VERSION → test-v207)
+- docs/handoffs/HANDOFF.md (本记录)

@@ -36,13 +36,18 @@ def sync_macro_data():
     更新频率: 月频 (CPI/PMI/M2), 日频 (国债收益率).
     """
     import akshare as ak
-    
+    from quant.data.datasource_retry import datasource_retry
+
     conn = sqlite3.connect(DB_PATH)
     _ensure_table(conn)
     total = 0
-    
+
     # ── CPI 同比 ──
-    cpi_df = ak.macro_china_cpi()
+    @datasource_retry
+    def _fetch_cpi():
+        return ak.macro_china_cpi()
+
+    cpi_df = _fetch_cpi()
     if not cpi_df.empty:
         for _, row in cpi_df.iterrows():
             raw_date = str(row.get("月份", row.get("日期", "")))
@@ -61,7 +66,11 @@ def sync_macro_data():
         logger.info(f"CPI synced: {total} rows")
     
     # ── PMI 制造业 ──
-    pmi_df = ak.macro_china_pmi()
+    @datasource_retry
+    def _fetch_pmi():
+        return ak.macro_china_pmi()
+
+    pmi_df = _fetch_pmi()
     if not pmi_df.empty:
         for _, row in pmi_df.iterrows():
             date = str(row.get("日期", ""))[:10]
@@ -74,7 +83,11 @@ def sync_macro_data():
                 total += 1
     
     # ── M2 同比增速 ──
-    m2_df = ak.macro_china_money_supply()
+    @datasource_retry
+    def _fetch_m2():
+        return ak.macro_china_money_supply()
+
+    m2_df = _fetch_m2()
     if not m2_df.empty:
         for _, row in m2_df.iterrows():
             date = str(row.get("月份", ""))[:10]
@@ -87,7 +100,11 @@ def sync_macro_data():
                 total += 1
     
     # ── 10年期国债收益率 ──
-    bond_df = ak.bond_china_yield()
+    @datasource_retry
+    def _fetch_bond():
+        return ak.bond_china_yield()
+
+    bond_df = _fetch_bond()
     if not bond_df.empty:
         for _, row in bond_df.iterrows():
             date = str(row.get("日期", ""))[:10]

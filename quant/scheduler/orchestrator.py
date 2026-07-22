@@ -13,7 +13,7 @@ weekly 因子评估保持独立线程 (周六 06:00，不依赖交易日)。
 - 盘中介入 (如 10:16): 立即按顺序补跑已过期的任务 (signals → execute → monitor → ...)
 - 盘后介入: 同上，但 monitor 跳过，直接到 attribution
 """
-import time as _time, threading as _thr
+import os, time as _time, threading as _thr
 from datetime import datetime, time
 from quant.config.constants import _require_cfg
 from quant.monitor.metrics import metrics as _m
@@ -199,7 +199,7 @@ _TIMEOUTS = {
     "signals": 900,       # 15 min (正常 ~5 min)
     "execute": 600,       # 10 min (正常 <1 min)
     "monitor": None,      # 持续运行, 不收市不超时 — 只在 14:55+ 检查
-    "daily_data": 1800,   # 30 min (正常 ~5 min)
+    "daily_data": None,   # 不限时 — 盘后 turnover 回填可能 >60min (tickflow 5只/批×6s, 来源: 2026-07-22)
     "attribution": 900,   # 15 min (正常 ~3 min)
     "weekly_eval": 7200,  # 120 min (正常 ~30 min)
 }
@@ -251,7 +251,32 @@ def _check_timeouts(today: str):
         _log.warning(f"[{today}] timeout check failed (non-fatal): {e}")
 
 
+def _pid_path():
+    import tempfile
+    return os.path.join(tempfile.gettempdir(), "quant-orchestrator.pid")
+
+def _run_safe():
+    """重启保护：_run() 任何未捕获异常 → 记录 + 3s后重启."""
+    while True:
+        try:
+            _run()
+        except Exception as _e:
+            _log.exception(f"orchestrator crashed, restarting in 3s: {_e}")
+            _time.sleep(3)
+
 def start():
-    """启动编排器 daemon 线程."""
-    t = _thr.Thread(target=_run, daemon=True, name="orchestrator")
+    """启动编排器 daemon 线程（PID 锁防重复启动）."""
+    _pid = _pid_path()
+    if os.path.exists(_pid):
+        try:
+            with open(_pid) as f:
+                old_pid = int(f.read().strip())
+            os.kill(old_pid, 0)
+            _log.warning(f"orchestrator already running (PID={old_pid}), skip duplicate start")
+            return
+        except (OSError, ValueError):
+            os.remove(_pid)
+    with open(_pid, 'w') as f:
+        f.write(str(os.getpid()))
+    t = _thr.Thread(target=_run_safe, daemon=True, name="orchestrator")
     t.start()

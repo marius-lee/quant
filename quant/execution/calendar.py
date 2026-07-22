@@ -65,7 +65,13 @@ def _save_cache(trading_days: set[str]):
 def _fetch_from_akshare() -> Optional[set[str]]:
     """从 akshare 获取历史交易日历。失败返回 None。"""
     import akshare as ak
-    df = ak.tool_trade_date_hist_sina()
+    from quant.data.datasource_retry import datasource_retry
+
+    @datasource_retry
+    def _fetch_calendar():
+        return ak.tool_trade_date_hist_sina()
+
+    df = _fetch_calendar()
     if df is not None and len(df) > 0:
         trade_date_col = df.columns[0]
         days = set(df[trade_date_col].astype(str).tolist())

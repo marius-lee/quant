@@ -79,17 +79,23 @@ def sync_news_sentiment(start_date: str = None, end_date: str = None, max_per_da
         max_per_day: 每天最多拉取新闻数 (akshare 限流)
     """
     import akshare as ak
-    
+    from quant.data.datasource_retry import datasource_retry
+
     if start_date is None:
         start_date = (datetime.now().strftime("%Y-%m-%d"))
     if end_date is None:
         end_date = start_date
-    
+
     conn = sqlite3.connect(DB_PATH)
     _ensure_table(conn)
-    
+
     total_new = 0
-    news_df = ak.stock_news_em()
+
+    @datasource_retry
+    def _fetch_news():
+        return ak.stock_news_em()
+
+    news_df = _fetch_news()
     if news_df.empty:
         logger.warning("stock_news_em returned empty")
         return 0

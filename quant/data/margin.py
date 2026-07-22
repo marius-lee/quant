@@ -105,11 +105,16 @@ def _get_synced_dates(conn):
 
 
 def _sync_szse_wrapper(date_str: str, conn) -> int:
-    """深交所融资融券 — akshare wrapper + 3次重试 (8s/16s/32s)。"""
+    """深交所融资融券 — akshare wrapper + 指数退避重试 (1-2-4-8s)。"""
     import akshare as ak
+    from quant.data.datasource_retry import datasource_retry
+
+    @datasource_retry
+    def _fetch_margin(date_compact):
+        return ak.stock_margin_detail_szse(date=date_compact)
 
     for attempt in range(3):
-        df = ak.stock_margin_detail_szse(date=to_compact(date_str))
+        df = _fetch_margin(to_compact(date_str))
         if df is None or df.empty:
             return 0
 

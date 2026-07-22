@@ -1,3 +1,44 @@
+# HANDOFF — 2026-07-22 test-v225
+
+## 本次改动 (v224 → v225)
+
+### v225 — daily_data 超时移除 + 进度日志优化
+
+**背景**: daily_data 19:00 运行时超时 (1800s) 被 orchestrator kill。根因是 turnover 回填
+(backfill_turnover_quotes) 用 tickflow 5 只/批×6s, 4157 缺口需 83 分钟, 远超 30 分钟超时。
+
+**修改 1: orchestrator 移除 daily_data 超时**
+- `orchestrator.py`: `_TIMEOUTS["daily_data"]` 从 `1800` → `None`
+- 盘后 turnover 回填完成时间不可预测, 不应硬性 kill
+
+**修改 2: update_daily 进度日志加 ETA**
+- `store.py` `update_daily()`: 在 for 循环前加 `_t_loop` 计时器
+- 每批进度日志加入 `elapsed=XXs ETA=XXs`, 可判断是正在拉取还是卡死
+
+**修改 3: backfill_turnover_quotes 进度日志改密集**
+- 添加 `_progress_interval = max(50, len(all_syms) // 20)` — 最少每 50 只打印一次
+- 进度日志加入实际速率 `{rate:.1f}stocks/s` 和基于实际速率的 ETA
+- 日志含 `today=N` 字段, 可观察是否在持续写入
+
+## 当前交易日业务流程
+```
+08:30  signals    Pipeline→因子→排名→_rank_concentrated分配→daily_signals
+09:30  execute    读信号→涨停预检→封板重分配(_rank_concentrated实时价)→compute_trades→挂限价单
+09:35-14:55 monitor  每30s: 订单管理+止盈止损+集中度/VaR/流动性
+19:00  daily_data  update_daily(OHLCV) → backfill_turnover_quotes(turnover) — 无超时限制
+20:00  attribution 盘后归因
+21:00  factor_cache 因子缓存刷新
+```
+
+## 关键文件
+
+| 文件 | 最近改动 |
+|------|----------|
+| `quant/scheduler/orchestrator.py` | daily_data 超时 → None |
+| `quant/data/store.py` | update_daily 进度加 ETA; backfill_turnover_quotes 进度加密 + 速率 ETA |
+| `web/app.py` | VERSION = "test-v225" |
+
+---
 # HANDOFF — 2026-07-22 test-v223
 
 ## 本次改动 (v220 → v221 → v222 → v223)

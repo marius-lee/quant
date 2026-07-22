@@ -55,15 +55,20 @@ def _ensure_table(conn):
 def sync_date(date_str: str, conn=None) -> int:
     """同步单日涨停池。返回新增行数。"""
     import akshare as ak
-    
+    from quant.data.datasource_retry import datasource_retry
+
     close_conn = False
     if conn is None:
         conn = sqlite3.connect(DB_PATH)
         close_conn = True
-    
+
     _ensure_table(conn)
-    
-    df = ak.stock_zt_pool_em(date=date_str.replace('-', ''))
+
+    @datasource_retry
+    def _fetch_zt(date_str_compact):
+        return ak.stock_zt_pool_em(date=date_str_compact)
+
+    df = _fetch_zt(date_str.replace('-', ''))
     if df.empty:
         return 0
 

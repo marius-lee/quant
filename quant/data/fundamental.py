@@ -45,6 +45,7 @@ def _fetch_value_em(conn: sqlite3.Connection, symbols: list, sleep_ms: int = 200
     返回: 更新成功数。
     """
     import akshare as ak
+    from quant.data.datasource_retry import datasource_retry
 
     updated = 0
     skipped = 0
@@ -58,7 +59,12 @@ def _fetch_value_em(conn: sqlite3.Connection, symbols: list, sleep_ms: int = 200
             logger.info(f"value_em [{i}/{total}] {updated} updated, {skipped} skipped | {rate:.1f}/s, ETA {eta:.0f}s")
         if i > 0:
             time.sleep(sleep_ms / 1000.0)
-        df = ak.stock_value_em(symbol=sym)
+
+        @datasource_retry
+        def _fetch_value(sym=sym):
+            return ak.stock_value_em(symbol=sym)
+
+        df = _fetch_value()
         if df is None or df.empty:
             skipped += 1
             continue

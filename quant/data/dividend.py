@@ -58,9 +58,16 @@ def sync_range(start_date: str = None, end_date: str = None, conn=None) -> int:
             conn.close()
         return 0
 
+    import akshare as ak
+    from quant.data.datasource_retry import datasource_retry
+
     total = 0
     for i, sym in enumerate(symbols):
-        df = ak.stock_history_dividend_detail(symbol=sym, indicator='分红', date='')
+        @datasource_retry
+        def _fetch_dividend(sym=sym):
+            return ak.stock_history_dividend_detail(symbol=sym, indicator='分红', date='')
+
+        df = _fetch_dividend()
 
         if df is None or df.empty:
             continue

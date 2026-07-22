@@ -113,6 +113,7 @@ def validate() -> None:
     _check_range(cfg, 'universe.min_price', (int, float), min_val=0)
     _check_range(cfg, 'universe.min_daily_amount', int, min_val=0)
     _check_range(cfg, 'universe.exclude_zero_turnover_days', int, min_val=0)
+    _check_range(cfg, 'universe.sealed_limit_up_ratio', (int, float), min_val=0.01)
 
 
 def _check(cfg: dict, key: str, expected: type | tuple[type, ...]) -> None:

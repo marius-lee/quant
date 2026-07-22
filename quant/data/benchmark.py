@@ -45,6 +45,8 @@ def sync_benchmark(index_code: str = "000300") -> int:
     Sina 的 vip.stock.finance.sina.com.cn 在国内 DNS 环境下被屏蔽。
     """
     import akshare as ak
+    from quant.data.datasource_retry import datasource_retry
+    from quant.utils.date import to_compact
     conn = _init_db()
     # 获取已有日期范围
     row = conn.execute(
@@ -54,11 +56,12 @@ def sync_benchmark(index_code: str = "000300") -> int:
     last_date = row[0] if row and row[0] else "2020-01-01"
 
     # eastmoney API 需要 YYYYMMDD 格式的日期参数
-    df = ak.stock_zh_index_daily_em(
-        symbol=f"sh{index_code}",
-        start_date=to_compact(last_date),
-        end_date="20500101"
-    )
+    @datasource_retry
+    def _fetch_benchmark(symbol, start_date):
+        return ak.stock_zh_index_daily_em(symbol=symbol,
+            start_date=start_date, end_date="20500101")
+
+    df = _fetch_benchmark(f"sh{index_code}", to_compact(last_date))
     if df is None or df.empty:
         logger.warning(f"benchmark {index_code}: empty response")
         return 0

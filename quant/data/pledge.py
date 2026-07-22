@@ -35,6 +35,8 @@ def _ensure_table(conn):
 
 def sync_range(start_date: str = None, end_date: str = None, conn=None) -> int:
     """同步股权质押统计 (akshare 批拉全市场). 返回新增行数."""
+    import akshare as ak
+    from quant.data.datasource_retry import datasource_retry
     close_conn = False
     if conn is None:
         conn = sqlite3.connect(DB_PATH)
@@ -43,7 +45,12 @@ def sync_range(start_date: str = None, end_date: str = None, conn=None) -> int:
     _ensure_table(conn)
 
     total = 0
-    df = ak.stock_gpzy_pledge_ratio_em()
+
+    @datasource_retry
+    def _fetch_pledge():
+        return ak.stock_gpzy_pledge_ratio_em()
+
+    df = _fetch_pledge()
 
     if df is None or df.empty:
         if close_conn:

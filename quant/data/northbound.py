@@ -41,15 +41,20 @@ def _ensure_table(conn):
 def sync_single_stock(symbol: str, conn=None) -> int:
     """同步单只股票的北向资金历史数据。返回新增行数。"""
     import akshare as ak
+    from quant.data.datasource_retry import datasource_retry
     close_conn = False
     if conn is None:
         conn = sqlite3.connect(DB_PATH)
         close_conn = True
-    
+
     _ensure_table(conn)
-    
+
+    @datasource_retry
+    def _fetch_northbound(sym):
+        return ak.stock_hsgt_individual_em(symbol=sym)
+
     n = 0
-    df = ak.stock_hsgt_individual_em(symbol=symbol)
+    df = _fetch_northbound(symbol)
     if df is None or df.empty:
         return 0
 

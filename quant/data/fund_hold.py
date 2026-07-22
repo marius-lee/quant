@@ -37,6 +37,7 @@ def _ensure_table(conn):
 def sync_quarter(report_date: str, conn=None) -> int:
     """同步单个季度的基金持仓。返回新增行数。"""
     import akshare as ak
+    from quant.data.datasource_retry import datasource_retry
     close_conn = False
     if conn is None:
         conn = sqlite3.connect(DB_PATH)
@@ -44,7 +45,11 @@ def sync_quarter(report_date: str, conn=None) -> int:
 
     _ensure_table(conn)
 
-    df = ak.stock_report_fund_hold(date=report_date)
+    @datasource_retry
+    def _fetch_fund_hold(date):
+        return ak.stock_report_fund_hold(date=date)
+
+    df = _fetch_fund_hold(report_date)
     if df is None or df.empty:
         return 0
 

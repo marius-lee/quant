@@ -80,7 +80,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     if not engine.is_initialized(strategy):
         engine.set_initial_capital(strategy, seed)
     total_capital = seed  # 用初始本金, 不用剩余现金 (get_cash 会随持仓变化缩小)
-
+    logger.info(f"[0/5] init: DataStore+Engine ready")
 
     # ── Step 1: Data Update ──
     if not skip_pull:
@@ -94,6 +94,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         _m.inc("data.sync.rows", n_new)
     else:
         results["steps"]["data"] = {"new_rows": 0, "status": "skipped"}
+        logger.info(f"[1/5] data: skipped (skip_pull=True)")
 
     # ── Step 2: Load ──
     from quant.data.repos import UniverseRepo
@@ -110,6 +111,8 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         )
     else:
         symbols = UniverseRepo().get_symbols(exclude_market="BJ")
+
+    logger.info(f"[2/5] load: loading {len(symbols)} symbols from DB...")
     from quant.factor.windows import max_factor_calendar_days
     _eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(None))
     hist_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
@@ -142,7 +145,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     _mconn = sqlite3.connect(MARKET_DB)
     _prev_dates = _mconn.execute(
         "SELECT date FROM limit_up_pool WHERE date < ? ORDER BY date DESC LIMIT 1",
-        (date,)
+        (date_str,)
     ).fetchone()
     _mconn.close()
     if _prev_dates:

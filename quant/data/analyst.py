@@ -40,6 +40,7 @@ def _ensure_table(conn):
 def sync_forecasts(conn=None) -> int:
     """同步全量分析师盈利预测 (单次 API 调用, ~2781只)。"""
     import akshare as ak
+    from quant.data.datasource_retry import datasource_retry
     close_conn = False
     if conn is None:
         conn = sqlite3.connect(DB_PATH)
@@ -48,7 +49,11 @@ def sync_forecasts(conn=None) -> int:
     _ensure_table(conn)
     today = datetime.now().strftime("%Y-%m-%d")
 
-    df = ak.stock_profit_forecast_em()
+    @datasource_retry
+    def _fetch_forecasts():
+        return ak.stock_profit_forecast_em()
+
+    df = _fetch_forecasts()
     if df is None or df.empty:
         return 0
 

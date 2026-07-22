@@ -45,6 +45,7 @@ def _ensure_table(conn):
 def sync_single_stock(symbol: str, market: str = 'sh', conn=None, max_retries: int = 3) -> int:
     """同步单只股票的资金流向历史数据。带重试逻辑。返回新增行数。"""
     import akshare as ak
+    from quant.data.datasource_retry import datasource_retry
     close_conn = False
     if conn is None:
         conn = sqlite3.connect(DB_PATH)
@@ -52,9 +53,13 @@ def sync_single_stock(symbol: str, market: str = 'sh', conn=None, max_retries: i
 
     _ensure_table(conn)
 
+    @datasource_retry
+    def _fetch_flow(sym, mkt):
+        return ak.stock_individual_fund_flow(stock=sym, market=mkt)
+
     last_err = None
     for attempt in range(max_retries):
-        df = ak.stock_individual_fund_flow(stock=symbol, market=market)
+        df = _fetch_flow(symbol, market)
         if df is None or df.empty:
             if close_conn:
                 conn.close()

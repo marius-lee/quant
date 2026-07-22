@@ -87,9 +87,16 @@ def sync_range(start_date: str, end_date: str, conn=None) -> int:
             conn.close()
         return 0
 
+    import akshare as ak
+    from quant.data.datasource_retry import datasource_retry
+
     total = 0
     for i, sym in enumerate(symbols):
-        df = ak.stock_shareholder_change_ths(symbol=sym)
+        @datasource_retry
+        def _fetch_holder(sym=sym):
+            return ak.stock_shareholder_change_ths(symbol=sym)
+
+        df = _fetch_holder()
 
         if df is None or df.empty:
             continue

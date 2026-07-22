@@ -1066,6 +1066,8 @@ class DataStore:
         total_updated = 0
         batch_count = (len(all_syms) + batch_size - 1) // batch_size
         logger.info(f"turnover backfill: {len(all_syms)} stocks, {batch_count} batches, ~{batch_count*6/60:.0f}min estimated")
+        _progress_interval = max(50, len(all_syms) // 20)  # 至少每50只打印一次, 最多20次进度
+
         t_start = __import__('time').time()
         for batch_idx, i in enumerate(range(0, len(all_syms), batch_size)):
             chunk = all_syms[i:i + batch_size]
@@ -1095,10 +1097,16 @@ class DataStore:
                     total_updated += 1
             conn.commit()
             import time; time.sleep(_require_cfg("data.rate_limit.tickflow_quote_batch_sec"))  # tickflow 免费版 10次/分钟; 来源: test-v169 实测
-            if batch_idx % 10 == 0 or batch_idx == batch_count - 1:
-                elapsed = __import__('time').time() - t_start
-                eta = (batch_count - batch_idx - 1) * 6
-                logger.info(f"turnover backfill: {i+len(chunk)}/{len(all_syms)} ({100*(i+len(chunk))//len(all_syms)}%) elapsed={elapsed:.0f}s ETA={eta:.0f}s")
+            _stocks_done = i + len(chunk)
+            # 动态进度: 每 50 只或进度达 5% 阶梯打印, 避免长时间无输出
+            if _stocks_done % _progress_interval == 0 or batch_idx % 10 == 0 or batch_idx == batch_count - 1:
+                elapsed = __import__("time").time() - t_start
+                _rate = _stocks_done / max(elapsed, 0.001)
+                _remaining = len(all_syms) - _stocks_done
+                _eta = _remaining / max(_rate, 0.001)
+                logger.info(f"turnover backfill: {_stocks_done}/{len(all_syms)} "
+                           f"({100*_stocks_done//len(all_syms)}%) "
+                           f"{_rate:.1f}stocks/s ETA={_eta:.0f}s today={total_updated}")
         logger.info(f"turnover backfill (tickflow): {total_updated} stocks for {date}")
         return total_updated
     def _sync_industry_akshare(self, conn) -> int:
@@ -1259,6 +1267,7 @@ class DataStore:
         total_new = 0
         batch_size = _require_cfg("data.batch_size")  # 批量大小
         sources = {}     # source → count
+        _t_loop = __import__('time').time()  # 进度日志用, 计算 ETA
 
         # total_new: INSERT ... ON CONFLICT DO UPDATE 语义下统计的是"受影响行数"(INSERT+UPDATE)
         # 非传统"新增行数" — 对 stale_recent 全量刷新场景会等于全量行数
@@ -1361,7 +1370,11 @@ class DataStore:
                 sample_str = f" | sample: {sample[0]} {sample[1]} V={sample[6]} Amt={sample[7]}"
             pct = min(i + batch_size, len(symbols)) / len(symbols) * 100
             done = min(i + batch_size, len(symbols))
-            logger.info(f"daily [{source}] {done}/{len(symbols)} ({pct:.0f}%) {total_new}新行{sample_str}")
+            _elapsed = __import__("time").time() - _t_loop
+            _remaining = len(symbols) - done
+            _rate = done / max(_elapsed, 0.001)
+            _eta = _remaining / max(_rate, 0.001)
+            logger.info(f"daily [{source}] {done}/{len(symbols)} ({pct:.0f}%) {total_new}新行 | {_elapsed:.0f}s ETA={_eta:.0f}s{sample_str}")
 
             # tushare 限流由 _fetch_batch_tushare 内 RateLimiter 统一管控 (calls_per_minute 来自 config)
             # 不再额外 sleep — 避免双重限流 (来源: 2026-07-21 全链路逻辑分析)

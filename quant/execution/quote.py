@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import re, urllib.request
 from quant.config.constants import _require_cfg
 from quant.utils.logger import get_logger
+from quant.data.datasource_retry import quote_retry
 
 logger = get_logger("execution.quote")
 
@@ -120,9 +121,14 @@ def _fetch_tencent_batch(batch: list[str], include_ask_bid: bool = False) -> dic
     """腾讯实时行情单批拉取."""
     codes = ",".join(_symbol_to_tencent(s) for s in batch)
     req = urllib.request.Request(_TENCENT_URL + codes, headers=_TENCENT_HEADERS)
-    try:
+
+    @quote_retry
+    def _do_request():
         with urllib.request.urlopen(req, timeout=_require_cfg("data.http_timeout.tencent")) as resp:
-            text = resp.read().decode("gbk")
+            return resp.read().decode("gbk")
+
+    try:
+        text = _do_request()
     except Exception:
         return {}
     result: dict[str, dict] = {}
@@ -174,9 +180,14 @@ def _fetch_sina_batch(batch: list[str]) -> dict[str, dict]:
     """新浪实时行情单批拉取."""
     codes = ",".join(_symbol_to_sina(s) for s in batch)
     req = urllib.request.Request(_SINA_URL + codes, headers=_SINA_HEADERS)
-    try:
+
+    @quote_retry
+    def _do_request():
         with urllib.request.urlopen(req, timeout=_require_cfg("data.http_timeout.sina")) as resp:
-            text = resp.read().decode("gbk")
+            return resp.read().decode("gbk")
+
+    try:
+        text = _do_request()
     except Exception:
         return {}
     result: dict[str, dict] = {}

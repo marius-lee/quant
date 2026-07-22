@@ -11,6 +11,7 @@ from quant.config.constants import _require_cfg
 from quant.execution.engine import ExecutionEngine, Order
 from quant.execution.cost import CostModel
 from quant.optimizer.rebalance import compute_trades, validate_orders
+from quant.optimizer.portfolio import PortfolioConstructor
 from quant.scheduler._base import _timed_loop
 
 _log = get_logger(__name__)
@@ -19,7 +20,7 @@ _log = get_logger(__name__)
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
-    rid = _tk_start("execute", today)
+    rid = _tk_start("execute", today, grace_seconds=600)
     if rid is None:
         _log.info(f"[{today}] execute already running, skip duplicate trigger")
         return
@@ -110,6 +111,27 @@ def _run(today: str):
             _log.info(f"[{today}] {sym} 开盘封死涨停 (ask=0, px={last_price}), skip")
     if sealed_at_open:
         targets = [tp for tp in targets if tp["symbol"] not in sealed_at_open]
+        # ── 重分配: 封板股释放的资本重新跑优化器, 剩余候选吃满资金 ──
+        if targets:
+            cash = engine.get_cash(strategy)
+            alpha_series = pd.Series({tp["symbol"]: tp["score"] for tp in targets}, dtype=float)
+            prices_series = pd.Series({tp["symbol"]: tp["price"] for tp in targets}, dtype=float)
+            try:
+                opt = PortfolioConstructor()
+                # 重分配用实时价直接算，不走 construct 的 price_buffer
+                # (construct 的 buffer 是为盘前 pipeline 设计的——用昨收预估，需留安全边际。
+                #  execute 阶段已有实时报价，buffer 会导致仓位偏保守，偏离业界标准)
+                new_pf = opt._rank_concentrated(alpha_series, prices_series, cash)
+                new_lots = new_pf.lots
+                for tp in targets:
+                    sym = tp["symbol"]
+                    if sym in new_lots.index and new_lots[sym] > 0:
+                        tp["shares"] = int(new_lots[sym]) * LOT_SIZE
+                _log.info(f"[{today}] reallocated after sealed removal: " +
+                          str({s: int(l) * LOT_SIZE for s, l in new_lots.items() if l > 0}))
+            except Exception as _re_e:
+                _log.warning(f"[{today}] reallocation after sealed failed (non-fatal): {_re_e}, "
+                             f"using original allocations")
         # 重新构建 target_lots
         target_lots = {tp["symbol"]: tp["shares"] // LOT_SIZE for tp in targets}
         target_lots_series = pd.Series(target_lots, dtype=int) if target_lots else pd.Series(dtype=int)

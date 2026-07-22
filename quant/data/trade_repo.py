@@ -150,6 +150,16 @@ class TradeRepo:
             CREATE INDEX IF NOT EXISTS idx_po_status
                 ON pending_orders(status, day);
         """)
+        # ── 持仓元数据 (C6 — 防止重启后止盈状态丢失) ──
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS position_meta (
+                symbol TEXT NOT NULL,
+                day TEXT NOT NULL,
+                tp1_hit INTEGER DEFAULT 0,
+                peak_price REAL DEFAULT 0,
+                PRIMARY KEY (symbol, day)
+            )
+        """)
         c.commit()
         c.close()
 
@@ -433,3 +443,27 @@ class TradeRepo:
         cnt = c.execute("SELECT COUNT(*) FROM sim_trades WHERE date=? AND strategy=? AND mode=?", (date_str, strategy, mode)).fetchone()[0]
         c.close()
         return cnt > 0
+
+    def save_position_meta(self, symbol: str, day: str, tp1_hit: bool, peak_price: float):
+        """持久化持仓元数据 (C6 — 防止重启后止盈状态丢失)."""
+        c = self._conn()
+        c.execute(
+            "INSERT OR REPLACE INTO position_meta (symbol, day, tp1_hit, peak_price) VALUES (?, ?, ?, ?)",
+            (symbol, day, int(tp1_hit), peak_price)
+        )
+        c.commit()
+        c.close()
+
+    def get_position_meta(self, symbol: str, day: str) -> dict:
+        """读取持仓元数据."""
+        c = self._conn()
+        row = c.execute(
+            "SELECT tp1_hit, peak_price FROM position_meta WHERE symbol=? AND day=?",
+            (symbol, day)
+        ).fetchone()
+        result = {}
+        if row:
+            result = {"_tp1_hit": bool(row[0]), "_peak": row[1] if row[1] > 0 else None}
+        c.close()
+        return result
+

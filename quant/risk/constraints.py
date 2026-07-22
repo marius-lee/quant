@@ -107,6 +107,43 @@ def filter_st_stocks(
     return candidates[~is_st].copy()
 
 
+def filter_sealed_limit_up(candidates, prev_date: str, seal_ratio_threshold: float = 3.0):
+    """Exclude stocks sealed at limit-up on previous trading day.
+
+    Sources: ADR-033 limit order design + test-v210 exec feedback loop.
+    limit_up_pool table in market.db, synced daily by daily_sync.py.
+    seal_ratio = lock_capital / amount; higher = stronger seal.
+    """
+    import sqlite3
+    from quant.config.paths import MARKET_DB
+    conn = sqlite3.connect(MARKET_DB)
+    try:
+        rows = conn.execute(
+            "SELECT symbol, lock_capital, amount FROM limit_up_pool WHERE date=?",
+            (prev_date,)
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return candidates.copy()
+    sealed_syms = set()
+    for sym, lock_cap, amt in rows:
+        try:
+            lc = float(lock_cap or 0)
+            a = float(amt or 0)
+            if lc > 0 and a > 0 and (lc / a) > seal_ratio_threshold:
+                sealed_syms.add(sym)
+        except (ValueError, TypeError):
+            pass
+    from quant.utils.logger import get_logger
+    logger = get_logger("risk.constraints")
+    removed = [s for s in sealed_syms if s in candidates.index]
+    if removed:
+        logger.info(f"limit-up filter: {prev_date} sealed={len(sealed_syms)} removed={len(removed)}")
+    return candidates[~candidates.index.isin(sealed_syms)].copy()
+
+
+
 def apply_all_filters(
     candidates: pd.DataFrame,
     limits: Optional[RiskLimits] = None,

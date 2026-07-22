@@ -80,6 +80,14 @@ class TradeRepo:
             c.execute("ALTER TABLE daily_signals ADD COLUMN mode TEXT DEFAULT 'live'")
         except sqlite3.OperationalError:
             pass  # column already exists
+        try:
+            c.execute("ALTER TABLE pending_orders ADD COLUMN cancel_reason TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            c.execute("ALTER TABLE daily_signals ADD COLUMN exec_notes TEXT DEFAULT '{}'")
+        except sqlite3.OperationalError:
+            pass
         sc_cols = {r[1] for r in c.execute("PRAGMA table_info(strategy_config)").fetchall()}
         if 'mode' not in sc_cols:
             c.executescript('''
@@ -382,6 +390,43 @@ class TradeRepo:
         if row:
             return {"date": row[0], "targets": _json.loads(row[1]), "capital": row[2]}
         return None
+
+    def get_signal_exec_notes(self, date_str: str) -> dict:
+        import json as _json
+        c = self._conn()
+        row = c.execute(
+            "SELECT exec_notes FROM daily_signals WHERE date=? ORDER BY generated_at DESC LIMIT 1",
+            (date_str,)
+        ).fetchone()
+        c.close()
+        if row and row[0]:
+            try:
+                return _json.loads(row[0])
+            except Exception:
+                return {}
+        return {}
+
+    def update_signal_exec_note(self, date_str: str, symbol: str, note: str):
+        import json as _json
+        c = self._conn()
+        row = c.execute(
+            "SELECT exec_notes FROM daily_signals WHERE date=? ORDER BY generated_at DESC LIMIT 1",
+            (date_str,)
+        ).fetchone()
+        if not row:
+            c.close()
+            return
+        try:
+            notes = _json.loads(row[0]) if row[0] else {}
+        except Exception:
+            notes = {}
+        notes[symbol] = note
+        c.execute(
+            "UPDATE daily_signals SET exec_notes=? WHERE date=?",
+            (_json.dumps(notes, ensure_ascii=False), date_str)
+        )
+        c.commit()
+        c.close()
 
     def has_trades_today(self, strategy: str, date_str: str, mode: str = "live") -> bool:
         c = self._conn()

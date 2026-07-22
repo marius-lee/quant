@@ -166,6 +166,7 @@ class OrderManager:
                                         "reason": "封死涨停(ask_volume=0), 无法买入"})
                         _log.info(f"[order_manager] ABANDON {po.symbol}: 封死涨停 "
                                   f"(ask={ask:.2f} ask_vol=0), 放弃买入")
+                        self._note_signal(day, po.symbol, "abandoned_sealed")
                         continue
 
             gap = (ask - po.limit_price) / po.limit_price if po.limit_price > 0 else 0
@@ -244,12 +245,19 @@ class OrderManager:
     def _cancel(self, order_id: int, reason: str = ""):
         c = _conn()
         c.execute(
-            "UPDATE pending_orders SET status='cancelled' WHERE id=?",
-            (order_id,))
+            "UPDATE pending_orders SET status='cancelled', cancel_reason=? WHERE id=?",
+            (reason, order_id))
         c.commit()
         c.close()
         if reason:
             _log.info(f"[order_manager] cancelled order#{order_id}: {reason}")
+
+    def _note_signal(self, day: str, symbol: str, note: str):
+        try:
+            from quant.data.trade_repo import TradeRepo
+            TradeRepo().update_signal_exec_note(day, symbol, note)
+        except Exception as e:
+            _log.warning(f"[order_manager] exec_note write failed (non-fatal): {e}")
 
     def cancel_all(self, day: str, strategy: str = "quant"):
         c = _conn()

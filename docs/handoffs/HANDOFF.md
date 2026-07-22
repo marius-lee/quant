@@ -691,3 +691,54 @@ test-v200 的 Sharpe/MDD 计算依赖 `sim_trades.capital_after` 字段构建日
 - quant/scheduler/orchestrator.py (2处 09:35→09:30)
 - web/app.py (VERSION → test-v208)
 - docs/handoffs/HANDOFF.md (本记录)
+
+---
+## test-v210 — 信号执行反馈闭环: cancel_reason + exec_notes (2026-07-22)
+
+### 背景
+
+test-v208 的 include_ask_bid 实现了封死涨停检测 → monitor 放弃订单。但放弃信息只留在日志中，
+未写回任何结构化位置。归因系统不知道信号是因为"买不到"而非"alpha 差"未成交。
+
+同时 `pending_orders` 表有 `cancel_reason` 语义但无实际列，`_cancel()` 只写日志不写 DB。
+
+### 变更
+
+**1. trade_repo.py — Schema 迁移 + 新方法**
+- `pending_orders` 新增 `cancel_reason TEXT DEFAULT ''` 列 (ALTER TABLE 幂等)
+- `daily_signals` 新增 `exec_notes TEXT DEFAULT '{}'` 列 (JSON: `{"001258": "abandoned_sealed"}`)
+- `get_signal_exec_notes(date_str)` — 查询某日信号的执行备注
+- `update_signal_exec_note(date_str, symbol, note)` — 追加单个标的备注
+
+**2. order_manager.py — _cancel 写 DB + 封死回写信号**
+- `_cancel()` 现在写 `cancel_reason` 到 `pending_orders` 表 (之前只打日志)
+- 封死涨停放弃时调用 `_note_signal(day, symbol, "abandoned_sealed")`
+- `_note_signal()` 通过 TradeRepo 回写 exec_notes 到 daily_signals 表
+
+**3. state_broker.py — 信号信增 exec_note 字段**
+- 读取 daily_signals 时同时加载 exec_notes JSON
+- 每个信号条目追加 `exec_note` 字段: `"abandoned_sealed"` / `""` (正常)
+
+**4. app.js — Alpha 候选池新增「状态」列**
+- 信号表格增加 `exec_note` 列, 显示在「信号」列之后
+
+### 闭环流程
+
+```
+pipeline → daily_signals (signals_json) → state_broker 展示
+  ↓
+execute → pending_orders → monitor 管理
+  ↓
+封死涨停检测 → order_manager._cancel(cancel_reason='sealed_limit_up')
+  → order_manager._note_signal('abandoned_sealed')
+  → TradeRepo.update_signal_exec_note → daily_signals.exec_notes
+  → state_broker 读取 → 前端「状态」列显示 "abandoned_sealed"
+```
+
+### 涉及文件
+- quant/data/trade_repo.py (migrations + 2 methods)
+- quant/scheduler/order_manager.py (_cancel write + _note_signal + sealed回写)
+- web/state_broker.py (exec_notes 读取与合并)
+- web/static/app.js (状态列)
+- web/app.py (VERSION → test-v210)
+- docs/handoffs/HANDOFF.md (本记录)

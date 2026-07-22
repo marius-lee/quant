@@ -24,14 +24,14 @@ def _run(today: str):
     elapsed = _time.time() - t0
     _log.info(f"[{today}] daily_data done: {n} new rows ({elapsed:.1f}s)")
     # 盘后换手率回填 — 安全网: tushare 已配置且为首选源(turnover_rate✅),
-    # 正常情况 backfill_turnover_quotes 查询到 0 行待补 → 即时返回。
-    # 仅在 tushare 某批失败、回退源(如 tickflow)接盘写入 turnover=0 时,
-    # 才实际触发 tickflow quotes 回填 (约 60s/50只)。
+    # 正常情况 backfill_turnover 查询到 0 行待补 → 即时返回。
+    # 仅在 tushare 某批失败、回退源(无 turnover)接盘写入 turnover=0 时,
+    # 才实际触发 baostock 回填 (baostock 0.3s/只, 来源: 2026-07-21 实测)。
     # 来源: 2026-07-21 全链路逻辑分析 (问题3: 冗余安全网)
     import traceback
     try:
         s = DataStore()
-        tn = s.backfill_turnover_quotes(today)
+        tn = s.backfill_turnover(today)
         s.close()
         if tn > 0:
             _log.info(f"[{today}] turnover backfill: {tn} stocks updated (safety net triggered)")

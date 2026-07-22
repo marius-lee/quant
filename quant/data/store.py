@@ -895,7 +895,7 @@ class DataStore:
         from quant.execution.calendar import is_trading_day
         _today = datetime.today()
         gap_start_dt = datetime.strptime(last_good, "%Y-%m-%d")
-        gap_end_dt = _today - timedelta(days=1)
+        gap_end_dt = _today  # 包含今天(盘后): daily_data 已写入 OHLCV, turnover=0 需回填 (来源: 2026-07-22)
 
         # 收集所有缺口日期 (含 last_good 当天 — 只有6只BJ有turnover, 其余5421只需补)
         gap_dates = []

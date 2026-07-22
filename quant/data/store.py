@@ -996,7 +996,7 @@ class DataStore:
 
                 _bs_processed += 1
                 # 每 5000 只重登, 防止 session 超时导致 Broken pipe (baostock 免费服务 ~1-2h 超时)
-                if _bs_processed % 5000 == 0:
+                if _bs_processed > 0 and _bs_processed % 200 == 0:
                     logger.info(f"turnover backfill: baostock re-login at {_bs_processed} stocks")
                     _bs.logout()
                     _lg = _bs.login()

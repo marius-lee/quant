@@ -135,9 +135,22 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     _latest_amount = data["amount"].iloc[-1] if "amount" in data else pd.Series(dtype=float)
     _pre_df = pd.DataFrame({"close": _latest_close, "amount": _latest_amount})
     _pre_filtered = apply_all_filters(_pre_df, limits=_risk_limits, stock_names=store.get_stock_names(symbols))
+    # ── 涨停封死预过滤 (test-v211): 昨日封成比>阈值的股票今日无法交易 ──
+    from quant.risk.constraints import filter_sealed_limit_up
+    import sqlite3
+    from quant.config.paths import MARKET_DB
+    _mconn = sqlite3.connect(MARKET_DB)
+    _prev_dates = _mconn.execute(
+        "SELECT date FROM limit_up_pool WHERE date < ? ORDER BY date DESC LIMIT 1",
+        (date,)
+    ).fetchone()
+    _mconn.close()
+    if _prev_dates:
+        _pre_filtered = filter_sealed_limit_up(_pre_filtered, _prev_dates[0],
+                                                seal_ratio_threshold=_require_cfg("universe.sealed_limit_up_ratio"))
     investable_symbols = _pre_filtered.index.tolist()
     logger.info(f"[2.3] risk pre-filters: {len(symbols)} → {len(investable_symbols)} investable "
-                f"(liquidity>{_risk_limits.min_daily_amount}, price>{_risk_limits.min_price}, no ST)")
+                f"(liquidity>{_risk_limits.min_daily_amount}, price>{_risk_limits.min_price}, no ST, limit-up)")
     # Feed investable universe into subsequent steps
     symbols = [s for s in symbols if s in set(investable_symbols)]
     data = data.loc[:, data.columns.get_level_values(1).isin(symbols)]

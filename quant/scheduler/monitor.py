@@ -95,7 +95,7 @@ def _run_continuous(today: str):
             _pending_syms = [po.symbol for po in _pending_list]
             all_syms = list(set(_pos_syms + _pending_syms))
             try:
-                quotes = fetch_quotes(all_syms) if all_syms else {}
+                quotes = fetch_quotes(all_syms, include_ask_bid=True) if all_syms else {}
             except Exception as _qe:
                 _log.warning(f"[{today}] quote fetch failed: {_qe}, using empty quotes")
                 quotes = {}

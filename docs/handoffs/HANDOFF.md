@@ -644,3 +644,50 @@ test-v200 的 Sharpe/MDD 计算依赖 `sim_trades.capital_after` 字段构建日
 - quant/scheduler/monitor.py (fetch_quotes try/except)
 - web/app.py (VERSION → test-v207)
 - docs/handoffs/HANDOFF.md (本记录)
+
+---
+## test-v208 — include_ask_bid 落地: 五档盘口 + 封死涨停检测 (2026-07-22)
+
+### 背景
+
+`include_ask_bid` 在 ADR-033 限价单执行设计阶段被讨论但未实现。它的目的不是通用盘口数据,
+而是回答一个特定问题: **推荐的涨停板股票是否真的能买入？**
+
+如果一只股票涨停封死 (卖一价=涨停价 且 卖一量为0), 则:
+- 限价单无法成交 → 资金被无效占用
+- 14:50 强制补单也买不到 → 信号被浪费
+- 正确的做法是在 monitor 检测到封死时立即放弃, 释放资金
+
+### 实现方案
+
+**4 文件改动 (4 层)**:
+
+| 层 | 文件 | 改动 |
+|----|------|------|
+| 数据层 | `quant/execution/quote.py` | `_parse_tencent_line` 扩展: 腾讯API field[9]=买一价, [10]=买一量, [19]=卖一价, [20]=卖一量 |
+| 决策层 | `quant/scheduler/order_manager.py` | 新增涨停封死检测: ask_volume==0 + 价格触及涨停限价 → 立即放弃; ask 替代 price 做成交判断 |
+| 调用层 | `quant/scheduler/monitor.py` | `fetch_quotes(all_syms, include_ask_bid=True)` 启用五档数据 |
+| 调度层 | `quant/scheduler/orchestrator.py` | monitor 启动时间 09:35→09:30, 消除执行后5分钟空窗 |
+
+### 关键设计决策
+
+1. **仅增强腾讯解析器** (主源): Sina 备用源不加, 不影响回退链。
+2. **封死判定内联**: 不做 `_get_board_limit()` 导入 (需要 aux 依赖, 对 order_manager 太重)。
+   改用板块前缀直接判断: `68/30→20%`, `4/8/92→30%`, 其余→10%。
+3. **0.1% 容差**: `pct >= 0.19` (非 `0.20`) 用 1% 偏差容忍浮点误差。
+4. **ask_volume 为 None → 不触发**: 仅当 include_ask_bid 成功返回 ask_volume 且值为0 时检测。
+5. **force_fill 不触发封死检测**: 14:50 强制补单时不做涨停判断 (反正市价也买不到, 但维持行为一致)。
+
+### monitor 启动时间 09:35→09:30 的理由
+
+- A股连续竞价从 09:30 开始, execute 下单只需 0.6s
+- 09:30-09:35 的 5 分钟空窗导致: 开盘急涨无法追价、开盘成交无法及时确认
+- 改为 09:30 立即启动, execute 与 monitor 之间仅差 orchestrator 轮询周期 (<30s)
+
+### 涉及文件
+- quant/execution/quote.py (+15行 ask/bid 提取)
+- quant/scheduler/order_manager.py (+25行 封死涨停检测 + ask优先)
+- quant/scheduler/monitor.py (1行 include_ask_bid=True)
+- quant/scheduler/orchestrator.py (2处 09:35→09:30)
+- web/app.py (VERSION → test-v208)
+- docs/handoffs/HANDOFF.md (本记录)

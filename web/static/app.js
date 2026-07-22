@@ -24,7 +24,7 @@ let _schedulerTimer = null;
 // ── Utils ──
 const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => el.querySelectorAll(sel);
-const fmtMoney = (v) => '¥' + Math.round(v).toLocaleString();
+const fmtMoney = (v) => '¥' + Number(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
 const fmtPct = (v) => { if (v == null || isNaN(v)) return '—'; return (v >= 0 ? '+' : '') + v.toFixed(2) + '%'; };
 const fmtNum = (v, d = 2) => { if (v == null || isNaN(v)) return '—'; return v.toFixed(d); };
 const clsPnl = (v) => v >= 0 ? 'up' : 'down';

@@ -20,6 +20,7 @@ def compute_trades(
     cash: float = 0.0,
     alpha_scores: pd.Series = None,
     max_trades_per_day: int = 0,
+    skip_cash_feasibility: bool = False,
 ) -> list[Order]:
     """计算调仓订单。
 
@@ -137,6 +138,11 @@ def compute_trades(
     # ── 换手缩放后的 cash feasibility 检查 ──
     # 换手率限制可能使卖单缩水但买单保留, 造成资金缺口。
     # 此时优先执行所有卖单, 再按买入成本从低到高依次纳入买单。
+    # skip_cash_feasibility=True 时跳过二次裁剪: pipeline 已在信号生成阶段完成
+    # 分配，execute 是 delta 执行，不应二次裁剪 (test-v213)。
+    if skip_cash_feasibility:
+        return orders
+
     available_cash = cash if cash > 0 else capital
     if available_cash > 0 and orders:
         sell_orders = [o for o in orders if o.side == "sell"]

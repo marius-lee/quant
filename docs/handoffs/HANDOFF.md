@@ -581,3 +581,17 @@ test-v200 的 Sharpe/MDD 计算依赖 `sim_trades.capital_after` 字段构建日
 该列为 schema DEFAULT 0，从未被赋值。`capital_after` 的填充需要知道交易时刻的总资产（现金 + 持仓市值），
 这需要后续在 `execution/engine.py` 中每次下单后调用估值逻辑写入。
 当前通过 `daily_equity` 表绕开此问题。
+
+## test-v202 — fmtMoney 保留 2 位小数 (2026-07-22)
+
+### 背景
+`app.js:27` 的 `fmtMoney` 使用 `Math.round(v).toLocaleString()`，把所有金额四舍五入到整数。
+总资产 4482.79 被显示为 ¥4,483。所有用到 `fmtMoney` 的地方（KPI 总资产、概览卡片、绩效页）都受影响。
+
+### 变更
+- **web/static/app.js:27** — `Math.round(v).toLocaleString()` → `Number(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})`
+- 金额显示保留 2 位小数，千位逗号分隔
+
+### 涉及文件
+- web/static/app.js
+- web/app.py (VERSION → test-v202)

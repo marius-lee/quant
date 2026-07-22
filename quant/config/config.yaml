@@ -116,6 +116,8 @@ execution:
     runaway_threshold: 0.02
     force_fill_time: '14:50'
     quote_ttl_sec: 30
+  # test-v214: pipeline 分配时预留价格波动空间 (Nano 5%, Micro 3%, Small 0%)
+  price_buffer: 0.05
 factor:
   accruals:
     max: 1

@@ -196,12 +196,12 @@ def _run():
 
 # ── 超时阈值 (秒) ──
 _TIMEOUTS = {
-    "signals": 900,       # 15 min (正常 ~5 min)
-    "execute": 600,       # 10 min (正常 <1 min)
+    "signals": None,      # 不限时 — 任务耗时随因子数增长, 不应硬性kill
+    "execute": None,      # 不限时 — 同上
     "monitor": None,      # 持续运行, 不收市不超时 — 只在 14:55+ 检查
     "daily_data": None,   # 不限时 — 盘后 turnover 回填可能 >60min (tickflow 5只/批×6s, 来源: 2026-07-22)
-    "attribution": 900,   # 15 min (正常 ~3 min)
-    "weekly_eval": 7200,  # 120 min (正常 ~30 min)
+    "attribution": None,  # 不限时 — 多阶段归因耗时随因子数增长
+    "weekly_eval": None,  # 不限时 — 周度评估
 }
 
 def _check_timeouts(today: str):

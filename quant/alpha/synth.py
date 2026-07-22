@@ -127,3 +127,40 @@ def sleeve_compose(
               min(score_map.values()), max(score_map.values()))
 
     return pd.Series(score_map, name="alpha").sort_values(ascending=False)
+
+
+def factor_attribution(factor_values: dict, target_symbols: list,
+                       positions_per_factor: int = 10, max_factors: int = 3) -> dict:
+    """返回每个目标标的的因子归因字符串 (test-v206).
+
+    sleeve 模式: 列出该标的 z-score 最高且入选 top-N 的因子。
+    用于替换 reason 字段的 #1/#2 无意义序号。
+
+    Returns:
+        dict[symbol] -> str, e.g. "momentum_63d(+2.1), reversal_5d(+1.8)"
+    """
+    result = {}
+    for sym in target_symbols:
+        contributions = []
+        for name, scores in factor_values.items():
+            val = scores.get(sym)
+            if val is None or (isinstance(val, float) and val != val):
+                continue
+            valid = scores.dropna()
+            top_n = min(positions_per_factor, len(valid))
+            top_set = set(valid.nlargest(top_n).index.tolist())
+            in_top = sym in top_set
+            contributions.append((name, float(val), in_top))
+        # 按入选状态优先, 再按 z-score 降序
+        contributions.sort(key=lambda x: (x[2], x[1]), reverse=True)
+        top_k = contributions[:max_factors]
+        if top_k:
+            parts = []
+            for fname, fval, in_top in top_k:
+                sign = "+" if fval >= 0 else ""
+                marker = "*" if in_top else ""
+                parts.append(f"{fname}{marker}({sign}{fval:.2f})")
+            result[sym] = ", ".join(parts)
+        else:
+            result[sym] = "-"
+    return result

@@ -293,10 +293,15 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
                 "side": "buy",
                 "industry": str(industries.get(sym, "")) if (industries is not None and not (isinstance(industries.get(sym, ""), float) and industries.get(sym, "") != industries.get(sym, ""))) else "",
             })
-    # ── rank by score descending, annotate reason ──
+    # ── rank by score descending, annotate factor attribution (test-v206) ──
     target_positions.sort(key=lambda x: x.get("score", 0), reverse=True)
+    from quant.alpha.synth import factor_attribution
+    target_syms = [tp["symbol"] for tp in target_positions]
+    attr_map = factor_attribution(factor_values, target_syms,
+                                  positions_per_factor=constructor.positions_per_factor,
+                                  max_factors=3)
     for i, tp in enumerate(target_positions):
-        tp["reason"] = f"#{i+1}"
+        tp["reason"] = attr_map.get(tp["symbol"], f"#{i+1}")
     results["target_positions"] = target_positions
     results["steps"]["optimizer"] = {
         "method": portfolio.method, "positions": portfolio.positions,

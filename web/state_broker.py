@@ -139,7 +139,23 @@ class InProcessBroker:
                     (today,)
                 ).fetchone()
                 if sig_row and sig_row["signals_json"]:
-                    state["signals"] = _json_sig.loads(sig_row["signals_json"])
+                    signals = _json_sig.loads(sig_row["signals_json"])
+                    # 从 market.db stocks 表补充名称 (test-v205)
+                    try:
+                        mdb = _sql2.connect(_os.path.join(_root, "quant", "data", "market.db"))
+                        symbols = [s["symbol"] for s in signals if "symbol" in s]
+                        if symbols:
+                            placeholders = ",".join(["?"] * len(symbols))
+                            name_map = dict(mdb.execute(
+                                f"SELECT symbol, name FROM stocks WHERE symbol IN ({placeholders})",
+                                symbols
+                            ).fetchall())
+                            for s in signals:
+                                s["name"] = name_map.get(s.get("symbol", ""), "")
+                        mdb.close()
+                    except Exception:
+                        pass
+                    state["signals"] = signals
                 sc_sig.close()
             except Exception:
                 pass

@@ -198,6 +198,7 @@ function renderSignals(state) {
   if (el) el.textContent = signals.length + ' 候选';
   renderTable('table-signals', signals.slice(0, 10), [
     { key: 'symbol', label: '代码' },
+    { key: 'name', label: '名称' },
     { key: 'price', label: '最新价' },
     { key: 'shares', label: '股数' },
     { key: 'score', label: '得分' },

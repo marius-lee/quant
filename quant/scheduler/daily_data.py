@@ -9,7 +9,10 @@ _log = get_logger(__name__)
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
-    _tk_start("daily_data", today)
+    rid = _tk_start("daily_data", today)
+    if rid is None:
+        _log.info(f"[{today}] daily_data already running, skip duplicate trigger")
+        return
     _log.info(f"[{today}] 19:00 — pulling daily data")
     t0 = _time.time()
 

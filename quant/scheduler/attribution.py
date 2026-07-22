@@ -20,7 +20,10 @@ _log = get_logger(__name__)
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
-    _tk_start("attribution", today)
+    rid = _tk_start("attribution", today)
+    if rid is None:
+        _log.info(f"[{today}] attribution already running, skip duplicate trigger")
+        return
     _log.info(f"[{today}] 15:30 — attribution")
     t0 = _time.time()
 

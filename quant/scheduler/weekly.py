@@ -15,7 +15,10 @@ _log = get_logger(__name__)
 
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
-    _tk_start("weekly_eval", today)
+    rid = _tk_start("weekly_eval", today)
+    if rid is None:
+        _log.info(f"[{today}] weekly_eval already running, skip duplicate trigger")
+        return
     _log.info(f"[{today}] weekly factor evaluation starting")
     t0 = _time.time()
 

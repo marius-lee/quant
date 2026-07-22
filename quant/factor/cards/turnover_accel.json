@@ -19,9 +19,9 @@
       "reason": "幻方 Tier S 因子接入 — 华安证券2024, 待评估"
     }
   ],
-  "ic_mean_12m": -0.0093,
+  "ic_mean_12m": 0.0,
   "ic_std_12m": null,
-  "icir_12m": -0.1405,
+  "icir_12m": 0.0,
   "half_life_days": null,
   "decay_trend": "unknown",
   "correlations": {},

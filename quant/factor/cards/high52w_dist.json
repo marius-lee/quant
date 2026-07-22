@@ -3,8 +3,8 @@
   "display_name": "high52w_dist",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.0034,
-  "icir_12m": -0.0234,
+  "ic_mean_12m": 0.0013,
+  "icir_12m": 0.0091,
   "last_evaluated": "auto",
   "n_obs": 64
 }

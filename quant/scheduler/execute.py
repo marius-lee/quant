@@ -125,8 +125,21 @@ def _run(today: str):
     if orders:
         is_valid, msg = validate_orders(orders, engine.get_cash(strategy))
         if not is_valid:
-            _log.warning(f"[{today}] validate_orders failed: {msg}, skipping")
-            orders = []
+            # test-v213: 资金不足时不全部丢弃, 按成本升序裁剪买单 (便宜优先保留)
+            _log.warning(f"[{today}] validate_orders failed: {msg}, trimming...")
+            buy_orders = [o for o in orders if o.side == "buy"]
+            sell_orders = [o for o in orders if o.side == "sell"]
+            buy_orders.sort(key=lambda o: o.cost)
+            for i in range(len(buy_orders), 0, -1):
+                trimmed = sell_orders + buy_orders[:i]
+                ok, _ = validate_orders(trimmed, engine.get_cash(strategy))
+                if ok:
+                    orders = trimmed
+                    _log.warning(f"[{today}] trimmed {len(buy_orders)-i} buy(s), kept {i}: "
+                                 f"{[o.symbol for o in buy_orders[:i]]}")
+                    break
+            else:
+                orders = []
 
     # ── Step 6: 卖单立即执行, 买单挂限价 (ADR 033) ──
     sell_orders = [o for o in orders if o.side == "sell"]

@@ -61,7 +61,7 @@ def _run(today: str):
     # ── Step 3: 获取实时报价 ──
     from quant.execution.quote import fetch_quotes
     all_syms = list(set(list(current_lots.keys()) + list(target_lots.keys())))
-    quotes = fetch_quotes(all_syms)
+    quotes = fetch_quotes(all_syms, include_ask_bid=True)
     if not quotes:
         _log.error(f"[{today}] 无实时报价, 拒绝执行 (no fallback)")
         _tk_finish("execute", today, "failed", error="no quotes")
@@ -82,6 +82,38 @@ def _run(today: str):
             q = quotes.get(tp["symbol"], {})
             prices[tp["symbol"]] = q.get("price", 0) or q.get("open", 0)
     prices = pd.Series(prices)
+
+    # ── Step 3.5: 涨停封死预检 (test-v214) ──
+    # 在挂单前检查 target 是否开盘即封死涨停，避免生成无效挂单
+    # 封死的跳过，写入 exec_notes 供前端展示
+    sealed_at_open = []
+    for tp in targets:
+        sym = tp["symbol"]
+        q = quotes.get(sym, {})
+        ask_vol = q.get("ask_volume", 0) or 0
+        last_price = q.get("price", 0) or q.get("open", 0)
+        prev_close = q.get("prev_close", 0)
+        if prev_close <= 0 or last_price <= 0:
+            continue
+        # 判断涨停价 (板块差异化)
+        if sym.startswith("68") or sym.startswith("30"):
+            limit_pct = 0.20
+        elif sym[:1] == "4" or sym[:1] == "8" or sym.startswith("92"):
+            limit_pct = 0.30
+        else:
+            limit_pct = 0.10
+        limit_up_price = round(prev_close * (1 + limit_pct), 2)
+        if abs(last_price - limit_up_price) <= 0.02 and ask_vol == 0:
+            sealed_at_open.append(sym)
+            repo.update_signal_exec_note(today, sym, "sealed_at_open")
+            _log.info(f"[{today}] {sym} 开盘封死涨停 (ask=0, px={last_price}), skip")
+    if sealed_at_open:
+        targets = [tp for tp in targets if tp["symbol"] not in sealed_at_open]
+        # 重新构建 target_lots
+        target_lots = {tp["symbol"]: tp["shares"] // LOT_SIZE for tp in targets}
+        target_lots_series = pd.Series(target_lots, dtype=int) if target_lots else pd.Series(dtype=int)
+        _log.info(f"[{today}] after sealed pre-check: {len(targets)} targets remain "
+                  f"(removed {len(sealed_at_open)}: {sealed_at_open})")
 
     # ── Step 4: 止损检查 ──
     cash = engine.get_cash(strategy)
@@ -125,19 +157,32 @@ def _run(today: str):
     if orders:
         is_valid, msg = validate_orders(orders, engine.get_cash(strategy))
         if not is_valid:
-            # test-v213: 资金不足时不全部丢弃, 按成本升序裁剪买单 (便宜优先保留)
-            _log.warning(f"[{today}] validate_orders failed: {msg}, trimming...")
+            # test-v214: 资金不足时按 alpha 得分降序裁剪, 高价重算可买股数
+            _log.warning(f"[{today}] validate_orders failed: {msg}, trimming by alpha...")
             buy_orders = [o for o in orders if o.side == "buy"]
             sell_orders = [o for o in orders if o.side == "sell"]
-            buy_orders.sort(key=lambda o: o.cost)
-            for i in range(len(buy_orders), 0, -1):
-                trimmed = sell_orders + buy_orders[:i]
-                ok, _ = validate_orders(trimmed, engine.get_cash(strategy))
-                if ok:
-                    orders = trimmed
-                    _log.warning(f"[{today}] trimmed {len(buy_orders)-i} buy(s), kept {i}: "
-                                 f"{[o.symbol for o in buy_orders[:i]]}")
-                    break
+            # 按 alpha 得分降序: top1 优先分配资金
+            target_score = {tp["symbol"]: tp.get("score", 0) for tp in targets}
+            buy_orders.sort(key=lambda o: target_score.get(o.symbol, 0), reverse=True)
+            available = engine.get_cash(strategy)
+            # 卖单先结算
+            for o in sell_orders:
+                available += o.price * o.shares - o.cost
+            feasible = []
+            for o in buy_orders:
+                # 用实时开盘价重算可买股数 (整手取整)
+                px = o.price
+                max_shares = int((available - o.cost) // (px * 100)) * 100 if px > 0 else 0
+                if max_shares >= 100:
+                    o.shares = max_shares
+                    o.cost = cost_model.buy_cost(px, max_shares)
+                    available -= o.shares * px + o.cost
+                    feasible.append(o)
+                    _log.info(f"[{today}]   kept {o.symbol}: {o.shares}股 @¥{px:.2f} (score={target_score.get(o.symbol,0):.2f})")
+                else:
+                    _log.info(f"[{today}]   dropped {o.symbol}: max_shares={max_shares} < 100 (score={target_score.get(o.symbol,0):.2f})")
+            if feasible:
+                orders = sell_orders + feasible
             else:
                 orders = []
 

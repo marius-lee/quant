@@ -201,6 +201,12 @@ class PortfolioConstructor:
         a = alpha.loc[common].sort_values(ascending=False)
         p = prices.loc[common]
 
+        # test-v214: 价格缓冲 — pipeline 用昨收价分配, execute 用开盘价执行,
+        # 两者存在价差。在成本估算时预留 buffer, 减少 validate_orders 裁剪触发。
+        price_buffer = _require_cfg("execution.price_buffer")
+        if price_buffer > 0:
+            p = p * (1.0 + price_buffer)
+
         n_top = min(self.max_positions, len(p))
         avg_price = float(p.loc[a.index[:n_top]].mean())
         tier = self._tier(capital, avg_price)

@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v200"
+VERSION = "test-v201"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 def _log_exit(reason: str = ""):
@@ -85,7 +85,29 @@ def index():
         base = repo.get_initial_capital("quant")
         capital = repo.get_cash("quant") or base
         position_cost = repo.get_open_position_cost("quant")  # (2026-07-21 audit M3)
-        total_asset = round(capital + position_cost, 2)
+        # 优先用最新收盘价估值, 与绩效页面口径一致 (test-v201)
+        position_value = position_cost
+        try:
+            mc = sqlite3.connect(MARKET_DB)
+            pos_rows = sqlite3.connect(TRADE_DB).execute(
+                "SELECT symbol, SUM(shares) FROM sim_trades WHERE side='buy' AND strategy='quant' AND mode='live'"
+                " AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy='quant' AND mode='live')"
+                " GROUP BY symbol"
+            ).fetchall()
+            if pos_rows:
+                close_mv = 0.0
+                for sym, shares in pos_rows:
+                    cr = mc.execute(
+                        "SELECT close FROM daily WHERE symbol=? ORDER BY date DESC LIMIT 1", (sym,)
+                    ).fetchone()
+                    if cr and cr[0] and cr[0] > 0:
+                        close_mv += cr[0] * shares
+                if close_mv > 0:
+                    position_value = round(close_mv, 2)
+            mc.close()
+        except Exception:
+            pass  # fall through to position_cost
+        total_asset = round(capital + position_value, 2)
         total_pnl = round(total_asset - base, 2)
         perf = {"total_pnl": total_pnl, "total_asset": total_asset, "initial_capital": base}
     except Exception:
@@ -433,25 +455,45 @@ def api_performance():
     total_pnl = round(total_asset - base, 2)
     tc.close()
 
-    # 计算 Sharpe 和最大回撤: 用 sim_trades 的 capital_after 构建日收益序列
+    # 计算 Sharpe 和最大回撤: 从 daily_equity 表读权益序列 (test-v201)
+    # capital_after 在 record_trade 从未写入, daily_equity 是唯一权益快照来源
     sharpe = 0.0
     max_drawdown = 0.0
-    from quant.data.trade_repo import TradeRepo as _TR
-    _trades = _TR().get_trades(strategy, mode="live", limit=10000)
-    if _trades:
-        import pandas as _pd
-        from quant.monitor.attribution import compute_sharpe, compute_max_drawdown
-        rets = []
-        prev = base
-        for t in sorted(_trades, key=lambda x: x.get("date", "")):
-            ca = t.get("capital_after", 0) or prev
-            if prev > 0 and ca != prev:
-                rets.append(ca / prev - 1)
-            prev = ca
-        if len(rets) >= 3:
-            sr = _pd.Series(rets)
-            sharpe = compute_sharpe(sr)
-            max_drawdown = compute_max_drawdown(sr)
+    import pandas as _pd
+    from quant.monitor.attribution import compute_sharpe, compute_max_drawdown
+
+    _eqconn = sqlite3.connect(TRADE_DB)
+    _eq_rows = _eqconn.execute(
+        "SELECT total_equity FROM daily_equity ORDER BY date"
+    ).fetchall()
+    _eqconn.close()
+
+    rets = []
+    if len(_eq_rows) >= 3:
+        _prev_eq = _eq_rows[0][0]
+        for (_eq,) in _eq_rows[1:]:
+            if _prev_eq > 0:
+                rets.append(_eq / _prev_eq - 1)
+            _prev_eq = _eq
+    else:
+        # fallback: daily_equity 不足时从卖出 PnL 构建近似权益曲线
+        _sdconn = sqlite3.connect(TRADE_DB)
+        _sd = _sdconn.execute(
+            "SELECT date, pnl FROM sim_trades WHERE side='sell' AND strategy=? AND mode='live' ORDER BY date",
+            (strategy,)
+        ).fetchall()
+        _sdconn.close()
+        if _sd:
+            _cum = base
+            for _date, _p in _sd:
+                _cum += (_p or 0)
+                if _cum > 0:
+                    rets.append((_p or 0) / _cum)
+
+    if len(rets) >= 3:
+        _sr = _pd.Series(rets)
+        sharpe = compute_sharpe(_sr)
+        max_drawdown = compute_max_drawdown(_sr)
 
     result = {
         "realized_pnl": round(realized_pnl, 2),

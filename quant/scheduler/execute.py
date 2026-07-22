@@ -19,7 +19,10 @@ _log = get_logger(__name__)
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
-    _tk_start("execute", today)
+    rid = _tk_start("execute", today)
+    if rid is None:
+        _log.info(f"[{today}] execute already running, skip duplicate trigger")
+        return
     _log.info(f"[{today}] 09:30 — executing trades")
     t0 = _time.time()
 

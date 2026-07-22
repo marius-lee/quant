@@ -59,24 +59,45 @@ def _ensure_table():
 _ensure_table()
 
 
-def start(task_name: str, date: str, dedup: bool = False) -> int:
-    """任务启动时调用。返回 row id。
-    
+def start(task_name: str, date: str, dedup: bool = False, grace_seconds: int = 120) -> int | None:
+    """任务启动时调用。返回 row id, 若已运行则返回 None 表示跳过。
+
     Args:
         task_name: 'signals' | 'execute' | 'monitor' | 'attribution' | 'weekly_eval'
         date: '2026-07-15'
         dedup: 如果 True，同任务同日期仅保留一行（DELETE 旧行 + INSERT 新行）。
                适用于高频重复任务（如 monitor 每30s一次），防止 task_runs 膨胀。
+        grace_seconds: running 行的宽限期(秒)。在此时间内视为"仍在运行"，返回 None。
+                       超时则标为 aborted 并新建行。默认 120s。
     """
     conn = _conn()
     try:
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-        # 自动清理旧 running 僵尸行 → aborted
-        conn.execute(
-            "UPDATE task_runs SET status='aborted', finished_at=?, error='上次运行未正常结束 (auto-abort)' "
-            "WHERE task_name=? AND date=? AND status='running'",
-            (now, task_name, date)
-        )
+
+        # 检查是否已有 running 行 (test-v204: 防止双 orchestractor 重复触发)
+        existing = conn.execute(
+            "SELECT id, started_at FROM task_runs "
+            "WHERE task_name=? AND date=? AND status='running' "
+            "ORDER BY id DESC LIMIT 1",
+            (task_name, date)
+        ).fetchone()
+
+        if existing:
+            rid, started = existing
+            dt = datetime.fromisoformat(started)
+            elapsed = (datetime.now() - dt).total_seconds()
+            if elapsed < grace_seconds:
+                # 近期已有运行中任务 → 跳过, 不创建重复行
+                conn.close()
+                return None
+            else:
+                # 超时僵尸 → 标为 aborted, 然后继续创建新行
+                conn.execute(
+                    "UPDATE task_runs SET status='aborted', finished_at=?, "
+                    "error='超时未完成 (auto-abort, ' || ? || 's)' WHERE id=?",
+                    (now, int(elapsed), rid)
+                )
+
         if dedup:
             # 每天每任务最多一行 (2026-07-22: monitor防膨胀)
             conn.execute("DELETE FROM task_runs WHERE task_name=? AND date=?", (task_name, date))
@@ -86,7 +107,8 @@ def start(task_name: str, date: str, dedup: bool = False) -> int:
         conn.commit()
         return cur.lastrowid
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 
 def finish(task_name: str, date: str, status: str,

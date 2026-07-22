@@ -3,8 +3,8 @@
   "display_name": "trcf",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0678,
-  "icir_12m": 0.5423,
+  "ic_mean_12m": 0.0127,
+  "icir_12m": 0.2014,
   "last_evaluated": "auto",
   "n_obs": 6
 }

@@ -12,7 +12,10 @@ _log = get_logger(__name__)
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
-    _tk_start("signals", today)
+    rid = _tk_start("signals", today)
+    if rid is None:
+        _log.info(f"[{today}] signals already running, skip duplicate trigger")
+        return
     _log.info(f"[{today}] 08:30 — generating signals")
     t0 = _time.time()
 

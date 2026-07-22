@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v202"
+VERSION = "test-v203"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 def _log_exit(reason: str = ""):
@@ -403,11 +403,14 @@ def api_performance():
         "SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)",
         (strategy, strategy)).fetchone()[0]
 
-    # 估值: ?quotes=true → 市价; 默认 → 账面成本
+    # 估值: ?quotes=true → 市价; 默认 → 最新收盘, 均失败则账面成本 (test-v203)
     use_quotes = request.args.get("quotes", "").lower() == "true"
     position_market_value = position_cost  # 默认用成本
     valuation_method = "book_cost"
-    shares_map = {}
+    # shares_map 提前填充, latest_close fallback 不依赖 use_quotes
+    shares_map = dict(tc.execute(
+        "SELECT symbol, SUM(shares) FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?) GROUP BY symbol",
+        (strategy, strategy)).fetchall())
     if use_quotes:
         try:
             pos_symbols = [r[0] for r in tc.execute(
@@ -415,9 +418,6 @@ def api_performance():
                 (strategy, strategy)).fetchall()]
             from quant.execution.quote import fetch_quotes
             quotes = fetch_quotes(pos_symbols)
-            shares_map = dict(tc.execute(
-                "SELECT symbol, SUM(shares) FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?) GROUP BY symbol",
-                (strategy, strategy)).fetchall())
             if quotes:
                 pos_share_map = dict(tc.execute(
                     "SELECT symbol, SUM(shares) FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?) GROUP BY symbol",

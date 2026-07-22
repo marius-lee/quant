@@ -1,4 +1,4 @@
-"""盘中实时风控 — 每日 09:35-14:55 持续监控. P6 已落地.
+"""盘中实时风控 — 每日 09:35-11:30, 13:00-14:55 持续监控 (午休跳过). P6 已落地.
 
 Grinold & Kahn 标准: 盘中独立风控 daemon, 与执行引擎解耦。
 检查项:
@@ -29,12 +29,12 @@ QUOTE_THROTTLE_SEC = 5  # 行情 API 限频
 
 
 def _run_continuous(today: str):
-    """盘中持续风控循环 — 09:35 到 14:55 每 30s 检查一次."""
+    """盘中持续风控循环 — 09:35-11:30, 13:00-14:55 每 30s 检查一次 (午休跳过)."""
     from quant.scheduler.status import register
     from web.state_broker import broker
     from quant.execution.calendar import is_market_open
 
-    register("monitor", "09:35-14:55", has_multiprocess=False)
+    register("monitor", "09:35-11:30,13:00-14:55", has_multiprocess=False)
 
     _tk_start("monitor", today)
     _log.info(f"[{today}] monitor started — interval={CHECK_INTERVAL_SEC}s")
@@ -46,6 +46,11 @@ def _run_continuous(today: str):
     while True:
         now = datetime.now()
         hhmm = time(now.hour, now.minute)
+
+        # 午休 11:30-13:00 — 市场休市, sleep 到 13:00 (来源: 2026-07-22 审查)
+        if time(11, 30) <= hhmm < time(13, 0):
+            _time.sleep(_require_cfg("quant.scheduler.poll_interval"))
+            continue
 
         if hhmm >= time(14, 55):
             pass  # 收市 (status 从 task_runs DB 读取)
@@ -291,7 +296,7 @@ def _loop():
     import threading
     t = threading.Thread(target=_outer_loop, daemon=True, name="sch-monitor")
     t.start()
-    _log.info("monitor scheduler launched (09:35-14:55)")
+    _log.info("monitor scheduler launched (09:35-11:30,13:00-14:55)")
 
 
 def _get_market_conn():

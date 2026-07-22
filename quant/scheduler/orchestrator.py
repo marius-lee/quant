@@ -3,7 +3,7 @@
 方案C: 消除 5 个独立 daemon 线程之间的竞态条件。
 所有日频任务按时间顺序串行执行，确保后序任务读取前序任务的产出。
 
-monitor 是连续循环 (09:35-14:55)，由编排器作为子线程启动和停止。
+monitor 是连续循环 (09:35-11:30,13:00-14:55, 午休跳过)，由编排器作为子线程启动和停止。
 weekly 因子评估保持独立线程 (周六 06:00，不依赖交易日)。
 
 状态映射: config.constants.STATUS_LABELS — 内部码→中文展示文本 (单一真相源)。
@@ -31,7 +31,7 @@ def _run():
     register_all()
 
     _log.info("orchestrator started — daily sequence: 08:30 signals → 09:30 execute → "
-              "09:35-14:55 monitor → 19:00 daily_data → 20:00 attribution → 21:00 factor_cache")
+              "09:35-11:30,13:00-14:55 monitor → 19:00 daily_data → 20:00 attribution → 21:00 factor_cache")
 
     POLL = _require_cfg("quant.scheduler.poll_interval")
     today = None
@@ -40,14 +40,14 @@ def _run():
     _monitor_stop = _thr.Event()
 
     def _monitor_daemon(current_day):
-        """子线程: 盘中风控守护 (09:35-14:55 单次运行).
+        """子线程: 盘中风控守护 (09:35-11:30,13:00-14:55 单次运行, 午休跳过).
         
         _run_continuous 内部已有完整 while 循环 (每30s检查一次，到14:55自动退出)。
         外层无需再包 while — 崩溃恢复由 orchestrator 主循环负责
         (检测 _monitor_thread is None → 重建线程)。
         """
         from quant.scheduler.monitor import _run_continuous
-        _log.info(f"[{current_day}] monitor daemon started (09:35-14:55)")
+        _log.info(f"[{current_day}] monitor daemon started (09:35-11:30,13:00-14:55)")
         _run_continuous(current_day)
         _log.info(f"[{current_day}] monitor daemon stopped")
 
@@ -125,7 +125,7 @@ def _run():
                 wait_m = (time(9, 30).hour * 60 + 30) - (hhmm.hour * 60 + hhmm.minute)
 
         # ═══════════════════════════════════════════
-        # 3. 09:35-14:55 — 盘中风控 (子线程守护)
+        # 3. 09:35-11:30,13:00-14:55 — 盘中风控 (午休跳过) (子线程守护)
         # ═══════════════════════════════════════════
         if done["signals"]:
             if _monitor_thread is None and time(9, 30) <= hhmm <= time(14, 55):

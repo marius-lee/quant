@@ -181,7 +181,7 @@ PYTHONPATH=. python3 -m pytest tests/ -v
 ## Data flow
 
 ```
-quant/scheduler/ (单线程编排器: 08:30 信号 → 09:30 执行 → 09:35-14:55 盘中风控 → 15:30 归因+IC衰减检测)
+quant/scheduler/ (单线程编排器: 08:30 信号 → 09:30 执行 → 09:35-11:30,13:00-14:55 盘中风控(午休跳过) → 15:30 归因+IC衰减检测)
   └─ pipeline.py.run(date)
        ├─ Step 1: DataStore.update_daily()
        ├─ Step 2: factor/ic.py → IC/IR report

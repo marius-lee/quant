@@ -1,6 +1,6 @@
 """调度器 — 单线程编排器 + 独立周频因子评估。
 
-日频: orchestrator 串行 signals(08:30) → execute(09:30) → monitor(09:35-14:55) → attribution(15:30)
+日频: orchestrator 串行 signals(08:30) → execute(09:30) → monitor(09:35-11:30,13:00-14:55) → attribution(15:30)
 周频: weekly 独立线程 (周六 06:00 force_refresh_cache)
 """
 import threading

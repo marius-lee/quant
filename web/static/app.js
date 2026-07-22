@@ -196,17 +196,29 @@ function renderSignals(state) {
   const signals = state?.signals || [];
   const el = document.getElementById('meta-signals');
   if (el) el.textContent = signals.length + ' 候选';
-  renderTable('table-signals', signals.slice(0, 10), [
+  renderTable('table-signals', signals.slice(0, 5), [
     { key: 'symbol', label: '代码' },
     { key: 'name', label: '名称' },
-    { key: 'price', label: '最新价' },
-    { key: 'shares', label: '股数' },
     { key: 'score', label: '得分' },
-    { key: 'industry', label: '行业' },
     { key: 'reason', label: '信号' },
     { key: 'exec_note', label: '状态' },
   ], {
-    fmtMap: { score: v => fmtNum(v, 3) },
+    fmtMap: {
+      score: v => fmtNum(v, 2),
+      reason: v => {
+        if (!v) return '—';
+        const parts = v.split(', ');
+        if (parts.length <= 2) return '<span title="' + v + '">' + v + '</span>';
+        const shown = parts.slice(0, 2).join(', ');
+        return '<span title="' + v + '" class="trunc-reason">' + shown + ', <em>+' + (parts.length - 2) + ' more</em></span>';
+      },
+      exec_note: v => {
+        if (!v) return '';
+        const map = { abandoned_sealed: '封死', abandoned_funds: '资金不足' };
+        const label = map[v] || v;
+        return '<span class="badge badge-red">' + label + '</span>';
+      }
+    },
     rank: true
   });
 }

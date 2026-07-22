@@ -128,14 +128,14 @@ def _run():
         # 3. 09:35-14:55 — 盘中风控 (子线程守护)
         # ═══════════════════════════════════════════
         if done["signals"]:
-            if _monitor_thread is None and time(9, 35) <= hhmm <= time(14, 55):
+            if _monitor_thread is None and time(9, 30) <= hhmm <= time(14, 55):
                 _monitor_stop.clear()
                 _monitor_thread = _thr.Thread(
                     target=_monitor_daemon, args=(today,),
                     daemon=True, name="monitor-daemon"
                 )
                 _monitor_thread.start()
-            elif _monitor_thread is not None and not _monitor_thread.is_alive() and time(9, 35) <= hhmm <= time(14, 55):
+            elif _monitor_thread is not None and not _monitor_thread.is_alive() and time(9, 30) <= hhmm <= time(14, 55):
                 _log.warning(f"[{today}] monitor daemon died, restarting")
                 _monitor_stop.clear()
                 _monitor_thread = _thr.Thread(

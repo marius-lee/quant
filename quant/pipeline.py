@@ -189,7 +189,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     # ── Step 2.6: Cooling-off exclude (backtest only) ──
     if exclude_symbols:
         symbols = [s for s in symbols if s not in exclude_symbols]
-        data = data.loc[:, data.columns.get_level_values(1).isin(symbols)] if symbols else data.iloc[:0]
+        data = data.loc[:, data.columns.get_level_values(1).isin(symbols)] if symbols else data.iloc[:, :0]
         fundamentals = fundamentals[fundamentals.index.isin(symbols)]
     # ── Step 3: Factor + Alpha ──
     actual_date = date_str

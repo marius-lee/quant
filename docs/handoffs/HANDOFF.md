@@ -1,6 +1,21 @@
-# HANDOFF — 2026-07-23 test-v237
+# HANDOFF — 2026-07-23 test-v239
 
-## 本次改动 (v236 → v237)
+## 本次改动 (v238 → v239)
+
+### v239 — 修复 B6 (sync_all 参数名) + B4 (JQ 缓存方法名)
+
+- B6: `store.py:1486` — `sync_all(conn, max_pb_fetch=-1)` → `max_fetch=-1`，符合 `fundamental.py` 的签名
+- B4: `jq_valuation.py:140,147` — `_cache.put()` → `_cache.set()`，符合 `DataCache` API
+
+# HANDOFF — 2026-07-23 test-v238
+
+## 本次改动 (v237 → v238)
+
+### v238 — 修复 TradeRepo.__init__ 参数顺序 bug
+
+v237 迁移时 `db_manager` 在前，导致 `TradeRepo(TRADE_DB)` (positional arg) 把字符串赋给 db_manager，
+`self._db.get_connection()` 报 `'str' object has no attribute 'get_connection'`。
+修复：`db_path` 放首位。
 
 ### v237 — B7: TradeRepo 完整迁移到 repos/ + DatabaseManager
 

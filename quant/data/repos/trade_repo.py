@@ -22,9 +22,9 @@ class TradeRepo:
     Auto-creates schema on first init. Uses DatabaseManager for connection pooling.
     """
 
-    def __init__(self, db_manager=None, db_path: str = None):
-        self._db = db_manager or DatabaseManager.get_instance()
+    def __init__(self, db_path: str = None, db_manager=None):
         self._path = db_path or TRADE_DB
+        self._db = db_manager or DatabaseManager.get_instance()
         self._ensure_schema()
 
     def _conn(self):

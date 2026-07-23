@@ -137,14 +137,14 @@ def sync_date(date_str, conn):
         raw = _fetch_tushare_valuation_rows(date_str)
         if raw is None:
             return 0
-        _cache.put(date_str, raw)
+        _cache.set(date_str, raw)
         inserted = _insert_valuation_rows(conn, raw, date_str)
         logger.info(f"daily_valuation {date_str}: {inserted} stocks (tushare)")
         return inserted
 
     # 3. 缓存原始响应 (msgpack)
     raw = df.to_dict(orient="records")
-    _cache.put(date_str, raw)
+    _cache.set(date_str, raw)
 
     # 4. 写入 SQLite
     inserted = _insert_valuation_rows(conn, raw, date_str)

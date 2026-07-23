@@ -1483,7 +1483,7 @@ class DataStore:
         """同步 PE/PB/市值 — 批量PE+市值, 逐只补PB, 多源容错"""
         try:
             from quant.data.fundamental import sync_all
-            result = sync_all(self._connect(), max_pb_fetch=-1)
+            result = sync_all(self._connect(), max_fetch=-1)
             logger.info(f"fundamentals: PE={result['pe_count']} PB={result['pb_count']}")
             return result["pe_count"]
         except (ImportError, ModuleNotFoundError):

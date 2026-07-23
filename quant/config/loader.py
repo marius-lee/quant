@@ -126,7 +126,7 @@ def _check(cfg: dict, key: str, expected: type | tuple[type, ...]) -> None:
             val = None
             break
     if val is None:
-        raise KeyError(f'config.yaml missing required key: {key}')
+        raise KeyError(f'config.yaml missing required key: {key} (or value is null)')
     if not isinstance(val, expected):
         exp_names = (
             ' | '.join(t.__name__ for t in expected)

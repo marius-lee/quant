@@ -1,4 +1,4 @@
-# HANDOFF — 2026-07-23 test-v245
+# HANDOFF — 2026-07-23 test-v246
 
 ## 本次改动 (v240 → v241)
 
@@ -12,7 +12,7 @@
 - `store.py:1531`: 被删注释行导致 `trade_date` 变量丢失，下一行 `validate_date_format(trade_date)` 报 NameError
 - 修复：从 row 提前提取 `trade_date = to_str(row.get("上榜日", ...))`，验证和 INSERT 复用同一值
 
-# HANDOFF — 2026-07-23 test-v239
+# HANDOFF — 2026-07-23 test-v246
 
 ## 本次改动 (v238 → v239)
 
@@ -21,7 +21,7 @@
 - B6: `store.py:1486` — `sync_all(conn, max_pb_fetch=-1)` → `max_fetch=-1`，符合 `fundamental.py` 的签名
 - B4: `jq_valuation.py:140,147` — `_cache.put()` → `_cache.set()`，符合 `DataCache` API
 
-# HANDOFF — 2026-07-23 test-v238
+# HANDOFF — 2026-07-23 test-v246
 
 ## 本次改动 (v237 → v238)
 
@@ -59,7 +59,7 @@ schema 不兼容、连接方式不统一。审计报告 B7。
 
 **验证**: smoke_test_v190.py 8/8 ✅
 
-# HANDOFF — 2026-07-23 test-v236
+# HANDOFF — 2026-07-23 test-v246
 
 ## 本次改动 (v235 → v236)
 
@@ -79,7 +79,7 @@ schema 不兼容、连接方式不统一。审计报告 B7。
 - factor_ic_daily: 2279 行写入
 - ic_mean 同步到 factor_registry: 完成
 
-# HANDOFF — 2026-07-23 test-v235
+# HANDOFF — 2026-07-23 test-v246
 
 ## 本次改动 (v234 → v235)
 
@@ -92,7 +92,7 @@ schema 不兼容、连接方式不统一。审计报告 B7。
 
 ---
 
-# HANDOFF — 2026-07-23 test-v234
+# HANDOFF — 2026-07-23 test-v246
 
 ## 本次改动 (v233 → v234)
 

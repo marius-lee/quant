@@ -22,7 +22,7 @@ from quant.config.paths import TRADE_DB
 _log = get_logger(__name__)
 
 # ── 风控阈值 (config-driven, 硬编码为默认值) ──
-MAX_DRAWDOWN_PCT = 5.0
+MAX_DRAWDOWN_PCT = _require_cfg("monitor.max_drawdown_pct")
 CIRCUIT_BREAKER_PCT = 5.0
 CHECK_INTERVAL_SEC = 30
 QUOTE_THROTTLE_SEC = 5  # 行情 API 限频

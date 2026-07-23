@@ -61,7 +61,7 @@ def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
     # Sharpe (daily → annualized)
     mean_ret = returns.mean()
     std_ret = returns.std()
-    sharpe = (mean_ret / std_ret * np.sqrt(252)) if std_ret > 0 else 0.0
+    sharpe = (mean_ret / std_ret * np.sqrt(244)) if std_ret > 0 else 0.0
 
     # Max drawdown
     cum = (1 + returns).cumprod()
@@ -70,7 +70,7 @@ def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
     max_dd = float(drawdown.min())
 
     # CAGR
-    years = len(returns) / 252
+    years = len(returns) / 244
     final = df["equity"].iloc[-1]
     initial = df["equity"].iloc[0]
     cagr = (final / initial) ** (1 / max(years, 0.5)) - 1 if initial > 0 else 0
@@ -82,7 +82,7 @@ def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
     # Sortino (annualized): only penalize downside deviation
     downside = returns[returns < 0]
     if len(downside) > 1 and downside.std() > 0:
-        sortino = (mean_ret / downside.std() * np.sqrt(252))
+        sortino = (mean_ret / downside.std() * np.sqrt(244))
     else:
         sortino = 0.0
 
@@ -115,10 +115,10 @@ def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
                                 beta = round(float(beta_val), 3)
                             if beta is not None:
                                 daily_alpha = (strat - beta_val * bm).mean()
-                                alpha = round(float(daily_alpha * 252), 4)
-                                tracking_err = (strat - bm).std() * np.sqrt(252)
+                                alpha = round(float(daily_alpha * 244), 4)
+                                tracking_err = (strat - bm).std() * np.sqrt(244)
                                 if tracking_err > 0:
-                                    ir = round(float(daily_alpha * 252 / tracking_err), 3)
+                                    ir = round(float(daily_alpha * 244 / tracking_err), 3)
         except (TypeError, ValueError, IndexError):
             pass
 
@@ -299,9 +299,10 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
             ar = signals.get("_alpha_raw", pd.Series(dtype=float))
             # Get next-day returns for PnL tracking
             all_syms_track = list(set([tp["symbol"] for tp in targets]))
-            next_ret = _get_prices(all_syms_track, next_day, store, field="close") if all_syms_track and targets else {}
-            if isinstance(next_ret, dict) and next_ret:
-                ret_series = pd.Series(next_ret)
+            next_close = _get_prices(all_syms_track, next_day, store, field="close") if all_syms_track and targets else {}
+            today_close = _get_prices(all_syms_track, today, store, field="close") if all_syms_track and targets else {}
+            if isinstance(next_close, dict) and next_close:
+                ret_series = pd.Series({s: (next_close[s] / today_close[s] - 1) for s in next_close if s in today_close and today_close.get(s, 0) > 0})
             else:
                 ret_series = pd.Series(dtype=float)
             if fv and not ar.empty and not ret_series.empty:

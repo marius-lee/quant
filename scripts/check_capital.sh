@@ -4,7 +4,7 @@ STRATEGY="quant"
 
 echo "=== 资金概览 ==="
 PYTHONPATH=. .venv/bin/python3 << PYEOF
-from quant.data.trade_repo import TradeRepo
+from quant.data.repos import TradeRepo
 tr = TradeRepo()
 strat = "$STRATEGY"
 cash = tr.get_cash(strat)
@@ -22,7 +22,7 @@ PYEOF
 echo ""
 echo "=== 持仓明细 ==="
 PYTHONPATH=. .venv/bin/python3 << PYEOF
-from quant.data.trade_repo import TradeRepo
+from quant.data.repos import TradeRepo
 tr = TradeRepo()
 strat = "$STRATEGY"
 positions = tr.get_positions(strat)

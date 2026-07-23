@@ -21,7 +21,7 @@ def main():
         _log.info(f"signals done: {len(result.get('target_positions', []))} targets")
     elif task == "execute":
         from quant.pipeline import execute_signals
-        from quant.data.trade_repo import TradeRepo
+        from quant.data.repos import TradeRepo
         sig = TradeRepo().get_latest_signals()
         targets = sig["targets"] if sig else []
         _log.info(f"read {len(targets)} targets from daily_signals")

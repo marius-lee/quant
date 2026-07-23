@@ -1,8 +1,8 @@
-
-"""FactorRepo — factor_registry CRUD operations."""
+"""FactorRepo — factor_registry CRUD operations + factor_ic_daily storage."""
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Optional
 
@@ -10,12 +10,11 @@ from quant.data.repos._base import DatabaseManager, query_all, query_row
 
 logger = logging.getLogger(__name__)
 
-# backtesting is not a real status — it's a filter alias in _resolve_statuses()
 VALID_STATUSES = frozenset({"registered", "candidate", "active", "monitoring", "retired", "rejected"})
 
 
 class FactorRepo:
-    """CRUD operations for factor_registry table."""
+    """CRUD operations for factor_registry + factor_ic_daily tables."""
 
     def __init__(self, db_manager: Optional[DatabaseManager] = None,
                  db_path: str = "quant/data/market.db"):
@@ -24,6 +23,8 @@ class FactorRepo:
 
     def _conn(self):
         return self.db.get_connection(self.db_path)
+
+    # ── factor_registry queries ──
 
     def get_factors_by_status(self, statuses: tuple[str, ...],
                               names: list[str]) -> list[dict]:
@@ -38,6 +39,16 @@ class FactorRepo:
             f"FROM factor_registry "
             f"WHERE status IN ({ph_status}) AND name IN ({ph_names})",
             tuple(statuses) + tuple(names))
+        return [dict(r) for r in rows]
+
+    def get_all_by_status(self, statuses: tuple[str, ...]) -> list[dict]:
+        """Return all factors with given statuses (no name filter)."""
+        conn = self._conn()
+        ph = ",".join("?" * len(statuses))
+        rows = query_all(conn,
+            f"SELECT name, category, ic_mean, status, status_reason, updated_at "
+            f"FROM factor_registry WHERE status IN ({ph})",
+            tuple(statuses))
         return [dict(r) for r in rows]
 
     def get_factor_by_name(self, name: str) -> dict | None:
@@ -71,14 +82,6 @@ class FactorRepo:
         conn.commit()
         return conn.total_changes
 
-    def status_distribution(self) -> dict[str, int]:
-        conn = self._conn()
-        dist = {}
-        for r in query_all(conn, "SELECT status, COUNT(*) as cnt FROM factor_registry GROUP BY status"):
-            dist[r["status"]] = r["cnt"]
-        return dist
-
-
     def get_factors_with_ic(self, statuses: tuple[str, ...]) -> list[dict]:
         """Return factors with IC data for given statuses."""
         conn = self._conn()
@@ -97,24 +100,27 @@ class FactorRepo:
         return [dict(r) for r in rows]
 
     def count_by_status(self) -> dict[str, int]:
-        """Return {status: count} and total with IC."""
         return self.status_distribution()
 
+    def status_distribution(self) -> dict[str, int]:
+        conn = self._conn()
+        dist = {}
+        for r in query_all(conn, "SELECT status, COUNT(*) as cnt FROM factor_registry GROUP BY status"):
+            dist[r["status"]] = r["cnt"]
+        return dist
+
     def count_with_ic(self) -> int:
-        """Return count of factors that have IC data."""
         conn = self._conn()
         return query_scalar(conn,
             "SELECT COUNT(*) FROM factor_registry WHERE ic_mean IS NOT NULL") or 0
 
     def count_total(self) -> int:
-        """Return total factor count."""
         conn = self._conn()
         return query_scalar(conn, "SELECT COUNT(*) FROM factor_registry") or 0
 
     def insert_or_update(self, name: str, category: str, status: str,
                          status_reason: str = "", ic_mean: float = None,
                          ic_ir: float = None, compute_fn: str = None):
-        """Insert or update a factor registry entry."""
         conn = self._conn()
         existing = query_row(conn, "SELECT 1 FROM factor_registry WHERE name=?", (name,))
         if existing:
@@ -146,32 +152,6 @@ class FactorRepo:
         rows = query_all(conn, "SELECT name FROM factor_registry")
         return [r["name"] for r in rows]
 
-    # ── IC snapshot persistence (attribution degradation detection) ──
-
-    def save_ic_snapshot(self, date_str: str, weights_json: str) -> None:
-        """Save today's IC weights snapshot to DB. Replaces broker-memory baseline."""
-        conn = self._conn()
-        conn.execute(
-            "INSERT OR REPLACE INTO factor_ic_snapshot (date, data_json, created_at) "
-            "VALUES (?, ?, datetime('now','localtime'))",
-            (date_str, weights_json))
-        conn.commit()
-
-    def get_recent_ic_snapshots(self, n_days: int = 5) -> dict:
-        """Return recent N days of IC snapshots as {date: {factor: ic_mean}}."""
-        import json
-        conn = self._conn()
-        rows = conn.execute(
-            "SELECT date, data_json FROM factor_ic_snapshot "
-            "ORDER BY date DESC LIMIT ?", (n_days,)).fetchall()
-        result = {}
-        for date_str, data_json_str in reversed(rows):
-            try:
-                result[date_str] = json.loads(data_json_str)
-            except Exception:
-                pass
-        return result
-
     def get_factor_updated_at(self, name: str) -> str | None:
         """Get updated_at timestamp for a factor (used for monitoring buffer check)."""
         conn = self._conn()
@@ -179,13 +159,83 @@ class FactorRepo:
             "SELECT updated_at FROM factor_registry WHERE name=?", (name,)).fetchone()
         return row[0] if row else None
 
-    def delete_old_ic_snapshots(self, keep_days: int = 90) -> int:
-        """Clean up old IC snapshots beyond keep_days. Returns deleted count."""
+    # ── factor_ic_daily — 每日因子 IC 记录 (Level 1 数据源) ──
+
+    def ensure_ic_daily_table(self) -> None:
+        """幂等建表 factor_ic_daily."""
+        conn = self._conn()
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS factor_ic_daily (
+                date        TEXT NOT NULL,
+                factor_name TEXT NOT NULL,
+                ic_value    REAL,
+                n_stocks    INTEGER,
+                is_ir       REAL,
+                oos_ir      REAL,
+                created_at  TEXT DEFAULT (datetime('now','localtime')),
+                PRIMARY KEY (date, factor_name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_fic_date ON factor_ic_daily(date);
+            CREATE INDEX IF NOT EXISTS idx_fic_factor ON factor_ic_daily(factor_name);
+        """)
+        conn.commit()
+
+    def insert_ic_daily(self, date: str, factor_name: str,
+                        ic_value: float, n_stocks: int,
+                        is_ir: float = None, oos_ir: float = None) -> None:
+        """写入每日因子 IC 记录。INSERT OR REPLACE 语义。"""
         conn = self._conn()
         conn.execute(
-            "DELETE FROM factor_ic_snapshot "
-            "WHERE date < date('now', ? || ' days')", (f"-{keep_days}",))
-        deleted = conn.total_changes
+            "INSERT OR REPLACE INTO factor_ic_daily (date, factor_name, ic_value, n_stocks, is_ir, oos_ir, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, datetime('now','localtime'))",
+            (date, factor_name, ic_value, n_stocks, is_ir, oos_ir))
         conn.commit()
-        return deleted
+
+    def get_ic_rolling(self, factor_name: str, n_days: int = 20) -> list[dict]:
+        """读取某因子最近 n_days 的 IC 记录。"""
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT date, ic_value, is_ir, oos_ir FROM factor_ic_daily "
+            "WHERE factor_name=? ORDER BY date DESC LIMIT ?",
+            (factor_name, n_days)).fetchall()
+        return [{"date": r[0], "ic_value": r[1], "is_ir": r[2], "oos_ir": r[3]} for r in reversed(rows)]
+
+    def get_ic_rolling_all(self, factor_names: list[str], n_days: int = 20) -> dict:
+        """批量读取所有因子最近 n_days IC 序列。{name: [ic_values]}"""
+        if not factor_names:
+            return {}
+        conn = self._conn()
+        ph = ",".join("?" * len(factor_names))
+        rows = conn.execute(
+            f"SELECT factor_name, ic_value FROM factor_ic_daily "
+            f"WHERE factor_name IN ({ph}) "
+            f"AND date IN (SELECT DISTINCT date FROM factor_ic_daily ORDER BY date DESC LIMIT ?) "
+            f"ORDER BY date",
+            tuple(factor_names) + (n_days,)).fetchall()
+        result: dict[str, list[float]] = {n: [] for n in factor_names}
+        for r in rows:
+            result[r[0]].append(r[1])
+        return result
+
+    def sync_ic_mean_to_registry(self, name: str, ic_mean: float, n_days: int = 60) -> None:
+        """将最近 n_days 滚动均值写回 factor_registry.ic_mean。"""
+        recent = self.get_ic_rolling(name, n_days)
+        if recent:
+            vals = [r["ic_value"] for r in recent if r["ic_value"] is not None]
+            if vals:
+                ic_mean = sum(vals) / len(vals)
+        conn = self._conn()
+        conn.execute(
+            "UPDATE factor_registry SET ic_mean=?, updated_at=datetime('now','localtime') WHERE name=?",
+            (ic_mean, name))
+        conn.commit()
+
+    def sync_all_ic_means(self, factor_names: list[str], n_days: int = 60) -> None:
+        """批量同步所有因子的 ic_mean 到 factor_registry。"""
+        ic_map = self.get_ic_rolling_all(factor_names, n_days)
+        for name in factor_names:
+            vals = ic_map.get(name, [])
+            if vals:
+                mu = sum(vals) / len(vals)
+                self.sync_ic_mean_to_registry(name, mu, n_days)
 from quant.data.repos._base import DatabaseManager, query_all, query_row, query_scalar

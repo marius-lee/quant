@@ -42,7 +42,7 @@ def t_h6():
 
 # ── H3: daily_equity 表 + 读写 ──
 def t_h3():
-    from quant.data.trade_repo import TradeRepo
+    from quant.data.repos import TradeRepo
     from datetime import date
     repo = TradeRepo()
     today = date.today().strftime("%Y-%m-%d")
@@ -65,14 +65,14 @@ def t_h5():
 
 # ── H7: average_cost ──
 def t_h7():
-    from quant.data.trade_repo import TradeRepo
+    from quant.data.repos import TradeRepo
     repo = TradeRepo()
     cost = repo.get_average_cost("quant", "600519")
     assert isinstance(cost, float)
 
 # ── M3: open_position_cost ──
 def t_m3():
-    from quant.data.trade_repo import TradeRepo
+    from quant.data.repos import TradeRepo
     repo = TradeRepo()
     cost = repo.get_open_position_cost("quant")
     assert isinstance(cost, float)

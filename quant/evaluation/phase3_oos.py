@@ -65,19 +65,32 @@ def validate_oos(input_json: str = "/tmp/_eval_phase2.json",
                 ic_series_dict[name] = s
 
     if not ic_series_dict:
-        logger.info("Phase 3: re-computing IC series for %d candidates...", len(candidates))
+        logger.info("Phase 3: re-computing IC series for %d candidates via factor_cache...", len(candidates))
         from quant.factor.stats_cache import compute_factor_stats
         stats = compute_factor_stats(
             factor_names=candidates,
             n_symbols=None,
             lookback=lookback,
         )
+        # Phase 3 需要 factor_snapshot.ic_series 但该字段已在 v233 移除。
+        # IC 序列应从 factor_ic_daily 表读取（由每日归因 G1 OOS 写入），
+        # 或先运行 factor_cache 刷新 factor_snapshot。
+        # 零 fallback：数据不足时直接上抛，不静默降级。
+        missing = []
         for name in candidates:
             ic_data = stats.get("ic_series", {}).get(name, {})
             if ic_data:
                 s = pd.Series(ic_data)
                 s.index = pd.to_datetime(list(ic_data.keys()))
                 ic_series_dict[name] = s
+            else:
+                missing.append(name)
+        if missing:
+            raise RuntimeError(
+                f"Phase 3 OOS: no IC series data for {len(missing)} factors: {missing}. "
+                f"Run factor_cache (21:00) or manual evaluation to populate factor_snapshot.ic_series, "
+                f"or read from factor_ic_daily table populated by daily attribution G1 OOS."
+            )
 
     # ── CPCV 折叠 ──
     pvf = PurgedWalkForward(n_groups=n_groups, embargo_days=embargo_days)

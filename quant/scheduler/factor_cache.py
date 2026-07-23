@@ -37,6 +37,14 @@ def _run(today: str):
         _log.info(f"[{today}] factor_cache: all dates already materialized, skipped")
     else:
         _log.info(f"[{today}] factor_cache done: {result['n_rows']} new rows ({elapsed:.1f}s)")
+        # Sync ic_mean to factor_registry
+        try:
+            from quant.data.repos import FactorRepo
+            f_repo = FactorRepo()
+            f_repo.sync_all_ic_means(f_repo.all_factor_names(), n_days=60)
+            _log.info(f"[{today}] factor_cache: synced ic_mean to factor_registry")
+        except Exception as e:
+            _log.warning(f"[{today}] factor_cache: sync ic_mean failed: {e}")
 
     _tk_finish("factor_cache", today, "ok",
                summary={"rows": result.get("n_rows", 0), "elapsed": round(elapsed, 1)})

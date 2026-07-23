@@ -12,14 +12,15 @@ alpha:
   top_fraction: 0.3
   train_window: 500
 attribution:
+  ic_rolling_window: 20
+  ic_degradation_threshold: 0.5
+  oos_warning_decay: 0.3
+  oos_recovery_threshold: 0.5
+  monitoring_buffer_days: 20
+  promotion_stability_days: 5
+  ic_daily_retention_days: 252
   annual_periods: 252
   risk_free_rate: 0.02
-  ic_degradation_threshold: 0.3
-  ic_rolling_window: 20
-  monitoring_buffer_days: 10
-  promotion_stability_days: 5
-  oos_warn_threshold: 0.5
-  snapshot_keep_days: 90
 oos_verify:
   train_window_days: 60
   test_window_days: 10

@@ -196,6 +196,7 @@ def run_oos_check(today: str) -> dict:
     store.close()
     return {
         "n_factors": len(active_names),
+        "ic_daily": ic_series_per_factor,
         "n_qualified": n_qualified,
         "oos_ir": round(oos_ir_agg, 4),
         "is_ir": round(is_ir_agg, 4),

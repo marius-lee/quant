@@ -16,7 +16,7 @@ from quant.utils.logger import get_logger
 from quant.monitor.metrics import metrics as _m
 from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
 from quant.scheduler.order_manager import OrderManager
-from quant.data.trade_repo import TradeRepo
+from quant.data.repos import TradeRepo
 from quant.config.paths import TRADE_DB
 
 _log = get_logger(__name__)

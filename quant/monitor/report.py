@@ -40,7 +40,7 @@ def generate_report(
     # 回退到逐笔交易估算 (2026-07-22: audit "Sharpe计算" 项)
     ret_series = None
     try:
-        from quant.data.trade_repo import TradeRepo
+        from quant.data.repos import TradeRepo
         repo = TradeRepo()
         eq_rows = repo.get_connection().execute(
             "SELECT date, total_equity FROM daily_equity ORDER BY date"

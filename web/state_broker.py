@@ -40,7 +40,7 @@ class InProcessBroker:
                  'mood': {}, 'signals': [], 'sectors': [],
                  'summary': {}, 'timestamp': '', 'trace_id': ''}
         try:
-            from quant.data.trade_repo import TradeRepo
+            from quant.data.repos import TradeRepo
             db = _os.path.join(_root, "quant", "data", "trades.db")
             repo = TradeRepo(db)
             # 首次启动自动播种策略资金
@@ -186,7 +186,7 @@ class InProcessBroker:
             import time as _t
             while True:
                 try:
-                    from quant.data.trade_repo import TradeRepo
+                    from quant.data.repos import TradeRepo
                     from quant.execution.quote import fetch_quotes
                     from quant.execution.calendar import is_market_open
                     if is_market_open():

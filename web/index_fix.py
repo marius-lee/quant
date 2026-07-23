@@ -11,7 +11,7 @@ new_index = '''def index():
         import sqlite3, os
         TRADE_DB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "quant", "data", "trades.db")
         tc = sqlite3.connect(TRADE_DB)
-        from quant.data.trade_repo import TradeRepo
+        from quant.data.repos import TradeRepo
         base = TradeRepo().get_initial_capital("quant")
         capital = TradeRepo().get_cash("quant") or base
         position_cost = tc.execute(

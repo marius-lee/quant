@@ -75,7 +75,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     cost_model = CostModel()
     constructor = PortfolioConstructor()
 
-    from quant.data.trade_repo import TradeRepo
+    from quant.data.repos import TradeRepo
     seed = TradeRepo(db_path=db_path).get_initial_capital(strategy)
     if not engine.is_initialized(strategy):
         engine.set_initial_capital(strategy, seed)
@@ -334,7 +334,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     # Persist to daily_signals — every caller (scheduler, web, CLI) gets DB-backed signals
     targets = results.get("target_positions", [])
     if targets:
-        from quant.data.trade_repo import TradeRepo
+        from quant.data.repos import TradeRepo
         TradeRepo(db_path=db_path).save_signals(date_str, targets, total_capital, strategy)
         logger.info(f"[pipeline] saved {len(targets)} targets to daily_signals for {date_str}")
 
@@ -477,7 +477,7 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
     trades = engine.get_trades(strategy, limit=50)
     total_wealth = engine.get_capital(strategy)
     cash_balance = engine.get_cash(strategy)
-    from quant.data.trade_repo import TradeRepo
+    from quant.data.repos import TradeRepo
     seed = TradeRepo(db_path=db_path).get_initial_capital(strategy)
     from quant.monitor.report import generate_report, push_to_web
     report = generate_report(

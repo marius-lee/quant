@@ -254,7 +254,7 @@ class OrderManager:
 
     def _note_signal(self, day: str, symbol: str, note: str):
         try:
-            from quant.data.trade_repo import TradeRepo
+            from quant.data.repos import TradeRepo
             TradeRepo().update_signal_exec_note(day, symbol, note)
         except Exception as e:
             _log.warning(f"[order_manager] exec_note write failed (non-fatal): {e}")

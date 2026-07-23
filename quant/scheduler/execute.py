@@ -27,7 +27,7 @@ def _run(today: str):
     _log.info(f"[{today}] 09:30 — executing trades")
     t0 = _time.time()
 
-    from quant.data.trade_repo import TradeRepo
+    from quant.data.repos import TradeRepo
     repo = TradeRepo()
     LOT_SIZE = _require_cfg("backtest.lot_size")
     strategy = "quant"

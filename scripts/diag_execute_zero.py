@@ -41,7 +41,7 @@ tdb.close()
 # 4. latest signal in TradeRepo format
 print("\n=== TradeRepo.get_latest_signals() ===")
 import sys; sys.path.insert(0, ".")
-from quant.data.trade_repo import TradeRepo
+from quant.data.repos import TradeRepo
 sig = TradeRepo().get_latest_signals()
 if sig:
     print(f"  date={sig.get('date')} targets={len(sig.get('targets',[]))}")

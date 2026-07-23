@@ -72,7 +72,7 @@ c.close()
 # 现金
 import sqlite3 as sq
 c2 = sq.connect("quant/data/trades.db")
-from quant.data.trade_repo import TradeRepo
+from quant.data.repos import TradeRepo
 tr = TradeRepo()
 try:
     cash = tr.get_cash()

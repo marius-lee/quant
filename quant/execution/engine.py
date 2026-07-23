@@ -10,11 +10,8 @@ from typing import Optional
 from dataclasses import dataclass
 from quant.execution.cost import CostModel
 from quant.data.store import market_conn  # P69: 统一连接层
-from quant.data.trade_repo import TradeRepo
-
-
-TRADE_DB_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "trades.db")
-MARKET_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
+from quant.data.repos import TradeRepo
+from quant.config.paths import TRADE_DB, MARKET_DB
 # A-share daily price limit: ±10% (沪深交易所交易规则). Gap > 10% → ex-dividend event.
 EX_DIVIDEND_THRESHOLD = 0.10
 
@@ -32,11 +29,11 @@ class Order:
 class ExecutionEngine:
     """模拟执行引擎: 订单执行 → trades.db, 更新 capital_after。"""
 
-    def __init__(self, db_path: str = TRADE_DB_DEFAULT, cost_model: CostModel = CostModel()):
+    def __init__(self, db_path: str = TRADE_DB, cost_model: CostModel = CostModel()):
         self.db_path = db_path
         self.cost_model = cost_model
-        # 统一 schema 管理 → TradeRepo
-        TradeRepo(self.db_path)._ensure_tables()
+        # Schema auto-managed by TradeRepo.__init__()
+        TradeRepo(db_path=self.db_path)
 
     def get_capital(self, strategy: str = "quant") -> float:
         """获取当前策略总资产 (现金 + 持仓市值) — 委托 TradeRepo。"""

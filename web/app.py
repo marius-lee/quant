@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v232"
+VERSION = "test-v237"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 def _log_exit(reason: str = ""):
@@ -59,7 +59,7 @@ import threading
 
 def _capital(strategy: str) -> float:
     """从 strategy_config 表读本金。无记录时默认 5000 并自动写入。"""
-    from quant.data.trade_repo import TradeRepo
+    from quant.data.repos import TradeRepo
     repo = TradeRepo()
     cap = repo.get_initial_capital(strategy)
     if cap <= 0:
@@ -80,7 +80,7 @@ from web.shared import get_state, update_state  # deprecated, kept for compat
 def index():
     """首页 — 传递 perf 数据供服务端渲染仪表盘."""
     try:
-        from quant.data.trade_repo import TradeRepo
+        from quant.data.repos import TradeRepo
         repo = TradeRepo()
         base = repo.get_initial_capital("quant")
         capital = repo.get_cash("quant") or base
@@ -196,7 +196,7 @@ def api_trades():
     trades = []
     positions = []
     try:
-        from quant.data.trade_repo import TradeRepo
+        from quant.data.repos import TradeRepo
         repo = TradeRepo(TRADE_DB)
         if strategy:
             raw_trades = repo.get_trades(strategy, limit=10000)  # 前端展示上限, 防止浏览器卡死, 非业务参数
@@ -262,7 +262,7 @@ def api_record_trade():
         return _api_response(error={"code": "INVALID_PARAMETER", "message": "side 必须是 buy 或 sell", "field": "side"}), 400
 
     today = date.today().isoformat()
-    from quant.data.trade_repo import TradeRepo
+    from quant.data.repos import TradeRepo
     repo = TradeRepo()
 
     if side == "buy":
@@ -397,7 +397,7 @@ def api_performance():
     total_sells = len(sells)
     win_rate = round(win_trades / total_sells * 100, 1) if total_sells > 0 else 0
     buys = tc.execute("SELECT COUNT(*) FROM sim_trades WHERE side='buy' AND strategy=?", (strategy,)).fetchone()[0]
-    from quant.data.trade_repo import TradeRepo; base = TradeRepo().get_initial_capital(strategy)
+    from quant.data.repos import TradeRepo; base = TradeRepo().get_initial_capital(strategy)
     capital = TradeRepo().get_cash(strategy) or base
     position_cost = tc.execute(
         "SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)",

@@ -103,123 +103,6 @@ def _run(today: str):
 
 
     # ═══════════════════════════════════════════════════════
-    # IC 衰减检测 + 自动升回 + OOS 验证 (P2+P3+P4)
-    # ═══════════════════════════════════════════════════════
-    import json
-    from quant.config.constants import _market_db_path, _require_cfg
-    from quant.data.repos import FactorRepo
-    repo = FactorRepo()
-    rows = repo.get_factors_with_ic(('active', 'monitoring'))
-    rows = [(r["name"], r["ic_mean"]) for r in rows]
-    if rows:
-        IC_ROLLING_WINDOW = _require_cfg("attribution.ic_rolling_window")
-        IC_DEGRADATION_THRESHOLD = _require_cfg("attribution.ic_degradation_threshold")
-        OOS_WARN_THRESHOLD = _require_cfg("attribution.oos_warn_threshold")
-        MONITORING_BUFFER_DAYS = _require_cfg("attribution.monitoring_buffer_days")
-        PROMOTION_STABILITY_DAYS = _require_cfg("attribution.promotion_stability_days")
-
-        today_weights = {r[0]: round(r[1], 6) for r in rows}
-        repo.save_ic_snapshot(today, json.dumps(today_weights))
-
-        # Step 1: 滚动窗口 IC 均值 (P4: 窗口从5→20天)
-        recent_snapshots = repo.get_recent_ic_snapshots(n_days=IC_ROLLING_WINDOW)
-        rolling_means = {}
-        for name in today_weights:
-            values = []
-            for snap_date, snap in recent_snapshots.items():
-                v = snap.get(name)
-                if v is not None:
-                    values.append(v)
-            if len(values) >= max(3, IC_ROLLING_WINDOW // 4):
-                rolling_means[name] = sum(values) / len(values)
-
-        # Step 2: IC 衰减检测 (active/monitoring)
-        degraded = []
-        promoted = []
-
-        for name, w in today_weights.items():
-            rm = rolling_means.get(name)
-            if rm and rm != 0 and abs((w - rm) / rm) > IC_DEGRADATION_THRESHOLD:
-                degraded.append(f"{name}: mean={rm:+.4f}→{w:+.4f}")
-
-        # P2: 因子自动升回检查 (monitoring→active)
-        monitoring_factors = repo.get_factors_by_status(('monitoring',), [r[0] for r in rows])
-        for mf in monitoring_factors:
-            mname = mf["name"]
-            if mname in today_weights:
-                still_degrading = any(e.startswith(mname + ':') for e in degraded)
-                if not still_degrading:
-                    rolling_mean = rolling_means.get(mname)
-                    current_ic = today_weights.get(mname)
-                    if rolling_mean and current_ic and rolling_mean != 0:
-                        stability = abs((current_ic - rolling_mean) / max(abs(rolling_mean), 1e-10))
-                        if stability < IC_DEGRADATION_THRESHOLD:
-                            # 检查快照历史中连续稳定的天数
-                            stable_days = 0
-                            snap_dates = sorted(recent_snapshots.keys(), reverse=True)
-                            for sd in snap_dates:
-                                sd_ic = recent_snapshots[sd].get(mname)
-                                if sd_ic is not None:
-                                    sd_rm = rolling_means.get(mname)
-                                    if sd_rm and abs((sd_ic - sd_rm) / max(abs(sd_rm), 1e-10)) < IC_DEGRADATION_THRESHOLD:
-                                        stable_days += 1
-                                    else:
-                                        break
-                                else:
-                                    break
-                            if stable_days >= PROMOTION_STABILITY_DAYS:
-                                repo.update_status(mname, 'active',
-                                    f"[LIVE] monitoring→active: IC recovered (mean={rolling_mean:+.4f}, stable for {stable_days}d)")
-                                _log.info(f"[{today}] {mname}: monitoring → active (IC recovered, {stable_days}d stable)")
-                                _m.inc("scheduler.attribution.promoted", 1)
-                                promoted.append(mname)
-
-        if degraded:
-            _log.warning(f"[{today}] IC degradation detected ({IC_ROLLING_WINDOW}d rolling): {'; '.join(degraded)}")
-            _m.inc("scheduler.attribution.ic_degraded", len(degraded))
-            for entry in degraded:
-                fname = entry.split(":")[0]
-                if fname in promoted:
-                    continue
-                repo.update_status(fname, 'monitoring', f"[LIVE] IC degraded ({IC_ROLLING_WINDOW}d): {entry}")
-                _log.warning(f"[{today}] {fname}: active → monitoring (IC degraded)")
-
-            from datetime import datetime as _dt, timedelta as _td
-            _buffer_cutoff = (_dt.now() - _td(days=MONITORING_BUFFER_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
-            monitoring_rows = repo.get_factors_by_status(('monitoring',), [])
-            for mr in monitoring_rows:
-                mname = mr["name"]
-                if mname in promoted:
-                    continue
-                still_decaying = any(e.startswith(mname + ':') for e in degraded)
-                if not still_decaying:
-                    continue
-                updated_at = repo.get_factor_updated_at(mname)
-                if updated_at and updated_at < _buffer_cutoff:
-                    repo.update_status(mname, 'retired',
-                        f"[LIVE] 持续衰减退役: {next(e for e in degraded if e.startswith(mname + ':'))}")
-                    _log.warning(f'[{today}] {mname}: monitoring → retired '
-                                 f'(持续IC衰减, 已监控≥{MONITORING_BUFFER_DAYS}d)')
-                    _m.inc("scheduler.attribution.retired", 1)
-                else:
-                    _log.info(f"[{today}] {mname}: monitoring, still decaying but within {MONITORING_BUFFER_DAYS}d buffer - observing")
-
-        # Step 4: P3 轻量级在线 OOS IC 验证
-        oos_alerts = []
-        for name in today_weights:
-            if name in promoted:
-                continue
-            rm = rolling_means.get(name)
-            if rm and rm != 0:
-                oos_ratio = max(0.0, today_weights.get(name, 0) / rm) if rm != 0 else 1.0
-                if oos_ratio < OOS_WARN_THRESHOLD:
-                    oos_alerts.append(f"{name}: OOS_IC={today_weights[name]:+.4f} vs IS={rm:+.4f} (ratio={oos_ratio:.2f})")
-        if oos_alerts:
-            _log.warning(f"[{today}] OOS IC warning (expanding-window): {'; '.join(oos_alerts)}")
-            _m.inc("scheduler.attribution.oos_warning", len(oos_alerts))
-
-        repo.delete_old_ic_snapshots(keep_days=_require_cfg("attribution.snapshot_keep_days"))
-    # ═══════════════════════════════════════════════════════
     # G1: 在线 Walk-Forward OOS 验证
     # ═══════════════════════════════════════════════════════
     from quant.scheduler.oos_verify import run_oos_check
@@ -233,6 +116,149 @@ def _run(today: str):
     else:
         _log.info(f"[{today}] G1 OOS walk-forward: {oos_result.get('n_factors', 0)} factors, no decay alert")
     # ═══════════════════════════════════════════════════════
+
+    # ═══════════════════════════════════════════════════════
+    # 统一因子健康评估 — Level 1→2→3 三级检测体系 (AQR/WorldQuant 标准)
+    # 数据源: G1 OOS ic_daily (真实行情, 非静态缓存)
+    # ═══════════════════════════════════════════════════════
+    from quant.data.repos import FactorRepo
+    f_repo = FactorRepo()
+    f_repo.ensure_ic_daily_table()
+
+    from quant.config.constants import _require_cfg
+    IC_ROLLING_WINDOW = _require_cfg("attribution.ic_rolling_window")
+    IC_DEGRADATION_THRESHOLD = _require_cfg("attribution.ic_degradation_threshold")
+    OOS_WARNING_DECAY = _require_cfg("attribution.oos_warning_decay")
+    OOS_RECOVERY_THRESHOLD = _require_cfg("attribution.oos_recovery_threshold")
+    MONITORING_BUFFER_DAYS = _require_cfg("attribution.monitoring_buffer_days")
+    PROMOTION_STABILITY_DAYS = _require_cfg("attribution.promotion_stability_days")
+
+    oos_per_factor = oos_result.get("details", {}).get("per_factor", {})
+    ic_daily = oos_result.get("ic_daily", {})
+
+    # ── Step A: 写入 factor_ic_daily (每日追加) ──
+    # Get active+monitoring factor names for estimation
+    _all_monitored = f_repo.get_all_by_status(('active', 'monitoring'))
+    _all_monitored_names = [f["name"] for f in _all_monitored]
+    ic_daily_written = 0
+    for fname, daily_ics in ic_daily.items():
+        for ds, ic_val in daily_ics.items():
+            n_stocks_est = len(_all_monitored_names) if _all_monitored_names else 59
+            f_repo.insert_ic_daily(ds, fname, float(ic_val), n_stocks_est,
+                                   is_ir=oos_per_factor.get(fname, {}).get("is_ir"),
+                                   oos_ir=oos_per_factor.get(fname, {}).get("oos_ir"))
+            ic_daily_written += 1
+    if ic_daily_written:
+        _log.info(f"[{today}] factor_ic_daily: {ic_daily_written} rows written for {len(ic_daily)} factors")
+
+    # ── Step B: Level 1 — 滚动 IC 监控 ──
+    degraded_l1 = set()
+    active_factors = f_repo.get_all_by_status(('active',))
+    for af in active_factors:
+        name = af["name"]
+        rolling = f_repo.get_ic_rolling(name, IC_ROLLING_WINDOW)
+        if len(rolling) < max(3, IC_ROLLING_WINDOW // 4):
+            continue
+        vals = [r["ic_value"] for r in rolling if r["ic_value"] is not None]
+        if len(vals) < max(3, IC_ROLLING_WINDOW // 4):
+            continue
+        current = vals[-1]
+        rolling_mean = sum(vals[:-1]) / max(len(vals[:-1]), 1)
+        if rolling_mean and abs((current - rolling_mean) / max(abs(rolling_mean), 1e-10)) > IC_DEGRADATION_THRESHOLD:
+            degraded_l1.add(name)
+            _log.warning(f"[{today}] L1: {name} IC rolling decline (mean={rolling_mean:+.4f}→current={current:+.4f})")
+
+    # ── Step C: Level 2 — OOS/IS 比率 ──
+    degraded_l2 = set()
+    recovery_candidates = set()
+    for name, info in oos_per_factor.items():
+        is_ir = info.get("is_ir", 0)
+        oos_ir = info.get("oos_ir", 0)
+        if oos_ir < 0:
+            degraded_l2.add(name)
+            _log.warning(f"[{today}] L2: {name} OOS IR reversed (IS_IR={is_ir:+.4f}→OOS_IR={oos_ir:+.4f})")
+        elif is_ir and abs(is_ir) > 0.001:
+            ratio = oos_ir / is_ir if is_ir > 0 else 1.0
+            if ratio < OOS_WARNING_DECAY:
+                degraded_l2.add(name)
+                _log.warning(f"[{today}] L2: {name} OOS decay (IS_IR={is_ir:+.4f}→OOS_IR={oos_ir:+.4f} ratio={ratio:.2f})")
+            elif ratio > OOS_RECOVERY_THRESHOLD:
+                recovery_candidates.add(name)
+
+    # ── Step D: Level 3 — 稳定性校验 + 状态变更 ──
+    all_degraded = degraded_l1 | degraded_l2
+
+    # D1: active → monitoring (Level 1 ∪ Level 2)
+    for name in all_degraded:
+        if name in {af["name"] for af in active_factors}:
+            l1 = "L1" if name in degraded_l1 else ""
+            l2 = "L2" if name in degraded_l2 else ""
+            source = "+".join(x for x in [l1, l2] if x)
+            reason = f"[LIVE] IC degraded ({source}): " + (
+                f"IS_IR={oos_per_factor.get(name, {}).get('is_ir', '?'):+.4f}→OOS_IR={oos_per_factor.get(name, {}).get('oos_ir', '?'):+.4f}"
+                if name in oos_per_factor else f"rolling IC decline"
+            )
+            f_repo.update_status(name, 'monitoring', reason)
+            _log.warning(f"[{today}] {name}: active → monitoring ({source})")
+            _m.inc("scheduler.attribution.ic_degraded", 1)
+
+    # D2: monitoring → active (recovery confirmed)
+    monitoring_factors = f_repo.get_all_by_status(('monitoring',))
+    for mf in monitoring_factors:
+        mname = mf["name"]
+        if mname not in recovery_candidates:
+            continue
+        # Check stability: needs PROMOTION_STABILITY_DAYS of non-degraded IC
+        recent_ics = f_repo.get_ic_rolling(mname, PROMOTION_STABILITY_DAYS + 5)
+        if len(recent_ics) < PROMOTION_STABILITY_DAYS:
+            continue
+        recent_vals = [r["ic_value"] for r in recent_ics[-PROMOTION_STABILITY_DAYS:] if r["ic_value"] is not None]
+        if len(recent_vals) < PROMOTION_STABILITY_DAYS:
+            continue
+        rolling_vals = f_repo.get_ic_rolling(mname, IC_ROLLING_WINDOW)
+        if not rolling_vals:
+            continue
+        longer_vals = [r["ic_value"] for r in rolling_vals if r["ic_value"] is not None]
+        if not longer_vals:
+            continue
+        longer_mean = sum(longer_vals) / len(longer_vals)
+        # All recent values must be within threshold of longer mean
+        stable = all(
+            abs((v - longer_mean) / max(abs(longer_mean), 1e-10)) < IC_DEGRADATION_THRESHOLD
+            for v in recent_vals
+        )
+        if stable:
+            f_repo.update_status(mname, 'active',
+                f"[LIVE] monitoring→active: OOS recovered (OOS_IR={oos_per_factor.get(mname, {}).get('oos_ir', '?'):+.4f}, stable for {PROMOTION_STABILITY_DAYS}d)")
+            _log.info(f"[{today}] {mname}: monitoring → active (OOS recovered, {PROMOTION_STABILITY_DAYS}d stable)")
+            _m.inc("scheduler.attribution.promoted", 1)
+
+    # D3: monitoring → retired (persistent decay)
+    from datetime import datetime as _dt, timedelta as _td
+    _buffer_cutoff = (_dt.now() - _td(days=MONITORING_BUFFER_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    for mf in monitoring_factors:
+        mname = mf["name"]
+        if mname in recovery_candidates:
+            continue
+        # Check if still decaying
+        still_decaying = mname in all_degraded
+        if not still_decaying:
+            continue
+        updated_at = mf.get("updated_at") or f_repo.get_factor_updated_at(mname)
+        if updated_at and updated_at < _buffer_cutoff:
+            f_repo.update_status(mname, 'retired',
+                f"[LIVE] 持续衰减退役: IS_IR={oos_per_factor.get(mname, {}).get('is_ir', '?'):+.4f}→OOS_IR={oos_per_factor.get(mname, {}).get('oos_ir', '?'):+.4f}")
+            _log.warning(f"[{today}] {mname}: monitoring → retired (持续衰减, 已监控≥{MONITORING_BUFFER_DAYS}d)")
+            _m.inc("scheduler.attribution.retired", 1)
+        else:
+            _log.info(f"[{today}] {mname}: monitoring, still decaying but within {MONITORING_BUFFER_DAYS}d buffer - observing")
+
+    # ── Step E: 同步 ic_mean 到 factor_registry ──
+    all_active_names = [af["name"] for af in active_factors] + [mf["name"] for mf in monitoring_factors]
+    if all_active_names:
+        f_repo.sync_all_ic_means(all_active_names, n_days=min(60, IC_ROLLING_WINDOW * 3))
+        _log.info(f"[{today}] synced ic_mean to factor_registry for {len(all_active_names)} factors")
+
     # G2: 因子拥挤度检测
     # ═══════════════════════════════════════════════════════
     from quant.scheduler.crowdedness import check_factor_crowdedness
@@ -325,7 +351,7 @@ def _run(today: str):
     # ═══════════════════════════════════════════════════════
     # R4: 信号衰减归因 — 信号 alpha vs 执行价滑点
     # ═══════════════════════════════════════════════════════
-    from quant.data.trade_repo import TradeRepo
+    from quant.data.repos import TradeRepo
     sig_data = TradeRepo().get_latest_signals()
     if sig_data and sig_data.get("date") == today:
         targets_by_sym = {t["symbol"]: t for t in sig_data.get("targets", [])}

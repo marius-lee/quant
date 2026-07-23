@@ -25,7 +25,7 @@ def check_alerts(state: dict, metrics_snap: dict) -> list[dict]:
     critical_pct = _require_cfg("monitor.alert.drawdown_critical")
     warning_pct = _require_cfg("monitor.alert.drawdown_warning")
     try:
-        from quant.data.trade_repo import TradeRepo
+        from quant.data.repos import TradeRepo
         dd_pct = TradeRepo().get_max_drawdown()
         if dd_pct >= critical_pct * 100:
             alerts.append({

@@ -1,3 +1,138 @@
+# HANDOFF — 2026-07-23 test-v237
+
+## 本次改动 (v236 → v237)
+
+### v237 — B7: TradeRepo 完整迁移到 repos/ + DatabaseManager
+
+**背景**: 两个 TradeRepo 并存（`data/trade_repo.py` 470行 vs `repos/trade_repo.py` 94行空壳），
+schema 不兼容、连接方式不统一。审计报告 B7。
+
+**迁移内容**:
+
+| 操作 | 文件 | 说明 |
+|------|------|------|
+| 重写 | `quant/data/repos/trade_repo.py` (→418行) | DatabaseManager 单例获取连接；完整 26 方法；自动建表 |
+| 删除 | `quant/data/trade_repo.py` | 旧实现，raw sqlite3.connect() per-call |
+| 更新 | 12 文件 × 27 处 import | `from quant.data.trade_repo import TradeRepo` → `from quant.data.repos import TradeRepo` |
+| 清理 | `quant/execution/engine.py` | 删除 `TRADE_DB_DEFAULT`/`MARKET_DB` 本地定义 → `from quant.config.paths import TRADE_DB, MARKET_DB`；移除临时 `_ensure_tables()` hack |
+
+**设计要点**:
+- `_conn()` → `DatabaseManager.get_connection(db_path)` — 连接复用，不再 per-call open/close
+- 所有方法去掉 `c.close()` — DatabaseManager 管理连接生命周期
+- `record_trade(conn=...)` 保留外部连接参数 — engine.py 事务分组语义不变
+- `TRADE_DB` 唯一定义在 `quant/config/paths.py`
+
+**删除了什么**:
+- `data/trade_repo.py` — 470行旧实现（raw sqlite3 连接）
+- `repos/trade_repo.py` 旧版 — 94行空壳（key-value schema）
+- `engine.py` TRADE_DB_DEFAULT/MARKET_DB 本地定义 + _ensure_tables() hack
+- 27处旧 import 路径
+
+**验证**: smoke_test_v190.py 8/8 ✅
+
+# HANDOFF — 2026-07-23 test-v236
+
+## 本次改动 (v235 → v236)
+
+### v236 — attribution.py L3 修复`active_names`未定义
+
+- 删除旧 IC 块时 `active_names` 变量（旧块中定义，新块中引用）被误删
+- 改为 `_all_monitored_names`，从 `FactorRepo.get_all_by_status(('active','monitoring'))` 实时获取
+- 修复后 L1/L2/L3 三级检测全链路贯通：归因补跑成功完成，36/37 因子从 active → monitoring
+
+## 验证确认
+
+归因补跑 07-22（trace_id=a07b0db588da）:
+- G1 OOS walk-forward: 12/37 因子衰减
+- L1 (滚动 IC 突变): 7 因子
+- L2 (OOS/IS 反转/衰减): 14 因子
+- L3 状态变更: active → monitoring 正常触发
+- factor_ic_daily: 2279 行写入
+- ic_mean 同步到 factor_registry: 完成
+
+# HANDOFF — 2026-07-23 test-v235
+
+## 本次改动 (v234 → v235)
+
+### v235 — attribution.py 修复 _require_cfg 未导入
+- 删除旧 IC 块时 _require_cfg import 一起被移除，新三级检测块引用时报 NameError
+- 补上 `from quant.config.constants import _require_cfg`
+
+### v234 — 零 fallback: phase3_oos.py RuntimeError
+### v233 — 因子健康监控闭环（三级检测体系）
+
+---
+
+# HANDOFF — 2026-07-23 test-v234
+
+## 本次改动 (v233 → v234)
+
+### v234 — 零 fallback: phase3_oos.py 数据不足时上抛 RuntimeError
+- `phase3_oos.py`: 移除 silent fallback。Phase 2 未传入 IC 序列且 `factor_snapshot.ic_series` 不可用时
+  不再静默跳过，改为 raise RuntimeError 明确指引用户先运行 factor_cache 或补充 factor_ic_daily 数据。
+- 对齐零 fallback 原则（CLAUDE.md 硬约束）
+
+### v233 — 因子健康监控闭环（见上一段）
+
+---
+
+# HANDOFF — 2026-07-22 test-v233
+
+## 本次改动 (v232 → v233)
+
+### v233 — 因子健康监控闭环（对标 AQR/WorldQuant 三级检测体系）
+
+**背景**: 归因任务的 IC 衰减检测读取静态 `factor_registry.ic_mean`（永不更新），降级永远不触发。
+G1 OOS Walk-Forward 正确计算了每个因子的 IS_IR/OOS_IR，但结果只记日志不做动作。
+
+**修改概要**:
+
+| 文件 | 改动 |
+|------|------|
+| `quant/data/repos/factor_repo.py` | 新建 `factor_ic_daily` 表 + `insert_ic_daily`/`get_ic_rolling`/`sync_ic_mean_to_registry` 方法；删除 `save_ic_snapshot`/`get_recent_ic_snapshots`/`delete_old_ic_snapshots` |
+| `quant/scheduler/oos_verify.py` | `run_oos_check` 返回增加 `ic_daily` 字段（透出逐日 IC 序列） |
+| `quant/scheduler/attribution.py` | 删除 L106-222（static ic_mean 整块）；新增三级检测：L1 滚动 IC → L2 OOS/IS 比率 → L3 稳定性校验 → 执行状态变更 |
+| `quant/factor/stats_cache.py` | 删除 `ic_series` 写入 factor_snapshot |
+| `quant/scheduler/factor_cache.py` | 刷新后同步 `ic_mean` 到 `factor_registry` |
+| `quant/config/config.yaml` | 替换 attribution 配置：`oos_warning_decay`/`oos_recovery_threshold`/`monitoring_buffer_days` 20d |
+| `quant/data/schema.sql` | 待更新：移除 factor_ic_snapshot，添加 factor_ic_daily |
+
+**数据表变更**:
+- `factor_ic_daily`: 新建，每因子每天一行，是因子绩效唯一真相源
+- `factor_ic_snapshot`: 已删除（旧 JSON blob 表，存静态假数据）
+- `factor_snapshot.ic_series`: 不再写入（已有字段不清除）
+
+**三级检测体系**:
+```
+Level 1: 滚动 IC 监控 (factor_ic_daily) — 20日均值 vs 当前值
+Level 2: OOS/IS 比率 (G1 per_factor) — OOS_IR<0 立即降级 / 比率<0.3 严重衰减
+Level 3: 稳定性校验 (factor_ic_daily) — 连续 N 天稳定 → 升回 / 持续衰减 → 退役
+```
+
+## 当前交易日业务流程
+```
+08:30  signals     Pipeline→因子→排名→_rank_concentrated分配→daily_signals
+09:30  execute     读信号→涨停预检→封板重分配→compute_trades→挂限价单
+09:35-11:30,13:00-14:55  monitor  每30s: 订单管理+止盈止损 (午休跳过)
+19:00  daily_data  update_daily(OHLCV) → backfill_turnover(baostock)
+20:00  attribution Brinson→G1 OOS→L1+L2+L3 三级检测→状态变更→G2 拥挤度→G3 DSR
+21:00  factor_cache 因子物化→factor_snapshot→同步 ic_mean
+```
+
+## 关键文件
+
+| 文件 | 最近改动 |
+|------|----------|
+| `quant/data/repos/factor_repo.py` | factor_ic_daily 表 + 新方法 + 删旧快照方法 |
+| `quant/scheduler/attribution.py` | IC 块替换为三级检测体系 |
+| `quant/scheduler/oos_verify.py` | 返回增加 ic_daily 透出 |
+| `quant/factor/stats_cache.py` | 删除 ic_series 写入 |
+| `quant/scheduler/factor_cache.py` | 加 sync_ic_mean |
+| `quant/config/config.yaml` | attribution 配置重构 |
+| `web/app.py` | VERSION = "test-v233" |
+
+---
+
 # HANDOFF — 2026-07-22 test-v231
 
 ## 本次改动 (v225 → v226 → v227 → v228 → v229 → v230 → v231)

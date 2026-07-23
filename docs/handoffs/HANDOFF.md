@@ -1,3 +1,12 @@
+# HANDOFF — 2026-07-23 test-v240
+
+## 本次改动 (v239 → v240)
+
+### v240 — 修复 B5: LHB sync 中 trade_date 未定义
+
+- `store.py:1531`: 被删注释行导致 `trade_date` 变量丢失，下一行 `validate_date_format(trade_date)` 报 NameError
+- 修复：从 row 提前提取 `trade_date = to_str(row.get("上榜日", ...))`，验证和 INSERT 复用同一值
+
 # HANDOFF — 2026-07-23 test-v239
 
 ## 本次改动 (v238 → v239)

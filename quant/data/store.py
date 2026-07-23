@@ -1528,7 +1528,7 @@ class DataStore:
             sym = str(row.get("代码", "")).zfill(6)
             if len(sym) != 6:
                 continue
-            # trade_date = trade_date  # no-op removed (2026-07-21 audit)
+            trade_date = to_str(row.get("上榜日", row.get("trade_date", row.get("日期", ""))))
             if not validate_date_format(trade_date, 'lhb_detail'):
                 continue
             conn.execute(
@@ -1537,7 +1537,7 @@ class DataStore:
                     net_buy, buy_amt, sell_amt, reason)
                    VALUES (?,?,?,?,?,?,?,?,?)""",
                 (sym,
-                 to_str(row.get("上榜日", row.get("trade_date", row.get("日期", "")))),
+                 trade_date,
                  float(row.get("收盘价", 0) or 0),
                  float(row.get("涨跌幅", 0) or 0),
                  float(row.get("换手率", 0) or 0),

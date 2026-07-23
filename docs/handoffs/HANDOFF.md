@@ -1,6 +1,11 @@
-# HANDOFF — 2026-07-23 test-v240
+# HANDOFF — 2026-07-23 test-v241
 
-## 本次改动 (v239 → v240)
+## 本次改动 (v240 → v241)
+
+### v241 — 修复 B8: Python 3.13+ Formatter defaults 依赖
+
+- `logger.py:73`: `logging.Formatter(defaults={"trace_id":""})` → `_TraceFormatter` 子类
+- 自定义 `format()` 方法注入 `record.trace_id` 默认值，兼容 Python 3.10+
 
 ### v240 — 修复 B5: LHB sync 中 trade_date 未定义
 

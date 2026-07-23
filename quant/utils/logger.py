@@ -66,10 +66,9 @@ def _init():
     # 控制台: INFO, 人类可读 + trace_id 前缀
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(logging.INFO)
-    console.setFormatter(logging.Formatter(
+    console.setFormatter(_TraceFormatter(
         "[%(asctime)s] %(levelname)-5s %(name)s | %(trace_id)s%(message)s",
-        datefmt="%m-%d %H:%M:%S",
-        defaults={"trace_id": ""}
+        datefmt="%m-%d %H:%M:%S"
     ))
     console.addFilter(lambda r: not r.name.endswith('.stderr'))
     root.addHandler(console)
@@ -119,6 +118,14 @@ def _init():
         root.critical("未捕获异常: %s: %s\n%s", t.__name__, v, "".join(traceback.format_tb(tb)))
     if sys.excepthook is sys.__excepthook__:  # 不覆盖 excepthook.setup() 的 hook
         sys.excepthook = _log_uncaught
+
+
+class _TraceFormatter(logging.Formatter):
+    """Compatible with Python 3.10+ — replaces defaults= dict (3.13+ PEP 705)."""
+    def format(self, record):
+        if not hasattr(record, 'trace_id'):
+            record.trace_id = ''
+        return super().format(record)
 
 
 class _JsonFormatter(logging.Formatter):

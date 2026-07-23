@@ -135,5 +135,9 @@ class AlphaModel:
         below = alpha_raw < threshold
         alpha = alpha_raw.copy()
         if below.any():
-            alpha[below] = alpha[below] * (alpha[below] / threshold) ** 2
+            # B3 fix: only decay positive alphas; negative alphas are already
+            # below threshold by definition and should not be enhanced by squaring.
+            pos_below = below & (alpha_raw > 0)
+            if pos_below.any():
+                alpha[pos_below] = alpha[pos_below] * (alpha[pos_below] / threshold) ** 2
         return alpha

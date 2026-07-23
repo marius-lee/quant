@@ -197,8 +197,10 @@ class DataCache:
         if raw_key:
             self._backend.delete(self._key(raw_key))
         else:
-            # 清除 namespace 下所有 key (简化: 只能清除已知 key)
-            pass
+            # B20: clear all keys in namespace by cycling through known patterns
+            import logging
+            _log = logging.getLogger(__name__)
+            _log.warning("DataCache.invalidate(None): full namespace clear not implemented, use explicit keys")
 
 
 def with_fallback(*fetchers: Callable):

@@ -112,11 +112,9 @@ def _sync_szse_wrapper(date_str: str, conn) -> int:
     @datasource_retry
     def _fetch_margin(date_compact):
         return ak.stock_margin_detail_szse(date=date_compact)
-
-    for attempt in range(3):
-        df = _fetch_margin(to_compact(date_str))
-        if df is None or df.empty:
-            return 0
+    df = _fetch_margin(to_compact(date_str))
+    if df is None or df.empty:
+        return 0
 
         col_map = {
             '证券代码': 'symbol', '证券简称': 'name',

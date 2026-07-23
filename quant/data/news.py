@@ -98,6 +98,7 @@ def sync_news_sentiment(start_date: str = None, end_date: str = None, max_per_da
     news_df = _fetch_news()
     if news_df.empty:
         logger.warning("stock_news_em returned empty")
+        conn.close()
         return 0
 
     # Process each news item

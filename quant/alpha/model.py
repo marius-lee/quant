@@ -62,7 +62,7 @@ class AlphaModel:
                         if status == "monitoring":
                             ic_5d = v.get("ic_5d", v.get("ic_mean", 0))
                             ic_60d = v.get("ic_60d", v.get("ic_mean", 0))
-                            if abs(ic_60d) > 1e-10:
+                            if abs(ic_60d) > 1e-5:
                                 decay = min(1.0, abs(ic_5d) / abs(ic_60d))
                                 return ic_mean * decay > 0
                         return True

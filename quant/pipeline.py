@@ -1,4 +1,3 @@
-import traceback
 """量化选股 Pipeline — 串联 Layer 0-7, 每个交易日盘后自动运行。
 
 每个 Layer 独立 try/except — 单层异常不中断后续层。
@@ -415,7 +414,6 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
             if tp["symbol"] not in prices:
                 q = quotes.get(tp["symbol"], {})
                 prices[tp["symbol"]] = q.get("price", 0) or q.get("open", 0)
-        prices = pd.Series(prices)
     prices = pd.Series(prices)
 
     # Compute total capital

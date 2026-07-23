@@ -1691,7 +1691,7 @@ class DataStore:
         # high52w: compute from daily table (MAX close over 252 trading days)
         if date:
             df_high52 = pd.read_sql_query(
-                "SELECT symbol, MAX(close) as high_52w FROM daily WHERE date >= date(?, '-365 days') AND date <= ? GROUP BY symbol",
+                "SELECT symbol, MAX(close) as high_52w FROM daily WHERE date >= date(?, '-244 days') AND date <= ? GROUP BY symbol",
                 conn, params=(date, date))
             df_high52 = df_high52.set_index("symbol")
             df["high_52w"] = df_high52["high_52w"]

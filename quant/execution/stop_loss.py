@@ -104,14 +104,14 @@ class RiskManager:
             # 止盈
             # ════════════════════════════════
             if not tp1_hit and gain >= self.atr_mult_tp1 * atr:
-                sell_shares = max(1, shares // 2)
+                sell_shares = max(100, (shares // 2 // 100) * 100)
                 results.append({"symbol": sym, "action": "sell", "shares": sell_shares,
                                 "price": cur, "reason": "TP1(+{:.1f}ATR)".format(self.atr_mult_tp1)})
                 tp1_hit = True
                 p["_tp1_hit"] = True  # 持久化, 防止同轮次重复触发 (2026-07-21 audit C6)
 
             elif tp1_hit and gain >= self.atr_mult_tp2 * atr:
-                results.append({"symbol": sym, "action": "sell", "shares": shares - shares // 2,
+                results.append({"symbol": sym, "action": "sell", "shares": shares - max(100, (shares // 2 // 100) * 100),
                                 "price": cur, "reason": "TP2(+{:.1f}ATR)".format(self.atr_mult_tp2)})
 
             elif tp1_hit and peak > cost + self.atr_mult_tp1 * atr:

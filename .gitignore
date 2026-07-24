@@ -37,3 +37,8 @@ appendonly.aof
  data/*.db
  data/*.db-shm
  data/*.db-wal
+
+# 数据库文件 (不跟踪)
+*.db
+*.db-shm
+*.db-wal

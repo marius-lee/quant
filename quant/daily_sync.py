@@ -1,4 +1,5 @@
 from quant.config.paths import MARKET_DB
+from quant.utils.date import to_compact
 """每日数据同步 — 一个命令更新所有数据。
 
 功能:
@@ -27,7 +28,7 @@ def step1_ohlcv(date_str: str):
     """日线增量更新: 自动检测缺口, 只拉缺失的。"""
     from data.store import DataStore
     store = DataStore()
-    n = store.update_daily(start="2020-01-01")
+    n = store.update_daily(start=date_str)
     logger.info(f"[1] daily: {n} new rows")
     return n
 
@@ -62,9 +63,10 @@ def step4_lhb(date_str: str):
     return n
 
 
-def step5_fundamentals():
+def step5_fundamentals(date_str: str):
     """基本面: 每周一更新 (PE/PB/市值)。非周一跳过。"""
-    if datetime.now().weekday() != 0:
+    import pandas as pd
+    if pd.Timestamp(date_str).weekday() != 0:
         logger.info("[5] fundamentals: skipped (not Monday)")
         return 0
     import sqlite3
@@ -99,7 +101,7 @@ def run(date_str: str = None):
     results["lhb"] = step4_lhb(date_str)
 
     # 5. 基本面 (周一)
-    results["fundamentals"] = step5_fundamentals()
+    results["fundamentals"] = step5_fundamentals(date_str)
 
     elapsed = time.time() - t0
     logger.info(f"=== Daily Sync done in {elapsed:.0f}s: {results} ===")

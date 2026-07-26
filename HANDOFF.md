@@ -3,6 +3,56 @@
 > **修改前**: `rg "关键词" HANDOFF.md HYPOTHESES.md docs/adr/` 三文件联动搜索，
 > 避免重复踩坑、重新讨论已否决方案、遗漏已有设计。
 
+## test-v306 (进行中): 独立代码审计 P0 批量修复 — 数据层防腐 + PIT 收口
+
+**背景**: 用户要求抛开旧文档独立审计 (docs/analysis/2026-07-26-independent-code-audit.md
+为归档件, 含核对表)。结论: 数据层是最大风险源, 本条目跟踪 P0 修复。
+
+**P0-1 _cs_zscore inf 防腐** ✅: registry.py 统一 isfinite 过滤 +
+reindex 回原索引 (保 "输出索引==输入索引" 契约, test_nan_handling 实证)。
+
+**P0-2 数据新鲜度 watchdog + 两源修复** ✅代码:
+- 新增 `quant/data/freshness.py`: 5 表 SLO (daily/fund_flow/margin_detail/
+  daily_valuation/adj_factor), check_freshness + unavailable_factors;
+  daily_data 晚间链接入 fund_flow/margin/daily_valuation 增量同步 +
+  stale → ERROR + send_alert CRITICAL (telegram/wechat/本地)。
+- 根因修复 ×3:
+  ① 东财封 python-requests 指纹 (curl 同参数 200/0.47s 实证) →
+    fund_flow._http_get_json 模块级探测降级 curl 子进程;
+  ② `to_compact` 漏 import ×2 (margin.py:115, daily_sync.py:41) —
+    **margin 07-09 起停滞真凶**: 每晚 daily_sync 静默 NameError;
+  ③ jq_valuation: jq 异常 → tushare 兜底 (原只在返回空时回退, auth
+    失败直接中断); tushare daily_basic free tier 1次/min → 62s 退避 ×6。
+
+**P0-3 物化池按数据可用性裁剪** ✅: freshness.TABLE_TO_FACTORS +
+unavailable_factors; factor_cache._run 物化前裁剪源停滞因子
+(fund_flow↦{fund_flow_3m, main_flow_ratio}, margin_detail↦{margin_*,
+short_interest}); 源恢复自动回池由 per-date missing 过滤补算。
+
+**P0-4 基本面 PIT 收口** ✅代码:
+- **坐实前视**: get_fundamentals(date) 在 daily_valuation 覆盖外
+  (2026-07-03 起停滞 23 天) 回退 stocks 快照 → 07-06..07-24 物化的
+  ep_ratio/bp_ratio/size/roe_ratio 全部拿 07-26 快照 = 前视。
+  已删污染行 259965 行 (78120+77490+78120+26235)。
+- **修复**: 严格 PIT — 只认 `MAX(daily_valuation.date ≤ date)`,
+  覆盖外 → NaN (诚实缺数据, 不静默前视); stocks 快照仅 date=None
+  实盘路径可用; roe 同列清空后由 PIT pb/pe 推导。
+- **误判纠正**: high52w_dist 原已 PIT (store.py 在传 date 时从 daily
+  重算 52 周高 + 当日收盘), 审计初判有误, 代码验证后翻案。
+- **遗留 (P1)**: financial_* 无 ann_date 列 (stat_date≤date-60d 近似,
+  年报 120d 法定期 → 2-4 月窗口 ≤2 月前视) + 数据停滞 2025-12-31
+  (2026Q1 未同步, 需 jq 凭据)。
+- daily_valuation 接入晚间链 (14 天增量窗口, 已同步自动跳过)。
+
+**测试**: test_v306_data_freshness (6 项) + test_v307_pit_fundamentals
+(3 项) + test_factor_compute inf (3 项); 全套 175 绿。
+
+**待用户终端执行 (网络活)**: ① 估值回填 `jq_valuation 2026-07-06
+2026-07-24`; ② fund_flow 全量 sync_all; ③ margin sync_range 07-09 起;
+④ run_task.sh factor_cache 2026-07-24 增量重算; ⑤ verify_v305.py 终验。
+
+---
+
 ## test-v305 (已完成 2026-07-26): factor_cache 0 行重算死循环 — 7 因子永不物化
 
 **实施结果 (2026-07-26)**:

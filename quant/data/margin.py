@@ -12,7 +12,7 @@ from datetime import datetime
 import requests
 from quant.config.constants import _require_cfg
 from quant.utils.logger import get_logger
-from quant.utils.date import validate_date_format
+from quant.utils.date import validate_date_format, to_compact
 
 logger = get_logger("data.margin")
 DB_PATH = os.path.join(os.path.dirname(__file__), "market.db")
@@ -116,41 +116,40 @@ def _sync_szse_wrapper(date_str: str, conn) -> int:
     if df is None or df.empty:
         return 0
 
-        col_map = {
-            '证券代码': 'symbol', '证券简称': 'name',
-            '融资余额': 'margin_balance', '融资买入额': 'margin_buy',
-            '融券卖出量': 'short_sell_vol', '融券余量': 'short_balance',
-            '融券余额': 'short_total', '融资融券余额': 'margin_total',
-        }
-        df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
-        df['date'] = date_str
-        df['market'] = 'SZ'
-        if 'symbol' in df.columns:
-            df['symbol'] = df['symbol'].apply(
-                lambda x: str(int(x)).zfill(6) if pd.notna(x) and isinstance(x, (int, float)) else str(x).zfill(6)
-            )
+    col_map = {
+        '证券代码': 'symbol', '证券简称': 'name',
+        '融资余额': 'margin_balance', '融资买入额': 'margin_buy',
+        '融券卖出量': 'short_sell_vol', '融券余量': 'short_balance',
+        '融券余额': 'short_total', '融资融券余额': 'margin_total',
+    }
+    df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+    df['date'] = date_str
+    df['market'] = 'SZ'
+    if 'symbol' in df.columns:
+        df['symbol'] = df['symbol'].apply(
+            lambda x: str(int(x)).zfill(6) if pd.notna(x) and isinstance(x, (int, float)) else str(x).zfill(6)
+        )
 
-        n = 0
-        for _, row in df.iterrows():
-            sym = str(row.get('symbol', '')).strip()
-            if len(sym) < 6:
-                continue
-            conn.execute("""
-                INSERT OR REPLACE INTO margin_detail
-                (symbol, date, market, margin_buy, margin_balance, margin_repay,
-                 short_sell_vol, short_balance, margin_total)
-                VALUES (?, ?, 'SZ', ?, ?, ?, ?, ?, ?)
-            """, (sym, date_str,
-                  _to_float(row.get('margin_buy')),
-                  _to_float(row.get('margin_balance')),
-                  None,
-                  _to_float(row.get('short_sell_vol')),
-                  _to_float(row.get('short_balance')),
-                  _to_float(row.get('margin_total'))))
-            n += 1
-        conn.commit()
-        return n
-    return 0
+    n = 0
+    for _, row in df.iterrows():
+        sym = str(row.get('symbol', '')).strip()
+        if len(sym) < 6:
+            continue
+        conn.execute("""
+            INSERT OR REPLACE INTO margin_detail
+            (symbol, date, market, margin_buy, margin_balance, margin_repay,
+             short_sell_vol, short_balance, margin_total)
+            VALUES (?, ?, 'SZ', ?, ?, ?, ?, ?, ?)
+        """, (sym, date_str,
+              _to_float(row.get('margin_buy')),
+              _to_float(row.get('margin_balance')),
+              None,
+              _to_float(row.get('short_sell_vol')),
+              _to_float(row.get('short_balance')),
+              _to_float(row.get('margin_total'))))
+        n += 1
+    conn.commit()
+    return n
 
 def sync_range(start_date: str, end_date: str, conn=None):
     """从 daily 表获取交易日, 同步上交所融资融券。"""

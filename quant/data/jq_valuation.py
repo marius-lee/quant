@@ -10,6 +10,7 @@ One API call per date fetches all stocks' valuation.
 """
 import os, sys, time, sqlite3, logging
 from quant.config.constants import _require_cfg
+from quant.utils.date import to_compact
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -93,10 +94,23 @@ def _fetch_tushare_valuation_rows(date_str):
     ts.set_token(token)
     pro = ts.pro_api()
     date_compact = to_compact(date_str)
-    df = pro.daily_basic(
-        trade_date=date_compact,
-        fields="ts_code,trade_date,pe_ttm,pb,ps_ttm,total_mv,turnover_rate",
-    )
+    # free tier daily_basic 限 1次/分钟 (2026-07-26 实测): 超限异常 → 等 62s 重试
+    df = None
+    for attempt in range(6):
+        try:
+            df = pro.daily_basic(
+                trade_date=date_compact,
+                fields="ts_code,trade_date,pe_ttm,pb,ps_ttm,total_mv,turnover_rate",
+            )
+            break
+        except Exception as e:
+            if "频率超限" in str(e) or "频" in str(e):
+                wait = 62
+                logger.info(f"tushare daily_basic rate limited, sleep {wait}s "
+                            f"(attempt {attempt + 1}/6)")
+                time.sleep(wait)
+            else:
+                raise
     if df is None or df.empty:
         return None
     rows = []
@@ -127,13 +141,22 @@ def sync_date(date_str, conn):
 
     # 2. 调用 JQData API
     _limiter.wait()
-    from jqdatasdk import auth, get_fundamentals, query, valuation, logout
-    auth(os.environ.get("JQDATA_USER", ""), os.environ.get("JQDATA_PASS", ""))
-    q = query(valuation)
-    df = get_fundamentals(q, date=date_str)
+    # auth 失败/异常 → tushare 兜底 (原只在返回空时回退, 异常直接中断同步,
+    # 2026-07-03 起停滞 23 天未被发现的根因之一, 审计 P0-4)
+    df = None
+    try:
+        from jqdatasdk import auth, get_fundamentals, query, valuation, logout
+        auth(os.environ.get("JQDATA_USER", ""), os.environ.get("JQDATA_PASS", ""))
+        q = query(valuation)
+        df = get_fundamentals(q, date=date_str)
+        try:
+            logout()
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning(f"JQData failed for {date_str} ({type(e).__name__}: {e}), trying tushare...")
     if df is None or df.empty:
-        logger.info(f"JQData returned empty for {date_str}, trying tushare...")
-        logout()
+        logger.info(f"JQData unavailable for {date_str}, trying tushare...")
         raw = _fetch_tushare_valuation_rows(date_str)
         if raw is None:
             return 0

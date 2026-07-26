@@ -1,20 +1,68 @@
-"""个股资金流向数据同步 — 主力/超大单/大单净流入。
+"""个股资金流向数据同步 — 东方财富直连 (绕过 akshare).
 
-数据源: akshare.stock_individual_fund_flow (东方财富)
-API 限流敏感: 请求间隔需 >= 1.5s, 否则远端断连接
-表: fund_flow (symbol, date, close, change_pct, main_net_inflow, main_net_ratio, ...)
+aksare 的 stock_individual_fund_flow 触发 RemoteDisconnected,
+urllib.request 直连 HTTP 200 → 改用直连方式。
 """
 
-import os, sqlite3, time
+import json, os, sqlite3, time
 from quant.config.constants import _require_cfg
-from datetime import datetime
-
-import pandas as pd
+import requests
 from quant.utils.logger import get_logger
-from quant.utils.date import validate_date_format
 
 logger = get_logger("data.fund_flow")
+# ── 列名常量 (DDL 与查询共引) ──
+FF_SYMBOL                 = "symbol"
+FF_DATE                   = "date"
+FF_CLOSE                  = "close"
+FF_CHANGE_PCT             = "change_pct"
+FF_MAIN_NET_INFLOW        = "main_net_inflow"
+FF_MAIN_NET_RATIO         = "main_net_ratio"
+FF_SUPER_LARGE_NET_INFLOW = "super_large_net_inflow"
+FF_SUPER_LARGE_NET_RATIO  = "super_large_net_ratio"
+FF_LARGE_NET_INFLOW       = "large_net_inflow"
+FF_LARGE_NET_RATIO        = "large_net_ratio"
+FF_MID_NET_INFLOW         = "mid_net_inflow"
+FF_MID_NET_RATIO          = "mid_net_ratio"
+FF_SMALL_NET_INFLOW       = "small_net_inflow"
+FF_SMALL_NET_RATIO        = "small_net_ratio"
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "market.db")
+
+_FUND_FLOW_URL = (
+    "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"
+    "?lmt=0&klt=101&secid={secid}"
+    "&fields1=f1,f2,f3,f7"
+    "&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65"
+    "&ut=b2884a393a59ad64002292a3e90d46a5"
+)
+
+# ── 东财封 python-requests 指纹降级通道 (2026-07-26 实证) ──
+# requests 直连 RemoteDisconnected, 同参数 curl HTTP 200/0.47s。
+# 模块级探测: 首次 requests 失败 → 本会话后续全部走 curl 子进程。
+_CURL_MODE = None  # None=未探测, True=curl, False=requests
+
+
+def _http_get_json(url: str, headers: dict):
+    """GET JSON, requests 优先, 被封自动降级 curl 子进程。"""
+    global _CURL_MODE
+    if _CURL_MODE is not True:
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            _CURL_MODE = False
+            return resp.json()
+        except Exception:
+            _CURL_MODE = True
+            logger.info("fund_flow: requests blocked, fallback to curl subprocess")
+    import subprocess
+    args = ["curl", "-sS", "-m", "30"]
+    for k, v in headers.items():
+        args += ["-H", f"{k}: {v}"]
+    args.append(url)
+    out = subprocess.run(args, capture_output=True, text=True, timeout=40)
+    if out.returncode != 0 or not out.stdout.strip():
+        raise ConnectionError(f"curl failed rc={out.returncode}: {out.stderr[:200]}")
+    return json.loads(out.stdout)
 
 
 def _ensure_table(conn):
@@ -42,62 +90,104 @@ def _ensure_table(conn):
     conn.commit()
 
 
-def sync_single_stock(symbol: str, market: str = 'sh', conn=None, max_retries: int = 3) -> int:
-    """同步单只股票的资金流向历史数据。带重试逻辑。返回新增行数。"""
-    import akshare as ak
-    from quant.data.datasource_retry import datasource_retry
+def _market_code(symbol: str) -> str:
+    """将 symbol 转为东方财富 secid: 6xxxxx → 1, 0xxxxx/3xxxxx → 0."""
+    if symbol.startswith(("6", "68")):
+        return f"1.{symbol}"
+    return f"0.{symbol}"
+
+
+def sync_single_stock(symbol: str, market: str = None, conn=None) -> int:
+    """同步单只股票的资金流向历史数据。返回新增行数。"""
     close_conn = False
     if conn is None:
         conn = sqlite3.connect(DB_PATH)
         close_conn = True
 
     _ensure_table(conn)
+    secid = _market_code(symbol)
+    url = _FUND_FLOW_URL.format(secid=secid)
 
-    @datasource_retry
-    def _fetch_flow(sym, mkt):
-        return ak.stock_individual_fund_flow(stock=sym, market=mkt)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "Referer": "https://data.eastmoney.com/",
+    }
 
+    data = None
     last_err = None
-    for attempt in range(max_retries):
-        df = _fetch_flow(symbol, market)
-        if df is None or df.empty:
-            if close_conn:
-                conn.close()
-            return 0
-
-        col_map = {
-            '日期': 'date', '收盘价': 'close', '涨跌幅': 'change_pct',
-            '主力净流入-净额': 'main_net_inflow', '主力净流入-净占比': 'main_net_ratio',
-            '超大单净流入-净额': 'super_large_net_inflow', '超大单净流入-净占比': 'super_large_net_ratio',
-            '大单净流入-净额': 'large_net_inflow', '大单净流入-净占比': 'large_net_ratio',
-            '中单净流入-净额': 'mid_net_inflow', '中单净流入-净占比': 'mid_net_ratio',
-            '小单净流入-净额': 'small_net_inflow', '小单净流入-净占比': 'small_net_ratio',
-        }
-        df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
-        df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
-        df['symbol'] = symbol
-
-        n = 0
-        for _, row in df.iterrows():
-            conn.execute("""
-                INSERT OR REPLACE INTO fund_flow
-                (symbol, date, close, change_pct, main_net_inflow, main_net_ratio,
-                 super_large_net_inflow, super_large_net_ratio, large_net_inflow, large_net_ratio,
-                 mid_net_inflow, mid_net_ratio, small_net_inflow, small_net_ratio)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (symbol, row.get('date'), row.get('close'), row.get('change_pct'),
-                  row.get('main_net_inflow'), row.get('main_net_ratio'),
-                  row.get('super_large_net_inflow'), row.get('super_large_net_ratio'),
-                  row.get('large_net_inflow'), row.get('large_net_ratio'),
-                  row.get('mid_net_inflow'), row.get('mid_net_ratio'),
-                  row.get('small_net_inflow'), row.get('small_net_ratio')))
-            n += 1
-        conn.commit()
+    for attempt in range(4):
+        try:
+            data = _http_get_json(url, headers)
+            break
+        except Exception as e:
+            last_err = e
+            if attempt < 3:
+                delay = 2 ** attempt  # 1s, 2s, 4s
+                time.sleep(delay)
+    if data is None:
+        logger.warning(f"fund_flow fetch failed for {symbol} after 4 attempts: {type(last_err).__name__}: {last_err}")
         if close_conn:
             conn.close()
-        return n
+        return 0
 
-    return 0
+    klines = data.get("data", {}).get("klines", [])
+    if not klines:
+        if close_conn:
+            conn.close()
+        return 0
+
+    n = 0
+    for line in klines:
+        parts = line.split(",")
+        if len(parts) < 13:
+            continue
+        # f51=date, f52=close, f53=change_pct, f54=main_net_inflow, f55=main_net_ratio
+        # f56=super_large_net_inflow, f57=super_large_net_ratio
+        # f58=large_net_inflow, f59=large_net_ratio
+        # f60=mid_net_inflow, f61=mid_net_ratio
+        # f62=small_net_inflow, f63=small_net_ratio
+        try:
+            conn.execute(
+                f"INSERT OR REPLACE INTO fund_flow "
+                f"({FF_SYMBOL}, {FF_DATE}, {FF_CLOSE}, {FF_CHANGE_PCT}, {FF_MAIN_NET_INFLOW}, {FF_MAIN_NET_RATIO}, "
+                f"  {FF_SUPER_LARGE_NET_INFLOW}, {FF_SUPER_LARGE_NET_RATIO}, {FF_LARGE_NET_INFLOW}, {FF_LARGE_NET_RATIO}, "
+                f"  {FF_MID_NET_INFLOW}, {FF_MID_NET_RATIO}, {FF_SMALL_NET_INFLOW}, {FF_SMALL_NET_RATIO}) "
+                f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            , (
+                symbol,
+                parts[0],                            # date
+                _float(parts[1]),                    # close
+                _float(parts[2]),                    # change_pct
+                _float(parts[3]),                    # main_net_inflow
+                _float(parts[4]),                    # main_net_ratio
+                _float(parts[5]),                    # super_large_net_inflow
+                _float(parts[6]),                    # super_large_net_ratio
+                _float(parts[7]),                    # large_net_inflow
+                _float(parts[8]),                    # large_net_ratio
+                _float(parts[9]),                    # mid_net_inflow
+                _float(parts[10]),                   # mid_net_ratio
+                _float(parts[11]),                   # small_net_inflow
+                _float(parts[12]),                   # small_net_ratio
+            ))
+            n += 1
+        except Exception:
+            continue
+
+    conn.commit()
+    if close_conn:
+        conn.close()
+    return n
+
+
+def _float(val: str):
+    """安全转换, 空字符串 → None."""
+    val = (val or "").strip()
+    if not val or val == "-":
+        return None
+    try:
+        return float(val)
+    except ValueError:
+        return None
 
 
 def sync_all(max_stocks: int = 500, conn=None):
@@ -116,12 +206,9 @@ def sync_all(max_stocks: int = 500, conn=None):
     if max_stocks:
         symbols = symbols[:max_stocks]
 
-    total = 0
-    ok = 0
-    fail = 0
+    total = ok = fail = 0
     for i, sym in enumerate(symbols):
-        mkt = 'sh' if sym.startswith(('6', '68')) else 'sz'
-        n = sync_single_stock(sym, market=mkt, conn=conn)
+        n = sync_single_stock(sym, conn=conn)
         total += n
         if n > 0:
             ok += 1
@@ -129,7 +216,6 @@ def sync_all(max_stocks: int = 500, conn=None):
             fail += 1
         if (i + 1) % 10 == 0:
             print(f"  [{i+1}/{len(symbols)}] ok={ok} fail={fail} total_rows={total}")
-        # Rate limit: ~1.5s between requests (API 限流)
         time.sleep(_require_cfg("data.api_delay.fund_flow"))
 
     logger.info(f"fund_flow sync done: {total} rows for {ok} stocks ({fail} failed)")

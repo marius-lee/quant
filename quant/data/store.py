@@ -14,10 +14,46 @@ import pandas as pd
 from quant.utils.logger import get_logger
 logger = get_logger("data.store")
 
+# test-v303: 注册 key 无批量K线权限 (tickflow.PermissionError) 时置 True,
+# 进程内不再白试注册端; 新进程/升级套餐后自动重试。
+_TICKFLOW_BATCH_NO_PERM = False
+
 from quant.data.cache import get_backend, DataCache, RateLimiter
 from quant.config.loader import load as _load_config
 from quant.config.constants import _require_cfg
 from quant.data.repos._base import DatabaseManager
+# ── 列名常量 (DDL 与查询共引，防 value→raw_value 类脱节) ──
+# daily 表
+D_DATE     = "date"
+D_SYMBOL   = "symbol"
+D_OPEN     = "open"
+D_HIGH     = "high"
+D_LOW      = "low"
+D_CLOSE    = "close"
+D_VOLUME   = "volume"
+D_AMOUNT   = "amount"
+D_TURNOVER = "turnover"
+D_PE_TTM   = "pe_ttm"
+D_PB       = "pb"
+D_TOTAL_MV = "total_mv"
+D_CIRC_MV  = "circ_mv"
+
+# stocks 表
+S_SYMBOL    = "symbol"
+S_NAME      = "name"
+S_MARKET    = "market"
+S_LIST_DATE = "list_date"
+S_INDUSTRY  = "industry"
+
+# fundamentals 附加列 (通过 ALTER TABLE 添加)
+F_PE       = "pe"
+F_PB       = "pb"
+F_TOTAL_MV = "total_mv"
+F_CIRC_MV  = "circ_mv"
+F_ROE      = "roe"
+F_EPS      = "eps"
+F_BVPS     = "bvps"
+from quant.config.paths import MARKET_DB
 from quant.utils.date import validate_date_format
 
 # ── Module-level cache (lazy init) ──
@@ -60,7 +96,7 @@ def _tencent_market(sym: str) -> str:
 class DataStore:
     """全A股 SQLite 数据仓库 — 单连接复用，任务结束时关闭。"""
 
-    def __init__(self, db_path: str = "quant/data/market.db",
+    def __init__(self, db_path: str = MARKET_DB,
                  tushare_token: str = None):
         self.db_path = db_path
         # tushare token 优先级: 显式传参 > 环境变量 > config.yaml (来源: HANDOFF test-v168)
@@ -345,9 +381,10 @@ class DataStore:
         return [r[0] for r in rows]
 
     def sync_industry(self):
-        """拉取行业分类 — baostock 证监会行业分类 (需 Python ≤3.12; akshare 回退)。
+        """拉取行业分类 — baostock 证监会行业分类 (0.9.20 起支持 Python 3.14; akshare 回退)。
 
-        注意: baostock 当前不支持 Python 3.14。数据已分类时直接跳过。
+        注意: baostock ≥0.9.20 已实测兼容 Python 3.14 (2026-07-26 纠偏, 旧注释过时)。
+        数据已分类时直接跳过。
         """
         _init_cache()
         conn = self._connect()
@@ -380,7 +417,7 @@ class DataStore:
         try:
             import baostock as bs
         except ImportError:
-            logger.info("baostock library not installed (no wheel for Python 3.14), trying akshare...")
+            logger.info("baostock library not installed, trying akshare...")
             return self._sync_industry_akshare(conn)
         bs.login()
         rs = bs.query_stock_industry()
@@ -439,6 +476,192 @@ class DataStore:
             logger.debug(f"[{source}] sample: {r[0]} {r[1]} O={r[2]} H={r[3]} L={r[4]} "
                         f"C={r[5]} V={r[6]} Amt={r[7]} To={r[8]}")
 
+    # ═══════════════════════════════════════════════════════
+    # 复权因子本地表 (报告 §3.3 / B-08 v2)
+    # tushare adj_factor 接口限流 1次/小时, daily 接口 200次/分钟。
+    # 因子只在除权日变化 → 落本地表, 写 daily 时用本地因子转 qfq,
+    # 完全绕开限流。因子表由 sync_adj_factor 后台低频填充 (hourly cron)。
+    # ═══════════════════════════════════════════════════════
+
+    def _ensure_adj_factor_tables(self, conn):
+        """adj_factor (复权因子) + adj_factor_state (重基准状态) 建表 (幂等)。"""
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS adj_factor (
+                symbol TEXT NOT NULL,
+                date TEXT NOT NULL,
+                factor REAL NOT NULL,
+                updated_at TEXT DEFAULT (datetime('now','localtime')),
+                PRIMARY KEY (symbol, date)
+            );
+            CREATE TABLE IF NOT EXISTS adj_factor_state (
+                symbol TEXT PRIMARY KEY,
+                latest_factor REAL NOT NULL,
+                updated_at TEXT DEFAULT (datetime('now','localtime'))
+            );
+        """)
+
+    def _ts_codes(self, symbols: list) -> list:
+        """6位代码 → tushare ts_code (带交易所后缀)。"""
+        out = []
+        for s in symbols:
+            if '.' in s:
+                out.append(s)
+            elif s.startswith("92"):
+                out.append(f"{s}.BJ")
+            elif s.startswith(("6", "5", "9")):
+                out.append(f"{s}.SH")
+            elif s.startswith(("0", "2", "3")):
+                out.append(f"{s}.SZ")
+        return out
+
+    def sync_adj_factor(self, max_batches: int = 1, batch_size: int = 50) -> dict:
+        """从 tushare 拉 adj_factor 落本地表 (接口限流 1次/小时 — 每次调用拉满 50 股全历史)。
+
+        选股顺序: 本地无因子的优先, 其次按 updated_at 最旧 (维护模式)。
+        每批成功后自动 rebase 因子跳变股票的 daily 历史 (除权重基准)。
+        设计为 hourly cron 每次跑 1 批: 5400 股 ≈ 108 批 ≈ 4.5 天铺满。
+
+        返回: {'batches': k, 'rows': n, 'rate_limited': bool, 'remaining': m}
+        """
+        if not self.token:
+            logger.warning("sync_adj_factor: no tushare token")
+            return {"batches": 0, "rows": 0, "rate_limited": False, "remaining": -1}
+        conn = self._connect()
+        self._ensure_adj_factor_tables(conn)
+        # 本地无因子或最久未更新的股票优先
+        pending = [r[0] for r in conn.execute("""
+            SELECT s.symbol FROM stocks s
+            LEFT JOIN (
+                SELECT symbol, MAX(updated_at) AS mu FROM adj_factor GROUP BY symbol
+            ) f ON f.symbol = s.symbol
+            WHERE s.symbol NOT LIKE 'BJ%'
+            ORDER BY f.mu IS NOT NULL, f.mu
+        """).fetchall()]
+        if not pending:
+            logger.info("sync_adj_factor: all symbols covered")
+            return {"batches": 0, "rows": 0, "rate_limited": False, "remaining": 0}
+
+        import tushare as ts
+        ts.set_token(self.token)
+        pro = ts.pro_api(timeout=_require_cfg("data.http_timeout.tushare"))
+        start = to_compact(_require_cfg("data.start_date"))
+
+        _init_cache()  # 初始化 _tushare_limiter (与 _fetch_batch_tushare 同一模式)
+        total_rows, batches, rate_limited = 0, 0, False
+        for bi in range(0, min(len(pending), max_batches * batch_size), batch_size):
+            chunk = pending[bi:bi + batch_size]
+            codes = self._ts_codes(chunk)
+            if not codes:
+                continue
+            _tushare_limiter.wait()
+            try:
+                fdf = pro.adj_factor(
+                    ts_code=",".join(codes),
+                    start_date=start,
+                    end_date=to_compact(datetime.today()),
+                    fields="ts_code,trade_date,adj_factor",
+                )
+            except Exception as e:
+                msg = str(e)
+                if "频率超限" in msg or "freq" in msg.lower() or "限" in msg:
+                    logger.warning(f"sync_adj_factor: rate limited at batch {bi // batch_size}: {e}")
+                    rate_limited = True
+                    break
+                logger.warning(f"sync_adj_factor: batch {bi // batch_size} failed: {e}")
+                continue
+            if fdf is None or fdf.empty:
+                logger.warning(f"sync_adj_factor: empty factor for batch {bi // batch_size}")
+                continue
+            rows = [
+                (r["ts_code"].split(".")[0],
+                 f"{r['trade_date'][:4]}-{r['trade_date'][4:6]}-{r['trade_date'][6:]}",
+                 float(r["adj_factor"]))
+                for _, r in fdf.iterrows()
+                if r.get("adj_factor") is not None
+            ]
+            conn.executemany(
+                "INSERT INTO adj_factor (symbol, date, factor) VALUES (?,?,?) "
+                "ON CONFLICT(symbol, date) DO UPDATE SET factor=excluded.factor, "
+                "updated_at=datetime('now','localtime')",
+                rows)
+            conn.commit()
+            total_rows += len(rows)
+            batches += 1
+            logger.info(f"sync_adj_factor: batch {bi // batch_size} {len(chunk)} symbols, "
+                        f"{len(rows)} rows (total {total_rows})")
+            # 因子落地后立即重基准: 该批中因子跳变的股票重写 daily 历史
+            rebased = self._rebase_ex_dividend(conn, chunk)
+            if rebased:
+                logger.info(f"sync_adj_factor: rebased {rebased} ex-dividend symbols")
+
+        remaining = len(pending) - batches * batch_size
+        return {"batches": batches, "rows": total_rows,
+                "rate_limited": rate_limited, "remaining": max(remaining, 0)}
+
+    def _rebase_ex_dividend(self, conn, symbols: list = None) -> int:
+        """除权重基准: 因子最新值与 state 不一致的股票, daily 全历史 × F_old/F_new。
+
+        推导: stored_old = raw × f/F_old, 目标 stored_new = raw × f/F_new
+              → stored_new = stored_old × F_old/F_new (全历史统一乘, 一条 UPDATE)。
+        symbols=None 时处理全表; state 无记录的股票只建档不重写 (历史口径由全量 resync 保证)。
+        """
+        self._ensure_adj_factor_tables(conn)
+        where = ""
+        params = ()
+        if symbols:
+            where = f"WHERE f.symbol IN ({','.join('?' for _ in symbols)})"
+            params = tuple(symbols)
+        latest = conn.execute(f"""
+            SELECT f.symbol, f.factor FROM adj_factor f
+            JOIN (SELECT symbol, MAX(date) AS md FROM adj_factor GROUP BY symbol) m
+              ON m.symbol = f.symbol AND m.md = f.date
+            {where}
+        """, params).fetchall()
+        rebased = 0
+        for sym, f_new in latest:
+            st = conn.execute(
+                "SELECT latest_factor FROM adj_factor_state WHERE symbol=?",
+                (sym,)).fetchone()
+            if st is None:
+                conn.execute(
+                    "INSERT OR IGNORE INTO adj_factor_state (symbol, latest_factor) VALUES (?,?)",
+                    (sym, f_new))
+                continue
+            f_old = float(st[0])
+            if f_old > 0 and abs(f_new / f_old - 1) > 1e-6:
+                ratio = f_old / f_new
+                conn.execute(
+                    "UPDATE daily SET open=round(open*?,4), high=round(high*?,4), "
+                    "low=round(low*?,4), close=round(close*?,4) WHERE symbol=?",
+                    (ratio, ratio, ratio, ratio, sym))
+                conn.execute(
+                    "UPDATE adj_factor_state SET latest_factor=?, "
+                    "updated_at=datetime('now','localtime') WHERE symbol=?",
+                    (f_new, sym))
+                rebased += 1
+                logger.info(f"rebase: {sym} factor {f_old:.4f}→{f_new:.4f}, "
+                            f"history × {ratio:.6f}")
+        conn.commit()
+        return rebased
+
+    def _local_qfq_ratio(self, conn, symbols: list) -> tuple:
+        """本地因子表 → ({symbol: latest_factor}, {symbol: {date: factor}})。
+
+        返回 (latest_map, factor_map); 无本地因子的股票不在 map 中。
+        """
+        if not symbols:
+            return {}, {}
+        self._ensure_adj_factor_tables(conn)
+        ph = ",".join("?" for _ in symbols)
+        rows = conn.execute(
+            f"SELECT symbol, date, factor FROM adj_factor WHERE symbol IN ({ph})",
+            tuple(symbols)).fetchall()
+        factor_map: dict = {}
+        for sym, d, f in rows:
+            factor_map.setdefault(sym, {})[d] = f
+        latest_map = {s: ds[max(ds)] for s, ds in factor_map.items() if ds}
+        return latest_map, factor_map
+
     def _fetch_batch_tushare(self, symbols: list, start_date: str) -> list:
         """tushare 批量获取日线 (Token认证, 200call/min). 返回 None 表示不可用。
 
@@ -482,15 +705,46 @@ class DataStore:
         df = _call_tushare(code_str, _start, to_compact(datetime.today()))
         if df is None or df.empty:
             return None
+        # B-08 fix: tushare daily 返回未复权原始价, 与 tencent/akshare 的 qfq
+        # 前复权混写同一张表 → 除权日收益率跳变 (如 -34%), 回测不可复现。
+        # B-08 v2: 转 qfq 用本地 adj_factor 表 (sync_adj_factor 后台低频填充),
+        # 不再在线调 adj_factor 接口 (限流 1次/小时, 每次 update_daily 都调必然超限)。
+        # 本地无因子覆盖的股票跳过 (不写口径不一致数据); 全缺 → None 交给下一源。
+        _conn = self._connect()
+        _latest_map, _factor_map = self._local_qfq_ratio(_conn, symbols)
+        _covered = set(_latest_map)
+        if not _covered:
+            logger.warning("[tushare] no local adj_factor coverage — run "
+                           "sync_adj_factor first; skip raw write, next source")
+            return None
+        df["symbol6"] = df["ts_code"].str.split(".").str[0]
+        df = df[df["symbol6"].isin(_covered)]
+        if df.empty:
+            return None
+        _d_iso = df["trade_date"].str[:4] + "-" + df["trade_date"].str[4:6] + "-" + df["trade_date"].str[6:]
+        df["adj_factor"] = [
+            _factor_map.get(s, {}).get(d)
+            for s, d in zip(df["symbol6"], _d_iso)
+        ]
+        # 同股票内前后填充 (停牌日无因子记录), 仍缺失则该股当天不复权 (ratio=1)
+        df["adj_factor"] = df.groupby("symbol6")["adj_factor"].transform(
+            lambda s: s.ffill().bfill())
+        # 全 None (K线日期与因子日期零重叠) → to_numeric 转 NaN, 防 object/除法 TypeError
+        df["adj_factor"] = pd.to_numeric(df["adj_factor"], errors="coerce")
+        _ratio = (df["adj_factor"] / df["symbol6"].map(_latest_map)).fillna(1.0)
+        for _col in ("open", "high", "low", "close"):
+            df[_col] = (df[_col].astype(float) * _ratio).round(4)
+
         rows = []
         for _, row in df.iterrows():
             rows.append(self._norm_row(
-                row["ts_code"].split(".")[0], row["trade_date"],
+                row["symbol6"], row["trade_date"],
                 float(row.get("open", 0)), float(row.get("high", 0)),
                 float(row.get("low", 0)), float(row.get("close", 0)),
                 float(row.get("vol", 0)), float(row.get("amount", 0)),
                 float(0.0)))  # tushare daily API 不含 turnover_rate (来源: 2026-07-21 实测)
-        logger.info(f"[tushare] {code_str}: {len(rows)} rows")
+        logger.info(f"[tushare] {code_str}: {len(rows)} rows "
+                    f"(qfq via local factors, {len(_covered)}/{len(symbols)} covered)")
         return rows
 
     def _fetch_sina_daily(self, symbols: list, start_date: str) -> list:
@@ -656,7 +910,8 @@ class DataStore:
     def _fetch_tickflow_daily(self, symbols: list, start_date: str = None) -> list:
         """TickFlow 批量日线: vol=手✅, amt=元❌→/1000→千元。
 
-        历史K线用免费版 TickFlow.free().klines.batch(),
+        历史K线先试注册版 TickFlow(api_key), 无批量K权限/未配置 → 免费层
+        (test-v303 权限感知故障转移, 显式日志),
         当天数据用 API key _fetch_tickflow_quotes() 补充。
         来源: tickflow 免费版 "日K为历史数据, 盘中不会实时更新";
               API key 支持 tf.quotes.get() 实时行情含 turnover_rate
@@ -668,7 +923,6 @@ class DataStore:
             return self._fetch_tickflow_quotes(symbols, start_date)
         try:
             from tickflow import TickFlow
-            tf = TickFlow.free()
         except ImportError:
             raise RuntimeError("tickflow not installed (pip install tickflow)")
         rows = []
@@ -680,14 +934,68 @@ class DataStore:
         from quant.data.datasource_retry import datasource_retry
 
         @datasource_retry
-        def _call_tickflow_batch(codes):
-            return tf.klines.batch(codes, period="1d", count=10000, as_dataframe=True, show_progress=False)
+        def _call_tickflow_batch(client, codes):
+            return client.klines.batch(codes, period="1d", count=10000, as_dataframe=True, show_progress=False)
 
-        dfs = _call_tickflow_batch(codes)
+        # test-v303: 权限感知故障转移 — 先试注册版批量K (api.tickflow.org),
+        # PermissionError (套餐无批量K权限, 2026-07-26 实测) → 记 flag 落免费层;
+        # 升级套餐后新进程自动走回注册版。注册端单次尝试不过 retry:
+        # 权限错误重试 4 次 × 15s 纯属浪费。
+        global _TICKFLOW_BATCH_NO_PERM
+        dfs = None
+        if not _TICKFLOW_BATCH_NO_PERM:
+            try:
+                _api_key = _require_cfg("data.tickflow_api_key")
+            except KeyError:
+                _api_key = None
+            if _api_key:
+                try:
+                    dfs = TickFlow(api_key=_api_key).klines.batch(
+                        codes, period="1d", count=10000, as_dataframe=True, show_progress=False)
+                    logger.info(f"[tickflow] 注册版批量K线 OK ({len(codes)} codes)")
+                except Exception as _e:
+                    from tickflow import PermissionError as _TFPermissionError
+                    if isinstance(_e, _TFPermissionError):
+                        _TICKFLOW_BATCH_NO_PERM = True
+                    logger.warning(
+                        f"[tickflow] 注册版批量K线失败 ({type(_e).__name__}: {_e}) → 免费层")
+            else:
+                logger.info("[tickflow] data.tickflow_api_key 未配置 → 免费层 (仅历史日K)")
+        if dfs is None:
+            dfs = _call_tickflow_batch(TickFlow.free(), codes)
+        # B-08: tickflow 日K 未复权 → 本地 adj_factor 表转 qfq (同 tushare 口径,
+        # test-v304), 不再直接落库混入 qfq 表 — 除权日收益率跳变, 回测不可复现。
+        # 无本地因子覆盖的股票跳过 (不写口径不一致数据); 全缺 → None 交下一源。
+        _conn = self._connect()
+        _latest_map, _factor_map = self._local_qfq_ratio(_conn, symbols)
+        _covered = set(_latest_map)
+        if not _covered:
+            logger.warning("[tickflow] no local adj_factor coverage — run "
+                           "sync_adj_factor first; skip raw write, next source")
+            return None
+        dfs = {c: d for c, d in dfs.items() if c.split(".")[0] in _covered}
+        if not dfs:
+            return None
         for code, df in dfs.items():
             if df.empty:
                 continue
             sym = code.split(".")[0]
+            # ratio = factor(date) / latest_factor; 停牌日无因子记录 → 该股内 ffill/bfill,
+            # 仍缺失则当天不复权 (ratio=1)。df 先按日期排序保证填充方向正确。
+            df = df.sort_values("trade_date")
+            _fmap = _factor_map.get(sym, {})
+            _tds = df["trade_date"].astype(str).str[:10]
+            # 归一化 YYYYMMDD → YYYY-MM-DD (与 adj_factor 表键一致)
+            _td_iso = _tds.where(
+                _tds.str.contains("-"),
+                _tds.str[:4] + "-" + _tds.str[4:6] + "-" + _tds.str[6:8])
+            df["adj_factor"] = [_fmap.get(d) for d in _td_iso]
+            df["adj_factor"] = df["adj_factor"].ffill().bfill()
+            # 全 None (K线日期与因子日期零重叠) → to_numeric 转 NaN, 防 object/除法 TypeError
+            df["adj_factor"] = pd.to_numeric(df["adj_factor"], errors="coerce")
+            _ratio = (df["adj_factor"] / _latest_map[sym]).fillna(1.0)
+            for _col in ("open", "high", "low", "close"):
+                df[_col] = (df[_col].astype(float) * _ratio).round(4)
             for _, row in df.iterrows():
                 d = str(row.get("trade_date", ""))[:10]  # _norm_row → to_str() 归一化
                 if len(d) < 8:  # 至少8位才算有效日期
@@ -709,7 +1017,9 @@ class DataStore:
                 rows.extend(_qr)
                 logger.info(f'[tickflow] +{len(_qr)} today rows from API key quotes')
         if rows:
-            logger.info(f"[tickflow] {len(symbols)} stocks: {len(rows)} rows (vol=手✅, amt/1000→千元)")
+            logger.info(f"[tickflow] {len(symbols)} stocks: {len(rows)} rows "
+                        f"(qfq via local factors, {len(_covered)}/{len(symbols)} covered; "
+                        f"vol=手✅, amt/1000→千元)")
         return rows
 
     def _fetch_tickflow_quotes(self, symbols: list, date: str) -> list:
@@ -1228,7 +1538,7 @@ class DataStore:
 
         流程:
           1. 分析哪些股票缺少数据（不浪费时间拉已有数据）
-          2. tushare(批量50股) → tickflow(批量) → zzshare → pytdx(TCP) → sina → tencent → akshare
+          2. tushare(批量50股,qfq) → tickflow(批量) → zzshare → pytdx(TCP) → tencent → akshare
           3. OHLCV 完成后，Baostock 补充换手率
 
         symbols: None 表示自动分析缺口并只拉缺失/不足的股票
@@ -1289,17 +1599,20 @@ class DataStore:
             rows = None
             source = "none"
 
-            # 动态轮转: 记录每条每秒速度, 最快的排前面, 失败排最后
+            # 速度统计: 记录每源 rows/s 的 EMA 供监控排查 (仅记录, 不参与排序 —
+            # 源顺序由下方 all_sources 固定优先级决定, 2026-07-26 审计纠偏)
             if not hasattr(self, '_source_speed'):
                 self._source_speed = {}
-            # P3: sina 已移除 — 返回未复权数据(除权日单日跳-34%)，tencent/akshare 均用 qfq 前复权
+            # B-08 fix: sina 从 all_sources 移除 — 返回未复权数据(除权日单日跳-34%),
+            # 与本表 qfq 口径不一致, 混写导致收益率序列不可复现。
+            # 各源复权口径: tushare=adj_factor 转 qfq (B-08), tickflow=adj_factor 转 qfq (B-08, test-v304),
+            # zzshare/pytdx=前复权, tencent/akshare=em qfq 前复权。
 
             # ── 全量拉取源选择 (多源回退, 按实测速度+批量能力排序) ──
-            # 优先级: tushare(批量50股, turnover✅) > tickflow(批量, 无turnover) > zzshare(逐只, 无turnover)
-            #         > pytdx(TCP, 无turnover) > sina(HTTP明文, turnover✅) > tencent(em K线,封禁中) > akshare(换手率✅,封禁中)
+            # 优先级: tushare(批量50股, turnover✅, qfq✅) > tickflow(批量, 无turnover) > zzshare(逐只, 无turnover)
+            #         > pytdx(TCP, 无turnover) > tencent(em K线,封禁中) > akshare(换手率✅,封禁中)
             # 设计决策: 速度优先于 turnover 完整性 — tushare 首位的 99%+ 成功率保证了 turnover 覆盖率。
             # 若 tushare 某批失败, 回退源(无 turnover)接盘 → backfill_turnover_quotes 后续补 turnover。
-            # sina/akshare 虽含 turnover 但逐只拉取极慢, 置后作为最后回退而非中间层。
             # eastmoney 系(tencent/akshare)当前IP不可用, 置末尾但不移除 — 等IP解封后自动恢复
             # TLS 指纹对抗: tencent/akshare 使用 curl_cffi 模拟 Chrome 131
             # 来源: 2026-07-20 scripts/test_all_sources_rate.py 全源实测; 2026-07-21 全链路逻辑分析
@@ -1307,7 +1620,6 @@ class DataStore:
                 ("tickflow", lambda: self._fetch_tickflow_daily(chunk, batch_start)),
                 ("zzshare", lambda: self._fetch_zzshare_daily(chunk, batch_start)),
                 ("pytdx", lambda: self._fetch_pytdx_daily(chunk, batch_start)),
-                ("sina", lambda: self._fetch_sina_daily(chunk, batch_start)),
                 ("tencent", lambda: self._fetch_tencent_daily(chunk, batch_start)),
                 ("akshare", lambda: self._fetch_akshare_daily(chunk, batch_start)),
             ]
@@ -1561,13 +1873,16 @@ class DataStore:
             start = _require_cfg("data.benchmark_start_date")
         # 本地 market.db benchmark_daily 表
         import sqlite3, os
-        bm_db = os.path.join(os.path.dirname(__file__), "market.db")
-        if os.path.exists(bm_db):
-            conn = DatabaseManager.get_instance().get_connection(bm_db)
+        from quant.config.paths import MARKET_DB
+        _bm_db = MARKET_DB
+        if os.path.exists(_bm_db):
+            _bm_conn = sqlite3.connect(_bm_db, timeout=5)
+            _bm_conn.execute("PRAGMA journal_mode=WAL")
             df = pd.read_sql_query(
                 "SELECT date, close FROM benchmark_daily WHERE index_code=? AND date>=? ORDER BY date",
-                conn, params=(code, start)
+                _bm_conn, params=(code, start)
             )
+            _bm_conn.close()
             if not df.empty:
                 df["date"] = pd.to_datetime(df["date"])
                 df = df.set_index("date")["close"]
@@ -1612,7 +1927,7 @@ class DataStore:
                 WHERE (symbol, stat_date) IN (
                     SELECT symbol, MAX(stat_date)
                     FROM financial_{tbl}
-                    WHERE stat_date <= ? AND symbol IN ({placeholders})
+                    WHERE stat_date <= date(?, '-60 days') AND symbol IN ({placeholders})
                     GROUP BY symbol
                 )
             """, conn, params=[date] + symbols)
@@ -1654,25 +1969,33 @@ class DataStore:
         df.loc[df["pe"] <= 0, "pe"] = None
         df.loc[df["pe"] > 1000, "pe"] = None
         df.loc[df["pb"] <= 0, "pb"] = None
-        # 如果有 date, 用 daily_valuation 的当日估值覆盖 stocks 快照
+        # 如果有 date: 严格 PIT — 估值字段只认 ≤ date 的最近一个 daily_valuation
+        # 交易日, 不回退 stocks 快照 (快照=最新值, 历史日期使用即前视,
+        # 2026-07-26 审计 P0-4: 07-03 覆盖截止后 20 天物化行被快照污染)。
+        # 覆盖外日期 → NaN → 因子按缺失处理 (诚实缺数据, 不静默前视)。
         if date:
             val_df = pd.read_sql_query(
                 "SELECT symbol, pe_ttm, pb, ps_ttm, pcf_ttm, market_cap, turnover_rate "
-                "FROM daily_valuation WHERE date=?",
+                "FROM daily_valuation "
+                "WHERE date = (SELECT MAX(date) FROM daily_valuation WHERE date <= ?)",
                 conn, params=(date,))
+            for col in ["pe", "pe_ttm", "pb", "ps_ttm", "pcf_ttm", "total_mv", "roe"]:
+                if col in df.columns:
+                    df[col] = None
             if not val_df.empty:
                 val_df = val_df.set_index("symbol")
-                # 用 JQData 当日估值覆盖 akshare 快照
-                for col in ["pe_ttm", "pb", "ps_ttm", "pcf_ttm", "market_cap"]:
-                    if col in val_df.columns:
-                        df[col] = val_df[col].combine_first(df.get(col, pd.Series(dtype=float)))
+                df["pe_ttm"] = val_df["pe_ttm"]
+                df["pb"] = val_df["pb"]
+                df["ps_ttm"] = val_df["ps_ttm"]
+                df["pcf_ttm"] = val_df["pcf_ttm"]
                 if "market_cap" in val_df.columns:
                     # JQData market_cap 单位是亿元, akshare total_mv 是元 → 统一到元
-                    val_df["market_cap"] = val_df["market_cap"] * 1e8
-                    df["total_mv"] = val_df["market_cap"].combine_first(df["total_mv"])
-                # pe_ttm 同时覆盖 pe (compute_ep_ratio 优先用 pe_ttm)
-                if "pe_ttm" in val_df.columns:
-                    df["pe"] = val_df["pe_ttm"].combine_first(df["pe"])
+                    df["total_mv"] = val_df["market_cap"] * 1e8
+                df["pe"] = val_df["pe_ttm"]  # compute_ep_ratio 优先 pe_ttm
+            # 覆盖后重过滤 (与快照路径同口径)
+            df.loc[df["pe"] <= 0, "pe"] = None
+            df.loc[df["pe"] > 1000, "pe"] = None
+            df.loc[df["pb"] <= 0, "pb"] = None
             # 加入最新收盘价
             df_date = pd.read_sql_query(
                 "SELECT symbol, close FROM daily WHERE date=?", conn, params=(date,))
@@ -1725,7 +2048,7 @@ def market_conn(mode='ro'):
     mode: 'ro' = read-only (附加 read_uncommitted), 'rw' = read-write.
     """
     _db = os.path.join(os.path.dirname(__file__), "market.db")
-    _c = DatabaseManager.get_instance().get_connection(_db)
+    _c = DatabaseManager.get_connection(_db)
     _c.execute("PRAGMA journal_mode=WAL")
     _c.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
     if mode == 'ro':

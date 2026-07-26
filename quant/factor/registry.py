@@ -29,16 +29,21 @@ _atexit.register(_close_shared)
 def _cs_zscore(series: pd.Series, min_count: int = None, sparse: bool = False) -> pd.Series:
     """截面 z-score 标准化: (x - cross_sectional_mean) / cross_sectional_std.
     若截面有效值 < min_count, 返回全 NaN。
+    ±inf 一律视为无效 (剔除): 上游零填充段/除零跳变产 inf, 单只 inf
+    会使 std=NaN → 全 universe 截面 NaN (test-v305 ctr_20d 实证根因)。
     sparse=True 时使用 zscore_min_count_sparse (基本面因子), 否则使用 zscore_min_count_dense (价量因子)。"""
     if min_count is None:
         key = "factor.compute.zscore_min_count_sparse" if sparse else "factor.compute.zscore_min_count_dense"
         min_count = _require_cfg(key)
+    orig_index = series.index
+    series = series[np.isfinite(series)]
     if series.count() < min_count:
-        return pd.Series(np.nan, index=series.index)
+        return pd.Series(np.nan, index=orig_index)
     std = series.std(ddof=1)
     if std == 0 or np.isnan(std):
-        return pd.Series(np.nan, index=series.index)
-    return (series - series.mean()) / std
+        return pd.Series(np.nan, index=orig_index)
+    # reindex 回原索引: NaN/inf 输入位置输出 NaN, 保持"输出索引==输入索引"契约
+    return ((series - series.mean()) / std).reindex(orig_index)
 
 
 def _db_connect():

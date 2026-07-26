@@ -44,6 +44,28 @@ class TestCrossSectionalZScore:
         assert pd.isna(result.loc["b"])
         assert result.loc["a":"e"].dropna().notna().all()
 
+    def test_inf_filtered_no_poison(self):
+        """test-v305 实证: 单只 inf 使 std=NaN → 全截面 NaN。修复后 inf 剔除,
+        其余股票正常 zscore。"""
+        s = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0, np.inf], index=list("abcdef"))
+        result = _cs_zscore(s, min_count=3)
+        finite = result.dropna()
+        assert len(finite) == 5                    # inf 股票被剔除, 其余保留
+        assert "f" not in finite.index
+        assert np.isfinite(finite).all()
+        assert abs(finite.mean()) < 0.001
+
+    def test_neg_inf_filtered(self):
+        s = pd.Series([1.0, 2.0, 3.0, 4.0, -np.inf], index=list("abcde"))
+        result = _cs_zscore(s, min_count=3)
+        assert result.dropna().shape[0] == 4
+
+    def test_all_inf_returns_full_nan_with_orig_index(self):
+        s = pd.Series([np.inf, -np.inf], index=list("ab"))
+        result = _cs_zscore(s, min_count=3)
+        assert result.isna().all()
+        assert len(result) == 2                   # 保持原索引长度
+
 
 class TestFinancialFactors:
     """4 个财务因子: 纯计算, 不依赖 IO."""

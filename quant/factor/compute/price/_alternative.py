@@ -37,7 +37,7 @@ def preload_ztd_cache(dates: list, all_symbols: list):
     earliest = pd.Timestamp(min(dates)) - pd.Timedelta(days=375)
     latest = pd.Timestamp(max(dates))
 
-    conn = DatabaseManager.get_instance().get_connection("quant/data/market.db")
+    conn = DatabaseManager.market()
     ph = ",".join(["?"] * len(all_symbols))
     rows = conn.execute(
         f"""SELECT date, symbol, volume
@@ -56,16 +56,26 @@ def preload_ztd_cache(dates: list, all_symbols: list):
     df = pd.DataFrame(rows, columns=['date', 'symbol', 'volume'])
     df['date'] = pd.to_datetime(df['date'])
 
+    # 向量化 (审计 P1-7, 2026-07-26): 原每日期全表过滤 + groupby
+    # (134 dates 实测 91s) → 每股 rolling(250) 一次 + merge_asof 查表。
+    # 语义: 每股最后 250 行 (≤d) 中零成交占比, 与原实现一致;
+    # 唯一差异: volume NaN 行不计入 total (原按行数, daily.volume 实际无 NaN)。
+    df = df.sort_values(['symbol', 'date'])
+    df['zero'] = (df['volume'] == 0).astype(float)
+    rolled = df.groupby('symbol', sort=False).rolling(250, min_periods=1)
+    df['ztd'] = (rolled['zero'].sum() / rolled['volume'].count()).values
+    df = df.sort_values('date')
+    grid = pd.MultiIndex.from_product(
+        [sorted(pd.Timestamp(d) for d in dates), df['symbol'].unique()],
+        names=['date', 'symbol']).to_frame(index=False)
+    merged = pd.merge_asof(grid, df[['date', 'symbol', 'ztd']],
+                           on='date', by='symbol')
     for d in dates:
-        cutoff = pd.Timestamp(d)
-        sub = df[df['date'] <= cutoff]
-        if sub.empty:
+        s = (merged.loc[merged['date'] == pd.Timestamp(d)]
+             .set_index('symbol')['ztd'].dropna())
+        if s.empty:
             continue
-        sub = sub.sort_values(['symbol', 'date'], ascending=[True, False])
-        recent = sub.groupby('symbol', sort=False).head(250)
-        zero = recent.groupby('symbol')['volume'].apply(lambda x: (x == 0).sum())
-        total = recent.groupby('symbol').size()
-        _ztd_cache[d] = (zero / total)
+        _ztd_cache[d] = s
 
     _log.info("preload_ztd_cache: precomputed %d dates for %d symbols",
              len(_ztd_cache), len(all_symbols))
@@ -174,7 +184,7 @@ def compute_str(data, date, window=20):
         return _cs_zscore(-raw).rename("str")
 
     # 市值中性化 (从 stocks 表取 total_mv)
-    conn2 = DatabaseManager.get_instance().get_connection("quant/data/market.db")
+    conn2 = DatabaseManager.market()
     _syms2 = raw.index.tolist()
     _ph2 = ",".join(["?"] * len(_syms2))
     rows = conn2.execute(
@@ -215,7 +225,7 @@ def compute_abn_turnover(data, date, window=20):
 
     # 取市值 + 行业
     syms = close.columns.tolist()
-    conn = DatabaseManager.get_instance().get_connection("quant/data/market.db")
+    conn = DatabaseManager.market()
     _ph = ",".join(["?"] * len(syms))
     meta_rows = conn.execute(f"""
         SELECT symbol, total_mv, industry FROM stocks
@@ -443,28 +453,42 @@ def compute_ideal_amplitude(data: "pd.DataFrame", date: str, window: int = 20) -
     """理想振幅: -(avg(high 25% amp) - avg(low 25% amp)).
 
     来源: 开源证券 — ICIR~3.0, 波动率类最强.
+
+    向量化 (审计 P1-7, 2026-07-26): 原逐股 python 循环 (5208×134 物化热点,
+    实测 ~8s/日期) → numpy partition 批处理。语义等价于原实现
+    (get_daily ffill 后 ampl 无中间 NaN, "全历史 dropna ≥ window" 与
+    "近 window 行全有效" 等价); 显式 .loc[:date] 防全历史输入前视。
+    停牌缺窗股票保守跳过 (原实现向更老日期取有效值, 有界语义差, 已记录)。
     """
     symbols_all = list(data["close"].columns)
 
     if "high" not in data.columns or "low" not in data.columns:
         return pd.Series(0.0, index=symbols_all, name="ideal_amplitude")
 
+    ampl = ((data["high"] - data["low"]) / data["low"]).loc[:str(date)[:10]]
+    ampl = ampl.replace([np.inf, -np.inf], np.nan)
+    recent = ampl.tail(window)
+    arr = recent.to_numpy(dtype=float)            # (window, n_syms)
+    k = max(int(window * 0.25), 1)
+    valid = ~np.isnan(arr)
+    cnt = valid.sum(axis=0)
+
+    # top-k / bottom-k 均值 (NaN 以 ±inf 排除出选择)
+    a = np.where(valid, arr, -np.inf)
+    top = np.partition(a, len(arr) - k, axis=0)[-k:]
+    top_mask = top > -np.inf
+    high_q = (np.where(top_mask, top, 0).sum(axis=0)
+              / np.where(top_mask.sum(axis=0) == 0, np.nan, top_mask.sum(axis=0)))
+    b = np.where(valid, arr, np.inf)
+    bot = np.partition(b, k - 1, axis=0)[:k]
+    bot_mask = bot < np.inf
+    low_q = (np.where(bot_mask, bot, 0).sum(axis=0)
+             / np.where(bot_mask.sum(axis=0) == 0, np.nan, bot_mask.sum(axis=0)))
+
     result = pd.Series(0.0, index=symbols_all)
-
-    for sym in symbols_all:
-        if sym not in data["high"].columns or sym not in data["low"].columns:
-            continue
-        high = data["high"][sym].dropna()
-        low = data["low"][sym].dropna()
-        ampl = (high - low) / low
-        ampl = ampl.dropna()
-        if len(ampl) < window:
-            continue
-        recent = ampl.tail(window)
-        high_q = recent.nlargest(max(int(len(recent) * 0.25), 1)).mean()
-        low_q = recent.nsmallest(max(int(len(recent) * 0.25), 1)).mean()
-        result[sym] = -(high_q - low_q)
-
+    vals = -(high_q - low_q)
+    ok = (cnt >= window) & np.isfinite(vals)
+    result.loc[result.index[ok]] = vals[ok]
     return _cs_zscore(result).rename("ideal_amplitude")
 
 
@@ -488,7 +512,7 @@ def compute_short_interest(data, date, window=20):
     import sqlite3, os as _os3
     symbols = list(data["close"].columns)
     result = pd.Series(np.nan, index=symbols)
-    conn = DatabaseManager.get_instance().get_connection("quant/data/market.db")
+    conn = DatabaseManager.market()
     rows = conn.execute(
         "SELECT symbol, short_balance, margin_total FROM margin_detail "
         "WHERE date = (SELECT MAX(date) FROM margin_detail WHERE date <= ?) "
@@ -511,7 +535,7 @@ def compute_fund_flow_3m(data, date, window=60):
     import sqlite3, os as _os4
     symbols = list(data["close"].columns)
     result = pd.Series(0.0, index=symbols)
-    conn = DatabaseManager.get_instance().get_connection("quant/data/market.db")
+    conn = DatabaseManager.market()
     rows = conn.execute(
         "SELECT symbol, change_ratio FROM fund_hold "
         "WHERE report_date >= date(?, '-{} days') AND change_ratio IS NOT NULL "

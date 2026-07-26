@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS factor_values (
 
 CREATE INDEX IF NOT EXISTS idx_fv_date_factor ON factor_values(date, factor);
 CREATE INDEX IF NOT EXISTS idx_fv_date ON factor_values(date);
+-- 按因子查/删 (DELETE WHERE factor=?, 审计 P1-6): 原只能全扫 (实测 107s/70万行)
+CREATE INDEX IF NOT EXISTS idx_fv_factor_date ON factor_values(factor, date);
 
 CREATE TABLE IF NOT EXISTS materialization_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

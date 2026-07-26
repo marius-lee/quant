@@ -3,7 +3,26 @@
 > **修改前**: `rg "关键词" HANDOFF.md HYPOTHESES.md docs/adr/` 三文件联动搜索，
 > 避免重复踩坑、重新讨论已否决方案、遗漏已有设计。
 
-## test-v306 (进行中): 独立代码审计 P0 批量修复 — 数据层防腐 + PIT 收口
+## test-v306 (进行中, P0+P1-6/7 已提交): 独立代码审计修复 — 数据层防腐 + PIT 收口
+
+**断点 (2026-07-26 晚, 上下文重启备份)**: 接续口令 "继续 test-v306"。
+已提交: 2c11b3f (P0 批量) + ce88060 (P1-6/7)。当前进度与待办:
+1. ⏳ 用户终端回填 (网络活, 命令见下): ① 估值 `jq_valuation 2026-07-06
+   2026-07-24` (限流自动退避 ~14min); ② fund_flow sync_all (~20min);
+   ③ margin sync_range 2026-07-09 起 (~4min); ④ 完成后
+   `bash scripts/run_task.sh factor_cache 2026-07-24` 增量重算;
+   ⑤ `scripts/verify_v305.py` 终验 (7 窗口因子 + 4 估值因子恢复)。
+2. ✅ P1-6: idx_fv_factor_date 索引 (真实库已建, 查询 60s→0.02s)。
+3. ✅ P1-7: ideal_amplitude 8s→0.009s/日期, ztd preload 91s→秒级。
+4. ⬜ P1-5 turnover 全历史回填 (backfill_turnover, baostock 0.3s/只,
+   5208 股 × 缺口日 — 大任务, 建议分批; 命令: `PYTHONPATH=.
+   .venv/bin/python -c "from quant.data.store import DataStore;
+   s=DataStore(); print(s.backfill_turnover(0)); s.close()"`)。
+5. ⬜ P2-9 hyperopt purged-CV 审计 (optimizer/hyperopt.py 是否过拟合源)。
+6. ⬜ P2-8 broker 抽象界定 / P2-10 DataStore 收口界定。
+7. ⬜ 新发现 (审计五节): financial_* 无 ann_date + 停滞 2025-12-31
+   (需 jq 凭据 JQDATA_USER/PASS, 否则财务因子集体吃 7 月前年报)。
+8. ⬜ push: 本地 ahead 25+ (v305/v306 提交), 网络慢曾被中断, 择时重推。
 
 **背景**: 用户要求抛开旧文档独立审计 (docs/analysis/2026-07-26-independent-code-audit.md
 为归档件, 含核对表)。结论: 数据层是最大风险源, 本条目跟踪 P0 修复。

@@ -68,9 +68,9 @@
 | P0-2 数据新鲜度 watchdog + 修 fund_flow/margin | ✅ 代码 / ⏳ 回填 | freshness.py SLO 5 表 + daily_data 接入 fund_flow/margin/valuation 同步 + send_alert; 根因修复: 东财封 requests→curl 降级 (fund_flow.py), to_compact 漏 import ×2 (margin.py/daily_sync.py — margin 停滞根因); 172 绿 |
 | P0-3 物化池按数据可用性裁剪 | ✅ | freshness.unavailable_factors (TABLE_TO_FACTORS) + factor_cache 裁剪, 源恢复自动回池; 172 绿 |
 | P0-4 基本面 PIT 审计 | ✅ 审计+修复 / ⏳ 回填 | 坐实: get_fundamentals 覆盖外回退快照=前视 (删 26 万污染行 ep_ratio/bp_ratio/size/roe_ratio @07-06..07-24); 修: 严格 PIT 只认 ≤date 最近 daily_valuation; high52w_dist 原已 PIT (误判纠正); daily_valuation 接晚间链 + jq 异常 tushare 兜底 + 限流重试; financial_* 无 ann_date (60d 近似, 年报窗口有界前视) + 停滞 2025-12-31 → 列入 P1; 175 绿 |
-| P1-5 turnover 全历史回填 | ⬜ | |
-| P1-6 factor_values 索引审计 | ⬜ | |
-| P1-7 ideal_amplitude/ztd 向量化 | ⬜ | |
+| P1-5 turnover 全历史回填 | ⬜ 命令已给 | backfill_turnover(0) 全量, baostock 0.3s/只 × 5208 × 缺口日, 建议分批/夜间 |
+| P1-6 factor_values 索引审计 | ✅ | 缺 (factor,date) 索引实证 (107s 删行); idx_fv_factor_date 已建, 查询 60s→0.02s; ce88060 |
+| P1-7 ideal_amplitude/ztd 向量化 | ✅ | ideal_amplitude 8s→0.009s/日期 (numpy partition); ztd preload 91s→秒级 (rolling+merge_asof); 语义等价已注释; 175 绿; ce88060 |
 | P2-8 broker 抽象界定 | ⬜ | |
 | P2-9 hyperopt purged-CV 审计 | ⬜ | |
 | P2-10 DataStore 收口 (界定范围) | ⬜ | |

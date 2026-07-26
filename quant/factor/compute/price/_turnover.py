@@ -58,23 +58,26 @@ def compute_ctr(data: "pd.DataFrame", date: str, window: int = 20) -> "pd.Series
         overnight = np.where(valid, o_sym.values / pc_sym.values - 1, np.nan)
 
         # 换手率变化: turnover_t / turnover_{t-1} - 1
-        to_chg = to_sym.pct_change().values
+        # inf 剔除: turnover 零填充段 → 非零的 0→x 跳变产生 inf, 单只 inf
+        # 会污染截面 zscore (std=NaN → 全 universe NaN, test-v305 实证)
+        to_chg = to_sym.pct_change().replace([np.inf, -np.inf], np.nan).values
 
         up_mask = overnight > 0
         down_mask = overnight < 0
 
         up_chg = to_chg[up_mask]
         down_chg = to_chg[down_mask]
+        up_chg = up_chg[np.isfinite(up_chg)]
+        down_chg = down_chg[np.isfinite(down_chg)]
 
-        # 至少各 2 个观测
+        # 至少各 2 个有效观测 (finite)
         if len(up_chg) < 2 or len(down_chg) < 2:
             continue
 
-        up_mean = np.nanmean(up_chg)
-        down_mean = np.nanmean(down_chg)
-        ctr_values[sym] = up_mean - down_mean
+        ctr_values[sym] = up_chg.mean() - down_chg.mean()
 
     result = pd.Series(ctr_values)
+    result = result[np.isfinite(result)]  # 兜底丢 inf/nan
     if result.empty:
         return pd.Series(np.nan, index=symbols, name="ctr_20d")
     # 高CTR = 上涨日换手异常放大 → 散户追涨 → 未来跑输 → 取负号

@@ -3,6 +3,428 @@
 > **修改前**: `rg "关键词" HANDOFF.md HYPOTHESES.md docs/adr/` 三文件联动搜索，
 > 避免重复踩坑、重新讨论已否决方案、遗漏已有设计。
 
+## test-v305 (已完成 2026-07-26): factor_cache 0 行重算死循环 — 7 因子永不物化
+
+**实施结果 (2026-07-26)**:
+1. ✅ `quant/factor/store.py` materialize: `data_full.loc[[ts]]` → `data_full.loc[:ts]`
+   (trailing slice, 无前视; iloc[-1]=ts 语义不变)。
+2. ✅ 次生 bug range_20d: 删 696131 错行 (107s) + 正常物化重算; 新口径实证
+   000001@2026-07-24 raw 1.6887(旧错值) → 1.7262 (20d 窗口口径)。
+3. ✅ **诊断外第二根因 — ctr_20d inf 截面污染**: trailing slice 修好后 ctr_20d
+   仍 0 行。实证: market.db turnover 2026-07-10 前近全零 (零填充段, 07-10
+   起 ~5192/日), 0→x 跳变 → `pct_change` 产 inf → `_cs_zscore` 不过滤 inf →
+   std=NaN → 全 universe NaN → 0 行。修复 (compute_ctr): to_chg 剔除 ±inf +
+   有效观测按 finite 计数 + 结果 isfinite 兜底。修后 ctr_20d@07-24 = 3988 行。
+4. ✅ 测试 test/test_v305_factor_cache_trailing_slice.py 5 项全绿, 全套 163 绿:
+   trailing slice 语义 / 无前视 (range_20d full vs truncated 一致) / amihud 1行→NaN
+   vs trailing→有值 / ctr inf 防腐 / 集成 materialize 7 因子全产行 (40 股 mock)。
+5. ✅ 全量补算: `run_task.sh factor_cache 2026-07-24` (134 日期增量, 仅算缺失)。
+   07-24 覆盖 58 → 65/67。
+
+**残留 (不阻塞, 非本任务范围)**:
+- `fund_flow_3m` (fund flow 数据停滞 2026-02-27) + `short_interest` (margin 数据
+  停滞 2026-07-09) 数据管道缺口 → 最新日 65/67, is_materialized 仍 False,
+  每晚增量重算 3 个缺失因子 (有界成本 ~每分钟级, 非原全量死循环)。根治 = 修
+  两条 aux 数据管道。
+- 历史日 (< 2026-07-10) turnover 零填充 → ctr_20d 那些日期 NaN 残留;
+  zt/dt_streak 全市场零涨/跌停日 std=0 → NaN 残留。均随数据累积自愈/可接受。
+- `_cs_zscore` 不过滤 inf 是共享隐患 (现仅 ctr_20d 在因子侧防住); 其他因子若
+  上游产 inf 同样截面全 NaN。建议后续在 registry._cs_zscore 统一 isfinite 过滤。
+
+**症状 (2026-07-26 用户实跑日志)**: 每次 factor_cache run 均为
+`materialized 134 dates × 67 factors × 5208 symbols → 0 rows in 1171s`
+(materialization_log 实锤: run 4=2163s/0行, run 6=3304s/0行, run 7=1171s/0行;
+仅 run 5 (07-24 21:22) 写过 443675 行)。
+
+**根因链**:
+1. 物化池 67 因子 (backtesting ∪ using), factor_values 仅 60 distinct →
+   `is_materialized()` 查最新日 67 因子齐全 → 永 False → 每次全量循环;
+2. 缺失 7 因子: `abn_turnover, amihud_250d, ctr_20d, dt_streak,
+   hl_volume_20d, ideal_amplitude, zt_streak` — 全部是**非 shortcut 价因子**;
+3. 机制: 物化循环 `day_data = data_full.loc[[ts]]` (quant/factor/store.py
+   ~line 200, **1 行切片**) 喂 compute_all_factors; 而这 7 个函数签名契约是
+   "给全历史+date, 内部自己 `iloc[start:idx+1]` 切窗口" → 1 行 = 无历史 →
+   全 NaN → 0 行 → 永缺失 → 回到 1, 死循环。
+4. 对照: 19 个 shortcut 因子吃全历史 prims → 正常; 12 个"工作中"非 shortcut
+   (analyst_buy/fund_change/margin_*/seal_* 等) 吃 aux 表或纯当日 → 正常。
+
+**次生 bug — range_20d 已写值是错的**: compute_intraday_range 同为窗口因子
+但 1 行输入不产 NaN 而是退化成"1 日振幅"写库。实证: 000001@2026-07-24
+cache raw=1.6887, 而 1d=0.008108 / 20d_avg=0.019720, 两边都不匹配
+(疑似更早版本口径)。**须删行重算**: `DELETE FROM factor_values WHERE
+factor='range_20d'` (重算走正常物化, 无需 force 全量)。其余 11 个工作中的
+非 shortcut 因子改完 trailing slice 后需抽查口径是否也受 1 行输入影响。
+
+**修复方案 (已全部实施, 见上方实施结果)**:
+1. ~~`quant/factor/store.py` 物化循环 trailing slice~~ ✅
+2. ~~删 range_20d 行 + 重跑 factor_cache~~ ✅
+3. ~~测试 3 项~~ ✅ (扩为 5 项, 含 ctr inf 防腐)
+4. ~~更新本文件 + 核对表~~ ✅
+
+**复现陷阱 (勿踩)**: `_cs_zscore` 有 `zscore_min_count_dense` 下限 — 3~5 只
+小样本直调必全 NaN, 与物化无关; 验证须 mock zscore 或用全 universe。
+zt/dt_streak 对未涨停股 fillna(0) 后 zscore — 正常日 std>0 可写; 极端
+"全市场零涨停"日 std=0 → NaN → 该日永不齐 (可接受的残留, 不阻塞)。
+
+**会话重启提示**: 本条目即断点备份。接续口令 "继续 test-v305"。
+相关文件: quant/factor/store.py (materialize 循环), _dispatch.py,
+price/{_momentum,_turnover,_alternative,_event}.py (7 因子实现)。
+
+---
+
+## test-v304: tickflow 日K 本地因子转 qfq — 堵死 fallback 混写 (B-08 收口)
+
+**背景 (数据源链审计 2026-07-26)**: OHLCV 链 = tushare→tickflow→zzshare→
+pytdx→tencent→akshare, first-non-empty-wins。tushare 路 B-08 v2 起用本地
+adj_factor 表转 qfq; 但 **tickflow 日K 未复权, fallback 接盘历史回填直接
+落库混入 qfq 表** — v303 改完故障转移后 tickflow 实际是高频承接者
+(tushare 200call/min 限流耗尽时), 混写风险从理论变现实。
+
+**修复** (`store.py::_fetch_tickflow_daily`):
+- 拉到 dfs 后先查本地因子: `_local_qfq_ratio(conn, symbols)` (复用 tushare
+  同一函数, 单一口径源);
+- 无覆盖股票跳过不写; **全缺 → return None 交下一源** (与 tushare 段同语义,
+  不写口径不一致数据);
+- 逐股 df 排序后 ratio = factor(date)/latest, 停牌日该股内 ffill/bfill,
+  乘 OHLC 四列; YYYYMMDD 紧凑日期归一化 ISO 匹配因子键;
+- `pd.to_numeric(errors="coerce")` 防全 None 边界 object/除法 TypeError
+  (tushare 段同款隐患一并加固);
+- 当日 quotes 实时价 = 最新因子价 (ratio=1), 不受影响。
+
+**审计附带纠偏 (注释级, 行为不变)**:
+- `_source_speed` EMA 只记录不参与排序 (`ordered = all_sources` 固定优先级),
+  删"动态轮转, 最快的排前面"误导注释;
+- baostock 0.9.20 实测兼容 py3.14, 纠 sync_industry 过时注释
+  ("不支持 3.14"→"≥0.9.20 已实测兼容")。
+
+**不改 (审计结论可接受)**: chunk 级短路语义 (50 只/批内任一源成即停);
+baostock 不进 OHLCV 链 (只回填换手率 turn 字段+行业分类, 见 store.py:1185)。
+
+**测试**: test_tickflow_failover.py +5 项 (除权日缩放/全缺→None/部分覆盖/
+紧凑日期/停牌 ffill)。158 passed, smoke 12 段全绿。
+
+**变更文件**: `quant/data/store.py`, `test/test_tickflow_failover.py`
+
+---
+
+## test-v303: tickflow 历史K线改走注册版 API
+
+**背景**: 用户发现 daily_data 拉取走 `TickFlow.free()` 免费层 (打印免费
+banner), 但项目有注册 key。原设计: 历史 K 免费层、仅当日行情
+(_fetch_tickflow_quotes) 用注册 key。
+
+**实测结论 (用户终端 2026-07-26)**: 注册 key 套餐**无批量K线权限** —
+`PermissionError: 无日/周/月K线查询批量查询权限`。原"历史K走免费层"
+不是疏忽, 是权限现实。
+
+**终版设计 — 权限感知故障转移** (`store.py::_fetch_tickflow_daily`):
+- 先试注册版批量K (单次尝试, 不过 retry 装饰器 — 权限错误重试 4×15s
+  纯属浪费);
+- `tickflow.PermissionError` → 模块级 `_TICKFLOW_BATCH_NO_PERM=True`,
+  进程内不再白试, 显式 warning 落免费层 (免费层仍过 datasource_retry);
+- 未配置 key → 免费层 + 显式 info 日志;
+- 升级套餐后新进程自动走回注册版 (flag 仅进程内)。
+
+**如要注册版提速 daily_data**: 需 tickflow 套餐开通"日/周/月K线批量查询"
+权限 — 开通后无需改代码。
+
+**测试**: test_tickflow_failover.py +3 项 (权限拒绝→落免费+置 flag;
+flag 置位→直走免费; flag 复位→重试注册版)。153 passed。
+
+---
+
+## test-v302: 晚间调度重排 — 依赖链替代固定时刻 (断点 3/4 排程根因)
+
+**设计判断**: v301 断点 3 (G1 窗口) /断点 4 (G4 倒挂) 不是单点 bug — 固定
+时刻表在 daily_data 耗时不定 (实测 10min~2h) 下必然错位: attribution
+20:00 永远跑在 factor_cache 21:00 物化之前, 而 G1/G4 都要当日因子缓存。
+修补单任务只是续命, 须重排依赖拓扑。
+
+**新拓扑 (cron 单入口依赖链)**:
+```
+19:00 evening_chain: daily_data --ok--> factor_cache --ok--> attribution
+  阶段已 ok → 跳过; 任一失败 → 链中断 fail-loud; 各阶段仍各自记 task_runs
+```
+- 新模块 `quant/scheduler/evening.py`: _CHAIN 声明式依赖序, ok 门控,
+  grace=4h (_TIMEOUTS["evening_chain"]=14400, 僵尸检测同源)
+- crontab: 删 19:00 daily_data / 20:00 attribution / 21:00 factor_cache
+  三条固定时刻, 并成 `0 19 * * 1-5 evening` 一条
+- orchestrator daemon 同步: 门从 "尝试过" (in status) 改 "成功" (== ok),
+  顺序对调 factor_cache→attribution (daemon 成 cron 兜底, 去重不冲突)
+- v301 的 G4 warning 修复降级为纵深防御 (手动单跑 attribution 仍安全)
+
+**附带发现 (周日实跑漏网)**: 周日验证 attribution 时 G1 过了是因为
+周日最后交易日=周五已物化; 真交易日 20:00 跑 G1 同样必崩 (trading_days
+含当日) — 固定时刻无救, 只有依赖链能解。
+
+**测试**: test_evening_chain.py +8 项 (顺序/失败中断/已 ok 跳过/去重/
+末段失败/超时注册/依赖序守卫)。150 passed, smoke 12 段全绿。
+
+**变更文件**: `quant/scheduler/evening.py` (new), `quant/scheduler/orchestrator.py`,
+`scripts/run_task.sh`, `test/test_evening_chain.py` (new), crontab 重排
+
+---
+
+## test-v301: 日频业务闭环审计与修复 (盘前→盘中→盘后全链路)
+
+**审计方法**: task_runs 全量运行记录 + 逐任务实跑 (2026-07-26 周日)。
+用户问题: 盘前信号→盘中执行→盘中风控→日终对账→数据拉取→盘后归因→
+因子物化→因子评估, 是否逻辑闭环且流畅。
+
+**结论: 审计前不闭环, 4 个断点全修**:
+
+**断点 1 — reconcile 史上零执行**: crontab 无条目 + run_task.sh 无
+reconcile case + orchestrator daemon 非常驻 (task_runs 零 reconcile 行
+实锤)。修: run_task.sh 加 case, crontab 装 `5 15 * * 1-5`。
+实跑 `reconcile._run('2026-07-24')` OK (pos checked=2 drifted=0)。
+
+**断点 2 — cron+daemon 双调度误杀**: `_tk_start` grace ≪ 合法运行时长
+(factor_cache 默认 120s vs 实际 2743s) → 第二触发把活任务标 aborted
+(07-24 factor_cache 145s 被误杀), 僵尸进程继续持 market.db 写锁 →
+daily_data 19:30 "database is locked"。修: grace 全面对齐
+orchestrator._TIMEOUTS (signals/execute 1800, daily_data 7200,
+attribution 3600, factor_cache 5400, weekly_eval 7200, monitor 21600);
+monitor._run_continuous 补 rid=None 守卫 (原忽略返回值, 双触发
+_tk_finish 必抛 "no running row found")。
+
+**断点 3 — attribution G1 窗口冲突 (必崩)**: v296 因子缓存裁剪 244
+日历日 vs oos_verify 需求 train 250+test 20+5=275 日历日 → 永久缺 31 天
+→ "factor_cache miss for 2025-10-24" 每天必崩, 且 Step A ic_daily 断粮
+(v300 CPCV L2 的数据源)。修: oos_verify.train_window_days 250→170
+(需求 195cd < 244 保留窗, IS ≈113td 采样 1/5 ≈23 点 ≥ min_is_points 20)。
+备选方案 (retention 280+回填 50 交易日) 因磁盘/时长成本否掉。
+
+**断点 4 — attribution G4 排程倒挂 (每个交易日必崩)**:
+factor_pnl_attribution 要求当日因子缓存, 但 attribution 20:00 跑在
+factor_cache 21:00 物化之前 → RuntimeError 拖垮全任务 (Step E/基准记录
+陪葬; 07-23 能 ok 纯属 22:56 重跑碰巧在物化后)。修: cache miss 改为
+warning + 返 {} (与函数内其他"算不了"分支同级), G4 当日跳过。
+
+**验证**: attribution 周日全链路实跑 OK (G1 23/183 采样日通过, CPCV L2
+D3 判定生效, Step E 37 因子同步, G2/G3/R3/R4/基准记录全到);
+142 passed + smoke 12 段全绿。07-24 的 attribution _require_cfg 失败
+已由 test-v299 detector/deflated_sharpe import 修复覆盖。
+
+**遗留观察 (未改)**:
+- D3 退役路径: Step E 每日 sync 刷 factor_registry.updated_at → 20d
+  buffer 永不超, 退役实际不触发 (既有缺陷)。
+- G1 仍硬依赖 factor_cache 全窗口, 单交易日缺缓存即 raise (fail-loud,
+  符合零 fallback; 窗口已对齐不会再缺)。
+- orchestrator daemon 与 cron 并存是设计冗余 (grace 对齐后互不误杀);
+  reconcile 现由 cron 兜底, daemon 跑也无冲突。
+
+**变更文件**: `scripts/run_task.sh`, `quant/scheduler/task_log.py` (注释),
+`scheduler/{signals,execute,daily_data,attribution,factor_cache,weekly,monitor}.py`,
+`quant/monitor/factor_attribution.py`, `quant/config/config.yaml`, crontab +1 行
+
+---
+
+## test-v300: §8.4 CPCV+DSR 驱动替代短窗判定 (L2 重写)
+
+**动机**: 核对表 §六 #4。旧 L2 用 G1 单切分 train 250d/test 20d 的 OOS/IS
+IR 比率判降级/恢复 — 统计功效低且强依赖切分点 ("短窗判定")。
+
+**新模块 `quant/evaluation/cpcv_dsr.py`**:
+- `cpcv_oos_series()`: factor_ic_daily live IC 序列 → PurgedWalkForward
+  切 fold → 各 fold 只取 OOS 段拼接 (首 fold 无训练段自动排除)。
+- `evaluate_factor()`: OOS 序列 → **日频** ICIR → DSR 多重检验校正
+  (M=评估因子总数, 偏度/峰度实测) → verdict:
+  degraded (DSR<0.5) / significant (≥0.95) / neutral / insufficient
+  (OOS<40 天, 不罚, 对齐 Phase 3 语义)。
+
+**单位坑 (实测抓到)**: DSR/PSR 公式内 E[max_SR]=√(2lnM/T) 与标准误
+均为 per-period 口径 — observed SR 传年化值会膨胀 √244≈15.6 倍,
+噪声序列也判 significant。必须传日频 ICIR; 年化值仅作展示字段。
+
+**attribution.py Step C 重写**: L1 滚动 IC 保留; L2 数据源换成
+factor_ic_daily live 序列 (attribution.cpcv_lookback_days=120 窗口),
+逐因子 evaluate_factor; D1/D2/D3 状态迁移 reason 改记 DSR/OOS_ICIR。
+死键 `oos_warning_decay`/`oos_recovery_threshold` 从 config 删除
+(oos_verify.decay_warn_threshold 属 G1, 保留)。
+
+**config 新增** (attribution.*): dsr_degraded_threshold=0.5,
+dsr_recover_threshold=0.95, cpcv_min_days=40, cpcv_lookback_days=120。
+
+**验证**: test_cpcv_dsr.py +13 项 (fold 切分/强 IC→significant/噪声→
+degraded/不足→insufficient/单调性/M 校正生效/config 接线+死键删除)。
+
+**上线影响 (真实数据 dry-run 2026-07-26)**: 当前 registry active=0/
+monitoring=37 → D1 无降级对象; 37 因子判定 28 degraded/2 neutral/
+1 significant (dt_streak, dsr=0.96, 唯一恢复候选)/6 insufficient。
+M≈40/T≈55 时运气门槛 ≈ 日频 ICIR 0.37 (年化 ~5.7) — DSR 固有保守,
+T 累积后放宽。注意: D3 退役路径因 Step E 每日 sync 刷新
+factor_registry.updated_at 导致 20d buffer 永不超 (既有缺陷,
+本次未改), 不会批量退役。
+
+**变更文件**: `quant/evaluation/cpcv_dsr.py` (new), `quant/scheduler/attribution.py`,
+`quant/config/config.yaml`, `test/test_cpcv_dsr.py` (new)
+
+---
+
+## test-v299: §8.2 — 接线 HRP / Regime / Optuna
+
+**动机**: 核对表 §六 #2。三个模块代码齐全但零调用方:
+`optimizer.method: equal_weight` 是死配置; combine_regime 无人调;
+hyperopt 修好后无入口脚本。
+
+**HRP**: `optimizer.method` 变真实分发 — `hrp` (新默认, De Prado 2016)
+| `risk_parity` (旧行为)。仅 small 层 (capital≥micro_cap) 有协方差时生效,
+Nano/Micro 不读 → 实盘 (¥5000 Nano) 行为不变, 影响回测大资金层。
+portfolio.py 新增 `_hrp_lot()` (hrp_weights→_iterative_clip→整手离散化,
+与 _mean_variance_lot 同范式), PortfolioConstructor 读 method 分发,
+0 仓位回落 Kelly/MV 链不变。
+
+**Regime**: `alpha.regime_combine: true` (新键)。pipeline Step 3 接线
+`am.combine_regime()`; generate_signals 新增 regime_label/regime_probs
+参数 — 实盘 (scope=live) 缺省自动 get_current_regime() (pickle 缓存),
+**回测禁止自动拉取** (全量历史训练 = 前视), 由 loop.py point-in-time
+注入: 起始日前训练 HMM, 逐调仓日用截止当日 returns 前向滤波。
+`regime.train_start: '2024-01-01'` 新键 (原 detector 两处硬编码),
+实盘/回测共用。store.get_benchmark 小数 → ×100 对齐实盘 percent 口径。
+
+**Optuna**: run_task.sh 新增 `hyperopt [trials]` 条目 (默认 200);
+顺带修 help 文本 factor_cache 行未闭合引号吃掉 weekly 行的旧 bug。
+
+**附带真 bug 修复**: `regime/detector.py` 与 `evaluation/deflated_sharpe.py`
+模块级缺 `from quant.config.constants import _require_cfg` (后者 import
+写在 docstring 里), RegimeDetector()/compute_dsr_for_strategy 直接调用
+必 NameError — 此前无调用方所以未暴露。
+
+**验证**: test_portfolio.py +5 (hrp 权重性质/分发/risk_parity 保持/无协方差
+报错链), test_regime_wiring.py +10 (PIT 训练+截断 predict/权重偏置/签名守卫
++回测源码禁 get_current_regime() 调用)。既有 mean_var 测试 pin
+method=risk_parity。smoke 回测确认 "regime combine: bull (confidence=1.00)"
+真实触发。
+
+**变更文件**: `quant/optimizer/portfolio.py`, `quant/regime/detector.py`,
+`quant/pipeline.py`, `quant/backtest/loop.py`, `quant/config/config.yaml`,
+`scripts/run_task.sh`, `test/test_portfolio.py`, `test/test_regime_wiring.py` (new)
+
+---
+
+## test-v298: 待办 #9 — hyperopt 空转修复 (Optuna 参数真实注入)
+
+**Bug**: hyperopt.py 把 11 个搜索参数写进 `OPTUNA_*` 环境变量, 但全项目
+无任何代码读取这些变量 (rg 全仓搜索确认) — Optuna 的 200 次 trial 全部
+跑同一套 config, 目标函数是常数, 搜索完全无效。
+
+**修复** (按核对表建议的"直接覆盖 config 单例"路线):
+- `quant/config/loader.py`: 新增 `override(mapping)` contextmanager —
+  深拷贝单例 → `_set_nested` 就地写 → 退出恢复; key 必须已存在于
+  config.yaml (fail-fast 防笔误); 覆盖期间 mtime 钉 inf 防热重载冲掉。
+- `quant/backtest/loop.py`: `run_backtest()` 新增 `combine_mode=None` 参数
+  (原 warmup 后硬编码切 ic_weighted, 该维度搜不动)。
+- `quant/optimizer/hyperopt.py`: 删全部 OPTUNA_* env 写入; config 参数经
+  `loader.override()` 注入 (8 个运行时读取点逐一核实, 全部即时生效),
+  universe_size / combine_mode 走 run_backtest 显式参数。
+
+**搜索空间死维度清理**:
+- `lookback_days` 范围 60-365 → 400-800: 旧范围全低于
+  `max_factor_calendar_days()=378`, 被 pipeline `_eff_days=max()` clamp 成常数。
+- `max_single_position` 删除: Nano 层 (capital=5000) _rank_concentrated
+  不用该参数, 死维度。
+
+**验证**: test_config_override.py +8 项 (override 生效/恢复/未知 key 拒绝/
+异常后恢复; param map key 存在性; objective 注入接线含 kwargs+恢复断言;
+backtest error→0; MDD>30% → sharpe×0.5)。全量 106→114 passed。
+smoke 回测 `run_backtest(combine_mode='sleeve')` 端到端跑通 (22.6s);
+注: smoke 窗口全在 warmup 内, sleeve/ic_weighted 信号相同属预期,
+kwarg 有效性由单测的 monkeypatch 断言覆盖。
+
+**变更文件**: `quant/config/loader.py`, `quant/backtest/loop.py`,
+`quant/optimizer/hyperopt.py`, `test/test_config_override.py` (new)
+
+---
+
+## test-v297: §8.3 交易成本感知组合优化 (Grinold α − λ·TC 无交易区间)
+
+**动机**: 核对表 §8.3 / 待办 #10。¥5000 Nano 账户一次全仓换股成本 ≈ ¥21
+(最低佣金 ¥5×2 主导) ≈ 0.47%，周频无差别换手的年化拖累 ~24% ——
+对微账户比因子本身更重要。
+
+**方案**: 各层优化器产出理想目标后统一过成本带：持仓 A→候选 B 的换股仅在
+`E[Δr] = Δz × IC_eff × σ_daily × horizon × 金额 ≥ λ × 实际成本` 时执行，
+否则恢复原持仓。z = Blom 分位正态逆累积 (对中性化变换稳健)；
+IC_eff 优先取运行时 ic_map 的 |IC| 均值，缺失回退 config `tc_ic_ref`；
+成本由 CostModel 实算 (含 ¥5 最低佣金)。只拦截"以卖养买"的换仓配对
+(满仓账户换手成本主导来源)；纯现金加仓、跌出候选集的持仓卖出不设门槛。
+贪心配对: 最大买入金额 × 最弱 alpha 持仓, 逐手 chunk 判定。
+
+**接线**: `generate_signals` 从 engine 读当前持仓 (`db_path` 回测=BACKTEST_DB /
+实盘=TRADE_DB，同一口径) 传入 `construct()` — 回测/实盘自动同时生效。
+被拦截留仓的持仓在 daily_signals.reason 标 `tc_hold` 前缀；optimizer step
+暴露 `tc_suppressed` 计数。
+
+**新增 config** (`optimizer.*`, 来源注释见 yaml):
+`tc_lambda: 1.0` (G&K 单期全额成本门槛) / `tc_horizon_days: 5` (=weekly 调仓间隔) /
+`tc_ic_ref: 0.015` (校准: factor_registry active+monitoring 平均 |ic_mean|=0.0148, 2026-07-26 实测)。
+σ_daily 复用 `execution.default_daily_vol`。
+
+**验证**: test_portfolio +11 项 (小 gap 拦截/大 gap 放行/无持仓/无 cost_model 兼容/
+跌出候选卖出/仍最优不动/纯加仓不设槛 + 辅助函数 4 项)；全量 95→106 passed；
+smoke 12 段全绿；真实回测 (2026-06-01→07-24, ¥5000, 80 股) 成本带实际触发:
+`688549→601899 benefit=¥2.35 < λ×cost=¥18.59 拦截` (ic_eff=0.015 回退值,
+该回测 warmup 内 ic_map 为空属预期)。
+
+**变更文件**: `quant/optimizer/portfolio.py` (construct 单出口重构 + `_apply_tc_band`
++ `_alpha_to_z` + `_ic_effective`), `quant/pipeline.py` (持仓接线+reason 标注),
+`quant/config/config.yaml` (+3 key), `test/test_portfolio.py` (+11 项)
+
+---
+
+## test-v237~239: 因子状态机重构 + 3项预存bug修复 (2026-07-24)
+
+### 因子状态机重构 (test-v237)
+
+**动机**: 因子状态由两个模块竞争管理 (phase5_monitor + attribution), 互不可见对方决策,
+monitoring 语义混用, retry_count 仅一边维护。
+
+**方案**: ADR-026 — 引入 `FactorStateManager` 作为唯一状态写入者。
+
+**新增**:
+- `docs/adr/026-factor-state-machine.md` — 完整 ADR 文档 (5状态 vs WorldQuant 对标)
+- `quant/factor/state_manager.py` — FactorStateManager 类
+  - 8 条状态转换, 事件驱动 `transition(name, event, reason)`
+  - 非法转换→InvalidTransitionError (零 fallback)
+  - `batch_transition()`, `get_pool()`, retry_count 自动管理
+
+**状态机变更**: 6→5 状态 (registered 合并入 candidate, ADR-026).
+
+**修改**:
+- `quant/data/repos/factor_repo.py`: VALID_STATUSES 移除 registered; update_status 加 retry_count
+- `quant/factor/compute/_registry.py`: backtesting 池→('candidate','monitoring','retired')
+- `quant/evaluation/phase5_monitor.py`: 4 处 raw SQL→fsm.transition()
+- `quant/scheduler/attribution.py`: 3 处 f_repo.update_status()→fsm.transition()
+- DB 迁移: 4 行 status='registered'→'candidate'
+
+### 预存 portfolio 测试修复 (test-v238)
+
+price_buffer(+5%) 使 Nano 层 lot_cost > capital → 0 仓位。
+
+| Bug | 修复 |
+|-----|------|
+| test_single_lot_single_stock: ValueError | construct() Nano 层 catch→原始价格重试 (portfolio.py:218-228) |
+| test_rank_concentrated_alpha_ordering: 3手→2手 | 断言动态计算 |
+| test_mean_var_with_covariance: numpy.index | array→pd.Series (portfolio.py:459-462) |
+
+### 预存 execution 测试修复 (test-v239)
+
+历史测试残留 sim_trades(3行旧记录)→get_cash() 多扣 ¥2,012.
+
+**修复**: 7 测试加 _cleanup_strategy() 前置清理. 断言→精确 48994.0
+(1000本金+5佣金+1滑点=1006; 50000-1006=48994. 来源: config.yaml execution.*)
+
+### 本次变更文件
+
+| 类型 | 文件 |
+|------|------|
+| 新增 | `docs/adr/026-factor-state-machine.md`, `quant/factor/state_manager.py` |
+| 修改 | `quant/data/repos/factor_repo.py`, `quant/factor/compute/_registry.py`, `quant/factor/stats_cache.py`, `quant/evaluation/phase5_monitor.py`, `quant/scheduler/attribution.py`, `quant/optimizer/portfolio.py`, `test/test_portfolio.py`, `test/test_execution.py`, `web/app.py` |
+| 数据 | `quant/data/market.db` (4 rows: registered→candidate) |
+
+**测试结果**: 71/71 passed
+
+
 ---
 ## test-v267: 全项目数据库连接泄漏修复
 

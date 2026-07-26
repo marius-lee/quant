@@ -22,6 +22,14 @@ _DB_NAME = "factor_cache.db"
 _PROJ_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _DEFAULT_PATH = os.path.join(_PROJ_ROOT, "quant", "data", _DB_NAME)
 
+
+# ── 列名常量 (DDL 与查询共引, 改一处全局生效) ──
+COL_DATE       = "date"
+COL_SYMBOL     = "symbol"
+COL_FACTOR     = "factor"
+COL_RAW_VALUE  = "raw_value"
+COL_ZSCORE     = "zscore"
+
 # 建表 SQL
 _DDL = """
 CREATE TABLE IF NOT EXISTS factor_values (
@@ -194,13 +202,13 @@ class FactorStore:
             if not missing:
                 continue
 
-            # 从 pre-loaded data 中提取当天切片
-# 从 pre-loaded data 中提取当天切片
+            # trailing slice (索引 ≤ ts, 无前视): 窗口因子需全历史自切窗口;
+            # iloc[-1]=ts 语义与旧 1 行切片一致 (test-v305 死循环修复)
             try:
                 ts = pd.Timestamp(date_str)
                 if ts not in data_full.index:
                     continue
-                day_data = data_full.loc[[ts]]
+                day_data = data_full.loc[:ts]
                 if day_data.empty:
                     continue
             except Exception:
@@ -245,6 +253,30 @@ class FactorStore:
         return {"n_dates": n_dates_computed, "n_factors": len(factor_names),
                 "n_symbols": len(symbols), "n_rows": total_rows, "elapsed_sec": round(elapsed, 1)}
 
+
+    def load(self, date_str: str, symbols=None, factor_names=None) -> dict:
+        """从缓存读取单日因子值。返回 {factor_name: pd.Series(symbol→value)}."""
+        import pandas as pd
+        c = self._get_conn()
+        if factor_names is None:
+            rows = c.execute(
+                "SELECT DISTINCT factor FROM factor_values WHERE date=?",
+                (date_str,)
+            ).fetchall()
+            factor_names = [r[0] for r in rows]
+        if not factor_names:
+            return {}
+        ph = ",".join("?" * len(factor_names))
+        rows = c.execute(
+            f"SELECT {COL_FACTOR}, {COL_SYMBOL}, {COL_RAW_VALUE} FROM factor_values WHERE {COL_DATE}=? AND {COL_FACTOR} IN ({ph})",
+            (date_str, *factor_names)
+        ).fetchall()
+        df = pd.DataFrame(rows, columns=[COL_FACTOR, COL_SYMBOL, COL_RAW_VALUE])
+        result = {}
+        for fname, grp in df.groupby(COL_FACTOR):
+            result[fname] = pd.Series(grp[COL_RAW_VALUE].values, index=grp[COL_SYMBOL].values)
+        return result
+
     def _flush_batch(self, batch: list):
         c = self._get_conn()
         c.executemany(
@@ -259,6 +291,45 @@ class FactorStore:
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (start, end, n_factors, n_symbols, n_dates, n_rows, round(elapsed, 1), int(force)))
         c.commit()
+
+    def trim_to_max_days(self, max_days: int) -> int:
+        """裁剪因子缓存: 删除超过 max_days 日历天窗口的旧数据。
+
+        设计原则:
+          - 因子值是可重算的衍生数据, 不应无限累积
+          - IC 回溯 + OOS 验证完整窗口约需 95 个交易日, 244 天 (=1 年) 提供充足余量
+          - 裁剪以最新物化日期为基准, 非当前系统时间 (避免重复物化间隔期内误删)
+
+        Args:
+            max_days: 日历天数窗口, 0 或负数跳过裁剪
+
+        Returns:
+            删除的行数
+
+        调用方: factor_cache._run() 在物化成功后调用
+        """
+        if max_days <= 0:
+            return 0
+
+        c = self._get_conn()
+        # 以最新物化日期为锚点, 向前保留 max_days 天
+        cutoff = c.execute(
+            "SELECT date(MAX(date), '-' || ? || ' days') FROM factor_values",
+            (max_days,)
+        ).fetchone()[0]
+
+        if cutoff is None:
+            return 0
+
+        c2 = self._get_conn()
+        deleted = c2.execute(
+            "DELETE FROM factor_values WHERE date < ?", (cutoff,)
+        ).rowcount
+        c2.commit()
+
+        if deleted > 0:
+            _log.info(f"factor_cache: trimmed {deleted} rows older than {cutoff} ({max_days}d window)")
+        return deleted
 
     def is_materialized(self, date_range: list[str], factor_names: list[str]) -> bool:
         """检查最新日期是否覆盖了全部因子。
@@ -277,14 +348,6 @@ class FactorStore:
         因子池新增因子时旧日期的数据永不补算。
         """
         return len(self._get_existing_factors(date_str)) == len(factor_names)
-
-    def _get_existing_factors(self, date_str: str) -> set:
-        """返回该日期已物化的因子名集合。"""
-        c = self._get_conn()
-        rows = c.execute(
-            "SELECT DISTINCT factor FROM factor_values WHERE date=?", (date_str,)
-        ).fetchall()
-        return {r[0] for r in rows}
 
     def _get_existing_factors(self, date_str: str) -> set:
         """返回该日期已物化的因子名集合。"""

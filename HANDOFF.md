@@ -7,22 +7,57 @@
 
 **断点 (2026-07-26 晚, 上下文重启备份)**: 接续口令 "继续 test-v306"。
 已提交: 2c11b3f (P0 批量) + ce88060 (P1-6/7)。当前进度与待办:
-1. ⏳ 用户终端回填 (网络活, 命令见下): ① 估值 `jq_valuation 2026-07-06
-   2026-07-24` (限流自动退避 ~14min); ② fund_flow sync_all (~20min);
-   ③ margin sync_range 2026-07-09 起 (~4min); ④ 完成后
-   `bash scripts/run_task.sh factor_cache 2026-07-24` 增量重算;
-   ⑤ `scripts/verify_v305.py` 终验 (7 窗口因子 + 4 估值因子恢复)。
+1. ⏳ 回填改为无人值守链 `scripts/v306_overnight.sh` (19:45 启动, 见下
+   "夜间链" 节): ① 估值 — tushare 免费档日配额 100 次已耗尽
+   (daily_basic 权限 2000 积分档), 当天无解 → 排次日 00:05 配额重置后跑;
+   ② fund_flow — 东财 19:04 起对本机 IP 限流 (单发 curl 也 rc=52),
+   已加 30 连败熔断, 脚本每 15min 探测解封 (截止 23:30) 再全量跑;
+   ③ ✅ margin 07-02..07-24 已补齐 (+36803 行, SSE/SZSE 源正常;
+   注意历史行 date 为 YYYYMMDD 紧凑格式, 新行为 YYYY-MM-DD, max(date)
+   字符串比较失真, 判新鲜度需两格式都查)。
 2. ✅ P1-6: idx_fv_factor_date 索引 (真实库已建, 查询 60s→0.02s)。
 3. ✅ P1-7: ideal_amplitude 8s→0.009s/日期, ztd preload 91s→秒级。
 4. ⬜ P1-5 turnover 全历史回填 (backfill_turnover, baostock 0.3s/只,
    5208 股 × 缺口日 — 大任务, 建议分批; 命令: `PYTHONPATH=.
    .venv/bin/python -c "from quant.data.store import DataStore;
    s=DataStore(); print(s.backfill_turnover(0)); s.close()"`)。
-5. ⬜ P2-9 hyperopt purged-CV 审计 (optimizer/hyperopt.py 是否过拟合源)。
-6. ⬜ P2-8 broker 抽象界定 / P2-10 DataStore 收口界定。
+5. ✅ P2-9 hyperopt 审计 (结论: 过拟合源属实, 但当前无消费方, 风险潜伏):
+   objective = 单窗 2023-01..2024-12 Sharpe × 200 TPE trials, 无 purge/
+   embargo/OOS gate/多重检验校正 — 与 §8.4 CPCV+DSR 体系自相矛盾;
+   但 `best_params.json` 全项目 (py/sh/yaml) 零引用, 只有手动抄进
+   config.yaml 才生效 → 接管前必须改: 目标函数换 CPCV 折均值
+   (cpcv_dsr.py 已有 purged walk-forward + embargo=5=label_horizon 实现)
+   + DSR 按 trials 数校正 + OOS gate。
+6. ✅ P2-8 / P2-10 界定 → docs/adr/ADR-034-execution-and-datastore-scope.md:
+   P2-8 真实券商接入搁置 (用户拍板: 无 Level-2 接不了, 不抽象 Brokerage
+   接口, 重启条件 = Level-2 + 券商通道); P2-10 界定完成 — store.py 2056 行/
+   54 def 按表归组分 G1-G5 (基准/universe/turnover/基本面/daily), 迁移
+   顺序与委托层连接复用注意事项见 ADR, 今晚不搬代码 (凌晨 ④⑤ 加载
+   store.py 链路), 验收后开始 G1。
 7. ⬜ 新发现 (审计五节): financial_* 无 ann_date + 停滞 2025-12-31
    (需 jq 凭据 JQDATA_USER/PASS, 否则财务因子集体吃 7 月前年报)。
 8. ⬜ push: 本地 ahead 25+ (v305/v306 提交), 网络慢曾被中断, 择时重推。
+
+**夜间链验收 (2026-07-27 早)**: ① ❌ tushare token 档位不足 (非配额 —
+00:05 重置后仍 0 行, 87min 空转), 此路已死, 只剩 JQ 凭据/付费/换源;
+② ❌ 东财 IP 封禁整晚 15 探测未解 (>14h, 疑似长封), fund_flow 未跑;
+③ ✅; ④ ✅ 281837 行/470.9s (P1-6/7 优化生效); ⑤ ✅ 65/67 —
+缺 fund_flow_3m (源封) + short_interest; 估值因子 (ep/bp/size/roe) 未缺,
+严格 PIT 按 07-06 前向填充 (无前视)。**① 后续已修**: jq_valuation
+fail-fast — 权限/日配额错误识别为致命 (FatalSourceError) 即终止
+(原误判限流 6×62s×14 日期, 晚间链每天会空转 87min), +4 测试, 全套 181 绿。
+**数据清理**: 删 margin_detail 2072 行紧凑格式重复行 ('20260701' 与
+'2026-07-01' 并存致 MAX(date) 失真 → watchdog 误报 stale + P0-3 会错杀
+margin 因子; 备份 logs/margin_detail_20260701_compact_backup.csv)。
+**待办**: ① 等用户 JQ 凭据或决定换源 (legulegu/akshare); ② fund_flow
+等东财解封 (scripts/v306_overnight.sh 探测逻辑可复用) 或换网络环境;
+P1-5 turnover 回填 (baostock, 与 fund_flow 撞库风险, 需串行)。
+
+**原夜间链说明**: `scripts/v306_overnight.sh` 前台会话托管 — 东财解封
+探测 (15min/次, 截止 23:30) → ② fund_flow 全量 → 次日 00:05 ① → ④ → ⑤。
+主日志 `logs/v306_overnight.log`。附带修复: margin.py ok_dates 计数 bug
+(135/18 失真); fund_flow.py 30 连败熔断 (+2 测试)。查进度:
+`bash scripts/v306_status.sh`。
 
 **背景**: 用户要求抛开旧文档独立审计 (docs/analysis/2026-07-26-independent-code-audit.md
 为归档件, 含核对表)。结论: 数据层是最大风险源, 本条目跟踪 P0 修复。

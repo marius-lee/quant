@@ -207,13 +207,25 @@ def sync_all(max_stocks: int = 500, conn=None):
         symbols = symbols[:max_stocks]
 
     total = ok = fail = 0
+    consecutive_fail = 0
     for i, sym in enumerate(symbols):
         n = sync_single_stock(sym, conn=conn)
         total += n
         if n > 0:
             ok += 1
+            consecutive_fail = 0
         else:
             fail += 1
+            consecutive_fail += 1
+            if consecutive_fail >= 30:
+                logger.warning(
+                    "fund_flow sync aborted: 30 consecutive failures "
+                    "(likely source block/throttle), resume later")
+                print(f"ABORTED: 30 consecutive failures at {i+1}/{len(symbols)}, "
+                      f"ok={ok} fail={fail} total_rows={total} — 源疑似封禁, 稍后重跑")
+                if close_conn:
+                    conn.close()
+                return total
         if (i + 1) % 10 == 0:
             print(f"  [{i+1}/{len(symbols)}] ok={ok} fail={fail} total_rows={total}")
         time.sleep(_require_cfg("data.api_delay.fund_flow"))

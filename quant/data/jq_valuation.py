@@ -44,6 +44,11 @@ DB = os.path.join(os.path.dirname(__file__), "market.db")
 TRIAL_START = "2025-03-26"
 TRIAL_END = "2026-04-02"
 
+
+class FatalSourceError(Exception):
+    """估值数据源致命错误 (权限不足/日配额耗尽) — 重试无意义, 立即终止本轮同步。"""
+
+
 COL_MAP = {
     "pe_ratio": "pe_ttm",
     "pb_ratio": "pb",
@@ -96,6 +101,7 @@ def _fetch_tushare_valuation_rows(date_str):
     date_compact = to_compact(date_str)
     # free tier daily_basic 限 1次/分钟 (2026-07-26 实测): 超限异常 → 等 62s 重试
     df = None
+    last_err = None
     for attempt in range(6):
         try:
             df = pro.daily_basic(
@@ -104,14 +110,25 @@ def _fetch_tushare_valuation_rows(date_str):
             )
             break
         except Exception as e:
-            if "频率超限" in str(e) or "频" in str(e):
+            msg = str(e)
+            last_err = e
+            # 权限/日配额 → 致命, 重试无意义 (2026-07-27 实证: token 档位不足,
+            # 14 日期 × 6 次 × 62s 空转 87min; 晚间链每天触发, 必须 fail-fast)
+            if any(k in msg for k in ("权限", "每天最多", "积分")):
+                logger.error(f"tushare daily_basic fatal for {date_str}: {msg[:200]}")
+                raise FatalSourceError(msg) from e
+            if "频率超限" in msg or "每分钟" in msg or "频" in msg:
                 wait = 62
-                logger.info(f"tushare daily_basic rate limited, sleep {wait}s "
-                            f"(attempt {attempt + 1}/6)")
+                logger.info(f"tushare daily_basic rate limited ({msg[:80]}), "
+                            f"sleep {wait}s (attempt {attempt + 1}/6)")
                 time.sleep(wait)
             else:
                 raise
-    if df is None or df.empty:
+    if df is None:
+        logger.warning(f"tushare daily_basic {date_str}: 6 attempts failed, "
+                       f"last: {last_err}")
+        return None
+    if df.empty:
         return None
     rows = []
     for _, row in df.iterrows():
@@ -223,7 +240,13 @@ def sync_range(start=TRIAL_START, end=TRIAL_END, max_dates=0):
     total_rows = 0
     t0 = time.time()
     for i, d in enumerate(todo):
-        n = sync_date(d, conn)
+        try:
+            n = sync_date(d, conn)
+        except FatalSourceError as e:
+            logger.error(f"fatal source error at {d}, "
+                         f"abort remaining {len(todo) - i} dates")
+            print(f"\nABORTED at {d}: {e}")
+            break
         total_rows += n
         elapsed = time.time() - t0
         rate = (i + 1) / elapsed if elapsed > 0 else 0

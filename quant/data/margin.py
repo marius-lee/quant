@@ -169,9 +169,9 @@ def sync_range(start_date: str, end_date: str, conn=None):
 
     total = 0
     synced = _get_synced_dates(conn)
-    ok_dates = len(synced)  # count already-synced
     to_sync = [d for d in trading_days if d not in synced]
     skipped = len(trading_days) - len(to_sync)
+    ok_dates = skipped  # count in-range already-synced dates
     if skipped > 0:
         print(f"Skipping {skipped} already-synced dates")
     

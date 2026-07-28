@@ -58,6 +58,7 @@ def _persist_backtest_result(strategy, start, end, capital, metrics, diagnosis, 
                 initial_capital REAL,
                 sharpe REAL, cagr_pct REAL, max_dd_pct REAL,
                 sortino REAL, calmar REAL, win_rate REAL,
+                dsr REAL,
                 alpha REAL, info_ratio REAL, beta REAL,
                 final_equity REAL, total_return_pct REAL,
                 n_days INTEGER, avg_signals REAL,
@@ -69,15 +70,15 @@ def _persist_backtest_result(strategy, start, end, capital, metrics, diagnosis, 
         conn.execute(
             "INSERT OR REPLACE INTO backtest_runs "
             "(strategy, start_date, end_date, initial_capital, "
-            "sharpe, cagr_pct, max_dd_pct, sortino, calmar, win_rate, "
+            "sharpe, cagr_pct, max_dd_pct, sortino, calmar, win_rate, dsr, "
             "alpha, info_ratio, beta, final_equity, total_return_pct, "
             "n_days, avg_signals, errors, elapsed_sec, diagnosis_json) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (strategy, start, end, capital,
              metrics.get("sharpe"), metrics.get("cagr_pct"),
              metrics.get("max_drawdown_pct"),
              metrics.get("sortino"), metrics.get("calmar"),
-             metrics.get("win_rate"),
+             metrics.get("win_rate"), metrics.get("dsr"),
              metrics.get("alpha"), metrics.get("info_ratio"),
              metrics.get("beta"),
              metrics.get("final_equity"), metrics.get("total_return_pct"),
@@ -93,6 +94,25 @@ def _persist_backtest_result(strategy, start, end, capital, metrics, diagnosis, 
 
 
 
+
+
+def _compute_dsr(returns: pd.Series) -> float | None:
+    """ADR-041: Compute Deflated Sharpe Ratio for statistical significance.
+    Bailey & Lopez de Prado (2014). DSR < 0.5 → likely overfit.
+    """
+    try:
+        from quant.evaluation.deflated_sharpe import deflated_sharpe_ratio
+        vals = returns.dropna().values
+        if len(vals) < 20:
+            return None
+        n_factors = _require_cfg("factor.evaluation.n_symbols")  # proxy for N trials
+        sr, dsr = deflated_sharpe_ratio(
+            vals, n_trials=max(n_factors, 1),
+            skewness=-0.5, kurtosis=8.0,
+        )
+        return round(dsr, 4)
+    except Exception:
+        return None
 
 
 def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
@@ -187,6 +207,8 @@ def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
         "alpha": alpha,
         "info_ratio": ir,
         "beta": beta,
+        # ADR-041: DSR (Deflated Sharpe Ratio)
+        "dsr": _compute_dsr(returns),
     }
 
 
@@ -388,7 +410,7 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             # Switch combine_mode from sleeve (warmup) to ic_weighted (walk-forward);
             # test-v298: run_backtest(combine_mode=...) 可覆盖 walk-forward 模式 (hyperopt)
             if i >= warmup_days:
-                kwargs["combine_mode"] = combine_mode or "ic_weighted"
+                kwargs["combine_mode"] = combine_mode or None  # None=use config (sleeve)
             # Walk-forward IC retrain
             if retrain_freq > 0 and (i - _last_retrain_idx) >= retrain_freq and bt_factor_names:
                 _log.info("backtest: retraining IC at day %d (%s)", i, today)

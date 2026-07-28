@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v246"
+VERSION = "test-v248"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 
@@ -212,6 +212,36 @@ def api_signals_quality():
                 "score_diff": round(today_avg_score - hist_avg_score, 4),
             },
         })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@app.route("/api/backtest/history")
+def api_backtest_history():
+    """回测历史记录 — backtest_runs 表最近 20 条。"""
+    try:
+        import sqlite3, json
+        db = os.path.join(os.path.dirname(os.path.dirname(__file__)), "quant", "data", "backtest_trades.db")
+        conn = sqlite3.connect(db)
+        rows = conn.execute('''
+            SELECT strategy, start_date, end_date, initial_capital,
+                   sharpe, cagr_pct, max_dd_pct, sortino, calmar, win_rate,
+                   dsr, alpha, info_ratio, beta,
+                   final_equity, total_return_pct, n_days, errors, elapsed_sec, started_at
+            FROM backtest_runs ORDER BY id DESC LIMIT 20
+        ''').fetchall()
+        conn.close()
+        result = []
+        for r in rows:
+            result.append({
+                "strategy": r[0], "start": r[1], "end": r[2], "capital": r[3],
+                "sharpe": r[4], "cagr": r[5], "mdd": r[6],
+                "sortino": r[7], "calmar": r[8], "win_rate": r[9],
+                "dsr": r[10], "alpha": r[11], "ir": r[12], "beta": r[13],
+                "equity": r[14], "return_pct": r[15],
+                "days": r[16], "errors": r[17], "elapsed": r[18], "at": r[19],
+            })
+        return _api_response(data=result)
     except Exception as e:
         return _api_response(error=str(e))
 

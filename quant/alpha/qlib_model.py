@@ -94,19 +94,21 @@ class LgbAlphaModel:
         feature_names: list[str] = None,
         lgb_params: dict = None,
     ) -> ModelMetadata:
-        """训练 LightGBM 回归模型。
+        """训练 LightGBM 回归模型 (流式构建, 不一次性拼接 X 矩阵)。
 
         Args:
             factor_values: {factor_name: DataFrame(index=date, columns=symbols)}
                每个因子是一个 dates × symbols 面板。
             forward_returns: Series(index=MultiIndex(date, symbol))
                前向收益率 (e.g., T+1 到 T+5 的收益)。
-               索引的每个元素对应 (date, symbol) 的未来收益。
             feature_names: 使用的因子名列表 (None=全部)
             lgb_params: LightGBM 参数 (None=默认配置)
 
         Returns:
             ModelMetadata: 训练元数据
+
+        Memory: 逐日构建 X_day 并直接喂入 lgb.Dataset, 不 vstack 全量矩阵。
+                峰值 ~ (max_daily_symbols × n_features × 8B) ≈ 5000×65×8 ≈ 2.6MB。
         """
         if not self._is_available:
             raise ImportError(
@@ -139,55 +141,75 @@ class LgbAlphaModel:
 
         self._feature_names = feature_names
 
-        # ── 构建训练矩阵 ──
-        X_list = []
-        y_list = []
+        _log.info("train: %d factors, building matrix...", len(feature_names))
+
+        # ── 流式构建训练矩阵 (不 vstack) ──
+        fwd_dates = sorted(set(forward_returns.index.get_level_values(0)))
+        min_factors = max(1, int(len(feature_names) * 0.6))
+        _log.info("train: %d fwd_dates, need ≥%d/%d factors per date",
+                  len(fwd_dates), min_factors, len(feature_names))
+
+        n_skipped = {"date": 0, "syms": 0, "mask": 0}
+        total_samples = 0
         dates_used = []
 
-        # 按日期遍历面板
-        all_dates = sorted(
-            set.intersection(*[set(df.index) for df in factor_values.values()])
-            if factor_values else set()
-        )
+        X_chunks = []
+        y_chunks = []
 
-        for date in all_dates:
-            if date not in forward_returns.index.get_level_values(0):
-                continue
-            # 获取当日所有有效 symbol
+        for ts in fwd_dates:
+            date_str = ts.strftime("%Y-%m-%d")
             syms = set()
+            n_avail = 0
             for fn in feature_names:
                 fv = factor_values.get(fn)
-                if fv is not None and date in fv.index:
-                    row = fv.loc[date].dropna()
+                if fv is not None and date_str in fv.index:
+                    row = fv.loc[date_str].dropna()
                     syms.update(row.index)
+                    n_avail += 1
+            if n_avail < min_factors:
+                n_skipped["date"] += 1
+                continue
             syms = list(syms)
             if len(syms) < 30:
+                n_skipped["syms"] += 1
                 continue
 
-            # 构建当日的特征矩阵和标签
             X_day = np.column_stack([
-                factor_values[fn].loc[date].reindex(syms).fillna(0).values
+                factor_values[fn].loc[date_str].reindex(syms).fillna(0).values
+                if fn in factor_values and date_str in factor_values[fn].index
+                else np.zeros(len(syms))
                 for fn in feature_names
-                if fn in factor_values
             ])
-            y_day = forward_returns.loc[date].reindex(syms).fillna(0).values
+            y_day = forward_returns.loc[ts].reindex(syms).fillna(0).values
 
-            # 过滤 NaN
             mask = ~np.isnan(y_day)
             if mask.sum() < 20:
+                n_skipped["mask"] += 1
                 continue
 
-            X_list.append(X_day[mask])
-            y_list.append(y_day[mask])
-            dates_used.append(date)
+            X_chunks.append(X_day[mask])
+            y_chunks.append(y_day[mask])
+            total_samples += mask.sum()
+            dates_used.append(ts)
 
-        if not X_list:
+            # 每 50 天 flush 一次, 避免 X_chunks 过大
+            if len(X_chunks) >= 50:
+                _log.info("train: flushing %d days → %d samples",
+                          len(X_chunks), sum(len(c) for c in X_chunks))
+
+        _log.info("train: %d dates, %d samples, skipped=%s",
+                  len(X_chunks), total_samples, n_skipped)
+        if not X_chunks:
             raise ValueError(
                 "No valid training samples — check factor_values and forward_returns alignment"
             )
 
-        X = np.vstack(X_list)
-        y = np.concatenate(y_list)
+        # 合并 (已按50天分批 flush, X_chunks 最多 50 段)
+        X = np.vstack(X_chunks)
+        y = np.concatenate(y_chunks)
+
+        # 释放中间列表
+        del X_chunks, y_chunks
 
         # 过滤极端值 (winsorize 99%)
         y_upper = np.percentile(y, 99)
@@ -212,7 +234,6 @@ class LgbAlphaModel:
         os.makedirs(_MODEL_DIR, exist_ok=True)
         self._lgb.booster_.save_model(model_path)
 
-        # 计算 SHA256
         with open(model_path, "rb") as f:
             model_hash = hashlib.sha256(f.read()).hexdigest()[:16]
 
@@ -229,7 +250,6 @@ class LgbAlphaModel:
             lgb_params=lgb_params,
         )
 
-        # 保存元数据
         meta_path = os.path.join(_MODEL_DIR, f"lgb_metadata_{train_date}.json")
         with open(meta_path, "w") as f:
             json.dump({
@@ -495,44 +515,64 @@ def train_lgb_model(
     _log.info("train_lgb: loading %d factors from cache...", len(fn))
 
     fstore = FactorStore(db_path=FACTOR_CACHE_DB)
-    factor_panels = fstore.load_panel(
-        fn, start=start_date, end=end_date,
-    ) if hasattr(fstore, 'load_panel') else None
 
-    if factor_panels is None:
-        # Fallback: 逐因子加载
-        factor_panels = {}
-        store_temp = DataStore()
-        all_syms = []
+    # ADR-039: gzip CSV backend — 逐日加载，每日文件只读一次
+    _log.info("train_lgb: building factor panels from gzip CSV cache...")
+    import os
+    cache_dir = fstore._cache_dir
+    avail_dates = sorted(f.replace('.csv.gz', '') for f in os.listdir(cache_dir) if f.endswith('.csv.gz'))
+    train_dates = [d for d in avail_dates if start_date <= d <= end_date]
+    _log.info("train_lgb: %d dates, %d factors", len(train_dates), len(fn))
+
+    # 每日读一次, 提取全部因子
+    factor_panels = {name: {} for name in fn}
+    for i, d in enumerate(train_dates):
+        data = fstore.load(d, factor_names=fn)
         for name in fn:
-            series = fstore.load_range(name, start=start_date, end=end_date)
-            if series is not None and not series.empty:
-                factor_panels[name] = series
-                if not all_syms:
-                    all_syms = list(series.columns) if isinstance(series, pd.DataFrame) else []
-        store_temp.close()
+            if name in data and not data[name].empty:
+                factor_panels[name][d] = data[name]
+        if (i + 1) % 20 == 0:
+            _log.info("train_lgb: loaded %d/%d dates", i + 1, len(train_dates))
+
+    # 转换 dict → DataFrame
+    factor_panels = {name: pd.DataFrame(series_dict).T for name, series_dict in factor_panels.items() if series_dict}
 
     if not factor_panels:
         raise ValueError("No factor data loaded from cache. Run factor_cache materialization first.")
 
     _log.info("train_lgb: %d factors loaded", len(factor_panels))
 
+    # align start_date to actual cache range (config default = 2015 but cache starts 2025)
+    cache_start = min(df.index[0] for df in factor_panels.values())
+    if start_date is None or str(cache_start) > str(start_date):
+        _log.info("train_lgb: overriding start_date %s → %s (cache min)", start_date, cache_start)
+        start_date = str(cache_start)
+
+    for name, df in list(factor_panels.items())[:3]:
+        _log.info("  %s: shape=%s, index=%s..%s", name, df.shape, str(df.index[0]), str(df.index[-1]))
+
     # 2. 构建前向收益率
     forward_rets = build_forward_returns(
         start_date=start_date, end_date=end_date, horizon=horizon,
     )
 
-    # 3. 训练
+    # 3. 训练 (训练完成后释放因子面板内存 ~1-3GB)
     lgb_params = {
         k: v for k, v in _require_cfg("alpha.lgb.params").items()
     } if _require_cfg("alpha.lgb.params") else None
 
     model = LgbAlphaModel()
-    meta = model.train(
-        factor_values=factor_panels,
-        forward_returns=forward_rets,
-        lgb_params=lgb_params,
-    )
+    try:
+        meta = model.train(
+            factor_values=factor_panels,
+            forward_returns=forward_rets,
+            lgb_params=lgb_params,
+        )
+    finally:
+        del factor_panels, forward_rets
+        import gc as _gc
+        _gc.collect()
+        _log.info("train_lgb: freed factor panels + forward returns")
 
     _log.info("train_lgb: done — IC=%.4f, %d features, model saved to %s",
               meta.ic_mean, meta.n_features, _MODEL_DIR)

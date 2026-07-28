@@ -4,6 +4,32 @@
 > 避免重复踩坑、重新讨论已否决方案、遗漏已有设计。
 
 
+
+## test-v247~248 (2026-07-28 晚): UI 对齐 + DSR + sleeve 回退
+
+### test-v247: 因子页面 UI 对齐
+- 因子 KPI 标签: 候选/观察/退役/淘汰/待评估 → 观察中/待评估/归档 (4态)
+- 热力图计数: 硬编码64 → 动态获取实际因子数
+- JS 字段: n_candidate/n_monitoring/n_retired/n_rejected → n_probation/n_evaluating/n_archived
+
+### test-v248: DSR + 回测历史 + sleeve 修复
+- 回测指标新增 DSR (Deflated Sharpe Ratio, Bailey & De Prado 2014)
+- backtest_runs 表新增 dsr 列
+- 新增 /api/backtest/history API
+- 回测 combine_mode 从 ic_weighted → None(用config sleeve)
+  - 原因: IC 120天窗口噪声大, ic_weighted Sharpe=-0.026 vs sleeve Sharpe=0.67
+  - 待因子缓存扩展到2020年后 ic_weighted 可重新启用
+- qlib_model.py: 修复 train_lgb_model() 兼容 gzip CSV FactorStore
+
+### 待执行
+- 因子缓存扩展到 2020-01-01 (一次性, ~2-4h)
+- LightGBM 模型训练 (需 lightgbm 包)
+- 回测 sleeve 模式重跑验证
+
+### 因子状态 (test-v246)
+- active=21, probation=15, evaluating=9, archived=34, total=79
+
+
 ## test-v246 (2026-07-28): ADR-035~041 全量会话 — 架构审计+因子重构+状态机+参数对齐
 
 ### 架构分析 (ADR-035)

@@ -3,8 +3,8 @@
   "display_name": "financial_anomaly",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0008,
-  "icir_12m": 0.0177,
+  "ic_mean_12m": 0.0069,
+  "icir_12m": 0.1812,
   "last_evaluated": "auto",
-  "n_obs": 64
+  "n_obs": 130
 }

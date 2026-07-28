@@ -144,6 +144,8 @@ function renderHeatmap(fd) {
   const el = document.getElementById('heatmap-grid');
   if (!el || !fd) return;
   const factors = buildFactorObjs(fd).filter(f => f.ic != null).sort((a, b) => Math.abs(b.ic) - Math.abs(a.ic));
+  // Update count dynamically
+  setText('meta-heatmap', factors.length + ' 因子');
   if (!factors.length) { el.innerHTML = '<div class="empty" style="color:var(--text3);font-size:12px;text-align:center;padding:20px">暂无 IC 数据</div>'; return; }
   const maxAbsIC = Math.max(0.001, ...factors.map(f => Math.abs(f.ic)));
   el.innerHTML = factors.map(f => {
@@ -295,14 +297,12 @@ function renderFactorKPIs(fd) {
   const absICs = ics.map(Math.abs);
   const meanAbsIC = absICs.length ? absICs.reduce((a,b)=>a+b)/absICs.length : 0;
   const meanIR = fd.ic_ir?.length ? fd.ic_ir.reduce((a,b)=>a+Math.abs(b))/fd.ic_ir.length : 0;
-  setText('kpi-ntotal', fd.n_total ?? ((fd.n_registered||0)+(fd.n_active||0)+(fd.n_candidate||0)+(fd.n_rejected||0)+(fd.n_retired||0)));
-  setText('kpi-nregistered', fd.n_registered ?? 0);
+  setText('kpi-ntotal', fd.n_total ?? ((fd.n_active||0)+(fd.n_probation||0)+(fd.n_evaluating||0)+(fd.n_archived||0)+(fd.n_registered||0)));
   setText('kpi-nactive', fd.n_active ?? 0);
-  setText('kpi-ncandidate', fd.n_candidate ?? 0);
-  setText('kpi-nrejected', fd.n_rejected ?? 0);
-  setText('kpi-nretired', fd.n_retired ?? 0);
-  setText('kpi-nmonitoring', fd.n_monitoring ?? 0);
-  setText('kpi-nfactors', fd.n_evaluated ?? 0);
+  setText('kpi-nprobation', fd.n_probation ?? fd.n_monitoring ?? 0);
+  setText('kpi-nevaluating', fd.n_evaluating ?? fd.n_candidate ?? 0);
+  setText('kpi-narchived', fd.n_archived ?? (fd.n_retired||0)+(fd.n_rejected||0));
+  setText('kpi-nevaluated', fd.n_evaluated ?? fd.n_factors ?? 0);
   setText('kpi-ic-mean', fmtNum(meanAbsIC, 4));
   setText('kpi-ic-ir', fmtNum(meanIR, 3));
 }

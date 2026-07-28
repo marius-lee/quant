@@ -3,8 +3,8 @@
   "display_name": "fund_flow_3m",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0231,
-  "icir_12m": 0.3604,
+  "ic_mean_12m": 0.004,
+  "icir_12m": 0.09,
   "last_evaluated": "auto",
-  "n_obs": 38
+  "n_obs": 130
 }

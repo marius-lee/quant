@@ -3,8 +3,8 @@
   "display_name": "abn_turnover",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0385,
-  "icir_12m": 0.243,
+  "ic_mean_12m": 0.0273,
+  "icir_12m": 0.1462,
   "last_evaluated": "auto",
-  "n_obs": 25
+  "n_obs": 130
 }

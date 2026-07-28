@@ -60,8 +60,9 @@ class FactorStore:
                     factor_names: list[str],
                     symbols: list[str],
                     store: "DataStore" = None,
-                    force: bool = False) -> dict:
-        """批量物化因子值: 预加载数据 + 原语, 逐日计算全部因子, 写入 gzip CSV。
+                    force: bool = False,
+                    chunk_days: int = 200) -> dict:
+        """批量物化因子值: 分块加载数据 + 原语, 逐日计算全部因子, 写入 gzip CSV。
 
         Args:
             date_range: 交易日列表
@@ -69,14 +70,21 @@ class FactorStore:
             symbols: 股票池
             store: DataStore 实例
             force: True 时删除旧数据重新物化
+            chunk_days: 每块最大交易日数 (控制内存, 默认200天=~5GB/块)
 
         Returns:
             dict: {n_dates, n_factors, n_symbols, n_rows, elapsed_sec}
+
+        Memory: 一次性加载 2020→now (~1590天) 需 ~25GB, 分块200天 (~5GB/块)
+                共 ~8 块, 每块完成后释放该块内存。
         """
         import time as _time
+        import gc as _gc
         from quant.factor.compute._dispatch import compute_all_factors
         from quant.factor.compute._primitives import precompute_primitives
         from quant.data.store import DataStore
+        from quant.factor.windows import max_factor_calendar_days
+        from quant.config.constants import _require_cfg
 
         if store is None:
             store = DataStore()
@@ -105,52 +113,12 @@ class FactorStore:
             return {"n_dates": 0, "n_factors": 0, "n_symbols": 0, "n_rows": 0,
                     "elapsed_sec": 0, "skipped": True}
 
-        # 0.5 清理孤儿文件: 因子退役后删除无用的旧数据文件
-        if not force and factor_names:
-            existing_factors = set()
-            for f in os.listdir(self._cache_dir):
-                if f.endswith('.csv.gz'):
-                    try:
-                        self._scan_file_factors(f)
-                        existing_factors.update(self._scan_file_factors(f))
-                    except Exception:
-                        pass
+        # 0.4 确定分块策略: 每块最多 chunk_days 个交易日
+        eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(None))
+        dates = sorted(date_range)
+        n_total = len(dates)
+        chunk_size = chunk_days
 
-        # 1. 预加载全部行情数据
-        start_dt = date_range[0]
-        end_dt = date_range[-1]
-        from quant.factor.windows import max_factor_calendar_days
-        from quant.config.constants import _require_cfg
-        _eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(None))
-        full_start = (pd.Timestamp(start_dt) - pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
-        data_full = store.get_daily(symbols, start=full_start, end=end_dt)
-        _log.info("factor_cache: loaded %d days × %d symbols data", len(data_full), len(symbols))
-
-        # 2. 预计算共享原语
-        prims = precompute_primitives(data_full)
-        _log.info("factor_cache: primitives ready (%d tables)", len(prims))
-
-        # 2.25 加载沪深300基准收益
-        try:
-            bm_ret = store.get_benchmark("000300", start=full_start)
-            if not bm_ret.empty:
-                prims["benchmark_ret"] = bm_ret
-                _log.info("factor_cache: benchmark_ret loaded (%d dates)", len(bm_ret))
-        except Exception as _e:
-            _log.warning("factor_cache: benchmark_ret not available (%s)", _e)
-
-        # 2.5 预加载 ztd 缓存
-        preload_ztd_cache(date_range, symbols)
-        _log.info("factor_cache: ztd cache preloaded (%d dates × %d symbols)",
-                  len(date_range), len(symbols))
-
-        # 2.6 预加载 fundamentals
-        _store_fundamentals = {}
-        for date_str in date_range:
-            _store_fundamentals[date_str] = store.get_fundamentals(symbols, date=date_str)
-        _log.info("factor_cache: fundamentals ready (%d dates)", len(_store_fundamentals))
-
-        # 3. 逐日计算 + 写入
         if force:
             for f in os.listdir(self._cache_dir):
                 if f.endswith('.csv.gz'):
@@ -158,64 +126,116 @@ class FactorStore:
 
         total_rows = 0
         n_dates_computed = 0
+        n_chunks = (n_total + chunk_size - 1) // chunk_size
 
-        for date_str in date_range:
-            # 查该日期已有因子
-            existing = self._get_existing_factors(date_str)
-            missing = [f for f in factor_names if f not in existing]
-            if not missing:
-                continue
+        _log.info("factor_cache: %d total dates → %d chunks (≤%d dates/chunk, %dd lookback)",
+                  n_total, n_chunks, chunk_size, eff_days)
 
+        for ci in range(n_chunks):
+            chunk_start_idx = ci * chunk_size
+            chunk_end_idx = min(chunk_start_idx + chunk_size, n_total)
+            chunk_dates = dates[chunk_start_idx:chunk_end_idx]
+            chunk_start_dt = chunk_dates[0]
+            chunk_end_dt = chunk_dates[-1]
+
+            _log.info("factor_cache: chunk %d/%d — %s → %s (%d dates)",
+                      ci + 1, n_chunks, chunk_start_dt, chunk_end_dt, len(chunk_dates))
+
+            t_chunk = _time.time()
+
+            # 分块加载: 只加载该块数据 + 回顾窗
+            data_start = (pd.Timestamp(chunk_start_dt) - pd.Timedelta(days=eff_days)).strftime("%Y-%m-%d")
+            data_full = store.get_daily(symbols, start=data_start, end=chunk_end_dt)
+            _log.info("factor_cache: chunk %d/%d — loaded %d days × %d symbols",
+                      ci + 1, n_chunks, len(data_full), len(symbols))
+
+            # 分块预计算原语
+            prims = precompute_primitives(data_full)
+
+            # 基准收益
             try:
-                ts = pd.Timestamp(date_str)
-                if ts not in data_full.index:
+                bm_ret = store.get_benchmark("000300", start=data_start)
+                if not bm_ret.empty:
+                    prims["benchmark_ret"] = bm_ret
+            except Exception as _e:
+                _log.warning("factor_cache: benchmark_ret not available (%s)", _e)
+
+            # ztd 缓存 (按块日期)
+            preload_ztd_cache(chunk_dates, symbols)
+
+            # fundamentals (按块日期)
+            chunk_fundamentals = {}
+            for date_str in chunk_dates:
+                chunk_fundamentals[date_str] = store.get_fundamentals(symbols, date=date_str)
+
+            # 逐日计算
+            chunk_rows = 0
+            chunk_dates_done = 0
+            for date_str in chunk_dates:
+                existing = self._get_existing_factors(date_str)
+                missing = [f for f in factor_names if f not in existing]
+                if not missing:
                     continue
-                day_data = data_full.loc[:ts]
-                if day_data.empty:
+
+                try:
+                    ts = pd.Timestamp(date_str)
+                    if ts not in data_full.index:
+                        continue
+                    day_data = data_full.loc[:ts]
+                    if day_data.empty:
+                        continue
+                except Exception:
                     continue
-            except Exception:
-                continue
 
-            fv = compute_all_factors(
-                day_data, date_str,
-                primitives=prims,
-                fundamentals=_store_fundamentals.get(date_str),
-                factor_names=missing,
-                status_filter=None,
-                factor_fail_fast=False,
-            )
+                fv = compute_all_factors(
+                    day_data, date_str,
+                    primitives=prims,
+                    fundamentals=chunk_fundamentals.get(date_str),
+                    factor_names=missing,
+                    status_filter=None,
+                    factor_fail_fast=False,
+                )
 
-            # 写入 gzip CSV
-            lines = []
-            for fname, series in fv.items():
-                if not isinstance(series, pd.Series) or series.dropna().empty:
-                    continue
-                for sym, val in series.dropna().items():
-                    lines.append(f"{sym},{fname},{val:.6f}")
+                # 写入 gzip CSV
+                lines = []
+                for fname, series in fv.items():
+                    if not isinstance(series, pd.Series) or series.dropna().empty:
+                        continue
+                    for sym, val in series.dropna().items():
+                        lines.append(f"{sym},{fname},{val:.6f}")
 
-            if lines:
-                path = self._path(date_str)
-                # 如果已有数据，追加（合并去重）
-                if os.path.exists(path) and existing:
-                    existing_lines = self._read_raw_lines(date_str)
-                    existing_set = set(existing_lines)
-                    for line in lines:
-                        if line not in existing_set:
-                            existing_lines.append(line)
-                    lines = existing_lines
+                if lines:
+                    path = self._path(date_str)
+                    if os.path.exists(path) and existing:
+                        existing_lines = self._read_raw_lines(date_str)
+                        existing_set = set(existing_lines)
+                        for line in lines:
+                            if line not in existing_set:
+                                existing_lines.append(line)
+                        lines = existing_lines
 
-                raw = "\n".join(lines).encode()
-                compressed = gzip.compress(raw, compresslevel=6)
-                with open(path, 'wb') as f:
-                    f.write(compressed)
-                total_rows += len(lines)
-            n_dates_computed += 1
+                    raw = "\n".join(lines).encode()
+                    compressed = gzip.compress(raw, compresslevel=6)
+                    with open(path, 'wb') as f:
+                        f.write(compressed)
+                    chunk_rows += len(lines)
+                chunk_dates_done += 1
+
+            # 释放该块内存
+            del data_full, prims, chunk_fundamentals
+            _gc.collect()
+
+            t_chunk_elapsed = _time.time() - t_chunk
+            total_rows += chunk_rows
+            n_dates_computed += chunk_dates_done
+            _log.info("factor_cache: chunk %d/%d done — %d rows in %.1fs",
+                      ci + 1, n_chunks, chunk_rows, t_chunk_elapsed)
 
         elapsed = _time.time() - t0
         _log.info("factor_cache: materialized %d dates × %d factors × %d symbols → %d rows in %.1fs",
                   n_dates_computed, len(factor_names), len(symbols), total_rows, elapsed)
 
-        self._log_materialization(start_dt, end_dt, len(factor_names), len(symbols),
+        self._log_materialization(dates[0], dates[-1], len(factor_names), len(symbols),
                                   n_dates_computed, total_rows, elapsed, force)
 
         size_mb = sum(os.path.getsize(os.path.join(self._cache_dir, f))

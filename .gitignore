@@ -10,38 +10,26 @@ logs/
 .idea/
 *.swp
 *.swo
+.war
+*.bak*
 
 # 敏感信息 (凭证)
 .env
-
-# 大型二进制 (数据库/模型, 不跟踪)
-quant/data/market.db
-quant/quant/data/market.db-shm
-quant/quant/data/market.db-wal
-data/results.db
-data/monitor.db
-data/monitor.db-shm
-data/monitor.db-wal
-data/live.db
-data/trades.db
-data/trades.db-shm
-data/trades.db-wal
-.venv-tushare/
-data/models/
-market.db
-data/metrics.db
-
-# Redis 持久化文件
-dump.rdb
-appendonly.aof
- data/*.db
- data/*.db-shm
- data/*.db-wal
 
 # 数据库文件 (不跟踪)
 *.db
 *.db-shm
 *.db-wal
-factor_cache/*.csv.gz
-factor_cache/*.jsonl
+
+# 因子缓存数据 (不跟踪)
 quant/data/factor_cache/
+
+# 模型二进制 (不跟踪)
+quant/data/models/
+
+# Redis 持久化文件
+dump.rdb
+appendonly.aof
+
+# Python venv
+.venv-tushare/

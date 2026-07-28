@@ -192,6 +192,7 @@ def compute_str(data, date, window=20):
         f"SELECT symbol, total_mv FROM stocks WHERE symbol IN ({_ph2}) AND total_mv IS NOT NULL",
         _syms2
     ).fetchall()
+    conn2.close()
     mv_map = {r[0]: r[1] for r in rows}
     log_mv = pd.Series({s: np.log(mv_map[s]) for s in raw.index if s in mv_map})
     common = raw.index.intersection(log_mv.index)
@@ -232,6 +233,7 @@ def compute_abn_turnover(data, date, window=20):
         SELECT symbol, total_mv, industry FROM stocks
         WHERE symbol IN ({_ph})
     """, syms).fetchall()
+    conn.close()
 
     mv_map = {r[0]: r[1] for r in meta_rows if r[1]}
     ind_map = {r[0]: r[2] for r in meta_rows if r[2]}
@@ -291,6 +293,8 @@ def _get_limit_pool(date_str: str, conn=None):
     df_down = pd.read_sql_query(
         "SELECT * FROM limit_down_pool WHERE date=?", conn, params=(date_str,)
     )
+    if own:
+        conn.close()
     return df_up, df_down
 
 
@@ -520,6 +524,7 @@ def compute_short_interest(data, date, window=20):
         "AND margin_total > 0",
         (str(date)[:10],)
     ).fetchall()
+    conn.close()
     for sym, sb, mt in rows:
         if sym in symbols and mt > 0:
             result[sym] = float(sb) / float(mt) if sb else 0
@@ -543,6 +548,7 @@ def compute_fund_flow_3m(data, date, window=60):
         "ORDER BY symbol, report_date DESC".format(window),
         (str(date)[:10],)
     ).fetchall()
+    conn.close()
     if rows:
         import pandas as _pd4
         df = _pd4.DataFrame(rows, columns=["symbol", "change_ratio"])

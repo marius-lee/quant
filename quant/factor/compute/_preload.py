@@ -45,6 +45,9 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
     """
     if conn is None:
         conn = DatabaseManager.market()
+        _own_conn = True
+    else:
+        _own_conn = False
 
     result = {}
     ph = ",".join("?" * len(symbols))
@@ -154,4 +157,6 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
         result["fund_flow"] = pd.DataFrame(columns=["symbol", "date", "main_net_inflow", "super_large_net_inflow", "main_net_ratio"]).set_index("symbol")
 
+    if _own_conn:
+        conn.close()
     return result

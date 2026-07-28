@@ -47,6 +47,7 @@ def preload_ztd_cache(dates: list, all_symbols: list):
             ORDER BY symbol, date""",
         [earliest.strftime("%Y-%m-%d"), latest.strftime("%Y-%m-%d")] + list(all_symbols)
     ).fetchall()
+    conn.close()
 
     if not rows:
         _log.warning("preload_ztd_cache: no rows for %d symbols x %d days",

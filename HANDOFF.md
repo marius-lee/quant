@@ -5,6 +5,54 @@
 
 
 
+## test-v249 (2026-07-28): 因子缓存分块物化 + LGB 内存优化
+
+### 背景
+用户执行"因子缓存扩展到 2020-01-01"和"LightGBM 模型训练"时, 内存飙升至 30+GB,
+系统强制终止进程。
+
+### 根因分析
+
+#### 因子缓存扩展 (materialize, ~25GB → 5GB)
+- `data_full`: 1590天×5208股×7字段 ≈ 1.5GB
+- `precompute_primitives()`: 183 个 DataFrame × 1590×5208 float64 ≈ 18GB
+- `get_fundamentals()` 逐日缓存 ≈ 2GB
+- `_query_cache` 跨块累积 (DataStore 内部) ≈ 3-5GB
+- **修复**: 分块处理, 默认 `chunk_days=200`
+  - 每块 ~200 交易日 + 378 日回顾窗, 独立加载/预计算/物化
+  - 每块后 `del` + `gc.collect()` + `_query_cache.clear()`
+  - 峰值 ~5GB, 与现有 384 天运行窗口相当
+
+#### LightGBM 训练 (train_lgb_model, ~8GB → 训练后释放)
+- 65 个因子面板 (dates × symbols) ≈ 1.3GB
+- X 训练矩阵 (np.vstack) ≈ 1.3GB
+- LGB 内部分配 ≈ 2-5GB
+- **修复**: 训练完成后 `try/finally` 释放 `factor_panels` + `forward_rets`
+
+### 附带修复
+- `preload_ztd_cache()`: `DatabaseManager.market()` 连接未关闭 → 加 `conn.close()`
+- `materialize()` step 0.3: `DatabaseManager.market()` 连接未关闭 → 加 `mconn.close()`
+- 启动时 `PRAGMA wal_checkpoint(TRUNCATE)` 清理前次崩溃残留 WAL
+- `DataStore` 内部创建后结束 `store.close()`
+- 测试 fixture `stub_market_conn`: 共享连接 → 每次新建连接 (对齐生产语义)
+
+### 执行结果
+第一轮: 5/8 块完成 (2020-01-02→2024-10-22, ~147M 行, 1423 文件), 第 6 块因 `_query_cache`
+泄漏导致 "disk I/O error" 崩溃。修补后重新运行即自动续跑 (已完成文件跳过)。
+
+### 变更文件
+| 文件 | 改动 |
+|------|------|
+| `quant/factor/store.py` | 分块物化 + WAL 清理 + conn 关闭 + 缓存清理 |
+| `quant/alpha/qlib_model.py` | 训练后释放因子面板内存 |
+| `quant/factor/compute/price/_alternative.py` | preload_ztd_cache conn.close() |
+| `test/test_v305_factor_cache_trailing_slice.py` | stub_market_conn 每次新建连接 |
+
+### 测试
+207 passed (4 个已知失败: optuna 未安装 + hmmlearn 未安装)
+
+
+
 ## test-v247~248 (2026-07-28 晚): UI 对齐 + DSR + sleeve 回退
 
 ### test-v247: 因子页面 UI 对齐

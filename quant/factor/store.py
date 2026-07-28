@@ -86,8 +86,16 @@ class FactorStore:
         from quant.factor.windows import max_factor_calendar_days
         from quant.config.constants import _require_cfg
 
+        _store_owned = store is None
         if store is None:
             store = DataStore()
+
+        # 清理残留 WAL, 防止前次崩溃导致 "disk image is malformed"
+        try:
+            mconn = store._connect()
+            mconn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
 
         t0 = _time.time()
 
@@ -104,6 +112,10 @@ class FactorStore:
         valid_syms = set(r[0] for r in mconn.execute(
             "SELECT DISTINCT symbol FROM stocks"
         ).fetchall())
+        try:
+            mconn.close()
+        except Exception:
+            pass  # monkeypatched shared conn in tests
         symbols_filtered = [s for s in symbols if s in valid_syms]
         _log.info("factor_cache: symbol filter %d → %d (stocks table)",
                   len(symbols), len(symbols_filtered))
@@ -221,8 +233,10 @@ class FactorStore:
                     chunk_rows += len(lines)
                 chunk_dates_done += 1
 
-            # 释放该块内存
+            # 释放该块内存（含 DataStore 查询缓存）
             del data_full, prims, chunk_fundamentals
+            if hasattr(store, '_query_cache'):
+                store._query_cache.clear()
             _gc.collect()
 
             t_chunk_elapsed = _time.time() - t_chunk
@@ -237,6 +251,13 @@ class FactorStore:
 
         self._log_materialization(dates[0], dates[-1], len(factor_names), len(symbols),
                                   n_dates_computed, total_rows, elapsed, force)
+
+        # 关闭内部创建的 DataStore, 释放 SQLite 连接
+        if _store_owned:
+            try:
+                store.close()
+            except Exception:
+                pass
 
         size_mb = sum(os.path.getsize(os.path.join(self._cache_dir, f))
                       for f in os.listdir(self._cache_dir) if f.endswith('.csv.gz')) / 1024 / 1024

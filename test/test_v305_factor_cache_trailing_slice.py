@@ -138,27 +138,44 @@ def _seed_market_db(store: DataStore, dates: pd.DatetimeIndex, data: pd.DataFram
 
 @pytest.fixture
 def stub_market_conn(monkeypatch):
-    """DatabaseManager.market() -> 内存 sqlite。
+    """DatabaseManager.market() -> 内存 sqlite (每次新建连接)。
 
     覆盖两条独立 DB 通路 (均不经 DataStore 注入):
       - preload_aux_data (aux["stocks"], zt/dt_streak 板块阈值必需)
       - abn_turnover 的 stocks meta 查询 (total_mv NULL -> common<30 ->
         早退路径, 跳过 sklearn OLS, 仍产 zscore(-ln_turnover) 行)
     daily 空表供 preload_ztd_cache 查询 (no-rows 警告路径, 不抛错)。
-    """
-    stub = sqlite3.connect(":memory:")
-    stub.execute("CREATE TABLE stocks (symbol TEXT PRIMARY KEY, name TEXT, "
-                 "market TEXT, list_date TEXT, industry TEXT, total_mv REAL)")
-    stub.executemany(
-        "INSERT INTO stocks(symbol, name, market, list_date, industry, total_mv) "
-        "VALUES (?, ?, ?, ?, ?, NULL)",
-        [(s, f"MOCK{i}", "SZ" if i % 2 else "SH", "2020-01-01", None)
-         for i, s in enumerate(SYMS)])
-    stub.execute("CREATE TABLE daily (symbol TEXT, date TEXT, volume REAL)")
-    stub.commit()
-    monkeypatch.setattr(DatabaseManager, "market", staticmethod(lambda: stub))
-    yield stub
-    stub.close()
+
+    注意: 每次 DatabaseManager.market() 调用返回新连接 (生产语义)。
+    调用方自行 close(), 互不干扰。"""
+    # Use a factory that returns a fresh in-memory copy each time
+    def _make_stub():
+        stub = sqlite3.connect(":memory:")
+        stub.execute("CREATE TABLE stocks (symbol TEXT PRIMARY KEY, name TEXT, "
+                     "market TEXT, list_date TEXT, industry TEXT, total_mv REAL)")
+        stub.executemany(
+            "INSERT INTO stocks(symbol, name, market, list_date, industry, total_mv) "
+            "VALUES (?, ?, ?, ?, ?, NULL)",
+            [(s, f"MOCK{i}", "SZ" if i % 2 else "SH", "2020-01-01", None)
+             for i, s in enumerate(SYMS)])
+        stub.execute("CREATE TABLE daily (symbol TEXT, date TEXT, volume REAL)")
+        stub.commit()
+        return stub
+
+    # Track stubs so we can close them all at test end
+    _stubs = []
+    def _market_factory():
+        s = _make_stub()
+        _stubs.append(s)
+        return s
+
+    monkeypatch.setattr(DatabaseManager, "market", staticmethod(_market_factory))
+    yield
+    for s in _stubs:
+        try:
+            s.close()
+        except Exception:
+            pass
 
 
 def test_materialize_window_factors_produce_rows(tmp_path, stub_market_conn):

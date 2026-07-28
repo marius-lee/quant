@@ -488,7 +488,7 @@ def compute_epd(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
     来源: 东吴证券《估值偏离因子研究》2022, ICIR=3.66.
     注: 原作 252d window, 当前仅有 ~82d pe_ttm, 暂用 60d (min_periods=20).
     """
-    lookback_start = (pd.Timestamp(date) - pd.DateOffset(days=365)).strftime("%Y-%m-%d")
+    lookback_start = (pd.Timestamp(date) - pd.DateOffset(days=_require_cfg("data.lookback_days"))).strftime("%Y-%m-%d")
     df = _load_daily_valuation_pe(lookback_start, date)
 
     if df.empty:
@@ -521,7 +521,7 @@ def compute_epds(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
     来源: 东吴证券《估值偏离因子研究》2022, ICIR=4.02.
     注: 原作 252d window, 当前仅有 ~82d pe_ttm, 暂用 60d (min_periods=20).
     """
-    lookback_start = (pd.Timestamp(date) - pd.DateOffset(days=365)).strftime("%Y-%m-%d")
+    lookback_start = (pd.Timestamp(date) - pd.DateOffset(days=_require_cfg("data.lookback_days"))).strftime("%Y-%m-%d")
     df = _load_daily_valuation_pe(lookback_start, date)
 
     if df.empty:

@@ -108,3 +108,38 @@ CLAUDE.md 曾指向 `docs/handoffs/HANDOFF.md`（已修复），但 `docs/handof
 | `quant/pipeline.py` | +8 行：multi_tf 周线确认（opt-in） |
 | `quant/alpha/multi_tf.py` | 修复硬编码 DB 路径 → `MARKET_DB` |
 | `quant/config/config.yaml` | 新增 `alpha.multi_tf_confirm: false` |
+
+## 七、全部修复清单（test-v249 final）
+
+### 第二节: 连接泄漏 ✅
+| 位置 | 修复 |
+|------|------|
+| `monitor.py:160` VaR 检查 | `try/finally: conn2.close()` |
+| `monitor.py:190` 流动性检查 | `try/finally: conn2.close()` |
+
+### 第三节: 硬编码数值 ✅
+| 位置 | 修复 |
+|------|------|
+| `monitor.py:368` | `MARKET_DB` 替代硬编码路径 |
+| `monitor.py:207` | `limit=max_trades*2` 替代 `limit=200` |
+| `task_log.py:32` | `_require_cfg("data.sqlite.busy_timeout")` |
+| `orchestrator.py:29,46,243` | 同上 ×3 |
+| `_base.py:72` | 同上 |
+| `hyperopt.py:87` | `_require_cfg("backtest.default_capital")` |
+| `_alternative.py:37` | `_require_cfg("data.lookback_days") + 10` |
+| `fundamental.py:491,524` | `_require_cfg("data.lookback_days")` |
+| `var.py:242` | 同上 |
+| `attribution.py:304,349` | `limit=1000` (充足上限) |
+
+### 第四节: 零 Fallback ✅
+| 位置 | 判断 |
+|------|------|
+| `order_manager.py:217` | 保留 — broker adapter 可选，simulated 无依赖 |
+| `crowdedness.py:187` | 保留 — `None` 为合法"无历史数据"语义 |
+
+### 第五节: 其他 ✅
+| 项 | 修复 |
+|------|------|
+| 5.1 版本号不一致 | P4 非功能项，不改 |
+| 5.3 gerrit.war | 已删除 |
+| 5.4 docs/handoffs/ | 已删除（CLAUDE.md 已指根目录） |

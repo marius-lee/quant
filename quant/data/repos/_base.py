@@ -23,6 +23,7 @@ import logging
 import threading
 
 from quant.config.paths import MARKET_DB, TRADE_DB, FACTOR_CACHE_DB
+from quant.config.constants import _require_cfg
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,7 @@ def _open(full_path: str) -> sqlite3.Connection:
     c = sqlite3.connect(full_path, timeout=10)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
-    c.execute("PRAGMA busy_timeout=5000")
+    c.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
     logger.debug("DatabaseManager: opened %s", full_path)
     return c
 

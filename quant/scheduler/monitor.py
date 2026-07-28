@@ -158,29 +158,32 @@ def _run_continuous_inner(today: str):
                     syms_for_var = [p["symbol"] for p in positions[:50]]  # max 50 stocks
                     if len(syms_for_var) > 1:
                         conn2 = _get_market_conn()
-                        close_rows = conn2.execute(
-                            "SELECT symbol, date, close FROM daily WHERE symbol IN ({}) "
-                            "AND date >= date('now', '-60 days') ORDER BY date".format(
-                                ",".join("?" * len(syms_for_var))),
-                            syms_for_var
-                        ).fetchall()
-                        if close_rows:
-                            df_close = pd.DataFrame(close_rows, columns=["symbol", "date", "close"])
-                            piv = df_close.pivot(index="date", columns="symbol", values="close")
-                            rets = piv.pct_change().dropna(how="all")
-                            w = pd.Series({s: (sum(1 for p in positions if p["symbol"] == s) or 0) for s in syms_for_var})
-                            if w.sum() > 0:
-                                w = w / w.sum()
-                                common_syms = [s for s in w.index if s in rets.columns]
-                                if len(common_syms) > 1:
-                                    w_sub = w[common_syms]
-                                    cov = rets[common_syms].cov()
-                                    from quant.risk.var import compute_var
-                                    var_val = compute_var(total, w_sub, cov, confidence=var_conf)
-                                    if var_val is not None and var_val > 0:
-                                        var_pct = var_val / total * 100
-                                        if var_pct > 3.0:
-                                            alerts.append(f"VaR告警: daily VaR {var_pct:.1f}% ({var_val:,.0f})")
+                        try:
+                            close_rows = conn2.execute(
+                                "SELECT symbol, date, close FROM daily WHERE symbol IN ({}) "
+                                "AND date >= date('now', '-60 days') ORDER BY date".format(
+                                    ",".join("?" * len(syms_for_var))),
+                                syms_for_var
+                            ).fetchall()
+                            if close_rows:
+                                df_close = pd.DataFrame(close_rows, columns=["symbol", "date", "close"])
+                                piv = df_close.pivot(index="date", columns="symbol", values="close")
+                                rets = piv.pct_change().dropna(how="all")
+                                w = pd.Series({s: (sum(1 for p in positions if p["symbol"] == s) or 0) for s in syms_for_var})
+                                if w.sum() > 0:
+                                    w = w / w.sum()
+                                    common_syms = [s for s in w.index if s in rets.columns]
+                                    if len(common_syms) > 1:
+                                        w_sub = w[common_syms]
+                                        cov = rets[common_syms].cov()
+                                        from quant.risk.var import compute_var
+                                        var_val = compute_var(total, w_sub, cov, confidence=var_conf)
+                                        if var_val is not None and var_val > 0:
+                                            var_pct = var_val / total * 100
+                                            if var_pct > 3.0:
+                                                alerts.append(f"VaR告警: daily VaR {var_pct:.1f}% ({var_val:,.0f})")
+                        finally:
+                            conn2.close()
                 except Exception as e:
                     _log.debug(f"VaR check skipped (non-fatal): {type(e).__name__}")
 
@@ -188,13 +191,16 @@ def _run_continuous_inner(today: str):
             if positions:
                 try:
                     conn2 = _get_market_conn()
-                    for p in positions:
-                        row = conn2.execute(
-                            "SELECT AVG(amount) FROM daily WHERE symbol=? AND date >= date('now', '-20 days')",
-                            (p["symbol"],)
-                        ).fetchone()
-                        if row and row[0] and row[0] < liquidity_min:
-                            alerts.append(f"流动性告警: {p['symbol']} 日均成交 {row[0]:,.0f} < {liquidity_min/1e7:.0f}千万")
+                    try:
+                        for p in positions:
+                            row = conn2.execute(
+                                "SELECT AVG(amount) FROM daily WHERE symbol=? AND date >= date('now', '-20 days')",
+                                (p["symbol"],)
+                            ).fetchone()
+                            if row and row[0] and row[0] < liquidity_min:
+                                alerts.append(f"流动性告警: {p['symbol']} 日均成交 {row[0]:,.0f} < {liquidity_min/1e7:.0f}千万")
+                    finally:
+                        conn2.close()
                 except Exception as e:
                     _log.debug(f"Liquidity check skipped (non-fatal): {type(e).__name__}")
 
@@ -204,7 +210,7 @@ def _run_continuous_inner(today: str):
                 max_daily_turnover = _require_cfg("monitor.max_daily_turnover_pct")
                 from quant.execution.engine import ExecutionEngine
                 eng = ExecutionEngine()
-                today_trades = eng.get_trades(strategy="quant", limit=200)
+                today_trades = eng.get_trades(strategy="quant", limit=max_trades * 2)
                 today_cnt = sum(1 for t in today_trades if t.get("date") == today)
                 if today_cnt > max_trades:
                     alerts.append(f"交易频率告警: 今日{today_cnt}笔 > {max_trades}笔上限")
@@ -365,5 +371,6 @@ def _loop():
 def _get_market_conn():
     """获取 market.db 只读连接 (P6 辅助)."""
     import sqlite3
-    conn = sqlite3.connect(os.path.join(os.path.dirname(__file__), "..", "..", "data", "market.db"))
+    from quant.config.paths import MARKET_DB
+    conn = sqlite3.connect(MARKET_DB)
     return conn

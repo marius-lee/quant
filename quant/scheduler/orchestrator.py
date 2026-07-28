@@ -26,7 +26,7 @@ def _get_today_status(today: str) -> dict:
     """
     conn = sqlite3.connect(MARKET_DB)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=3000")
+    conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
     rows = conn.execute(
         "SELECT task_name, status FROM task_runs WHERE date=? ORDER BY id DESC",
         (today,)
@@ -43,7 +43,7 @@ def _get_today_aborted(today: str) -> dict:
     """查询今日各任务 aborted 次数 (B-23: 重试风暴抑制)."""
     conn = sqlite3.connect(MARKET_DB)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=3000")
+    conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
     rows = conn.execute(
         "SELECT task_name, COUNT(*) FROM task_runs WHERE date=? AND status='aborted' GROUP BY task_name",
         (today,)
@@ -240,7 +240,7 @@ def _check_timeouts(today: str):
     try:
         conn = sqlite3.connect(MARKET_DB)
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=3000")
+        conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
         rows = conn.execute(
             "SELECT id, task_name, started_at FROM task_runs "
             "WHERE date=? AND status='running' AND finished_at IS NULL",

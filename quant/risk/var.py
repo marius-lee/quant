@@ -10,6 +10,7 @@ import pandas as pd
 import os, sqlite3, json
 from scipy.stats import norm
 from quant.utils.logger import get_logger
+from quant.config.constants import _require_cfg
 
 _log = get_logger("risk.var")
 
@@ -239,7 +240,7 @@ def update_daily_risk(engine, strategy="quant"):
     syms = list(weights_dict.keys())
     # 滚动窗口: 最近365天, 防止硬编码日期过期 (2026-07-21 audit H10)
     from datetime import date as _d, timedelta as _td
-    _start = (_d.today() - _td(days=365)).strftime("%Y-%m-%d")
+    _start = (_d.today() - _td(days=_require_cfg("data.lookback_days"))).strftime("%Y-%m-%d")
     recent_data = store.get_daily(syms, start=_start)
     if recent_data is not None and not recent_data.empty:
         log_ret = np.log(recent_data["close"]).diff().dropna(how="all")

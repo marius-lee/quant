@@ -301,7 +301,7 @@ def _run(today: str):
     # G3: DSR / MinTRL 计算
     # ═══════════════════════════════════════════════════════
     from quant.evaluation.deflated_sharpe import compute_dsr_for_strategy
-    trades = engine.get_trades(strategy="quant", limit=500)
+    trades = engine.get_trades(strategy="quant", limit=1000)
     if trades:
         # 按日期聚合 daily PnL（同一天多笔交易只算一个日收益）
         pnl_by_date = {}
@@ -346,7 +346,7 @@ def _run(today: str):
     # ═══════════════════════════════════════════════════════
     # R3: 换手率归因 — 换手 vs alpha 收益
     # ═══════════════════════════════════════════════════════
-    trades_today = engine.get_trades(strategy="quant", limit=500)
+    trades_today = engine.get_trades(strategy="quant", limit=1000)
     trades_today = [t for t in trades_today if t.get("date") == today]
     if trades_today and positions:
         daily_turnover = sum(abs(t.get("price", 0) * t.get("shares", 0)) for t in trades_today)

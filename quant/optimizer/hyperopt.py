@@ -26,6 +26,7 @@ sys.path.insert(0, _root)
 
 import numpy as np
 from quant.utils.logger import get_logger
+from quant.config.constants import _require_cfg
 
 _log = get_logger("optimizer.hyperopt")
 
@@ -84,7 +85,7 @@ def objective(trial):
             result = run_backtest(
                 start_date="2023-01-01",
                 end_date="2024-12-31",
-                capital=5000,
+                capital=_require_cfg("backtest.default_capital"),
                 strategy=f"optuna_{trial.number}",
                 universe_size=params["n_symbols"],
                 combine_mode=params["combine_mode"],

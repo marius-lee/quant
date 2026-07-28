@@ -23,13 +23,14 @@ import os
 from datetime import datetime
 
 from quant.config.paths import MARKET_DB
+from quant.config.constants import _require_cfg
 
 
 def _conn():
     """打开 market.db 连接 (WAL 模式 + 忙等待)."""
     c = sqlite3.connect(MARKET_DB)
     c.execute("PRAGMA journal_mode=WAL")
-    c.execute("PRAGMA busy_timeout=5000")
+    c.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
     return c
 
 

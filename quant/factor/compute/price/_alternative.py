@@ -34,7 +34,7 @@ def preload_ztd_cache(dates: list, all_symbols: list):
         return
 
     import pandas as pd
-    earliest = pd.Timestamp(min(dates)) - pd.Timedelta(days=375)
+    earliest = pd.Timestamp(min(dates)) - pd.Timedelta(days=_require_cfg("data.lookback_days") + 10)
     latest = pd.Timestamp(max(dates))
 
     conn = DatabaseManager.market()

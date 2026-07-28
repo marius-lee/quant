@@ -22,10 +22,9 @@ import numpy as np
 import pandas as pd
 from quant.utils.logger import get_logger
 from quant.config.constants import _require_cfg
+from quant.config.paths import MARKET_DB
 
 _log = get_logger("alpha.multi_tf")
-
-_MARKET_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
 
 
 class MultiTimeframeConfirmer:
@@ -39,7 +38,7 @@ class MultiTimeframeConfirmer:
 
     def _get_weekly_return(self, symbol: str, date: str) -> float:
         """获取周线收益率 (本周五 vs 上周五收盘价)."""
-        conn = sqlite3.connect(_MARKET_DB)
+        conn = sqlite3.connect(MARKET_DB)
         try:
             # 取上周五和本周五收盘价
             date_ts = pd.Timestamp(date)

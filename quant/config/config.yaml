@@ -35,6 +35,7 @@ alpha:
   train_window: 500
   sigmoid_steepness: 10
   regime_combine: true
+  multi_tf_confirm: false
 attribution:
   ic_rolling_window: 60
   ic_degradation_threshold: 0.3

@@ -272,6 +272,16 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         alpha_raw = am.combine(factor_values, ic_map=ic_map)
     alpha = am.rank(alpha_raw)
 
+    # test-v249: 周线多周期信号确认 (MultiTimeframeConfirmer, 压制逆势信号)
+    if _require_cfg("alpha.multi_tf_confirm", False):
+        try:
+            from quant.alpha.multi_tf import MultiTimeframeConfirmer
+            mtf = MultiTimeframeConfirmer()
+            alpha = mtf.confirm(alpha, date_str)
+            logger.info(f"step 3: multi_tf confirmation applied")
+        except Exception as e:
+            logger.warning(f"step 3: multi_tf confirm failed (non-fatal): {e}")
+
     results["_factor_values"] = {k: v for k, v in factor_values.items() if isinstance(v, pd.Series)}
     results["_alpha_raw"] = alpha_raw
     results["steps"]["factor"] = {"factors": len(factor_values), "valid_stocks": alpha.dropna().count(), "status": "ok"}

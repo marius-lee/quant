@@ -151,6 +151,19 @@ def _run(today: str):
     if ic_daily_written:
         _log.info(f"[{today}] factor_ic_daily: {ic_daily_written} rows written for {len(ic_daily)} factors")
 
+    # ── Step A.5: CPCV+DSR 因子级评估 (test-v300, 替代旧 L2 短窗判定) ──
+    from quant.evaluation.cpcv_dsr import evaluate_factor as _eval_dsr
+    cpcv_verdicts = {}
+    _n_monitored = len(_all_monitored_names)
+    for fname in _all_monitored_names:
+        ic_rows = f_repo.get_ic_rolling(fname, n_days=_require_cfg("attribution.cpcv_lookback_days"))
+        ic_vals = [r["ic_value"] for r in ic_rows if r["ic_value"] is not None]
+        if ic_vals:
+            cpcv_verdicts[fname] = _eval_dsr(ic_vals, n_trials=max(_n_monitored, 1))
+    _n_degraded_dsr = sum(1 for v in cpcv_verdicts.values() if v.get("verdict") == "degraded")
+    _n_significant = sum(1 for v in cpcv_verdicts.values() if v.get("verdict") == "significant")
+    _log.info(f"[{today}] CPCV+DSR: {len(cpcv_verdicts)} factors → {_n_degraded_dsr} degraded, {_n_significant} significant")
+
     # ── Step B: Level 1 — 滚动 IC 监控 ──
     degraded_l1 = set()
     active_factors = f_repo.get_all_by_status(('active',))

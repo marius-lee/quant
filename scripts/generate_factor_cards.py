@@ -1,28 +1,28 @@
- """Generate factor index cards from factor_registry + IC history.
+"""Generate factor index cards from factor_registry + IC history.
 
- Reads factor_registry table for status and factor/compute maps for metadata,
- then writes structured JSON cards to factor/cards/.
+Reads factor_registry table for status and factor/compute maps for metadata,
+then writes structured JSON cards to factor/cards/.
 
- Usage:
+Usage:
     PYTHONPATH=. python3 scripts/generate_factor_cards.py
 """
- import json
- import os
- from pathlib import Path
+import json
+import os
+from pathlib import Path
 
- from data.repos import FactorRepo
- from factor.compute.price import _PRICE_FN_MAP
- from factor.compute.fundamental import _FUNDAMENTAL_FN_MAP
+from data.repos import FactorRepo
+from factor.compute.price import _PRICE_FN_MAP
+from factor.compute.fundamental import _FUNDAMENTAL_FN_MAP
 
 
- ALL_FACTORS = {}
- for name, (fn, win) in _PRICE_FN_MAP.items():
+ALL_FACTORS = {}
+for name, (fn, win) in _PRICE_FN_MAP.items():
      ALL_FACTORS[name] = {"type": "price", "window": win, "category": "dynamic"}
- for name, (cat, fn) in _FUNDAMENTAL_FN_MAP.items():
+for name, (cat, fn) in _FUNDAMENTAL_FN_MAP.items():
      ALL_FACTORS[name] = {"type": "fundamental", "window": 0, "category": cat}
 
 
- def main():
+def main():
     repo = FactorRepo()
     db_factors = {f["name"]: f for f in repo.get_all_factors()}
 
@@ -65,5 +65,5 @@
 
     print(f"Done. {len(ALL_FACTORS)} factors processed.")
 
- if __name__ == "__main__":
+if __name__ == "__main__":
     main()

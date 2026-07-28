@@ -6,25 +6,17 @@ from quant.factor.compute.fundamental import _FUNDAMENTAL_FN_MAP
 
 
 def _resolve_statuses(status_filter):
-    """Convert status_filter string to tuple of statuses."""
+    """Convert status_filter string to tuple of statuses.
+    ADR-040: candidate→evaluating, monitoring→probation, retired+rejected→archived
+    """
     if status_filter is None:
         return None
     if isinstance(status_filter, (list, tuple)):
         return tuple(status_filter)
     if status_filter == 'using':
-        # using = active + monitoring: monitoring 以衰减权重参与实盘信号生成
-        # 来源: Grinold & Kahn (1999) Ch.6 Eq.6.16 — w_k ∝ IC_k/σ²_k
-        #       监测因子权重由 |IC_5d| / |IC_60d| 连续比例决定, 无硬阈值
-        #       QuantConnect 排除监测因子 (Inactive=removed),
-        #       但 AQR/WorldQuant/Barra 保留监测因子在组合内仅降权
-        #       — 本项目对齐机构级标准
-        return ('active', 'monitoring')
+        return ('active', 'probation')
     if status_filter == 'backtesting':
-        # backtesting = 所有非 active/非 rejected 的因子
-        # 来源: WorldQuant WebSim — 回测池包含注册/候选/退役/监测因子
-        #       rejected 永久排除 (数据源死亡 或 retry_count ≥ max_retries)
-        #       active 不参与回测 (已认证的线上因子)
-        return ('registered', 'candidate', 'monitoring', 'retired')
+        return ('evaluating', 'probation', 'archived')
     return (status_filter,)
 
 
@@ -34,7 +26,7 @@ def load_active_price_factors(status_filter='using'):
     status_filter:
         'using' → active + monitoring (实盘信号生成, monitoring 以衰减权重参与;
                    来源: Grinold & Kahn 1999 Ch.6 — w_k ∝ IC_k)
-        'backtesting' → registered + candidate + monitoring + retired (回测评估池)
+        'backtesting' → candidate + monitoring + retired (回测评估池, ADR-026)
         None → 全部因子 (评估用)
     """
     statuses = _resolve_statuses(status_filter)
@@ -54,7 +46,7 @@ def load_active_fundamental_factors(status_filter='using'):
     status_filter:
         'using' → active + monitoring (实盘信号生成, monitoring 以衰减权重参与;
                    来源: Grinold & Kahn 1999 Ch.6 — w_k ∝ IC_k)
-        'backtesting' → registered + candidate + monitoring + retired (回测评估池)
+        'backtesting' → candidate + monitoring + retired (回测评估池, ADR-026)
         None → 全部因子 (评估用)
     """
     statuses = _resolve_statuses(status_filter)
@@ -89,7 +81,7 @@ def get_factor_names(status_filter=None) -> list:
 
     status_filter:
         'using' → active + monitoring (实盘, monitoring 以衰减权重参与)
-        'backtesting' → registered + candidate + monitoring + retired (回测池)
+        'backtesting' → candidate + monitoring + retired (回测池, ADR-026)
         'active' → 仅 active
         None → 全部因子
     """

@@ -87,7 +87,10 @@ def send_alert(alert: dict) -> bool:
 
 def send_drawdown_alert(current_drawdown: float) -> bool:
     """便捷函数: 发送回撤告警."""
-    level = "CRITICAL" if abs(current_drawdown) > 0.1 else "WARNING"
+    from quant.config.constants import _require_cfg
+    warning_pct = _require_cfg("monitor.alert.drawdown_warning")
+    critical_pct = _require_cfg("monitor.alert.drawdown_critical")
+    level = "CRITICAL" if abs(current_drawdown) > critical_pct else "WARNING"
     return send_alert({
         "level": level,
         "title": f"回撤告警: {current_drawdown:.1%}",

@@ -194,12 +194,11 @@ def test_materialize_window_factors_produce_rows(tmp_path, stub_market_conn):
     assert not missing, f"修复前这 7 因子永不物化 (死循环); 仍缺: {missing}"
     assert fs.is_materialized([t_str], WINDOW7)
 
-    # 行数核对: 每因子 >= zscore_min_count_dense(30)
-    conn = fs._get_conn()
+    # 行数核对: 每因子 >= zscore_min_count_dense(30) (ADR-039: gzip CSV backend)
+    data = fs.load(t_str, factor_names=WINDOW7)
     for f in WINDOW7:
-        n = conn.execute(
-            "SELECT COUNT(*) FROM factor_values WHERE date=? AND factor=?",
-            (t_str, f)).fetchone()[0]
+        assert f in data, f"{f}: missing from load() result"
+        n = data[f].notna().sum()
         assert n >= 30, f"{f}: {n} rows < 30"
     fs.close()
     ds.close()

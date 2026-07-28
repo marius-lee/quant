@@ -36,7 +36,7 @@ class Metrics:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL, type TEXT NOT NULL,
             value REAL NOT NULL,
-            ts TEXT DEFAULT (datetime('now'))
+            ts TEXT DEFAULT (datetime('now','localtime'))
         )""")
         conn.commit()
         conn.close()

@@ -6,7 +6,8 @@ from quant.utils.logger import get_logger
 from quant.execution.impact import estimate_impact_pct
 from quant.config.constants import _require_cfg
 
-def market_impact(order_shares: float, daily_amount: float, eta: float = 0.1) -> float:
+def market_impact(order_shares: float, daily_amount: float, eta: float | None = None,
+                  price: float | None = None) -> float:
     """Non-linear market impact: sqrt(order_size / daily_volume) model.
 
     slippage = eta * sqrt(order_shares * avg_price / daily_amount)
@@ -16,13 +17,17 @@ def market_impact(order_shares: float, daily_amount: float, eta: float = 0.1) ->
         order_shares: number of shares to trade
         daily_amount: daily turnover amount (元)
         eta: impact coefficient (calibrated per market, default 0.1 = 10bp base)
+        price: B-24 fix — 实际成交价 (此前硬编码均价 10 元, 高价股参与度被低估)
 
     Returns: estimated slippage as fraction (e.g., 0.0015 = 15bp)
     """
     import numpy as np
+    if eta is None:
+        eta = _require_cfg("execution.impact_eta")
     if daily_amount <= 0 or order_shares <= 0:
         return 0.0
-    participation = abs(order_shares * 10) / max(daily_amount, 1)  # rough: assume avg_price ~10
+    px = price if price and price > 0 else 10.0
+    participation = abs(order_shares * px) / max(daily_amount, 1)
     return float(eta * np.sqrt(min(participation, 1.0)))
 
 logger = get_logger("execution.cost")

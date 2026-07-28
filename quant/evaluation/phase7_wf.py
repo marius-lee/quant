@@ -116,8 +116,9 @@ def _activate_factors_for_test(factor_names: list[str]) -> None:
     for name in factor_names:
         try:
             repo.update_status(name, "active", "phase7_wf: temporary OOS test")
-        except Exception:
-            pass
+        except Exception as _e:
+            # Q7-5 fix: 状态更新失败必须可观测 (原裸 except: pass 吞错)
+            _log.warning(f"phase7_wf: update_status({name}) failed: {_e}")
 
 
 def run_walkforward(

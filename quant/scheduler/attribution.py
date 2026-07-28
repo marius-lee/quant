@@ -1,6 +1,6 @@
 """归因分析调度器 — 每日 15:30. P2-P5 已落地.
 
-P2: monitoring→active 自动升回 (连续N天IC恢复)
+P2: probation→active 自动升回 (连续N天IC恢复)
 P3: 轻量级在线 OOS IC 验证 (expanding-window)
 P4: IC 滚动窗口 5→20 天 (config.yaml)
 P5: Brinson 基准从等权改为市值加权
@@ -137,8 +137,8 @@ def _run(today: str):
     ic_daily = oos_result.get("ic_daily", {})
 
     # ── Step A: 写入 factor_ic_daily (每日追加) ──
-    # Get active+monitoring factor names for estimation
-    _all_monitored = f_repo.get_all_by_status(('active', 'monitoring'))
+    # Get active+probation factor names for estimation
+    _all_monitored = f_repo.get_all_by_status(('active', 'probation'))
     _all_monitored_names = [f["name"] for f in _all_monitored]
     ic_daily_written = 0
     for fname, daily_ics in ic_daily.items():
@@ -185,10 +185,10 @@ def _run(today: str):
             elif ratio > OOS_RECOVERY_THRESHOLD:
                 recovery_candidates.add(name)
 
-    # ── Step D: Level 3 — 稳定性校验 + 状态变更 ──
+    # ── Step D: Level 3 — 稳定性校验 + 状态变更 (ADR-040 方案 B) ──
     all_degraded = degraded_l1 | degraded_l2
 
-    # D1: active → monitoring (Level 1 ∪ Level 2)
+    # D1: active → probation (Level 1 ∪ Level 2)
     for name in all_degraded:
         if name in {af["name"] for af in active_factors}:
             l1 = "L1" if name in degraded_l1 else ""
@@ -198,63 +198,72 @@ def _run(today: str):
                 f"IS_IR={oos_per_factor.get(name, {}).get('is_ir', '?'):+.4f}→OOS_IR={oos_per_factor.get(name, {}).get('oos_ir', '?'):+.4f}"
                 if name in oos_per_factor else f"rolling IC decline"
             )
-            f_repo.update_status(name, 'monitoring', reason)
-            _log.warning(f"[{today}] {name}: active → monitoring ({source})")
+            fsm.transition(name, "IC_DEGRADED", reason)
+            _log.warning(f"[{today}] {name}: active → probation ({source})")
             _m.inc("scheduler.attribution.ic_degraded", 1)
 
-    # D2: monitoring → active (recovery confirmed)
-    monitoring_factors = f_repo.get_all_by_status(('monitoring',))
-    for mf in monitoring_factors:
-        mname = mf["name"]
-        if mname not in recovery_candidates:
+    # D2: probation → active (recovery confirmed)
+    probation_factors = f_repo.get_all_by_status(('probation',))
+    for pf in probation_factors:
+        pname = pf["name"]
+        if pname not in recovery_candidates:
             continue
         # Check stability: needs PROMOTION_STABILITY_DAYS of non-degraded IC
-        recent_ics = f_repo.get_ic_rolling(mname, PROMOTION_STABILITY_DAYS + 5)
+        recent_ics = f_repo.get_ic_rolling(pname, PROMOTION_STABILITY_DAYS + 5)
         if len(recent_ics) < PROMOTION_STABILITY_DAYS:
             continue
         recent_vals = [r["ic_value"] for r in recent_ics[-PROMOTION_STABILITY_DAYS:] if r["ic_value"] is not None]
         if len(recent_vals) < PROMOTION_STABILITY_DAYS:
             continue
-        rolling_vals = f_repo.get_ic_rolling(mname, IC_ROLLING_WINDOW)
+        rolling_vals = f_repo.get_ic_rolling(pname, IC_ROLLING_WINDOW)
         if not rolling_vals:
             continue
         longer_vals = [r["ic_value"] for r in rolling_vals if r["ic_value"] is not None]
         if not longer_vals:
             continue
         longer_mean = sum(longer_vals) / len(longer_vals)
-        # All recent values must be within threshold of longer mean
         stable = all(
             abs((v - longer_mean) / max(abs(longer_mean), 1e-10)) < IC_DEGRADATION_THRESHOLD
             for v in recent_vals
         )
         if stable:
-            f_repo.update_status(mname, 'active',
-                f"[LIVE] monitoring→active: OOS recovered (OOS_IR={oos_per_factor.get(mname, {}).get('oos_ir', '?'):+.4f}, stable for {PROMOTION_STABILITY_DAYS}d)")
-            _log.info(f"[{today}] {mname}: monitoring → active (OOS recovered, {PROMOTION_STABILITY_DAYS}d stable)")
+            _v = cpcv_verdicts.get(pname, {})
+            fsm.transition(pname, "IC_RECOVERED",
+                reason=f"[LIVE] probation→active: DSR significant (DSR={_v.get('dsr')}, stable for {PROMOTION_STABILITY_DAYS}d)")
+            _log.info(f"[{today}] {pname}: probation → active (DSR significant, {PROMOTION_STABILITY_DAYS}d stable)")
             _m.inc("scheduler.attribution.promoted", 1)
 
-    # D3: monitoring → retired (persistent decay)
-    from datetime import datetime as _dt, timedelta as _td
-    _buffer_cutoff = (_dt.now() - _td(days=MONITORING_BUFFER_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
-    for mf in monitoring_factors:
-        mname = mf["name"]
-        if mname in recovery_candidates:
+    # D3: probation → archived (persistent decay, ADR-040: rolling t-test 替代硬时间阈值)
+    for pf in probation_factors:
+        pname = pf["name"]
+        if pname in recovery_candidates:
             continue
-        # Check if still decaying
-        still_decaying = mname in all_degraded
+        still_decaying = pname in all_degraded
         if not still_decaying:
             continue
-        updated_at = mf.get("updated_at") or f_repo.get_factor_updated_at(mname)
-        if updated_at and updated_at < _buffer_cutoff:
-            f_repo.update_status(mname, 'retired',
-                f"[LIVE] 持续衰减退役: IS_IR={oos_per_factor.get(mname, {}).get('is_ir', '?'):+.4f}→OOS_IR={oos_per_factor.get(mname, {}).get('oos_ir', '?'):+.4f}")
-            _log.warning(f"[{today}] {mname}: monitoring → retired (持续衰减, 已监控≥{MONITORING_BUFFER_DAYS}d)")
+        # ADR-040: 用滚动 IC 序列 t-test 而非 MONITORING_BUFFER_DAYS
+        rolling = f_repo.get_ic_rolling(pname, MONITORING_BUFFER_DAYS + 10)
+        if len(rolling) < MONITORING_BUFFER_DAYS:
+            continue
+        ic_vals = [r["ic_value"] for r in rolling[-MONITORING_BUFFER_DAYS:] if r["ic_value"] is not None]
+        if len(ic_vals) < max(5, MONITORING_BUFFER_DAYS // 2):
+            continue
+        import numpy as np
+        mean_ic = np.mean(ic_vals)
+        se_ic = np.std(ic_vals, ddof=1) / np.sqrt(len(ic_vals)) if len(ic_vals) > 1 else 0
+        t_stat = mean_ic / se_ic if se_ic > 0 else 0
+        # |t| < 1.0: 不显著异于 0 → IC 已无效 → 归档
+        if abs(t_stat) < 1.0:
+            _v = cpcv_verdicts.get(pname, {})
+            fsm.transition(pname, "IC_PERSISTENT",
+                reason=f"[LIVE] 持续衰减归档: |t|={abs(t_stat):.2f}<1.0, DSR={_v.get('dsr')}")
+            _log.warning(f"[{today}] {pname}: probation → archived (|t|={abs(t_stat):.2f}<1.0, 持续衰减)")
             _m.inc("scheduler.attribution.retired", 1)
         else:
-            _log.info(f"[{today}] {mname}: monitoring, still decaying but within {MONITORING_BUFFER_DAYS}d buffer - observing")
+            _log.info(f"[{today}] {pname}: probation, |t|={abs(t_stat):.2f}≥1.0 — still observing")
 
     # ── Step E: 同步 ic_mean 到 factor_registry ──
-    all_active_names = [af["name"] for af in active_factors] + [mf["name"] for mf in monitoring_factors]
+    all_active_names = [af["name"] for af in active_factors] + [pf["name"] for pf in probation_factors]
     if all_active_names:
         f_repo.sync_all_ic_means(all_active_names, n_days=min(60, IC_ROLLING_WINDOW * 3))
         _log.info(f"[{today}] synced ic_mean to factor_registry for {len(all_active_names)} factors")

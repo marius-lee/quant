@@ -5,7 +5,7 @@
 #
 # 用法:
 #   PYTHONPATH=. bash scripts/eval_standard.sh
-#   PYTHONPATH=. bash scripts/eval_standard.sh --phase5  # 包含 Phase 5 持续监控
+#   (--phase5 监控报告已移除: run_monitor 与 scheduler/attribution 重复, 2026-07-26 合并)
 #
 # 设计原则:
 #   不再内嵌 Python 字符串 — 所有逻辑在 evaluation/*.py 中
@@ -21,11 +21,6 @@ else
 fi
 
 cd "$(dirname "$0")/.."
-
-RUN_PHASE5=false
-if [ "${1:-}" = "--phase5" ]; then
-    RUN_PHASE5=true
-fi
 
 # ────────────────────────────────────────────
 # Phase 1: 数据准备
@@ -120,22 +115,6 @@ with offline_mode():
     for n in r['rejected']: print(f'    X {n}')
     for n in r['active']:   print(f'    V {n}')
 "
-
-if $RUN_PHASE5; then
-    echo ""
-    echo "============================================"
-    echo "Phase 5: 持续监控报告"
-    echo "============================================"
-    PYTHONPATH=. .venv/bin/python3 -c "
-from quant.utils.logger import offline_mode
-from quant.utils.excepthook import setup; setup()
-with offline_mode():
-    from quant.evaluation.phase5_monitor import run_monitor
-    path = run_monitor()
-    print(f'Report: {path}')
-"
-fi
-
 
 # Phase 6: 策略级全链路回测 (Gap 1 — 事件驱动 walk-forward)
 # 输入: Phase 3 通过的因子 (candidate + active)

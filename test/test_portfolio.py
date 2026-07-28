@@ -5,7 +5,11 @@
 import pytest
 import pandas as pd
 import numpy as np
-from quant.optimizer.portfolio import PortfolioConstructor, TargetPortfolio, LOT_SIZE, calibrate_risk_aversion
+from quant.optimizer.portfolio import (
+    PortfolioConstructor, TargetPortfolio, LOT_SIZE, calibrate_risk_aversion,
+    _alpha_to_z, _ic_effective, _TC_IC_REF,
+)
+from quant.execution.cost import CostModel
 
 
 class TestPortfolioConstructorGreedy:
@@ -80,16 +84,26 @@ class TestPortfolioConstructorGreedy:
         assert pf.positions == 2
 
     def test_rank_concentrated_alpha_ordering(self):
-        """Nano 层: 严格按 alpha 降序分配, 高 alpha 先买."""
+        """Nano 层: 严格按 alpha 降序分配, 高 alpha 先买.
+
+        price_buffer (test-v214, config execution.price_buffer) 会被 construct()
+        应用到有效价格上: p_eff = p × (1 + buffer). 因此 lot_cost = p_eff × 100.
+        test-v214 设计依据: 流水线用昨收价分配, 执行用开盘价, 缓冲防止 over-allocation.
+        来源: ADR-026 audit — price_buffer 在 Nano 层可导致 lot 数比未缓冲时少 1.
+        """
+        from quant.config.constants import _require_cfg
+        buffer = _require_cfg("execution.price_buffer")
         pc = PortfolioConstructor({"max_positions": 5, "max_single_position": 0.20})
         alpha = pd.Series([0.1, 0.9, 0.3], index=["X", "Y", "Z"])
         prices = pd.Series([10.0, 10.0, 10.0], index=["X", "Y", "Z"])
         # alpha 排序: Y(0.9), Z(0.3), X(0.1)
         pf = pc.construct(alpha, prices, 3000)
         assert pf.method == "rank_concentrated"
-        assert pf.lots["Y"] == 3  # Y 排名最高, 3000//(10*100)=3 lots
-        assert pf.lots.get("Z", 0) == 0  # 剩余0不够买Z
-        assert pf.lots.get("X", 0) == 0  # X 买不到
+        # 有效 lot_cost = 10 × (1+buffer) × 100; 3000 // lot_cost 手
+        expected_lots = int(3000 // (10.0 * (1 + buffer) * 100))
+        assert pf.lots["Y"] == expected_lots
+        assert pf.lots.get("Z", 0) == 0
+        assert pf.lots.get("X", 0) == 0
 
     def test_equal_weight_greedy_micro_fallback(self):
         """Micro 层 score_weighted→0 时回退到 equal_weight_greedy (非 rank_concentrated)."""
@@ -135,7 +149,8 @@ class TestPortfolioConstructorMeanVar:
 
     def test_mean_var_with_covariance(self):
         """充足资金 + 协方差 → 均值-方差分支."""
-        pc = PortfolioConstructor({"max_positions": 10, "max_single_position": 0.15})
+        pc = PortfolioConstructor({"max_positions": 10, "max_single_position": 0.15,
+                                   "method": "risk_parity"})
         stocks = ["A", "B", "C", "D", "E"]
         alpha = pd.Series([0.05, 0.03, 0.08, 0.02, 0.06], index=stocks)
         prices = pd.Series([10.0, 12.0, 8.0, 15.0, 9.0], index=stocks)
@@ -235,3 +250,174 @@ class TestCalibrateRiskAversion:
         cov = pd.DataFrame(np.eye(2) * 0.01, index=["A", "B"], columns=["A", "B"])
         lam = calibrate_risk_aversion(alpha, prices, 10000, cov)
         assert lam == 2.0
+
+
+class TestCostAwareBand:
+    """§8.3 交易成本感知优化 (Grinold α − λ·TC 无交易区间).
+
+    Nano 层 ¥5000: 一次全仓换股成本 ≈ ¥21 (最低佣金主导)。
+    换仓仅当 E[Δr] = Δz × IC × σ × horizon × 金额 ≥ λ × 成本 时执行。
+    """
+
+    def _pc(self):
+        return PortfolioConstructor({"max_positions": 20, "max_single_position": 0.05})
+
+    def _cm(self):
+        return CostModel.from_config()
+
+    def test_swap_suppressed_when_alpha_gap_small(self):
+        """小幅 alpha 提升 (Δz≈0.68): 预期收益 ¥15 < 成本 ¥21 → 留仓 S0."""
+        alpha = pd.Series({"S1": 0.60, "S0": 0.55, "S2": 0.40, "S3": 0.30, "S4": 0.20})
+        prices = pd.Series(45.0, index=alpha.index)
+        cur = pd.Series({"S0": 1})
+        pf = self._pc().construct(alpha, prices, 5000, current_lots=cur,
+                                  cost_model=self._cm(), ic_map={"f1": 0.05})
+        assert pf.tc_suppressed == 1
+        assert dict(pf.lots) == {"S0": 1}      # 保留原持仓, 不换 S1
+        assert pf.cash_reserve == pytest.approx(5000 - 45 * 1.05 * 100, abs=1)
+
+    def test_swap_executed_when_alpha_gap_large(self):
+        """大幅 alpha 提升 (Δz≈2.36): 预期收益 ¥55 > 成本 ¥21 → 换 S1."""
+        alpha = pd.Series({"S1": 0.90, "S0": 0.10, "S2": 0.40, "S3": 0.30, "S4": 0.20})
+        prices = pd.Series(45.0, index=alpha.index)
+        cur = pd.Series({"S0": 1})
+        pf = self._pc().construct(alpha, prices, 5000, current_lots=cur,
+                                  cost_model=self._cm(), ic_map={"f1": 0.05})
+        assert pf.tc_suppressed == 0
+        assert dict(pf.lots) == {"S1": 1}
+
+    def test_no_band_without_holdings(self):
+        """首次建仓 (无持仓): 成本带不启用, 按理想目标买 S1."""
+        alpha = pd.Series({"S1": 0.60, "S0": 0.55, "S2": 0.40, "S3": 0.30, "S4": 0.20})
+        prices = pd.Series(45.0, index=alpha.index)
+        pf = self._pc().construct(alpha, prices, 5000, cost_model=self._cm())
+        assert pf.tc_suppressed == 0
+        assert dict(pf.lots) == {"S1": 1}
+
+    def test_no_band_without_cost_model(self):
+        """cost_model 缺失 (向后兼容): 行为与旧版一致."""
+        alpha = pd.Series({"S1": 0.60, "S0": 0.55, "S2": 0.40, "S3": 0.30, "S4": 0.20})
+        prices = pd.Series(45.0, index=alpha.index)
+        cur = pd.Series({"S0": 1})
+        pf = self._pc().construct(alpha, prices, 5000, current_lots=cur)
+        assert pf.tc_suppressed == 0
+        assert dict(pf.lots) == {"S1": 1}
+
+    def test_held_stock_dropped_from_candidates_sold(self):
+        """持仓跌出候选集 (风险过滤/数据缺失): 无条件卖出, 不参与成本带."""
+        alpha = pd.Series({"S1": 0.60, "S0": 0.55, "S2": 0.40, "S3": 0.30, "S4": 0.20})
+        prices = pd.Series(45.0, index=alpha.index)
+        cur = pd.Series({"GONE": 1})
+        pf = self._pc().construct(alpha, prices, 5000, current_lots=cur,
+                                  cost_model=self._cm(), ic_map={"f1": 0.05})
+        assert pf.tc_suppressed == 0
+        assert dict(pf.lots) == {"S1": 1}   # GONE 不在目标 → 执行层 delta 卖出
+
+    def test_held_still_optimal_no_trade(self):
+        """持仓仍是 top alpha: 理想=当前, 无 diff, 成本带无副作用."""
+        alpha = pd.Series({"S0": 0.90, "S1": 0.55, "S2": 0.40, "S3": 0.30, "S4": 0.20})
+        prices = pd.Series(45.0, index=alpha.index)
+        cur = pd.Series({"S0": 1})
+        pf = self._pc().construct(alpha, prices, 5000, current_lots=cur,
+                                  cost_model=self._cm(), ic_map={"f1": 0.05})
+        assert pf.tc_suppressed == 0
+        assert dict(pf.lots) == {"S0": 1}
+
+    def test_topup_not_gated(self):
+        """纯现金加仓 (无卖单配对): 不做成本门槛 — 只拦截'以卖养买'."""
+        alpha = pd.Series({"S0": 0.90, "S1": 0.55, "S2": 0.40, "S3": 0.30, "S4": 0.20})
+        prices = pd.Series(20.0, index=alpha.index)   # lot=2100 (buffered)
+        cur = pd.Series({"S0": 1})
+        pf = self._pc().construct(alpha, prices, 5000, current_lots=cur,
+                                  cost_model=self._cm(), ic_map={"f1": 0.05})
+        assert pf.tc_suppressed == 0
+        assert pf.lots["S0"] == 2           # 5000 // 2100 = 2 手
+
+
+class TestCostBandHelpers:
+    """§8.3 辅助函数: _alpha_to_z / _ic_effective."""
+
+    def test_alpha_to_z_monotonic_and_signed(self):
+        alpha = pd.Series({"A": 0.9, "B": 0.7, "C": 0.5, "D": 0.3, "E": 0.1})
+        z = _alpha_to_z(alpha)
+        assert z["A"] > z["B"] > z["C"] > z["D"] > z["E"]
+        assert z["A"] > 0 > z["E"]
+        assert z["A"] == pytest.approx(-z["E"], abs=1e-9)   # Blom 对称性
+
+    def test_alpha_to_z_uses_ranks_not_values(self):
+        """对单调变换稳健: 线性缩放 alpha 不改变 z."""
+        a1 = pd.Series({"A": 0.9, "B": 0.7, "C": 0.5})
+        a2 = a1 * 100 + 5
+        pd.testing.assert_series_equal(_alpha_to_z(a1), _alpha_to_z(a2))
+
+    def test_ic_effective_float_and_dict(self):
+        assert _ic_effective({"a": 0.05, "b": -0.03}) == pytest.approx(0.04)
+        assert _ic_effective({"a": {"ic_mean": 0.05}}) == pytest.approx(0.05)
+
+    def test_ic_effective_fallback_to_config(self):
+        assert _ic_effective(None) == pytest.approx(_TC_IC_REF)
+        assert _ic_effective({}) == pytest.approx(_TC_IC_REF)
+        assert _ic_effective({"a": float("nan")}) == pytest.approx(_TC_IC_REF)
+
+
+class TestHRP:
+    """§8.2 (test-v299): HRP 优化器接线 — optimizer.method 分发."""
+
+    def _cov(self, symbols, vols=None):
+        """对角协方差 (零相关), vols 缺省全 0.2."""
+        n = len(symbols)
+        vols = vols or [0.2] * n
+        return pd.DataFrame(np.diag([v ** 2 for v in vols]),
+                            index=symbols, columns=symbols)
+
+    def test_hrp_weights_degenerate_single_asset(self):
+        from quant.optimizer.hrp import hrp_weights
+        w = hrp_weights(np.array([[0.04]]))
+        assert np.allclose(w, [1.0])
+
+    def test_hrp_weights_sum_to_one_and_favor_low_vol(self):
+        """6 只零相关资产: 权重和=1, 全正, 最高波动资产权重 < 最低波动资产."""
+        from quant.optimizer.hrp import hrp_weights
+        vols = np.array([0.20, 0.10, 0.30, 0.14, 0.25, 0.12])
+        cov = np.diag(vols ** 2)
+        w = hrp_weights(cov)
+        assert abs(w.sum() - 1.0) < 1e-9
+        assert (w > 0).all()
+        assert w[np.argmax(vols)] < w[np.argmin(vols)]
+
+    def test_hrp_dispatch_via_config(self):
+        """method='hrp' + 协方差 → small 层走 HRP, method 标记 hrp."""
+        pc = PortfolioConstructor({
+            "max_positions": 20, "max_single_position": 0.3,
+            "nano_cap": 30000, "micro_cap": 100000, "method": "hrp",
+        })
+        syms = [f"S{i}" for i in range(8)]
+        alpha = pd.Series(np.linspace(1.0, 0.3, 8), index=syms)
+        prices = pd.Series([10.0 + i for i in range(8)], index=syms)
+        pf = pc.construct(alpha, prices, 200000, covariance=self._cov(syms))
+        assert pf.method == "hrp"
+        assert pf.positions >= 2
+        assert pf.invested <= 200000
+
+    def test_risk_parity_dispatch_explicit(self):
+        """method='risk_parity' → small 层仍走 risk parity (行为不变)."""
+        pc = PortfolioConstructor({
+            "max_positions": 20, "max_single_position": 0.3,
+            "nano_cap": 30000, "micro_cap": 100000, "method": "risk_parity",
+        })
+        syms = [f"S{i}" for i in range(8)]
+        alpha = pd.Series(np.linspace(1.0, 0.3, 8), index=syms)
+        prices = pd.Series([10.0 + i for i in range(8)], index=syms)
+        pf = pc.construct(alpha, prices, 200000, covariance=self._cov(syms))
+        assert pf.method == "risk_parity"
+
+    def test_hrp_falls_back_without_covariance(self):
+        """method='hrp' 但无协方差 → 报错链不变 (mean-variance 要求协方差)."""
+        pc = PortfolioConstructor({
+            "max_positions": 20, "max_single_position": 0.3,
+            "nano_cap": 30000, "micro_cap": 100000, "method": "hrp",
+        })
+        alpha = pd.Series(np.linspace(1.0, 0.3, 8), index=[f"S{i}" for i in range(8)])
+        prices = pd.Series([10.0 + i for i in range(8)], index=alpha.index)
+        with pytest.raises(ValueError, match="requires covariance"):
+            pc.construct(alpha, prices, 200000)

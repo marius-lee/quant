@@ -47,12 +47,7 @@ def sync_benchmark(index_code: str = "000300") -> int:
     import akshare as ak
     from quant.data.datasource_retry import datasource_retry
     from quant.utils.date import to_compact
-    with _init_db() as conn:
-        row = conn.execute(
-            "SELECT MAX(date) FROM benchmark_daily WHERE index_code=?",
-            (index_code,)
-        ).fetchone()
-    # 获取已有日期范围
+    conn = _init_db()
     row = conn.execute(
         "SELECT MAX(date) FROM benchmark_daily WHERE index_code=?",
         (index_code,)
@@ -88,6 +83,7 @@ def sync_benchmark(index_code: str = "000300") -> int:
         )
         new_rows += 1
     conn.commit()
+    conn.close()
     logger.info(f"benchmark {index_code} ({BENCHMARKS.get(index_code, '')}): {new_rows} new rows")
     return new_rows
 

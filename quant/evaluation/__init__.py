@@ -7,5 +7,9 @@
   phase2_single.py —  Stage 2: 单因子 IC/t/ICIR/half-life 检验
   phase3_oos.py    —  Stage 3: CPCV OOS 检验 + PBO
   phase4_costs.py  —  Stage 4: 交易成本后验证
-  phase5_monitor.py—  Stage 5: 持续监控 (因子拥挤度/衰减/换手率/容量)
+  phase5_monitor.py—  Stage 5: 因子状态裁决 (手工管线终段; 日频监控职责在
+                       scheduler/attribution, IC 衰减检查在 scheduler/weekly)
+  phase6_backtest.py — Phase 6: Strategy-level backtest
+  phase7_wf.py       — Phase 7: Walk-forward cross-validation
+  phase8_live_consistency.py — Phase 8: Backtest-vs-Live consistency
 """

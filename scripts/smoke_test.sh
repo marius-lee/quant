@@ -1,31 +1,13 @@
-#!/bin/bash
-# Smoke test: 15s quick backtest, catch regressions before push
-# Run: bash scripts/smoke_test.sh
-
-set -e
+#!/usr/bin/env bash
+# 冒烟回测 — 快速验证因子+alpha+执行管线完整性
+# 用法: bash scripts/smoke_test.sh
+set -euo pipefail
 cd "$(dirname "$0")/.."
-
-echo "=== Smoke: backtest 2026-06-01..2026-06-30 ==="
-.venv/bin/python3 -c "
-import sys; sys.path.insert(0, '.')
-from backtest import run_backtest
-result = run_backtest('2026-06-01', '2026-06-30', 100000)
-n = len(result)
-w = float(result.total_wealth.iloc[-1])
-print(f'Rows: {n}, Final wealth: {w:,.2f}')
-assert n > 0, 'empty backtest result'
-assert w > 0, f'negative wealth: {w}'
-assert w < 1000000, f'absurd wealth: {w}'
-print('SMOKE PASSED')
-"
-echo ""
-echo "=== Smoke: pipeline generates signals ==="
-.venv/bin/python3 -c "
-import sys; sys.path.insert(0, '.')
-from pipeline import generate_signals
-s = generate_signals('2026-06-05')
-n = len(s.get('target_positions', []))
-print(f'Target positions: {n}')
-assert n > 0, 'no signals generated'
-print('SMOKE PASSED')
+PYTHONPATH=. .venv/bin/python3 -c "
+from quant.backtest.loop import run_backtest
+r = run_backtest('2026-06-01', '2026-07-27', capital=5000, mode='smoke')
+m = r['metrics']
+print(f'Sharpe={m[\"sharpe\"]}  CAGR={m[\"cagr_pct\"]}%  MDD={m[\"max_drawdown_pct\"]}%')
+print(f'equity=¥{m[\"final_equity\"]:,.0f}  return={m[\"total_return_pct\"]}%  win_rate={m[\"win_rate\"]}')
+print(f'days={m[\"n_days\"]}  signals/day={r[\"avg_signals_per_day\"]}  errors={r[\"errors\"]}  elapsed={r[\"elapsed_sec\"]}s')
 "

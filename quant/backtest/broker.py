@@ -39,8 +39,39 @@ class SimulatedBroker:
             db_path=self.db_path,
             suppress_push=suppress_push,
         )
-        result["wealth"] = self.engine.get_capital(strategy)
+        # B-06 fix: 净值按当日收盘价 MTM (原成本价 → 净值只在交易日变动, 指标失真)
+        result["wealth"] = self.get_mtm_capital(strategy, date)
         return result
+
+    def execute_risk_only(self, date, strategy="quant"):
+        """非调仓日 (rebalance_freq=weekly): 只跑硬止损, 不做组合再平衡.
+
+        targets 空列表 + risk_only=True → ExecutionModel 跳过 delta/分单,
+        仅风控段生效. 返回结构与 execute() 一致 (含 wealth/stopped_out).
+        """
+        from quant.pipeline import execute_signals
+        positions = self.engine.get_positions(strategy)
+        all_syms = [p["symbol"] for p in positions]
+        open_prices = self.get_prices(all_syms, date, field="open") if all_syms else {}
+        if not open_prices:
+            return {"executed": [], "wealth": self.get_mtm_capital(strategy, date),
+                    "skipped": True, "stopped_out": []}
+        result = execute_signals(
+            [], date, strategy=strategy,
+            prices=open_prices,
+            db_path=self.db_path,
+            suppress_push=True,
+            risk_only=True,
+        )
+        result["wealth"] = self.get_mtm_capital(strategy, date)
+        return result
+    def get_mtm_capital(self, strategy, date):
+        """按 date 收盘价计算 MTM 总资产 (B-06). 缺价标的回退成本价。"""
+        positions = self.engine.get_positions(strategy)
+        closes = {}
+        if positions:
+            closes = self.get_prices([p["symbol"] for p in positions], date, field="close")
+        return self.engine.get_capital(strategy, prices=closes)
 
     def get_capital(self, strategy="quant"):
         return self.engine.get_capital(strategy)

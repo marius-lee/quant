@@ -12,24 +12,55 @@ _log = get_logger(__name__)
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
-    rid = _tk_start("signals", today, grace_seconds=900)
+    # grace 对齐 orchestrator._TIMEOUTS["signals"]=1800 (test-v301: 原 900s
+    # 小于合法运行时长, 双调度第二触发误 abort 活任务)
+    rid = _tk_start("signals", today, grace_seconds=1800)
     if rid is None:
         _log.info(f"[{today}] signals already running, skip duplicate trigger")
         return
     _log.info(f"[{today}] 08:30 — generating signals")
     t0 = _time.time()
+    status = "failed"
+    error_msg = None
+    summary = {}
 
-    from quant.pipeline import generate_signals
-    result = generate_signals(date_str=today, skip_pull=True)
-    targets = result.get("target_positions", [])
+    try:
 
-    # signals already persisted by pipeline.generate_signals() → daily_signals table
-    elapsed = _time.time() - t0
-    _log.info(f"[{today}] signals done: {len(targets)} targets ({elapsed:.1f}s)")
-    _tk_finish("signals", today, "ok", summary={"targets": len(targets), "elapsed": round(elapsed, 1)})
-    _log.info(f"[SCHEDULER] {today} | TASK=signals | STATUS=OK | targets={len(targets)} | elapsed={elapsed:.1f}s")
-    _m.inc("scheduler.signals.ok")
+        from quant.pipeline import generate_signals
+        from quant.factor.store import FactorStore
+        from quant.config.paths import FACTOR_CACHE_DB
 
+        # ADR-037: 冷却期过滤提前到信号生成阶段
+        # 此前冷却过滤只在 ExecutionModel.run() 执行阶段，冷却标的仍出现在
+        # daily_signals 和 Web UI 候选池中。现改为信号阶段即过滤，使候选池更干净。
+        from quant.execution.stop_loss import RiskManager
+        rm = RiskManager(strategy="quant")
+        cooloff = list(rm.get_cooloff_symbols(today))
+        if cooloff:
+            _log.info(f"[{today}] cooling-off filter: {len(cooloff)} symbols excluded from signals")
+
+        fs = FactorStore(db_path=FACTOR_CACHE_DB)
+        result = generate_signals(
+            date_str=today, skip_pull=True, factor_store=fs,
+            exclude_symbols=cooloff,
+        )
+        fs.close()
+        targets = result.get("target_positions", [])
+
+        # signals already persisted by pipeline.generate_signals() → daily_signals table
+        elapsed = _time.time() - t0
+        _log.info(f"[{today}] signals done: {len(targets)} targets ({elapsed:.1f}s)")
+        status = "ok"
+        summary = {"targets": len(targets), "elapsed": round(elapsed, 1)}
+        _log.info(f"[SCHEDULER] {today} | TASK=signals | STATUS=OK | targets={len(targets)} | elapsed={elapsed:.1f}s")
+        _m.inc("scheduler.signals.ok")
+
+    except Exception as e:
+        error_msg = str(e)
+        _log.exception(f"[{today}] signals crashed: {e}")
+        raise
+    finally:
+        _tk_finish("signals", today, status, error=error_msg, summary=summary)
 
 def _loop():
     _timed_loop("signals", time(8, 30), _run, has_multiprocess=True)

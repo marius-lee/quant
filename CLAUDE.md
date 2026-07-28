@@ -12,11 +12,6 @@ This file provides guidance to Claude Code when working with code in this reposi
 - **每次代码改动后必须更新**，记录：版本号、变更内容、原因、涉及文件、设计原则
 - 每次 compact / 重启后第一步：读取 HANDOFF.md 了解最近变更
 
-### 资金计算
-- `sim_trades` 是资金唯一真相源，`get_cash()` 实时计算，从不缓存
-- 禁止维护 `cash_balance` 之类的手动同步列
-- 每笔交易必须存储 `cost` (佣金+印花税+滑点)
-
 ### 代码编辑
 - 禁止 `sed` — 用 heredoc (`python3 << 'PYEOF'`) 或 `apply_patch`
 - 禁止 fallback (静默降级掩盖错误)
@@ -125,11 +120,23 @@ PYTHONPATH=. python3 web/app.py
 # 手动触发全流程
 PYTHONPATH=. python3 pipeline.py
 
-# 因子评估
-PYTHONPATH=. python3 -c "from factor.ic import compute_ic; print(compute_ic(factor_names=get_factor_names()))"
+# 回测 (walk-forward)
+PYTHONPATH=. python3 -c "from quant.backtest.loop import run_backtest; r=run_backtest('2024-01-01','2025-12-31',capital=5000); print(r['metrics'])"
 
-# 运行测试
-PYTHONPATH=. python3 -m pytest tests/ -v
+# 因子评估
+PYTHONPATH=. bash scripts/eval_standard.sh
+
+# 因子缓存物化
+PYTHONPATH=. python3 -c "from quant.scheduler.factor_cache import _run; _run('2026-07-28')"
+
+# LightGBM 模型训练 (需 pip install lightgbm)
+PYTHONPATH=. python3 -c "from quant.alpha.qlib_model import train_lgb_model; train_lgb_model()"
+
+# 运行测试 (test/ 目录)
+PYTHONPATH=. python3 -m pytest test/ -v
+
+# 端到端验证
+PYTHONPATH=. python3 scripts/validate_lgb_e2e.py
 ```
 
 ## Architecture
@@ -150,58 +157,116 @@ PYTHONPATH=. python3 -m pytest tests/ -v
 - `store.py` — **DataStore**: 多源日线增量同步（tickflow→新浪→腾讯→tushare→akshare），速度自适应轮转
 - `trade_repo.py` — **TradeRepo**: `sim_trades` 统一读写，消除重复 SQL
 
-### Layer 2: Factor (`factor/`) — 57因子计算函数 (41 price + 16 fundamental)。运行时状态由 factor_registry 管理。实盘交易用 using (= active + monitoring)；回测评估用 backtesting；全量评估用 None。
-- `base.py` — **Factor** 抽象基类: `compute(data) → Series`, `evaluate(values, returns) → dict`
-- `compute/` — 因子计算子包: price/ (动量/反转/波动率/流动性/事件/情绪/另类) + fundamental.py (估值/质量/增长)。纯函数、向量化。
-- `ic.py` — 统一 IC 计算模块（双模式: Mode A 取数据算因子, Mode B 预计算因子值）。截面 Spearman Rank IC + ICIR + 衰减分析
-- `synth.py` — 因子合成：`equal_weight()` / `ic_weighted()`
+### Layer 2: Factor (`factor/`) — 65因子计算 (57价格 + 8基本面)。运行时状态由 factor_registry 管理。实盘交易用 using (= active + monitoring)；回测评估用 backtesting；全量评估用 None。
+- `factor/compute/` — 因子计算子包: price/ (动量/反转/波动率/量价/事件/情绪/另类) + fundamental.py (估值/质量/增长)。纯函数、向量化。
+- `factor/compute/_primitives.py` — 52个共享预计算算子 (log_ret/cum_log/vol/roll_max等) + shortcut 映射
+- `factor/compute/_dispatch.py` — compute_all_factors 调度器: 预加载→价格因子→基本面因子→季报真空期衰减
+- `factor/compute/_preload.py` — 辅助数据预加载 (融资融券/分析师/龙虎榜/财务三表)
+- `factor/compute/_registry.py` — 因子注册表 + 状态管理 (active/monitoring/candidate/retired/rejected)
+- `factor/stats_cache.py` — IC计算 + Bayesian shrinkage + 因子快照缓存
+- `factor/store.py` — **FactorStore**: 因子值物化缓存 (factor_cache.db)
+- `factor/ic.py` — 截面 Spearman Rank IC + ICIR + 衰减分析
+- `factor/synth.py` — 因子合成：`equal_weight()` / `ic_weighted()` / `sleeve_compose()`
+- `factor/registry.py` — `_cs_zscore()`: winsorize 1%/99% + MAD 标准化 (ADR-037)
+- `factor/orchestrator.py` — 因子评估编排
+- `factor/state_manager.py` — 因子状态机生命周期
 
 ### Layer 3: Alpha (`alpha/`)
-- `model.py` — **AlphaModel**: 因子合成 → 收益预测 → 截面分位数排名
+- `alpha/model.py` — **AlphaModel**: sleeve/composite/intersection/lgb 四种 combine_mode + sigmoid 软截断
+- `alpha/synth.py` — sleeve_compose / ic_weighted / equal_weight / intersection_alpha / factor_attribution
+- `alpha/rotation.py` — **SectorRotator**: 美林时钟行业轮动 (PMI+CPI → quadrant → 行业权重)
+- `alpha/multi_tf.py` — **MultiTimeframeConfirmer**: 周线+日线多周期投票确认
+- `alpha/qlib_model.py` — **LgbAlphaModel**: LightGBM 非线性 alpha 预测 (ADR-035 Phase 2)
 
 ### Layer 4: Risk (`risk/`)
-- `neutralize.py` — `industry_neutralize()`, `size_neutralize()`: 截面回归取残差
-- `covariance.py` — `ledoit_wolf_cov()`: 收缩协方差估计 (Ledoit & Wolf 2004)
-- `constraints.py` — **RiskLimits**: 单票仓位上限、行业暴露上限、流动性门槛、ST 过滤
+- `risk/neutralize.py` — industry/size/style 中性化: 截面回归取残差
+- `risk/covariance.py` — Ledoit-Wolf 收缩协方差 (2004) + HRP 层次风险平价
+- `risk/constraints.py` — **RiskLimits**: 单票仓位上限/行业暴露上限/流动性门槛/ST过滤/涨停封死过滤
+- `risk/var.py` — VaR 计算 (参数法 + 历史模拟)
+- `risk/atr.py` — ATR 辅助计算
 
 ### Layer 5: Optimizer (`optimizer/`)
-- `portfolio.py` — **PortfolioConstructor**: 资本自适应 (<2万等权 / 2-10万得分倾斜 / >10万均值-方差) + 整手约束
-- `rebalance.py` — `compute_trades()`: diff 目标持仓 vs 当前持仓 → 买卖订单列表
+- `optimizer/portfolio.py` — **PortfolioConstructor**: 资本自适应三层
+  - Nano (<¥30K): rank_concentrated 贪心集中
+  - Micro (¥30K-100K): score_weighted 得分倾斜
+  - Small (>¥100K): Kelly/mean-variance/HRP/risk_parity
+  - §8.3 Grinold α−λ·TC 成本带换仓拦截
+- `optimizer/rebalance.py` — `compute_trades()`: diff 目标持仓 vs 当前持仓 → 买卖订单
+- `optimizer/kelly.py` — Kelly 公式仓位分配
+- `optimizer/hrp.py` — Hierarchical Risk Parity (De Prado 2016)
+- `optimizer/hyperopt.py` — Optuna 超参优化
 
 ### Layer 6: Execution (`execution/`)
-- `engine.py` — **ExecutionEngine**: 订单执行 → trades.db + capital_after
-- `cost.py` — **CostModel**: 统一成本模型（佣金万三 + 最低 5 元 + 印花税千一）
-- `quote.py` — `fetch_quotes()`: 实时行情（腾讯主源 + 新浪备用）
-- `calendar.py` — 交易日历
+- `execution/engine.py` — **ExecutionEngine**: 订单执行 → trades.db, 除权检测, T+1 检查, 板块涨跌停
+- `execution/execution_model.py` — **ExecutionModel** (Template Method): BacktestExecutionModel / LiveExecutionModel 共用链
+- `execution/cost.py` — **CostModel**: 统一成本模型 (佣金万三 + 最低¥5 + 印花税万五(B-21: 2023-08-28减半) + 滑点千一 + Almgren-Chriss 冲击)
+- `execution/impact.py` — Almgren-Chriss (2001) 市场冲击模型: sqrt(Q/V)
+- `execution/stop_loss.py` — **RiskManager**: ATR(20)三重止盈止损 + 固定硬止损 + 冷却注册表
+- `execution/quote.py` — `fetch_quotes()`: 腾讯主源 + 新浪备用 + 并行batch + 五档盘口
+- `execution/calendar.py` — 交易日历: akshare + 手动节假日 + rebalance_day 判定
+- `execution/market_microstructure.py` — Roll(1984) 有效价差估计
+- `execution/broker_adapter.py` — **BrokerAdapter** (ADR-036): SimulatedAdapter / VnpyCtpAdapter / VnpyXtpAdapter
 
 ### Layer 7: Monitor (`monitor/`)
-- `attribution.py` — Brinson 归因 + IC 衰减自动检测: active→monitoring (衰减>30%), monitoring→retired (持续≥10天)
-- `report.py` — `generate_report()`: 日报 → JSON → Web 推送
+- `monitor/attribution.py` — Brinson 归因 + IC 衰减自动检测
+- `monitor/report.py` — 日报生成 + Web 推送
+- `monitor/alerts.py` — 告警系统
+- `monitor/factor_attribution.py` — 因子贡献归因
+- `monitor/metrics.py` — 性能指标埋点
+- `monitor/notify.py` — 通知推送
+
+### 非 Layer 模块
+- `backtest/` — 四层回测引擎 (loop/broker/bridge/analyze/naming)
+- `evaluation/` — 8阶段评估管线 (Phase1-8: 数据→单因子→OOS→成本→监控→回测→Walk-forward→实盘一致性)
+- `regime/` — HMM 3状态市场体制检测 (bull/bear/sideways) + 条件因子权重
+- `benchmark/` — 基准跟踪
+- `scheduler/` — 日频任务编排器 (orchestrator/evening/weekly/execute/monitor/factor_cache/order_manager)
 
 ## Data flow
 
 ```
 quant/scheduler/ (单线程编排器: 08:30 信号 → 09:30 执行 → 09:35-11:30,13:00-14:55 盘中风控(午休跳过) → 15:30 归因+IC衰减检测)
-  └─ pipeline.py.run(date)
-       ├─ Step 1: DataStore.update_daily()
-       ├─ Step 2: factor/ic.py → IC/IR report
-       ├─ Step 3: alpha/model.py → predict → cross_sectional_rank
-       ├─ Step 4: risk/neutralize.py + risk/constraints.py → filter
-       ├─ Step 5: optimizer/portfolio.py → construct → TargetPortfolio
-       ├─ Step 6: execution/engine.py → execute → trades.db
-       └─ Step 7: monitor/report.py → push to web/shared.py
+  └─ pipeline.py.generate_signals(date)  ← 阶段一: 盘前信号生成
+       ├─ Step 0: ExecutionEngine + PortfolioConstructor 初始化
+       ├─ Step 1: DataStore.update_daily() 增量同步
+       ├─ Step 2: UniverseRepo + risk pre-filters → investable universe
+       ├─ Step 3: FactorStore.load() 读取因子缓存 → AlphaModel.combine() → AlphaModel.rank()
+       ├─ Step 4: neutralize() + covariance_matrix(Ledoit-Wolf) + VaR check
+       ├─ Step 5: PortfolioConstructor.construct() → target_positions
+       └─ Step 6 (另开): execute_signals() → ExecutionModel.run() → 执行交易
+
+  └─ pipeline.py.execute_signals()   ← 阶段二: 开盘执行
+       ├─ ExecutionModel.run() (BacktestExecutionModel / LiveExecutionModel)
+       ├─ 冷却过滤 → 硬止损 → delta → validate+alpha裁剪 → 成交
+       └─ Step 7: generate_report() → push_to_web()
 ```
 
 Each step has independent try/except — failure in one layer does not block later layers.
 
+## Test suite
+
+```bash
+# 221 tests (test/ directory, not tests/)
+PYTHONPATH=. python3 -m pytest test/ -v
+
+# 运行特定模块
+PYTHONPATH=. python3 -m pytest test/test_broker_adapter.py -v   # 35 broker tests
+PYTHONPATH=. python3 -m pytest test/test_execution.py -v        # 8 execution tests
+```
+
 ## Key design decisions
 
-- **截面 Rank IC**: Spearman 秩相关评估因子预测力，对异常值鲁棒
-- **Ledoit-Wolf 收缩**: 协方差估计优于样本估计，适合高维截面（~5000 股票 × 60 日）
-- **资本自适应优化**: <2万等权 → 2-10万得分倾斜 → >10万均值-方差 + 整数约束。方法随资金增长自动升级
-- **统一成本模型**: `CostModel` 是所有模拟交易的唯一成本入口，确保绩效可比
-- **配置驱动**: 所有阈值从 `config.yaml` 读取，通过 `_require_cfg()` 取值，key 缺失即崩溃（零 fallback）
-- **独立策略多 track**: `strategy_config` 表允许多策略并行运行，各自独立资金核算
+| Decision | Choice | Why |
+|---|---|---|
+| Factor normalization | Winsorize 1%/99% + MAD z-score | Barra USE4; more robust than mean/std (ADR-037) |
+| Alpha synthesis | Sleeve (default) / IC-weighted / LGB | Sleeve preserves factor independence; LGB for nonlinear (ADR-035) |
+| Factor evaluation | 8-phase pipeline + Spearman Rank IC | CPCV + walk-forward + PBO; industry standard |
+| Covariance | Ledoit-Wolf shrinkage | Better than sample for high dim (~5000 stocks × 60d) |
+| Portfolio construction | Capital-adaptive 3-tier | Nano(<¥30K)/Micro(¥30-100K)/Small(>¥100K); auto-upgrades |
+| Execution model | Template Method (Backtest/Live shared chain) | Backtest and live share same delta/validate/trim logic (ADR-036) |
+| Broker integration | Adapter pattern (simulated/vnpy) | Swap config key to switch; zero-impact default (ADR-036) |
+| Cost model | Unified CostModel (commission+stamp+impact) | Almgren-Chriss impact; stamp tax 0.05% since 2023-08-28 (B-21) |
+| Performance | 52 precomputed primitives + factor cache | Eliminates redundant rolling stats; shortcut map for speed |
 
 ## Logging convention
 
@@ -225,25 +290,19 @@ PYTHONPATH=. bash scripts/eval_standard.sh
 
 | 文档 | 内容 |
 |------|------|
-| `docs/DATA_DICTIONARY.md` | 数据字典 (market.db / trades.db 全表全字段) |
-| `docs/research/A股有效因子普查_2026-07-07.md` | 因子普查汇总 (12家券商研报) |
-| `docs/research/因子失效记录_2026-07-07.md` | 24因子失效记录与原因 |
-| `docs/research/四因子接入分析_2026-07-07.md` | OIR/STR/ABN_TURN/OCFP 接入分析 |
-| `docs/research/oir-factor-deep-dive.md` | OIR 计算细节 |
-| `docs/research/str-factor-deep-dive.md` | STR 计算细节 |
-| `docs/research/abn-turnover-factor-deep-dive.md` | ABN_TURN 计算细节 |
-| `docs/research/ocfp-factor-deep-dive.md` | OCFP 计算细节 |
-| `docs/research/A股量化因子全量研究报告_2026-07-07.md` | 涨跌停制度特有效因子 (50+因子) |
-| `docs/research/涨跌停因子接入分析_2026-07-07.md` | P71 四因子接入分析 |
-| `docs/research/数据源适配因子清单_2026-07-07.md` | P72 数据源适配 — 55因子, 3个落地 |
-| `docs/research/量化因子回测策略业界标准_2026-07-07.md` | 业界标准 — 5阶段流程(CPCV+walk-forward+PBO) |
-| `docs/research/回测策略业界标准分析_2026-07-07.md` | 标准分析 + 与当前流程对比 |
-| `docs/adr/025-launchd-keepalive-policy.md` | ADR 025: KeepAlive 策略 — scheduler ✅ / webapp ❌ |
+| `docs/adr/` | Architecture Decision Records (37+) |
+| `docs/adr/ADR-035-infrastructure-replacement-analysis.md` | 基础设施替换分析 (NautilusTrader/vnpy/Qlib) |
+| `docs/adr/ADR-036-vnpy-execution-integration.md` | vnpy BrokerAdapter 集成方案 |
+| `docs/adr/ADR-037-factor-audit-fixes.md` | 因子计算审计修复 (winsorize+MAD/衰减/注释) |
+| `docs/architecture/` | Data dictionary, data sources |
+| `docs/research/` | Factor research papers |
+| `docs/reports/` | Audit and analysis reports |
+| `HANDOFF.md` | 变更日志 (每次改动后更新) |
 
 ## Data quirks (not bugs)
 
 ### Cash balance ≠ initial_capital - Σ(stock_cost)
-差额是交易成本：佣金(万三，最低¥5/笔) + 滑点(千一，双向)。CostModel 在 `execution/cost.py`。
+差额是交易成本：佣金(万三，最低¥5/笔) + 印花税(万五, 2023-08-28减半) + 滑点(千一，双向)。CostModel 在 `execution/cost.py`。
 验证方法：
 ```python
 python3 -c "

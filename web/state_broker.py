@@ -10,8 +10,11 @@ import json as _json
 import threading as _threading, queue
 import os as _os
 import logging
+import time as _time
+import copy as _copy
 
 _FINANCIAL_KEYS = ("capital", "total_asset", "pnl", "metrics", "pos_value", "positions")
+_STATE_TTL = 3.0  # B-27 fix: 财务状态缓存 TTL (秒)
 
 
 class InProcessBroker:
@@ -23,6 +26,8 @@ class InProcessBroker:
         self._cache: dict = {}          # pipeline 进度/信号 (非财务数据)
         self._quote_ts = 0.0
         self._quote_result = None
+        self._state_cache: dict = {}    # B-27 fix: _init_state 结果 TTL 缓存
+        self._state_ts = 0.0
         self._init_state()
         self._start_quote_thread()
 
@@ -236,7 +241,21 @@ class InProcessBroker:
 
     def get(self) -> dict:
         """获取完整状态: trades.db 财务数据 + pipeline 进度/信号 overlay。"""
-        state = self._init_state()
+        # B-27 fix: 财务状态做 TTL 缓存 (原每次 get() 全量重建 → 4 类 DB 查询/次,
+        # SSE 轮询下 DB 压力线性放大); overlay (quotes/status) 仍实时计算
+        now = _time.monotonic()
+        with self._lock:
+            if self._state_cache and (now - self._state_ts) < _STATE_TTL:
+                # 深拷贝: _quote_overlay 会原地改写 pnl/metrics/positions,
+                # 浅拷贝会把缓存污染
+                state = _copy.deepcopy(self._state_cache)
+            else:
+                state = None
+        if state is None:
+            state = self._init_state()
+            with self._lock:
+                self._state_cache = _copy.deepcopy(state)
+                self._state_ts = _time.monotonic()
         with self._lock:
             cached = dict(self._cache)
         # pipeline 进度/信号 overlay (signals/progress/mood/trace_id/timestamp)

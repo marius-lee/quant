@@ -17,7 +17,11 @@ def main():
 
     if task == "signals":
         from quant.pipeline import generate_signals
-        result = generate_signals(date_str=date, skip_pull=True)
+        from quant.factor.store import FactorStore
+        from quant.config.paths import FACTOR_CACHE_DB
+        fs = FactorStore(db_path=FACTOR_CACHE_DB)
+        result = generate_signals(date_str=date, skip_pull=True, factor_store=fs)
+        fs.close()
         _log.info(f"signals done: {len(result.get('target_positions', []))} targets")
     elif task == "execute":
         from quant.pipeline import execute_signals

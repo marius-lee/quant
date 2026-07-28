@@ -35,7 +35,7 @@ def test_no_duplicate_keys_in_maps():
 
 def test_no_duplicate_function_definitions():
     """Verify no compute_ function is defined more than once in compute.py."""
-    import quant.factor.compute as fc as fc
+    import quant.factor.compute as fc
 
     with open(fc.__file__) as f:
         counts = {}
@@ -51,7 +51,7 @@ def test_no_duplicate_function_definitions():
 
 def test_no_duplicate_helper_definitions():
     """Verify no helper function is defined more than once."""
-    import quant.factor.compute as fc as fc
+    import quant.factor.compute as fc
 
     with open(fc.__file__) as f:
         counts = {}

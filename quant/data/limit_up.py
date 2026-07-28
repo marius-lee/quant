@@ -110,6 +110,8 @@ def sync_date(date_str: str, conn=None) -> int:
               row.get('industry')))
         n += 1
     conn.commit()
+    if close_conn:
+        conn.close()
     logger.info(f"limit_up: {date_str} — {n} stocks")
     
     return n

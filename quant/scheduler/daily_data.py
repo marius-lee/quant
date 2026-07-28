@@ -68,12 +68,14 @@ def _run(today: str):
         # ── daily_valuation 估值增量同步 (审计 P0-4) ──
         # 严格 PIT 改造后估值因子只认本表; 曾停滞 2026-07-03 → 缺口期因子 NaN。
         # 增量 14 天窗口 (已同步日期自动跳过), 失败不阻塞主链。
+        # 2026-07-27 换源: tushare 档位不足 + JQ 窗口(前15月~前3月)外
+        # → 东财 datacenter (em_valuation) 承接近 3 个月; JQ 留作历史回补。
         try:
-            from quant.data.jq_valuation import sync_range as _jv_sync
+            from quant.data.em_valuation import sync_range as _em_sync
             from datetime import datetime as _dt2, timedelta as _td2
-            _jv_start = (_dt2.strptime(today, "%Y-%m-%d") - _td2(days=14)).strftime("%Y-%m-%d")
-            _jv_sync(start=_jv_start, end=today)
-            _log.info(f"[{today}] daily_valuation sync done ({_jv_start}..{today})")
+            _em_start = (_dt2.strptime(today, "%Y-%m-%d") - _td2(days=14)).strftime("%Y-%m-%d")
+            _em_sync(start=_em_start, end=today)
+            _log.info(f"[{today}] daily_valuation sync done ({_em_start}..{today}, eastmoney)")
         except Exception:
             _log.warning(f"[{today}] daily_valuation sync failed: {traceback.format_exc()}")
 

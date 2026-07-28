@@ -3,6 +3,59 @@
 > **修改前**: `rg "关键词" HANDOFF.md HYPOTHESES.md docs/adr/` 三文件联动搜索，
 > 避免重复踩坑、重新讨论已否决方案、遗漏已有设计。
 
+
+## test-v246 (2026-07-28): ADR-035~041 全量会话 — 架构审计+因子重构+状态机+参数对齐
+
+### 架构分析 (ADR-035)
+- 三模块替换分析: NautilusTrader(否决)/vnpy(部分替换)/Qlib(辅助)
+- vnpy BrokerAdapter 模式落地 (ADR-036)
+- LightGBM 非线性 alpha 模型 (ADR-036 Phase 2)
+
+### 因子体系重构 (ADR-037~040)
+- _cs_zscore: mean/std → winsorize+MAD (Barra标准)
+- 基本面季报真空期指数衰减
+- 动量/反转/隔夜缺口注释统一
+- 因子缓存: SQLite 10GB → gzip CSV 459MB (ADR-039)
+- 新增5因子: amihud_20d/turnover_adj_amihud_20d/lhb_intensity_5d/lhb_reversal_5d/lhb_freq_60d (ADR-040)
+- AI表达式编译器 expr_compiler.py (ADR-040 Phase 1)
+
+### 业务链路改进 (ADR-038)
+- 冷却期过滤提前到信号生成阶段
+- LightGBM 夜间链自动重训 (周一/四)
+- 因子冗余同向检测 (G5)
+- Web 仪表盘 LGB 模型状态面板
+- 回测结果 DB 持久化 (backtest_runs 表)
+- 信号质量对比 API
+
+### 因子状态机简化 (ADR-041 方案B)
+- 5状态 → 4状态: candidate→evaluating, monitoring→probation, retired+rejected→archived
+- rolling t-test 替代硬时间阈值
+- 新增 DATA_SOURCE_DEAD 快速降级路径
+- 统一 FactorStateManager.transition() 入口
+
+### 参数对齐 (ADR-041)
+- 16个参数对齐业界标准 (Barra/UCITS/De Prado/Qlib/Wilder)
+- config.yaml 追加完整参数来源对照表 (40行)
+- sample_interval 5→3 (IC采样密度对齐Qlib)
+- min_is_points 保持20 (Qlib标准)
+
+### 回测结果
+- Smoke: Sharpe=0.39, CAGR=2.2%, MDD=-28.7% (¥5K Nano)
+- Full:  Sharpe=0.67, CAGR=6.7%, MDD=-7.6% (¥50K Small, 首次入库)
+
+### 文档
+- README.md: 因子65、8阶段评估、221测试、Template Method执行
+- CLAUDE.md: 完整架构模块更新、数据流修正、命令更新
+- docs/adr/: ADR-035~041 共7份
+- docs/research/ai-factor-search-analysis.md
+
+### 代码变更统计
+- 新增文件: ~10 (broker_adapter, qlib_model, lgb_train, expr_compiler, validate脚本, ADR×7)
+- 修改文件: ~25 (store→gzip CSV, 状态机重构, 因子函数, 配置, 文档)
+- 测试: 185 → 221 (新增 broker_adapter 35 + 修订 zscore)
+
+
+
 ## test-v306 (进行中, P0+P1-6/7 已提交): 独立代码审计修复 — 数据层防腐 + PIT 收口
 
 **断点 (2026-07-26 晚, 上下文重启备份)**: 接续口令 "继续 test-v306"。
@@ -49,9 +102,25 @@ fail-fast — 权限/日配额错误识别为致命 (FatalSourceError) 即终止
 **数据清理**: 删 margin_detail 2072 行紧凑格式重复行 ('20260701' 与
 '2026-07-01' 并存致 MAX(date) 失真 → watchdog 误报 stale + P0-3 会错杀
 margin 因子; 备份 logs/margin_detail_20260701_compact_backup.csv)。
-**待办**: ① 等用户 JQ 凭据或决定换源 (legulegu/akshare); ② fund_flow
-等东财解封 (scripts/v306_overnight.sh 探测逻辑可复用) 或换网络环境;
-P1-5 turnover 回填 (baostock, 与 fund_flow 撞库风险, 需串行)。
+**2026-07-27 运维决策 (用户拍板)**:
+- **fund_flow_3m / short_interest → rejected** (FactorStateManager 执行,
+  原因写入 status_reason): 物化池 (backtesting∪using) 现为 65/65。
+  short_interest 原系评估退役, 数据源 margin_detail 健康; fund_flow_3m
+  系东财封禁无法物化。恢复路径: rejected 无自动转换, 需人工
+  RETRY_RESTORE 式操作回 candidate。
+- **② fund_flow 数据拉取挂起**: 东财 push2his 服务级封禁 (2026-07-26
+  19:04 起 >14h, 家庭宽带+手机热点双 IP 实证 rc=52 → 非 IP 封, 疑指纹/
+  服务级), 但同东财 datacenter-web 域名畅通 → 后续换源 (datacenter
+  资金流报表或新浪/腾讯) 再恢复, 恢复后重新全量 + 因子回池。
+- **JQ 凭据已接入**: .env (gitignored) + run_task.sh 自动 source;
+  jqdatasdk 1.9.8 已装。实测认证 OK (100万条/日), 但该账号数据窗口 =
+  前15个月~前3个月 (用户提供) → 近 3 个月估值/财务 JQ 管不了。
+- **① 估值缺口改用东财 datacenter (RPT_VALUEANALYSIS_DET)**: 字段
+  PE_TTM/PB_MRQ/PS_TTM/PCF_OCF_TTM/TOTAL_MARKET_CAP 全覆盖, 按日分页
+  ~12 页/日 → 写 quant/data/em_valuation.py 补 07-06..07-24 + 接晚间链。
+- ⑦ 财务: JQ 窗口内 (2026Q1 财报 4 月发布, 在窗口内) 可补; 需新写
+  jq_financials 抓取层 (现只有 upsert 层, 无 fetch 代码)。
+- P1-5 turnover 回填 (baostock): 排今晚 21:00 后 (避开 19:00 晚间链)。
 
 **原夜间链说明**: `scripts/v306_overnight.sh` 前台会话托管 — 东财解封
 探测 (15min/次, 截止 23:30) → ② fund_flow 全量 → 次日 00:05 ① → ④ → ⑤。

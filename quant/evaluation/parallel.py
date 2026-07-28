@@ -34,7 +34,9 @@ def _evaluate_batch(args):
     results = {}
 
     from quant.data.store import DataStore
-    from quant.factor.compute import compute_all_factors, _PRICE_FN_MAP, _FUNDAMENTAL_FN_MAP
+    from quant.factor.compute import _PRICE_FN_MAP, _FUNDAMENTAL_FN_MAP
+    from quant.factor.store import FactorStore
+    from quant.config.paths import FACTOR_CACHE_DB
 
     store = DataStore()
     n_symbols = kwargs.get("n_symbols", 500)
@@ -56,8 +58,15 @@ def _evaluate_batch(args):
     if data is None or data.empty:
         return results
 
-    # Compute all factors for this date
-    all_factors = compute_all_factors(data, date_str, fundamentals=fundamentals)
+    # 从 FactorStore 缓存读取因子值
+    _fs = FactorStore(db_path=FACTOR_CACHE_DB)
+    all_factors = _fs.load(date_str, symbols=symbols, factor_names=factor_names)
+    _fs.close()
+    if not all_factors:
+        raise RuntimeError(
+            f"factor_cache miss for {date_str} ({len(symbols)} symbols, "
+            f"{len(factor_names)} factors), run materialization first"
+        )
 
     # Filter to only our batch
     for name in factor_names:

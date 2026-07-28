@@ -501,3 +501,78 @@ def compute_analyst_buy(data: "pd.DataFrame", date: str, window: int = 0, aux=No
     result = pd.Series(scores, dtype=float)
     result = result.reindex(symbols).fillna(0.5)  # 无数据 -> 中性
     return _cs_zscore(result).rename("analyst_buy")
+
+
+# ═══════════════════════════════════════════════════════════
+# 龙虎榜增强因子 (ADR-040) — lhb_detail 表已有 post_1/2/5/10d + net_buy/circ_mv
+# ═══════════════════════════════════════════════════════════
+
+def compute_lhb_intensity(data, date: str, window: int = 5, aux=None):
+    """龙虎榜资金强度: avg(net_buy / circ_mv) over window days。
+    来源: 东方财富龙虎榜。净买入额占流通市值比例 → 主力资金强度。
+    高分 = 近期龙虎榜净买入强度大 → 主力看好。
+    """
+    symbols = list(data["close"].columns)
+    if aux is None or "lhb" not in aux:
+        return pd.Series(np.nan, index=symbols, name=f"lhb_intensity_{window}d")
+    lhb = aux["lhb"]
+    if lhb.empty or "trade_date" not in lhb.columns:
+        return pd.Series(np.nan, index=symbols, name=f"lhb_intensity_{window}d")
+    cutoff = (pd.Timestamp(date) - pd.Timedelta(days=window + 5)).strftime("%Y-%m-%d")
+    recent = lhb[lhb["trade_date"] >= cutoff]
+    if recent.empty:
+        return pd.Series(np.nan, index=symbols, name=f"lhb_intensity_{window}d")
+    # net_buy / circ_mv → intensity
+    recent = recent.copy()
+    recent["intensity"] = recent["net_buy"] / recent["circ_mv"].replace(0, np.nan)
+    avg = recent.groupby("symbol")["intensity"].mean()
+    result = pd.Series(0.0, index=symbols)
+    result.loc[avg.index] = avg.values
+    return _cs_zscore(result).rename(f"lhb_intensity_{window}d")
+
+
+def compute_lhb_reversal(data, date: str, window: int = 5, aux=None):
+    """龙虎榜上榜后反转: -avg(post_{window}d) over recent appearances。
+    来源: A股实证 — 龙虎榜上榜后短期常有反转 (散户跟风→主力出货)。
+    高分 = 上榜后跌幅大 → 反转买入信号。
+    """
+    symbols = list(data["close"].columns)
+    if aux is None or "lhb" not in aux:
+        return pd.Series(np.nan, index=symbols, name=f"lhb_reversal_{window}d")
+    lhb = aux["lhb"]
+    if lhb.empty:
+        return pd.Series(np.nan, index=symbols, name=f"lhb_reversal_{window}d")
+    cutoff = (pd.Timestamp(date) - pd.Timedelta(days=30)).strftime("%Y-%m-%d")
+    recent = lhb[lhb["trade_date"] >= cutoff]
+    if recent.empty:
+        return pd.Series(np.nan, index=symbols, name=f"lhb_reversal_{window}d")
+    col = f"post_{window}d"
+    if col not in recent.columns:
+        return pd.Series(np.nan, index=symbols, name=f"lhb_reversal_{window}d")
+    # -post_return: 越大跌幅 → 越高反转预期
+    avg = recent.groupby("symbol")[col].mean() * -1
+    result = pd.Series(0.0, index=symbols)
+    result.loc[avg.index] = avg.values
+    return _cs_zscore(result).rename(f"lhb_reversal_{window}d")
+
+
+def compute_lhb_frequency(data, date: str, window: int = 60, aux=None):
+    """龙虎榜上榜频率: log(1 + count) over window days。
+    来源: A股实证 — 频繁上榜的股票波动大、散户关注度高。
+    过高频率 = 过度投机 → 负向信号。取负号: 低频率→高分。
+    """
+    symbols = list(data["close"].columns)
+    if aux is None or "lhb" not in aux:
+        return pd.Series(np.nan, index=symbols, name=f"lhb_freq_{window}d")
+    lhb = aux["lhb"]
+    if lhb.empty:
+        return pd.Series(np.nan, index=symbols, name=f"lhb_freq_{window}d")
+    cutoff = (pd.Timestamp(date) - pd.Timedelta(days=window + 5)).strftime("%Y-%m-%d")
+    recent = lhb[lhb["trade_date"] >= cutoff]
+    if recent.empty:
+        return pd.Series(np.nan, index=symbols, name=f"lhb_freq_{window}d")
+    counts = recent.groupby("symbol").size()
+    freq = np.log1p(counts)
+    result = pd.Series(0.0, index=symbols)
+    result.loc[freq.index] = -freq.values  # 负号: 高频→低分
+    return _cs_zscore(result).rename(f"lhb_freq_{window}d")

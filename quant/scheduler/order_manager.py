@@ -6,9 +6,11 @@ Monitor 每 5s 调一次 check_and_manage, 不靠定时轮询。
 状态机: pending → filled | cancelled → (force_filled)
 事件触发:
   A: ask ≤ limit_price → 成交
-  B: ask < limit_price 且价差 > chase_threshold → 追价 (上调限价)
   C: ask > limit_price 且价差 > runaway_threshold → 放弃, 市价买入
   D: 时间 ≥ force_fill_time → 全部未成交市价补单
+
+ (B-11 fix: 原事件 B "ask 远低于 limit → 追价下调" 不可达 — ask ≤ limit 已被
+  事件 A 成交, 且买价走低时主动下调限价等于放弃更优成交价, 逻辑上也不成立, 已移除)
 """
 from quant.utils.logger import get_logger
 _log = get_logger(__name__)
@@ -18,6 +20,7 @@ from datetime import datetime, time
 from dataclasses import dataclass
 from typing import Optional
 from quant.config.constants import _require_cfg
+from quant.execution.cost import CostModel
 from quant.config.paths import TRADE_DB
 
 
@@ -187,16 +190,6 @@ class OrderManager:
                 _log.info(f"[order_manager] filled {po.symbol} @¥{ask:.2f} ≤ "
                           f"limit=¥{po.limit_price:.2f}")
 
-            elif gap < -CHASE_THRESHOLD:
-                # 事件 B: 当前价比限价低很多 (价格跌了, 可以更便宜买) → 追价下调
-                new_limit = round(ask * (1 - DISCOUNT_PCT), 2)
-                self._chase(po.id, new_limit)
-                actions.append({"symbol": po.symbol, "action": "chase",
-                                "old_limit": po.limit_price, "new_limit": new_limit})
-                _log.info(f"[order_manager] chase {po.symbol}: "
-                          f"¥{po.limit_price:.2f} → ¥{new_limit:.2f} "
-                          f"(ask=¥{ask:.2f}, chase#{po.chase_count+1})")
-
             elif gap > RUNAWAY_THRESHOLD:
                 # 事件 C: 价格跑远了 → 取消限价, 市价买入
                 self._cancel(po.id, "runaway")
@@ -211,23 +204,62 @@ class OrderManager:
 
     # ── 内部操作 ──
     def _fill(self, po: PendingOrder, price: float, day: str):
-        """执行成交: 写入 sim_trades + 更新 pending 状态."""
+        """执行成交: 通过 broker_adapter (ADR-036) 或 engine.execute (回退)."""
         from quant.execution.engine import ExecutionEngine, Order
-        engine = ExecutionEngine()
-        cost_est = round(price * po.target_shares * 1.001 + 5.0, 2)
-        cash = engine.get_cash(po.strategy)
-        if cash < cost_est:
-            _log.warning(f"[order_manager] insufficient cash for {po.symbol}: "
-                         f"need ¥{cost_est:.2f}, have ¥{cash:.2f} — cancelling")
-            self._cancel(po.id, "insufficient cash")
-            return
-        engine.execute(
-            [Order(symbol=po.symbol, side="buy", shares=po.target_shares,
-                   price=round(price, 2), cost=5.0)],
-            day, strategy=po.strategy)
+        from quant.execution.broker_adapter import get_broker_adapter
+        cost_model = CostModel.from_config()
+        cost_est = cost_model.buy_cost(price, po.target_shares)
+
+        # ADR-036: 尝试通过 broker adapter 下单
+        try:
+            adapter = get_broker_adapter()
+        except Exception:
+            adapter = None
+
+        if adapter is not None and adapter.is_connected() and not adapter.name == "simulated":
+            # 真实券商路径: 通过 adapter 下单
+            result = adapter.buy(po.symbol, price, po.target_shares, order_type="MARKET")
+            if not result.success:
+                if "insufficient" in str(result.error).lower():
+                    _log.warning(f"[order_manager] insufficient cash for {po.symbol}: "
+                                 f"{result.error} — cancelling")
+                    self._cancel(po.id, "insufficient cash")
+                    return
+                _log.error(f"[order_manager] broker buy failed: {po.symbol}: {result.error}")
+                return
+            # 成交成功 — 同步写入 sim_trades (保持 DB 一致)
+            try:
+                engine = ExecutionEngine()
+                engine.execute(
+                    [Order(symbol=po.symbol, side="buy", shares=po.target_shares,
+                           price=round(price, 2),
+                           cost=cost_model.commission(price * po.target_shares))],
+                    day, strategy=po.strategy)
+            except Exception as _e:
+                _log.warning(f"[order_manager] sim_trades sync failed (non-fatal): {_e}")
+        else:
+            # 模拟路径: engine.execute 直接写 sim_trades
+            engine = ExecutionEngine()
+            cash = engine.get_cash(po.strategy)
+            if cash < cost_est:
+                _log.warning(f"[order_manager] insufficient cash for {po.symbol}: "
+                             f"need ¥{cost_est:.2f}, have ¥{cash:.2f} — cancelling")
+                self._cancel(po.id, "insufficient cash")
+                return
+            executed = engine.execute(
+                [Order(symbol=po.symbol, side="buy", shares=po.target_shares,
+                       price=round(price, 2),
+                       cost=cost_model.commission(price * po.target_shares))],
+                day, strategy=po.strategy)
+            if executed == 0:
+                _log.warning(f"[order_manager] engine skipped buy for {po.symbol} "
+                             f"(ex-dividend?) — cancelling pending order")
+                self._cancel(po.id, "engine_skip")
+                self._note_signal(day, po.symbol, "engine_skip")
+                return
         c = _conn()
         c.execute(
-            "UPDATE pending_orders SET status='filled', filled_at=datetime('now'), "
+            "UPDATE pending_orders SET status='filled', filled_at=datetime('now','localtime'), "
             "filled_shares=?, filled_price=? WHERE id=?",
             (po.target_shares, price, po.id))
         c.commit()

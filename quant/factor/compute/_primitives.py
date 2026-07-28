@@ -11,8 +11,10 @@
 import numpy as np
 import pandas as pd
 from quant.utils.logger import get_logger
+from quant.config.constants import _require_cfg
 
 _log = get_logger("factor.primitives")
+
 
 
 def precompute_primitives(data: pd.DataFrame) -> dict:
@@ -78,7 +80,7 @@ def precompute_primitives(data: pd.DataFrame) -> dict:
         _log.info(f"  primitives: cum_log_{w} (window={w})")
         prims[f"cum_log_{w}"] = log_ret.rolling(w, min_periods=max(w//2, 1)).sum()
         # 滚动波动率
-        prims[f"vol_{w}"] = log_ret.rolling(w, min_periods=max(w//2, 1)).std() * np.sqrt(252)
+        prims[f"vol_{w}"] = log_ret.rolling(w, min_periods=max(w//2, 1)).std() * np.sqrt(_require_cfg("market.annual_trading_days"))
         # 滚动均值收益
         prims[f"mean_log_{w}"] = log_ret.rolling(w, min_periods=max(w//2, 1)).mean()
     
@@ -221,7 +223,7 @@ def _rsi_reversal(prims: dict, date: str, window: int):
 def _volume_ratio(prims: dict, date: str, window: int):
     """量比 = vol_ma_N / vol_ma_L"""
     from quant.factor.registry import _cs_zscore
-    from quant.config.constants import _VOL_RATIO_LONG
+    from quant.config.constants import _require_cfg,  _VOL_RATIO_LONG
     s_key = f"vol_ma_{window}"
     l_key = f"vol_ma_{_VOL_RATIO_LONG}"
     short_avg = prims[s_key].loc[date]
@@ -311,7 +313,7 @@ def _idio_vol(prims: dict, date: str, window: int):
     if "benchmark_ret" not in prims:
         return pd.Series(np.nan, index=prims["log_ret"].columns, name=f"idio_vol_{window}d")
     residual_ret = prims["log_ret"].sub(prims["benchmark_ret"], axis=0)
-    vol = residual_ret.rolling(window, min_periods=max(window // 2, 1)).std() * np.sqrt(252)
+    vol = residual_ret.rolling(window, min_periods=max(window // 2, 1)).std() * np.sqrt(_require_cfg("market.annual_trading_days"))
     s = vol.loc[date].dropna()
     return _cs_zscore(-s).rename(f"idio_vol_{window}d")
 

@@ -1,10 +1,18 @@
-"""DatabaseManager — singleton SQLite connection factory for all Repository classes.
+"""DatabaseManager — SQLite connection factory.
+
+每个调用方获取自己的连接，用完自行关闭。无连接池，无共享状态。
 
 Usage:
-    db = DatabaseManager()
-    conn = db.get_connection("quant/data/market.db")
+    from quant.data.repos._base import DatabaseManager
+
+    conn = DatabaseManager.market()    # 新开 market.db 连接
     conn.execute("SELECT ...")
     conn.close()
+
+    conn = DatabaseManager.trades()    # 新开 trades.db 连接
+    ...
+
+Repos 层通过 get_connection(path) 取连接，语义同上（每次新开）。
 """
 
 from __future__ import annotations
@@ -14,75 +22,79 @@ import os
 import logging
 import threading
 
+from quant.config.paths import MARKET_DB, TRADE_DB, FACTOR_CACHE_DB
+
 logger = logging.getLogger(__name__)
 
 
-
 class DatabaseManager:
-    """Singleton SQLite connection manager.
+    """SQLite 连接工厂。
 
-    All Repository classes share one instance.
-    Each thread gets its own connection (sqlite3 is not thread-safe).
+    语义化访问器 (每次调用返回新连接):
+        DatabaseManager.market()       → market.db
+        DatabaseManager.trades()       → trades.db
+        DatabaseManager.factor_cache() → factor_cache.db
     """
 
-    _instance: DatabaseManager | None = None
-    _lock = threading.Lock()
+    # DB 路径 — 全部来自 quant.config.paths
+    _MARKET_DB = MARKET_DB
+    _TRADE_DB = TRADE_DB
+    _FACTOR_CACHE_DB = FACTOR_CACHE_DB
 
-    def __init__(self):
-        self._connections: dict[str, sqlite3.Connection] = {}
+    # ── 语义化访问器 (每次新开) ─────────────────────────────
 
-    @classmethod
-    def get_instance(cls) -> DatabaseManager:
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = cls()
-        return cls._instance
+    @staticmethod
+    def market() -> sqlite3.Connection:
+        return _open(MARKET_DB)
 
-    def _resolve_path(self, db_path: str) -> str:
-        """Resolve relative paths to project root."""
-        if not os.path.isabs(db_path):
-            return os.path.join(_PROJECT_ROOT, db_path)
-        return db_path
+    @staticmethod
+    def trades() -> sqlite3.Connection:
+        return _open(TRADE_DB)
 
-    def get_connection(self, db_path: str = "quant/data/market.db") -> sqlite3.Connection:
-        """Get or create a thread-local SQLite connection for the given db."""
-        full = self._resolve_path(db_path)
-        thread_id = threading.get_ident()
-        key = f"{thread_id}:{full}"
-        if key not in self._connections:
-            conn = sqlite3.connect(full, timeout=10)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=5000")
-            self._connections[key] = conn
-            logger.debug("DatabaseManager: opened %s", full)
-        return self._connections[key]
+    @staticmethod
+    def factor_cache() -> sqlite3.Connection:
+        return _open(FACTOR_CACHE_DB)
 
-    def close_all(self):
-        """Close all connections held by this manager."""
-        for key, conn in list(self._connections.items()):
-            try:
-                conn.close()
-            except Exception:
-                pass
-            del self._connections[key]
-        logger.debug("DatabaseManager: all connections closed")
+    # ── 通用访问 (repos 用，每次新开) ───────────────────────
 
+    @staticmethod
+    def get_connection(db_path: str = MARKET_DB) -> sqlite3.Connection:
+        """根据路径新开连接。相对路径以项目根目录为基准。"""
+        full = _resolve_path(db_path)
+        return _open(full)
+
+
+def _open(full_path: str) -> sqlite3.Connection:
+    """新开一个 SQLite 连接，配置 WAL + busy_timeout."""
+    c = sqlite3.connect(full_path, timeout=10)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA busy_timeout=5000")
+    logger.debug("DatabaseManager: opened %s", full_path)
+    return c
+
+
+def _resolve_path(db_path: str) -> str:
+    """相对路径 → 绝对路径 (基于项目根目录)。"""
+    if not os.path.isabs(db_path):
+        return os.path.join(_PROJECT_ROOT, db_path)
+    return db_path
+
+
+# ── 辅助查询函数 ────────────────────────────────────────────
 
 def query_row(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> sqlite3.Row | None:
-    """Return first row or None."""
     row = conn.execute(sql, params).fetchone()
     return row
 
 
 def query_all(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
-    """Return all rows as list of Row objects."""
     return conn.execute(sql, params).fetchall()
 
 
 def query_scalar(conn: sqlite3.Connection, sql: str, params: tuple = ()):
-    """Return single scalar value or None."""
     row = conn.execute(sql, params).fetchone()
     return row[0] if row else None
+
+
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))

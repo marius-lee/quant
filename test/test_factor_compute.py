@@ -18,15 +18,28 @@ class TestCrossSectionalZScore:
         s = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0], index=list("abcde"))
         result = _cs_zscore(s, min_count=3)
         assert result.notna().all()
-        assert abs(result.mean()) < 0.001  # z-score mean ≈ 0
-        assert abs(result.std() - 1.0) < 0.01  # z-score std ≈ 1
+        # MAD-based z-score: median-normalized, center ≈ 0
+        assert abs(result.median()) < 0.01
+        # Values should be in reasonable range (not absurdly large)
+        assert result.abs().max() < 5.0
 
     def test_with_outliers(self):
         s = pd.Series([1.0, 2.0, 3.0, 4.0, 100.0], index=list("abcde"))
         result = _cs_zscore(s, min_count=3)
         assert result.notna().all()
-        # outlier should have highest z-score
+        # With MAD-based z-score + winsorize (5 elements < 100 threshold),
+        # outlier still gets high z-score but not absurdly so
         assert result.loc["e"] == result.max()
+
+    def test_with_outliers_winsorized(self):
+        """With enough elements (>1/winsorize_pct), outliers are clamped."""
+        np.random.seed(42)
+        normal = np.random.normal(0, 1, 200)
+        s = pd.Series(list(normal) + [50.0, -50.0])
+        result = _cs_zscore(s, min_count=30)
+        assert result.notna().all()
+        # Winsorized: extreme values clipped → z-scores bounded
+        assert result.abs().max() < 10.0
 
     def test_insufficient_data_returns_nan(self):
         s = pd.Series([1.0, 2.0], index=list("ab"))

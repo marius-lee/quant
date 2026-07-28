@@ -92,6 +92,8 @@ def sync_single_stock(symbol: str, conn=None) -> int:
     conn.commit()
     if n > 0:
         logger.info(f"northbound: {symbol} — {n} rows synced")
+    if close_conn:
+        conn.close()
     
     return n
 

@@ -3,8 +3,8 @@
   "display_name": "gap_5d",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0284,
-  "icir_12m": 0.2422,
+  "ic_mean_12m": 0.023,
+  "icir_12m": 0.1926,
   "last_evaluated": "auto",
-  "n_obs": 63
+  "n_obs": 64
 }

@@ -7,9 +7,11 @@ MinTRL = minimum track record length for statistical significance.
 """
 import numpy as np
 from scipy.stats import norm
+from quant.config.constants import _require_cfg
 from quant.utils.logger import get_logger
 
 _log = get_logger("evaluation.deflated_sharpe")
+
 
 
 def probabilistic_sharpe_ratio(
@@ -139,7 +141,7 @@ def min_track_record_length(
 def compute_dsr_for_strategy(
     daily_returns: list[float],
     n_factors: int = 30,
-    annual_factor: float = 252.0,
+    annual_factor: float = float(_require_cfg("market.annual_trading_days")),
     skewness: float = -0.5,
     kurtosis: float = 8.0,
 ) -> dict:

@@ -151,10 +151,13 @@ def apply_diagnosis(ic_map: dict, diagnosis: dict) -> dict:
             continue
         if name in ic_map:
             entry = dict(ic_map[name])
+            # Q7-4 fix: weight 保留符号 (负 IC = 反向信号), clamp 必须按绝对值缩放
             if info["recommendation"] == "boost":
-                entry["weight"] = min(1.0, entry.get("weight", 0.1) * 1.5)
+                w = entry.get("weight", 0.1)
+                entry["weight"] = min(1.0, abs(w) * 1.5) * (1 if w >= 0 else -1)
             elif info["recommendation"] == "review":
-                entry["weight"] = max(0.01, entry.get("weight", 0.1) * 0.5)
+                w = entry.get("weight", 0.1)
+                entry["weight"] = max(0.01, abs(w) * 0.5) * (1 if w >= 0 else -1)
             new_map[name] = entry
 
     return new_map

@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
-
+from quant.config.paths import MARKET_DB
 from quant.data.repos._base import DatabaseManager, query_all, query_scalar
 
 logger = logging.getLogger(__name__)
@@ -13,13 +12,34 @@ logger = logging.getLogger(__name__)
 class UniverseRepo:
     """Queries for stock universe, daily price data, and fundamentals."""
 
-    def __init__(self, db_manager: Optional[DatabaseManager] = None,
-                 db_path: str = "quant/data/market.db"):
-        self.db = db_manager or DatabaseManager.get_instance()
+    def __init__(self, db_path: str = MARKET_DB):
         self.db_path = db_path
 
     def _conn(self):
-        return self.db.get_connection(self.db_path)
+        return DatabaseManager.get_connection(self.db_path)
+
+    def _query(self, sql, params=()):
+        conn = self._conn()
+        try:
+            return conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+
+    def _query_one(self, sql, params=()):
+        conn = self._conn()
+        try:
+            return conn.execute(sql, params).fetchone()
+        finally:
+            conn.close()
+
+    def _execute(self, sql, params=()):
+        conn = self._conn()
+        try:
+            cur = conn.execute(sql, params)
+            conn.commit()
+            return cur
+        finally:
+            conn.close()
 
     def get_symbols(self, exclude_market: str = "BJ",
                   start_date: str = None, end_date: str = None,
@@ -108,6 +128,7 @@ class UniverseRepo:
 
         rows = query_all(conn, sql, tuple(params))
         return [r[0] for r in rows]
+        conn.close()
 
     def get_stock_markets(self) -> dict[str, str]:
         """Return {symbol: market} mapping."""

@@ -27,23 +27,51 @@ _atexit.register(_close_shared)
 
 
 def _cs_zscore(series: pd.Series, min_count: int = None, sparse: bool = False) -> pd.Series:
-    """截面 z-score 标准化: (x - cross_sectional_mean) / cross_sectional_std.
-    若截面有效值 < min_count, 返回全 NaN。
-    ±inf 一律视为无效 (剔除): 上游零填充段/除零跳变产 inf, 单只 inf
-    会使 std=NaN → 全 universe 截面 NaN (test-v305 ctr_20d 实证根因)。
+    """截面稳健 z-score 标准化 (ADR-035 audit 2026-07-28 修复)。
+
+    分层处理:
+      1. 剔除 ±inf (上游除零/零填充段产 inf)
+      2. Winsorize 1%/99% 分位 → 裁剪极端值 (单日涨跌停不再污染全截面)
+      3. MAD (中位数绝对偏差) 标准化 → 比均值/std 更抗异常值
+
+    来源: Barra USE4 风险模型 → MAD 标准化;
+          Qlib / WorldQuant → winsorize 后再标准化。
+    config factor.compute.winsorize_pct 控制裁剪分位 (默认 0.01 = 1%)。
+    MAD 常数 1.4826 = 正态分布下 MAD→σ 的转换因子。
+
     sparse=True 时使用 zscore_min_count_sparse (基本面因子), 否则使用 zscore_min_count_dense (价量因子)。"""
     if min_count is None:
         key = "factor.compute.zscore_min_count_sparse" if sparse else "factor.compute.zscore_min_count_dense"
         min_count = _require_cfg(key)
     orig_index = series.index
+    # 强制转换为 float (基本面因子列可能返回 object dtype → isfinite 报错)
+    series = pd.to_numeric(series, errors='coerce')
     series = series[np.isfinite(series)]
     if series.count() < min_count:
         return pd.Series(np.nan, index=orig_index)
-    std = series.std(ddof=1)
-    if std == 0 or np.isnan(std):
-        return pd.Series(np.nan, index=orig_index)
-    # reindex 回原索引: NaN/inf 输入位置输出 NaN, 保持"输出索引==输入索引"契约
-    return ((series - series.mean()) / std).reindex(orig_index)
+
+    # Winsorize: 裁剪极端值 (涨跌停/异常波动不再污染截面)
+    pct = _require_cfg("factor.compute.winsorize_pct")
+    if pct > 0 and series.count() > max(10, 1.0 / pct):
+        lo = series.quantile(pct)
+        hi = series.quantile(1.0 - pct)
+        if hi > lo:
+            series = series.clip(lo, hi)
+
+    # MAD 标准化 (中位数绝对偏差) — 比 mean/std 抗异常值
+    # 来源: Barra USE4 risk model; Rousseeuw & Croux (1993)
+    median = series.median()
+    mad = (series - median).abs().median()
+    if mad == 0 or np.isnan(mad):
+        # MAD=0 常见于稀疏因子 (如 zt_streak/dt_streak 大部分为 0)
+        # 回退到 winsorized mean/std 标准化
+        std = series.std(ddof=1)
+        if std == 0 or np.isnan(std):
+            return pd.Series(np.nan, index=orig_index)
+        result = (series - series.mean()) / std
+        return result.reindex(orig_index)
+    result = (series - median) / (mad * 1.4826)
+    return result.reindex(orig_index)
 
 
 def _db_connect():

@@ -69,6 +69,9 @@ def start(task_name: str, date: str, dedup: bool = False, grace_seconds: int = 1
                适用于高频重复任务（如 monitor 每30s一次），防止 task_runs 膨胀。
         grace_seconds: running 行的宽限期(秒)。在此时间内视为"仍在运行"，返回 None。
                        超时则标为 aborted 并新建行。默认 120s。
+                       ⚠ 必须 ≥ 任务合法最长运行时间, 否则 cron+daemon 双调度
+                       的第二触发会误 abort 活着的任务 (僵尸进程继续持锁 →
+                       下游 database is locked)。各任务对齐 orchestrator._TIMEOUTS。
     """
     conn = _conn()
     try:
@@ -132,12 +135,10 @@ def finish(task_name: str, date: str, status: str,
             (task_name, date)
         ).fetchone()
         if row is None:
-            import logging
-            logging.getLogger(__name__).warning(
-                f"finish({task_name}, {date}) — no running row found, "
-                f"possibly already updated by another process"
+            raise RuntimeError(
+                f"task_log.finish({task_name}, {date}): no running row found "
+                f"— task may not have been started, or was already finished by another caller"
             )
-            return
         conn.execute(
             """UPDATE task_runs
                SET finished_at = ?, status = ?, error = ?, summary = ?

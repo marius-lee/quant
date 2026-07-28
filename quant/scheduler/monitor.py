@@ -23,12 +23,13 @@ _log = get_logger(__name__)
 
 # ── 风控阈值 (config-driven, 硬编码为默认值) ──
 MAX_DRAWDOWN_PCT = _require_cfg("monitor.max_drawdown_pct")
-CIRCUIT_BREAKER_PCT = 5.0
+# 报告 §6.5 fix: 原硬编码 5.0 绕过配置 → 移入 config.yaml monitor.circuit_breaker_pct
+CIRCUIT_BREAKER_PCT = _require_cfg("monitor.circuit_breaker_pct")
 CHECK_INTERVAL_SEC = 30
 QUOTE_THROTTLE_SEC = 5  # 行情 API 限频
 
 
-def _run_continuous(today: str):
+def _run_continuous_inner(today: str):
     """盘中持续风控循环 — 09:35-11:30, 13:00-14:55 每 30s 检查一次 (午休跳过)."""
     from quant.scheduler.status import register
     from web.state_broker import broker
@@ -36,7 +37,6 @@ def _run_continuous(today: str):
 
     register("monitor", "09:35-11:30,13:00-14:55", has_multiprocess=False)
 
-    _tk_start("monitor", today)
     _log.info(f"[{today}] monitor started — interval={CHECK_INTERVAL_SEC}s")
     quotes = {}  # 初始化, 由行情拉取块更新
 
@@ -54,7 +54,6 @@ def _run_continuous(today: str):
 
         if hhmm >= time(14, 55):
             pass  # 收市 (status 从 task_runs DB 读取)
-            _tk_finish("monitor", today, "ok")
             _log.info(f"[{today}] monitor stopped — market closing")
             break
 
@@ -86,10 +85,22 @@ def _run_continuous(today: str):
             dd_pct = round((1 - total / initial) * 100, 1)
             if dd_pct > MAX_DRAWDOWN_PCT:
                 alerts.append(f"回撤 {dd_pct}% > {MAX_DRAWDOWN_PCT}%")
-            if total < initial * (1 - CIRCUIT_BREAKER_PCT / 100):
+            cb_triggered = total < initial * (1 - CIRCUIT_BREAKER_PCT / 100)
+            if cb_triggered:
                 alerts.append(f"熔断! ¥{total:,.0f} < ¥{initial*0.95:,.0f}")
                 broker.update({"circuit_breaker": True,
                                "cb_reason": f"总资产 {total:,.0f} < 95%初始资金"})
+                # B-14 fix: 熔断标志持久化到 DB, 供 execute 任务消费
+                # (此前只写内存 broker state — web 与 orchestrator 是不同进程, 无人消费)
+                TradeRepo().set_flag("circuit_breaker", today)
+                TradeRepo().set_flag("circuit_breaker_reason",
+                                     f"总资产 {total:,.0f} < 95%初始资金")
+            else:
+                # 自愈: 资产回升到阈值之上 → 清除熔断标志
+                if TradeRepo().get_flag("circuit_breaker"):
+                    TradeRepo().clear_flag("circuit_breaker")
+                    TradeRepo().clear_flag("circuit_breaker_reason")
+                    _log.info(f"[{today}] circuit breaker cleared (asset recovered above 95%)")
 
         # ── ADR 033: 限价单盘中管理 (独立于持仓, 每 QUOTE_THROTTLE_SEC 拉一次行情) ──
         now_ts = _time.time()
@@ -226,7 +237,9 @@ def _run_continuous(today: str):
                             pnl_pct = (cur / cost - 1)
                         break
 
-                if "TP" in reason.upper():
+                # Q7-2 拆分: trail_lock 是锁利出场 (止盈性质, 原误标止损+冷却)
+                _is_profit = ("TP" in reason.upper()) or reason.startswith("trail_lock")
+                if _is_profit:
                     tp_key = f"{sym}:profit"
                     if tp_key not in triggered_stop:
                         _execute_sell(today, sym, sell_shares, cur, "止盈", round(pnl_pct * 100, 1))
@@ -237,6 +250,15 @@ def _run_continuous(today: str):
                     sl_key = f"{sym}:loss"
                     if sl_key not in triggered_stop:
                         _execute_sell(today, sym, sell_shares, cur, "止损", round(pnl_pct * 100, 1))
+                        # Q7-2 重构: 冷却按出场性质分档 (TradeRepo meta KV) —
+                        # hard_sl 亏损出场 → 5 天 (stop_loss_cooloff_days);
+                        # trail_sl 峰值回撤 (常为盈利后) → 2 天 (trail_sl_cooloff_days);
+                        # time_stop 温和出场 → 不冷却
+                        if reason.startswith("hard_sl"):
+                            rm.set_cooloff(sym, today)
+                        elif reason.startswith("trail_sl"):
+                            rm.set_cooloff(sym, today,
+                                           days=_require_cfg("risk.trail_sl_cooloff_days"))
                         triggered_stop.add(sl_key)
                         alerts.append(f"{sym} 止损 {pnl_pct*100:.0f}% ({reason})")
                         _m.inc("scheduler.monitor.stop_loss")
@@ -255,7 +277,33 @@ def _run_continuous(today: str):
 
 def _execute_sell(today: str, symbol: str, shares: int, price: float,
                   reason: str, pnl_pct: float):
-    """执行卖出订单 + 写入 trades DB."""
+    """执行卖出订单 — ADR-036: 优先通过 broker_adapter, 回退 engine.execute."""
+    from quant.execution.broker_adapter import get_broker_adapter
+
+    # ADR-036: 尝试 broker adapter
+    adapter = None
+    try:
+        adapter = get_broker_adapter()
+    except Exception as e:
+        _log.debug(f"broker adapter unavailable, using engine fallback: {e}")
+
+    if adapter is not None and adapter.is_connected() and not adapter.name == "simulated":
+        result = adapter.sell(symbol, price, shares, order_type="MARKET")
+        if result.success:
+            _log.warning(f"[monitor] {reason}: {symbol} {shares}股 @¥{price:.2f} "
+                         f"PnL={pnl_pct:+.1f}% (broker)")
+        else:
+            _log.error(f"[monitor] broker sell failed: {symbol}: {result.error}")
+            # 回退到模拟执行以确保止损不静默失败
+            _engine_sell(today, symbol, shares, price)
+    else:
+        _engine_sell(today, symbol, shares, price)
+        _log.warning(f"[monitor] {reason}: {symbol} {shares}股 @¥{price:.2f} "
+                     f"PnL={pnl_pct:+.1f}%")
+
+
+def _engine_sell(today: str, symbol: str, shares: int, price: float):
+    """模拟卖出 — engine.execute 写入 sim_trades。"""
     from quant.execution.engine import ExecutionEngine, Order
     engine = ExecutionEngine()
     engine.execute(
@@ -263,8 +311,6 @@ def _execute_sell(today: str, symbol: str, shares: int, price: float,
                price=round(price, 2), cost=5.0)],
         today, strategy="quant"
     )
-    _log.warning(f"[{today}] {reason}: {symbol} {shares}股 @¥{price:.2f} "
-                 f"PnL={pnl_pct:+.1f}%")
 
 
 def _outer_loop():
@@ -290,6 +336,23 @@ def _outer_loop():
 
         _time.sleep(_require_cfg("quant.scheduler.poll_interval"))
 
+
+
+def _run_continuous(today: str):
+    # grace=21600s (6h) 覆盖全天交易窗口 (test-v301: 原默认 120s → cron+daemon
+    # 双调度全天互相误 abort); rid=None 时直接返回, 否则 _tk_finish 必抛
+    # "no running row found" (原代码忽略返回值, 双触发必崩)
+    rid = _tk_start("monitor", today, grace_seconds=21600)
+    if rid is None:
+        _log.info(f"[{today}] monitor already running, skip duplicate trigger")
+        return
+    try:
+        _run_continuous_inner(today)
+        _tk_finish("monitor", today, "ok")
+    except Exception as e:
+        _log.exception(f"[{today}] monitor crashed: {e}")
+        _tk_finish("monitor", today, "failed", error=str(e))
+        raise
 
 def _loop():
     """启动风控监控 daemon 线程."""

@@ -3,8 +3,8 @@
   "display_name": "fund_change",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0067,
-  "icir_12m": 0.1252,
+  "ic_mean_12m": 0.0022,
+  "icir_12m": 0.0347,
   "last_evaluated": "auto",
   "n_obs": 64
 }

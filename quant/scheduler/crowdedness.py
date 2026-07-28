@@ -45,7 +45,8 @@ def check_factor_crowdedness(
 
     try:
         from quant.factor.compute._registry import get_factor_names
-        from quant.factor.compute import compute_all_factors
+        from quant.factor.store import FactorStore
+        from quant.config.paths import FACTOR_CACHE_DB
         from quant.factor.windows import max_factor_calendar_days
 
         active_names = get_factor_names(status_filter="using")
@@ -62,9 +63,15 @@ def check_factor_crowdedness(
             return _empty_result(len(active_names))
 
         fundamentals = store.get_fundamentals(symbols, date=today)
-        factor_values = compute_all_factors(
-            data, today, fundamentals=fundamentals, status_filter="using",
-        )
+        # 从 FactorStore 缓存读取因子值
+        _fs = FactorStore(db_path=FACTOR_CACHE_DB)
+        factor_values = _fs.load(today, symbols=symbols, factor_names=active_names)
+        _fs.close()
+        if not factor_values:
+            raise RuntimeError(
+                f"factor_cache miss for {today} ({len(symbols)} symbols, "
+                f"{len(active_names)} factors), run materialization first"
+            )
         factor_values = {k: v for k, v in factor_values.items() if isinstance(v, pd.Series)}
 
         if len(factor_values) < 2:

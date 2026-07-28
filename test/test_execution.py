@@ -1,15 +1,29 @@
 """测试 ExecutionEngine — 模拟交易执行 + 资金管理.
 
 模板 3 (TDD): 确定性输入, 状态隔离.
+每个测试前清理该 strategy 的旧数据, 防止历史运行残留污染.
 """
 import pytest
+import sqlite3
 from quant.execution.engine import ExecutionEngine, Order
+
+TRADE_DB = "quant/data/trades.db"
+
+
+def _cleanup_strategy(strategy: str):
+    """删除指定 strategy 的所有交易记录, 确保测试隔离."""
+    conn = sqlite3.connect(TRADE_DB)
+    conn.execute("DELETE FROM sim_trades WHERE strategy=?", (strategy,))
+    conn.execute("DELETE FROM strategy_config WHERE strategy=?", (strategy,))
+    conn.commit()
+    conn.close()
 
 
 class TestExecutionEngineInit:
     """初始化与资金管理."""
 
     def test_initial_capital(self):
+        _cleanup_strategy("t_ci_1")
         engine = ExecutionEngine()
         engine.set_initial_capital("t_ci_1", 10000)
         assert engine.is_initialized("t_ci_1")
@@ -21,6 +35,8 @@ class TestExecutionEngineInit:
         assert not engine.is_initialized("t_ci_nx")
 
     def test_multiple_strategies_isolated(self):
+        _cleanup_strategy("t_ms_A")
+        _cleanup_strategy("t_ms_B")
         engine = ExecutionEngine()
         engine.set_initial_capital("t_ms_A", 5000)
         engine.set_initial_capital("t_ms_B", 8000)
@@ -32,20 +48,24 @@ class TestExecutionEngineTrade:
     """买入卖出 + 持仓管理."""
 
     def test_buy_reduces_cash(self):
+        _cleanup_strategy("t_tr_b")
         engine = ExecutionEngine()
         engine.set_initial_capital("t_tr_b", 50000)
         order = Order(symbol="TICKER1", side="buy", shares=100, price=10.0, cost=0)
         result = engine.execute([order], "2026-07-09", "t_tr_b")
         assert result == 1  # 1 order executed
         remaining = engine.get_cash("t_tr_b")
-        # Buy costs: principal + commission. Should be < 50000.
-        assert 48000 < remaining < 49500  # ~49000 after expenses
+        # Buy cost: principal (100×10=1000) + commission (max(1000×0.0003,5)=5)
+        #           + slippage (1000×0.001=1) = 1006. Cash = 50000 - 1006 = 48994.
+        # 来源: A股标准费率 (config.yaml execution.commission/min_commission/stamp_tax/slippage)
+        assert remaining == 48994.0
         # Position recorded
         positions = engine.get_positions("t_tr_b")
         assert len(positions) == 1
         assert positions[0]["symbol"] == "TICKER1"
 
     def test_sell_increases_cash(self):
+        _cleanup_strategy("t_tr_s")
         engine = ExecutionEngine()
         engine.set_initial_capital("t_tr_s", 50000)
         engine.execute(
@@ -62,6 +82,7 @@ class TestExecutionEngineTrade:
         assert postcash > precash
 
     def test_positions_tracking(self):
+        _cleanup_strategy("t_tr_p")
         engine = ExecutionEngine()
         engine.set_initial_capital("t_tr_p", 100000)
         engine.execute(
@@ -76,6 +97,7 @@ class TestExecutionEngineTrade:
         assert "FAKE02" in syms
 
     def test_sell_all_reduces_position_to_zero(self):
+        _cleanup_strategy("t_tr_z")
         engine = ExecutionEngine()
         engine.set_initial_capital("t_tr_z", 50000)
         engine.execute(
@@ -90,6 +112,7 @@ class TestExecutionEngineTrade:
         assert len(positions) == 0
 
     def test_get_trades_records(self):
+        _cleanup_strategy("t_tr_r")
         engine = ExecutionEngine()
         engine.set_initial_capital("t_tr_r", 100000)
         engine.execute(

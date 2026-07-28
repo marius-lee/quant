@@ -6,6 +6,13 @@ risk_aversion (Markowitz λ):
   校准函数是模块级纯函数，不依赖 PortfolioConstructor 实例。
   来源: Markowitz (1952) 均值-方差框架, λ 决定收益/风险权衡。
   典型范围 1-10, 越低越激进 (追求收益), 越高越保守 (规避风险)。
+
+交易成本感知 (§8.3, Grinold α − λ·TC 无交易区间):
+  construct() 接受 current_lots + cost_model 后, 对各层产出的理想目标做
+  换仓成本过滤: 持仓 A → 候选 B 的换股仅在预期收益差 ≥ λ × 实际成本时执行。
+  E[Δr] = (z_B − z_A) × IC_eff × σ_daily × horizon (Grinold 基本法则),
+  成本由 CostModel 实算 (含 ¥5 最低佣金, Nano 层一次全仓换股 ≈ 0.47%)。
+  来源: Grinold & Kahn (2000) Ch.16; Gârleanu & Pedersen (2013)。
 """
 from quant.utils.logger import get_logger
 logger = get_logger("optimizer.portfolio")
@@ -13,6 +20,7 @@ logger = get_logger("optimizer.portfolio")
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass, field
+from statistics import NormalDist
 from typing import Optional
 
 
@@ -23,6 +31,7 @@ class TargetPortfolio:
     cash_reserve: float
     method: str
     total_value: float = 0.0
+    tc_suppressed: int = 0   # §8.3: 被成本带拦截的换仓笔数 (0=未启用或无拦截)
 
     @property
     def positions(self) -> int:
@@ -36,6 +45,43 @@ class TargetPortfolio:
 from quant.config.constants import _require_cfg
 LOT_SIZE = _require_cfg("backtest.lot_size")  # A股每手 100 股, ① 交易所规则
 
+# ── §8.3 成本带参数 (config.yaml optimizer.*, 来源注释见 yaml) ──
+_TC_LAMBDA = _require_cfg("optimizer.tc_lambda")
+_TC_HORIZON = _require_cfg("optimizer.tc_horizon_days")
+_TC_IC_REF = _require_cfg("optimizer.tc_ic_ref")
+_TC_SIGMA_DAILY = _require_cfg("execution.default_daily_vol")  # 典型日波动率 (impact 模型同源)
+
+_NORMAL = NormalDist()
+
+
+def _ic_effective(ic_map) -> float:
+    """从运行时 ic_map 估计截面 IC 强度: 因子 |IC| 的均值。
+
+    ic_map 值可以是 float (factor_registry / factor_ic_daily) 或
+    dict (含 ic_mean 键, compute_ic 风格)。缺失/全 NaN 时回退
+    config optimizer.tc_ic_ref (校准值, 见 yaml 注释)。
+    """
+    vals = []
+    for v in (ic_map or {}).values():
+        if isinstance(v, dict):
+            v = v.get("ic_mean", 0)
+        if isinstance(v, (int, float)) and v == v:  # 排除 NaN
+            vals.append(abs(float(v)))
+    if vals:
+        return sum(vals) / len(vals)
+    return _TC_IC_REF
+
+
+def _alpha_to_z(alpha: pd.Series) -> pd.Series:
+    """截面 alpha → z-score: Blom 分位 (rank−3/8)/(n+1/4) 的正态逆累积。
+
+    对 alpha 的任意单调/中性化变换稳健 (只用截面秩), 分位严格落在 (0,1)。
+    来源: Blom (1958) plotting position; Grinold 基本法则要求 z 尺度输入。
+    """
+    n = len(alpha)
+    ranks_asc = alpha.rank(method="first", ascending=True)  # 1 = 最低 alpha
+    pct = (ranks_asc - 0.375) / (n + 0.25)
+    return pct.map(_NORMAL.inv_cdf)
 
 # ── risk_aversion 校准网格 ──
 # 来源: Markowitz (1952) 框架下 λ 典型范围 1-10。
@@ -160,12 +206,15 @@ class PortfolioConstructor:
                 "max_single_position": _require_cfg("risk.max_single_position"),
                 "nano_cap": _require_cfg("optimizer.nano_cap"),
                 "micro_cap": _require_cfg("optimizer.micro_cap"),
+                "method": _require_cfg("optimizer.method"),
             }
         self.max_positions = config.get("max_positions")
         self.positions_per_factor = config.get("positions_per_factor", _require_cfg("alpha.sleeve.positions_per_factor"))
         self.max_single = config.get("max_single_position")
         self.nano_cap = config.get("nano_cap", _require_cfg("optimizer.nano_cap"))
         self.micro_cap = config.get("micro_cap", _require_cfg("optimizer.micro_cap"))
+        # small 层风险优化器: hrp | risk_parity (test-v299 §8.2 接线, 原死配置)
+        self.method = config.get("method") or _require_cfg("optimizer.method")
 
     def _tier(self, capital: float, avg_price: float) -> str:
         """根据资金量判定组合优化层级。
@@ -188,11 +237,18 @@ class PortfolioConstructor:
         capital: float,
         covariance: Optional[pd.DataFrame] = None,
         ic_map: dict = None,
+        current_lots: Optional[pd.Series] = None,
+        cost_model=None,
     ) -> TargetPortfolio:
         """资本自适应组合构建。
 
         根据 capital 与当前均价自动选择策略层级。
         进入均值-方差分支时实时校准 risk_aversion。
+
+        current_lots: 当前持仓 (index=symbol, values=手数)。与 cost_model
+          一起传入时启用 §8.3 成本带 — 理想目标与当前持仓的差量中,
+          预期 alpha 收益 < λ × 实际换仓成本的换股被拦截 (保留原持仓)。
+          None 或空 → 不启用, 行为与之前完全一致。
         """
         common = alpha.dropna().index.intersection(prices.dropna().index)
         if len(common) == 0:
@@ -216,7 +272,22 @@ class PortfolioConstructor:
         )
 
         if tier == "nano":
-            return self._rank_concentrated(a, p, capital)
+            try:
+                result = self._rank_concentrated(a, p, capital)
+            except ValueError:
+                # price_buffer 可能导致 Nano 层 0 仓位 (ADR-026 audit):
+                # buffer 使有效 lot_cost > capital, 但实际执行价无 buffer。
+                # 回退: 用原始价格重试, 同时降 buffer 防止高估成本。
+                if price_buffer > 0:
+                    p_raw = prices.loc[common]
+                    logger.warning(
+                        "[portfolio] nano tier: buffer=%.1f%% caused 0 lots, "
+                        "retrying with raw prices (capital=¥%s)",
+                        price_buffer * 100, f"{capital:,.0f}"
+                    )
+                    result = self._rank_concentrated(a, p_raw, capital)
+                else:
+                    raise
         elif tier == "micro":
             result = self._score_weighted_rounding(a, p, capital)
             if result.lots.sum() == 0:
@@ -224,27 +295,136 @@ class PortfolioConstructor:
                     "[portfolio] micro tier produced 0 lots (capital=¥%s), "
                     "falling back to equal-weight greedy", f"{capital:,.0f}"
                 )
-                return self._equal_weight_greedy(a, p, capital)
-            return result
+                result = self._equal_weight_greedy(a, p, capital)
         else:  # small
-            # Risk parity first if covariance available
+            result = None
+            # 风险优化器分发 (test-v299 §8.2): optimizer.method 选择 HRP 或 risk parity,
+            # 均只依赖协方差; 失败/0 仓位 → 下方 Kelly/mean-variance 链兜底.
             if covariance is not None:
-                result = self._risk_parity(a, p, capital, covariance)
-                if result.lots.sum() > 0:
-                    return result
-            # Kelly if IC available, otherwise mean-variance
-            if ic_map is not None:
-                return self._kelly_greedy(a, p, capital, ic_map)
-            if covariance is None:
-                raise ValueError(
-                    "Mean-variance tier requires covariance matrix. "
-                    "Pass covariance= to construct()."
-                )
-            risk_aversion = calibrate_risk_aversion(
-                a, p, capital, covariance,
-                self.max_positions, self.max_single,
+                if self.method == "hrp":
+                    rp = self._hrp_lot(a, p, capital, covariance)
+                else:
+                    rp = self._risk_parity(a, p, capital, covariance)
+                if rp.lots.sum() > 0:
+                    result = rp
+            if result is None:
+                # Kelly if IC available, otherwise mean-variance
+                if ic_map is not None:
+                    result = self._kelly_greedy(a, p, capital, ic_map)
+                elif covariance is None:
+                    raise ValueError(
+                        "Mean-variance tier requires covariance matrix. "
+                        "Pass covariance= to construct()."
+                    )
+                else:
+                    risk_aversion = calibrate_risk_aversion(
+                        a, p, capital, covariance,
+                        self.max_positions, self.max_single,
+                    )
+                    result = self._mean_variance_lot(a, p, capital, covariance, risk_aversion)
+
+        # ── §8.3 成本带 (Grinold α − λ·TC): 拦截不划算的换仓 ──
+        if current_lots is not None and len(current_lots) > 0 and cost_model is not None:
+            result = self._apply_tc_band(result, current_lots, a, p, cost_model, ic_map)
+        return result
+
+    def _apply_tc_band(
+        self,
+        ideal: TargetPortfolio,
+        current_lots: pd.Series,
+        alpha: pd.Series,
+        prices: pd.Series,
+        cost_model,
+        ic_map: dict = None,
+    ) -> TargetPortfolio:
+        """Grinold α − λ·TC 无交易区间 (§8.3): 效益不足的换仓恢复为原持仓。
+
+        算法:
+          1. diff = 理想 − 当前 → 买单侧 (新增/加仓) 与卖单侧 (减仓/清仓)。
+          2. 卖单中仅"仍在候选集内"的持仓可评估效益 (有 z 值);
+             跌出候选集的持仓 (风险过滤/数据缺失) 无条件卖出, 不参与配对。
+          3. 贪心配对: 最大买入金额 × 最弱 alpha 持仓, 逐手 chunk 判定:
+             benefit = (z_B − z_A) × IC_eff × σ_daily × horizon × swap_val
+             cost    = sell_cost(A) + buy_cost(B) − buy_val  (纯费用, CostModel 实算)
+             benefit < λ × cost → 撤销该 chunk: B 减 chunk 手, A 恢复 chunk 手。
+          4. 纯现金买入 (无卖单配对) 与无条件卖出不做门槛 — 只拦截"以卖养买"
+             的换仓, 这是满仓 Nano 账户换手成本的主导来源。
+
+        参数来源: config optimizer.tc_lambda / tc_horizon_days / tc_ic_ref,
+        σ_daily 复用 execution.default_daily_vol; IC_eff 优先取运行时 ic_map
+        的 |IC| 均值 (回测 walk-forward / 实盘 registry 均为实测值)。
+
+        注: prices 为 price_buffer 缓冲价 (construct 内部口径), 成本与效益
+        同向放大, 判定结论不变号; 略微偏保守 (多拦截边缘换仓)。
+
+        Args:
+            ideal: 各层方法产出的理想目标。
+            current_lots: 当前持仓 (index=symbol, values=手数)。
+            alpha: 已排序的候选 alpha 序列 (与 prices 同 index)。
+            prices: 候选价格序列 (含 price_buffer)。
+            cost_model: CostModel 实例, 用于实算换仓费用。
+            ic_map: 运行时 IC 权重 (可选, 缺失时 IC 取 config tc_ic_ref)。
+
+        Returns:
+            TargetPortfolio: 成本带过滤后的目标; tc_suppressed 记录拦截笔数。
+        """
+        z = _alpha_to_z(alpha)
+        ic_eff = _ic_effective(ic_map)
+
+        all_syms = ideal.lots.index.union(current_lots.index)
+        tgt = ideal.lots.reindex(all_syms, fill_value=0).astype(int)
+        cur = current_lots.reindex(all_syms, fill_value=0).astype(int)
+        diff = tgt - cur
+
+        sell_syms = [s for s in diff.index if diff[s] < 0 and s in z.index]
+        sell_syms.sort(key=lambda s: z[s])                      # 最弱 alpha 先被换
+        buy_syms = [s for s in diff.index if diff[s] > 0]
+        buy_syms.sort(key=lambda s: -diff[s] * LOT_SIZE * prices.get(s, 0))  # 最大金额先配
+
+        final = tgt.copy()
+        sell_remaining = {s: int(-diff[s]) for s in sell_syms}
+        n_suppressed = 0
+        cost_saved = 0.0
+
+        for b in buy_syms:
+            b_remaining = int(diff[b])
+            for a in sell_syms:
+                if b_remaining <= 0:
+                    break
+                if sell_remaining.get(a, 0) <= 0:
+                    continue
+                chunk = min(b_remaining, sell_remaining[a])
+                shares = chunk * LOT_SIZE
+                buy_val = shares * prices[b]
+                sell_val = shares * prices[a]
+                swap_val = min(buy_val, sell_val)
+                benefit = float(z[b] - z[a]) * ic_eff * _TC_SIGMA_DAILY * _TC_HORIZON * swap_val
+                cost = (cost_model.sell_cost(prices[a], shares)
+                        + cost_model.buy_cost(prices[b], shares) - buy_val)
+                if benefit < _TC_LAMBDA * cost:
+                    final[b] -= chunk
+                    final[a] += chunk
+                    n_suppressed += 1
+                    cost_saved += cost
+                    logger.info(
+                        "[tc_band] swap suppressed: %s→%s %d手 "
+                        "(benefit=¥%.2f < λ×cost=¥%.2f, Δz=%.2f)",
+                        a, b, chunk, benefit, _TC_LAMBDA * cost, float(z[b] - z[a]),
+                    )
+                # 无论是否拦截, 该 chunk 的卖单额度都消费掉, 避免重复配对
+                b_remaining -= chunk
+                sell_remaining[a] -= chunk
+
+        final = final[final > 0]
+        invested = float((final * prices.loc[final.index] * LOT_SIZE).sum()) if len(final) else 0.0
+        cash = round(ideal.cash_reserve + ideal.total_value - invested, 2)
+        if n_suppressed:
+            logger.info(
+                "[tc_band] %d swap(s) suppressed, est. cost saved=¥%.2f "
+                "(ic_eff=%.4f, λ=%.2f, horizon=%dd)",
+                n_suppressed, cost_saved, ic_eff, _TC_LAMBDA, _TC_HORIZON,
             )
-            return self._mean_variance_lot(a, p, capital, covariance, risk_aversion)
+        return TargetPortfolio(final, cash, ideal.method, invested, tc_suppressed=n_suppressed)
 
     def _kelly_greedy(
         self, alpha: pd.Series, prices: pd.Series, capital: float, ic_map: dict = None,
@@ -430,6 +610,42 @@ class PortfolioConstructor:
         total_value = (lots * p * LOT_SIZE).sum()
         return TargetPortfolio(lots[lots > 0], round(cash, 2), "mean_variance", total_value)
 
+    def _hrp_lot(
+        self,
+        alpha: pd.Series,
+        prices: pd.Series,
+        capital: float,
+        covariance: pd.DataFrame,
+    ) -> TargetPortfolio:
+        """HRP 层次风险平价 + 整手离散化。
+        来源: De Prado (2016) "Building Diversified Portfolios that
+              Outperform Out-of-Sample", JPM — 不逆协方差矩阵,
+              层次聚类 + 递归二分分配风险预算, 高维截面比 mean-variance 稳。
+        选股沿用 alpha 降序 top-N, 权重由协方差驱动 (与 _risk_parity 同范式)。
+        """
+        from quant.optimizer.hrp import hrp_weights
+        common = [s for s in alpha.index if s in covariance.index and s in prices.index]
+        n = min(self.max_positions, len(common))
+        if n < 2:
+            return TargetPortfolio(pd.Series(dtype=int), round(capital, 2), "hrp", 0.0)
+        top = common[:n]
+        p = prices.loc[top]
+        Sigma = covariance.loc[top, top].values
+        w_cont = hrp_weights(Sigma)
+        w_cont = _iterative_clip(w_cont, self.max_single)
+        lots = pd.Series(0, index=top, dtype=int)
+        cash = capital
+        for i, sym in enumerate(top):
+            alloc = capital * w_cont[i]
+            n_lots = int(alloc / (p[sym] * LOT_SIZE))
+            if n_lots > 0:
+                cost = n_lots * p[sym] * LOT_SIZE
+                if cost <= cash:
+                    lots[sym] = n_lots
+                    cash -= cost
+        total_value = (lots * p * LOT_SIZE).sum()
+        return TargetPortfolio(lots[lots > 0], round(cash, 2), "hrp", total_value)
+
     def _risk_parity(self, alpha, prices, capital, covariance):
         """Risk parity: w_i = (1/sigma_i) / sum(1/sigma_j)"""
         common = [s for s in alpha.index if s in covariance.index and s in prices.index]
@@ -443,6 +659,9 @@ class PortfolioConstructor:
             return self._kelly_greedy(alpha, prices, capital)
         w = (1.0 / sigmas) / (1.0 / sigmas).sum()
         w = _iterative_clip(w, self.max_single)  # (2026-07-21 audit H6)
+        # _iterative_clip 返回 numpy array; 转回 Series 保持 index 语义
+        if isinstance(w, np.ndarray):
+            w = pd.Series(w, index=sigmas.index)
         lots = pd.Series(0, index=top, dtype=int)
         cash = capital
         for sym in top:

@@ -12,12 +12,12 @@
  ```
  Layer 0: Config     — YAML hot-reload, constants, logging, calendar
  Layer 1: Data       — Multi-source daily sync, trade persistence, repos
- Layer 2: Factor     — 57 factors (41 price + 16 fundamental), IC/IR evaluation
- Layer 3: Alpha      — Factor synthesis → return prediction → cross-sectional ranking
+ Layer 2: Factor     — 65 factors (57 price + 8 fundamental), winsorize+MAD z-score, IC/IR evaluation
+ Layer 3: Alpha      — Factor synthesis (sleeve/IC-weighted/intersection/LGB) → return prediction → ranking
  Layer 4: Risk       — Sector neutralization, Ledoit-Wolf covariance, constraints
- Layer 5: Optimizer  — Capital-adaptive portfolio construction with integer-lot constraints
- Layer 6: Execution  — Simulated trading engine, unified cost model, real-time quotes
- Layer 7: Monitor    — Brinson attribution, daily reports, Web push
+ Layer 5: Optimizer  — Capital-adaptive 3-tier (Nano/Micro/Small) + Grinold α−λ·TC cost band
+ Layer 6: Execution  — Template Method execution (backtest/live shared), unified cost model, broker adapter
+ Layer 7: Monitor    — Brinson attribution, ATR stop-loss, daily reports, Web push
           Web        — Flask dashboard on port 8521
  ```
 
@@ -47,29 +47,29 @@
 
  ```
  quant/
- ├── alpha/          Layer 3: Alpha model
+ ├── alpha/          Layer 3: Alpha model (sleeve/IC/LGB + rotation + multi-tf)
  ├── backtest/       Four-layer backtest engine
  ├── benchmark/      Benchmark tracking
  ├── config/         Layer 0: Config + constants
  ├── core/           Shared abstractions (Trace, Experiment)
  ├── data/           Layer 1: Data store + repos
  │   └── repos/      Repository layer
- ├── evaluation/     Five-phase evaluation pipeline
- ├── execution/      Layer 6: Execution engine
+ ├── evaluation/     Eight-phase evaluation pipeline
+ ├── execution/      Layer 6: Execution engine + broker adapter
  ├── factor/         Layer 2: Factor computation
  │   ├── cards/      Factor index cards (JSON)
  │   └── compute/    Compute functions (price + fundamental)
- ├── monitor/        Layer 7: Attribution + reports
+ ├── monitor/        Layer 7: Attribution + reports + ATR stop-loss
  ├── optimizer/      Layer 5: Portfolio construction
  ├── quant/scheduler/ Scheduler (orchestrator + weekly)
  ├── regime/         Market regime detection
  ├── risk/           Layer 4: Risk management
  ├── scripts/        Operational scripts
- ├── tests/          Test suite (67 tests)
+ ├── test/           Test suite (221 tests)
  ├── utils/          Utilities (date, logger)
  ├── web/            Flask dashboard
  ├── docs/           Documentation
- │   ├── adr/        Architecture Decision Records (31)
+ │   ├── adr/        Architecture Decision Records (37+)
  │   ├── architecture/ Data dictionary, data sources
  │   ├── backtest/   Backtest system docs
  │   ├── factors/    Factor catalog + evaluation
@@ -88,14 +88,16 @@
  ## Data flow
 
  ```
- Trading day → quant/scheduler/ → pipeline.py
-   Step 1: DataStore.update_daily()
-   Step 2: Factor.compute() → rank_ic()
-   Step 3: AlphaModel.predict()
-   Step 4: RiskManager.apply()
-   Step 5: PortfolioConstructor.construct()
-   Step 6: ExecutionEngine.execute()
-   Step 7: Monitor.generate_report()
+ Trading day → quant/scheduler/ → pipeline.py (two-phase)
+   Phase 1 (盘前): generate_signals()
+     Step 1: DataStore.update_daily()
+     Step 2: UniverseRepo + risk pre-filters → investable universe
+     Step 3: FactorStore.load() → AlphaModel.combine() → AlphaModel.rank()
+     Step 4: neutralize() + covariance_matrix(Ledoit-Wolf) + VaR check
+     Step 5: PortfolioConstructor.construct() → target_positions
+   Phase 2 (开盘): execute_signals()
+     Step 6: ExecutionModel.run() → ExecutionEngine.execute() → trades.db
+     Step 7: Monitor.generate_report() → push_to_web()
  ```
 
  ## Key decisions
@@ -104,10 +106,12 @@
  |----------|--------|-----|
  | Storage | SQLite | Single-user, zero-config, 10M+ rows |
  | Frequency | Daily | A-share T+1 |
- | Factor eval | Rank IC | Robust to outliers |
+ | Factor normalization | Winsorize+MAD z-score | Barra USE4 standard (ADR-037) |
+ | Alpha synthesis | Sleeve (default) / IC-weighted / LGB | ML nonlinear upgrade (ADR-035) |
  | Covariance | Ledoit-Wolf | Better than sample for high dim |
- | Portfolio | Capital-adaptive | Upgrades with capital scale |
- | Cost model | Unified CostModel | Comparable across runs |
+ | Portfolio | Capital-adaptive 3-tier | Nano/Micro/Small auto-upgrade |
+ | Execution | Template Method (backtest/live) | Shared chain; broker adapter (ADR-036) |
+ | Cost model | Unified CostModel | Commission+stamp(0.05%)+Almgren-Chriss impact |
  | Parameter mgmt | YAML + hot-reload | Zero-downtime tuning |
 
  ## Documentation

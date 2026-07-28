@@ -6,6 +6,7 @@
 遵循 config.yaml 单一真相源: 所有参数通过 _require_cfg() 读取 , 构造函数仅存实例快照.
 """
 
+import numpy as np
 import pandas as pd
 from quant.config.constants import _require_cfg
 from quant.utils.logger import get_logger
@@ -59,7 +60,7 @@ class AlphaModel:
                         # 无地板 — 状态机在 10d 持续衰减后自动退役因子
                         # Source: Active Portfolio Management, 2nd ed., p.178
                         status = v.get("status", "active")
-                        if status == "monitoring":
+                        if status == "probation":
                             ic_5d = v.get("ic_5d", v.get("ic_mean", 0))
                             ic_60d = v.get("ic_60d", v.get("ic_mean", 0))
                             if abs(ic_60d) > 1e-5:
@@ -79,6 +80,33 @@ class AlphaModel:
             )
             _log.info("sleeve: %d factors -> %d stocks (filtered=%s)", len(factor_values), alpha_raw.notna().sum(), bool(ic_map))
             return alpha_raw
+
+        # ── ML model modes (lgb) ──
+        # ADR-035 Phase 2: LightGBM 非线性 alpha 预测。
+        # 用已训练的 LightGBM 模型将因子截面值映射为预期收益。
+        # 未训练/未安装时自动回退到 ic_weighted。
+        if self.combine_mode == "lgb":
+            try:
+                from quant.alpha.qlib_model import get_lgb_model
+                lgb_model = get_lgb_model(auto_load=True)
+                if lgb_model.is_trained:
+                    alpha_raw = lgb_model.predict(factor_values)
+                    _log.info(
+                        "lgb: %d features → %d stocks (IC=%.4f)",
+                        len(lgb_model.feature_names),
+                        alpha_raw.notna().sum(),
+                        lgb_model.metadata.ic_mean if lgb_model.metadata else 0,
+                    )
+                    return alpha_raw
+                else:
+                    _log.info("lgb: model not trained, falling back to ic_weighted")
+                    return ic_weighted(factor_values, ic_map) if ic_map else equal_weight(factor_values)
+            except ImportError:
+                _log.info("lgb: lightgbm not installed, falling back to ic_weighted")
+                return ic_weighted(factor_values, ic_map) if ic_map else equal_weight(factor_values)
+            except Exception as _lgb_err:
+                _log.warning("lgb: predict failed (%s), falling back to ic_weighted", _lgb_err)
+                return ic_weighted(factor_values, ic_map) if ic_map else equal_weight(factor_values)
 
         # composite mode
         method = self._method
@@ -132,12 +160,11 @@ class AlphaModel:
             return alpha_raw.copy()
 
         threshold = alpha_raw.quantile(1.0 - self.top_fraction)
-        below = alpha_raw < threshold
         alpha = alpha_raw.copy()
-        if below.any():
-            # B3 fix: only decay positive alphas; negative alphas are already
-            # below threshold by definition and should not be enhanced by squaring.
-            pos_below = below & (alpha_raw > 0)
-            if pos_below.any():
-                alpha[pos_below] = alpha[pos_below] * (alpha[pos_below] / threshold) ** 2
+        # ALG1: sigmoid soft cutoff — smooth transition instead of hard quadratic decay.
+        # α' = α / (1 + exp(-k × (α - threshold)))
+        # k (steepness) from config; default 10.0 balances selectivity vs smoothness.
+        from quant.config.constants import _require_cfg
+        k = float(_require_cfg("alpha.sigmoid_steepness"))
+        alpha = alpha / (1.0 + np.exp(-k * (alpha - threshold)))
         return alpha

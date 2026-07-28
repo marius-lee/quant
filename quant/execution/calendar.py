@@ -130,6 +130,42 @@ def is_trading_day(d: Optional[date] = None) -> bool:
     return d.strftime("%Y-%m-%d") in trading_days
 
 
+def is_rebalance_day(d: Optional[date] = None, freq: str = None,
+                     weekday: int = None) -> bool:
+    """是否组合再平衡日 (optimizer.rebalance_freq)。
+
+    daily  → 每个交易日都是调仓日
+    weekly → 本周自 rebalance_weekday (0=周一) 起的首个交易日;
+             假期自动顺延 (如周一休市 → 周二为本周调仓日)
+
+    业界标准周频语义: 非调仓日只跑风控 (止损/退出), 不做组合再平衡。
+    """
+    from quant.config.constants import _require_cfg
+    if freq is None:
+        freq = _require_cfg("optimizer.rebalance_freq")
+    if freq == "daily":
+        return is_trading_day(d)
+    if weekday is None:
+        weekday = _require_cfg("optimizer.rebalance_weekday")
+    if d is None:
+        d = date.today()
+    if not is_trading_day(d):
+        return False
+    # 本周 weekday 对应的日期 (可能与 d 同周或未来)
+    monday = d - timedelta(days=d.weekday())
+    anchor = monday + timedelta(days=weekday)
+    if anchor > d:
+        return False  # 本周调仓锚点还没到 (如 anchor=周五, 今天周三)
+    # d 是 [anchor, d] 区间内首个交易日 → 此前本周无交易日 → 调仓日
+    days = get_trading_days()
+    cur = anchor
+    while cur < d:
+        if cur.strftime("%Y-%m-%d") in days:
+            return False
+        cur += timedelta(days=1)
+    return True
+
+
 def get_next_trading_day(from_date: Optional[date] = None) -> date:
     """获取下一个交易日（不含当日）"""
     if from_date is None:

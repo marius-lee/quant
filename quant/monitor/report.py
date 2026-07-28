@@ -42,9 +42,13 @@ def generate_report(
     try:
         from quant.data.repos import TradeRepo
         repo = TradeRepo()
-        eq_rows = repo.get_connection().execute(
+        # B-15 fix: TradeRepo 只有 _conn() (此前调不存在的 get_connection()
+        # → AttributeError 被裸 except 吞掉, daily_equity Sharpe 路径永远走 fallback)
+        _conn = repo._conn()
+        eq_rows = _conn.execute(
             "SELECT date, total_equity FROM daily_equity ORDER BY date"
         ).fetchall()
+        _conn.close()
         if len(eq_rows) >= 20:
             eq_series = pd.Series(
                 [r[1] for r in eq_rows],
@@ -104,8 +108,8 @@ def generate_report(
                         cur = closes.get(sym, p.get("price", 0))
                         unrealized += (cur - p.get("price", 0)) * p.get("shares", 0)
             ds.close()
-        except Exception:
-            pass  # 日线不可用时不阻塞报告生成
+        except Exception as e:
+            logger.warning("Cannot compute unrealized PnL from daily data: %s", e)
 
     # 计算持仓市值
     positions_value = sum(

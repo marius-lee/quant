@@ -1,7 +1,9 @@
 """Factor compute dispatcher — compute_all_factors."""
 
+import numpy as np
 import pandas as pd
 from typing import Optional
+from quant.config.constants import _require_cfg
 
 from quant.utils.logger import get_logger
 from quant.factor.compute._preload import preload_aux_data
@@ -100,6 +102,8 @@ def compute_all_factors(data: pd.DataFrame, date: str,
         if fundamentals is not None and any(n in fund_factors for n in _FIN_FACTORS):
             if preloaded_financials is not None:
                 financials = preloaded_financials.get(date)
+                if financials is None:
+                    _plog.warning(f"No financials preloaded for {date}, fundamental factors will use DB fallback")
             else:
                 from quant.data.store import DataStore
                 store = DataStore()
@@ -131,6 +135,42 @@ def compute_all_factors(data: pd.DataFrame, date: str,
             if done_ff % 5 == 0 or done_ff == total_ff:
                 _plog.info(f"  fundamental factors: {done_ff}/{total_ff} ({done_ff*100//total_ff}%, {_time2.time()-_t1:.0f}s)")
         _plog.info(f"  fundamental factors done: {total_ff} in {_time2.time()-_t1:.0f}s")
+
+        # ADR-035 audit: 季报真空期衰减
+        # 基本面因子在季报发布间隔期 (最长4个月) 值不变，但其预测力随时间衰减。
+        # 对每个基本面因子按距最近财报天数做指数衰减: value × exp(-λ × days)。
+        # λ = factor.compute.earnings_decay_lambda (默认 ln(2)/90 ≈ 0.0077, 半衰期90天)。
+        _decay_lambda = _require_cfg("factor.compute.earnings_decay_lambda")
+        if _decay_lambda > 0 and fund_factors:
+            _decayed = 0
+            for name in list(results.keys()):
+                if name not in fund_factors:
+                    continue
+                series = results[name]
+                if not isinstance(series, pd.Series) or series.empty:
+                    continue
+                # 从 financials 获取每只股票的最新 stat_date
+                _decayed_series = series.copy()
+                for tbl_name in ["financial_income", "financial_balance", "financial_cashflow"]:
+                    tbl = preloaded_financials.get(tbl_name) if preloaded_financials else None
+                    if tbl is not None and not tbl.empty and "stat_date" in tbl.columns and "symbol" in tbl.columns:
+                        latest = tbl.groupby("symbol")["stat_date"].max()
+                        for sym in series.index:
+                            if sym in latest.index:
+                                try:
+                                    days = max(0, (pd.Timestamp(date) - pd.Timestamp(latest[sym])).days)
+                                    if days > 30:  # 30天内不衰减 (刚发布)
+                                        _decayed_series[sym] *= np.exp(-_decay_lambda * days)
+                                except (ValueError, TypeError):
+                                    pass
+                        break  # 用一个表即可 (income 覆盖最广)
+                if _decayed_series.notna().sum() > 0:
+                    results[name] = _decayed_series
+                    _decayed += 1
+            if _decayed > 0:
+                _plog.info(f"  earnings decay applied to {_decayed} factors "
+                           f"(λ={_decay_lambda:.4f}, half-life={np.log(2)/_decay_lambda:.0f}d)")
+
     return results
 
 # 7. 基本面因子 — Fama & French (1992, 1993, 2015)

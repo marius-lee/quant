@@ -44,7 +44,7 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
     Factor functions check `aux.get("margin")` instead of doing their own query.
     """
     if conn is None:
-        conn = DatabaseManager.get_instance().get_connection(_DB)
+        conn = DatabaseManager.market()
 
     result = {}
     ph = ",".join("?" * len(symbols))

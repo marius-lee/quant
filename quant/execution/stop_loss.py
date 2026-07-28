@@ -36,12 +36,15 @@ def _compute_atr(symbol: str, period: int = 20) -> float:
         if now - ts < 120:
             return val
 
-    conn = DatabaseManager.get_instance().get_connection(_DB)
+    # B-01 fix: 行情日线在 market.db, 不在 trades.db (trades.db 的 daily 表为空,
+    # 导致 ATR 恒为 0, 盘中止盈止损全部静默失效)
+    conn = DatabaseManager.market()
     rows = conn.execute(
         "SELECT high, low, close FROM daily WHERE symbol=? "
         "ORDER BY date DESC LIMIT ?",
         (symbol, period + 1)
     ).fetchall()
+    conn.close()
 
     if len(rows) < period:
         return 0.0
@@ -60,15 +63,114 @@ def _compute_atr(symbol: str, period: int = 20) -> float:
 
 
 class RiskManager:
-    """无状态 — 每次 check() 传入持仓快照."""
+    """统一风控服务 (Q7-2 重构): 固定硬止损 + ATR 止损止盈 + 冷却注册表。
 
-    def __init__(self):
+    调用点: pipeline(回测) / scheduler.execute(实盘开盘) / scheduler.monitor(盘中)。
+    此前固定止损逻辑在三处各自复制, 冷却期只有回测实现且因 stopped_out
+    从未写入而是死代码。
+
+    cooloff_store: None → TradeRepo meta KV (实盘, 跨进程/重启存活);
+                   dict → 内存 (回测热路径, 避免每日 DB 写)。
+    """
+
+    def __init__(self, strategy: str = "quant", cooloff_store=None):
         self.atr_mult_sl = _require_cfg("risk.atr_mult_stop_loss")
         self.atr_mult_tp1 = _require_cfg("risk.atr_mult_take_profit_1")
         self.atr_mult_tp2 = _require_cfg("risk.atr_mult_take_profit_2")
         self.atr_mult_trail = _require_cfg("risk.atr_mult_trailing")
         self.max_hold_days = _require_cfg("risk.max_hold_days")
         self.atr_period = _require_cfg("risk.atr_period")
+        self.strategy = strategy
+        self._cooloff_store = cooloff_store
+
+    # ═══════════════════════════════════════════
+    # 固定百分比硬止损 (回测/实盘开盘共用)
+    # ═══════════════════════════════════════════
+
+    def check_hard_stop(self, positions: list, prices: dict,
+                        sl_pct: float = None) -> list:
+        """固定百分比硬止损 — 现价跌破成本 sl_pct 触发全卖。
+
+        返回: [{symbol, shares, price, cost, drop, reason}]
+        此前该逻辑复制于 pipeline.execute_signals 与 scheduler/execute 两处。
+        """
+        if sl_pct is None:
+            sl_pct = _require_cfg("risk.stop_loss_pct")
+        stops = []
+        for p in positions:
+            cost = p.get("price", 0)
+            cur = prices.get(p["symbol"], None)
+            if cur is None or cost <= 0:
+                continue
+            try:
+                if np.isnan(cur) or cur <= 0:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            drop = (float(cur) - cost) / cost
+            if drop <= -sl_pct:
+                shares = int(p.get("shares", 0))
+                if shares > 0:
+                    stops.append({"symbol": p["symbol"], "shares": shares,
+                                  "price": float(cur), "cost": cost,
+                                  "drop": drop,
+                                  "reason": "hard_sl({:.1%})".format(drop)})
+        return stops
+
+    # ═══════════════════════════════════════════
+    # 冷却注册表 (止损后 N 天禁止买回, 回测/实盘共用)
+    # ═══════════════════════════════════════════
+
+    def _cooloff_key(self) -> str:
+        return f"cooloff:{self.strategy}"
+
+    def _load_cooloff_db(self) -> dict:
+        from quant.data.repos import TradeRepo
+        import json as _json
+        raw = TradeRepo().get_flag(self._cooloff_key())
+        if not raw:
+            return {}
+        try:
+            return _json.loads(raw)
+        except Exception:
+            return {}
+
+    def _save_cooloff_db(self, data: dict):
+        from quant.data.repos import TradeRepo
+        import json as _json
+        TradeRepo().set_flag(self._cooloff_key(), _json.dumps(data))
+
+    def set_cooloff(self, symbol: str, today: str, days: int = None):
+        """标记 symbol 进入冷却期 (默认 risk.stop_loss_cooloff_days 天)。"""
+        if days is None:
+            days = _require_cfg("risk.stop_loss_cooloff_days")
+        from datetime import datetime as _dt, timedelta as _td
+        end = (_dt.strptime(today, "%Y-%m-%d") + _td(days=days)).strftime("%Y-%m-%d")
+        if self._cooloff_store is not None:
+            self._cooloff_store[symbol] = end
+        else:
+            data = self._load_cooloff_db()
+            data[symbol] = end
+            self._save_cooloff_db(data)
+        _log.info(f"cooloff set: {symbol} until {end} (strategy={self.strategy})")
+
+    def get_cooloff_symbols(self, today: str) -> set:
+        """今天仍在冷却期的 symbol 集合 (end > today, ISO 日期字符串可比)。"""
+        if self._cooloff_store is not None:
+            data = self._cooloff_store
+        else:
+            data = self._load_cooloff_db()
+        return {s for s, end in data.items() if end > today}
+
+    def clear_cooloff(self, symbol: str):
+        """手动解除冷却 (如人工判断可买回)。"""
+        if self._cooloff_store is not None:
+            self._cooloff_store.pop(symbol, None)
+        else:
+            data = self._load_cooloff_db()
+            if symbol in data:
+                del data[symbol]
+                self._save_cooloff_db(data)
 
     def check(self, positions: list, quotes: dict, today: str) -> list:
         """返回触发信号列表."""

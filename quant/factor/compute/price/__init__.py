@@ -6,6 +6,8 @@ from quant.factor.compute.price._momentum import (
     compute_uret,  # noqa: F401
     _log_returns,
     compute_amihud,
+    compute_amihud_20d,           # ADR-040
+    compute_turnover_adj_amihud,  # ADR-040
     compute_downside_volatility,
     compute_hsgt_flow,
     compute_idiosyncratic_vol,
@@ -33,6 +35,9 @@ from quant.factor.compute.price._event import (  # noqa: F401
     compute_fund_change,
     compute_lhb_net_buy,
     compute_lhb_post_quality,
+    compute_lhb_intensity,       # ADR-040
+    compute_lhb_reversal,        # ADR-040
+    compute_lhb_frequency,       # ADR-040
     compute_limit_up_proximity,
     compute_limit_up_streak,
     compute_main_flow_ratio,
@@ -51,6 +56,8 @@ from quant.factor.compute.price._turnover import (
     compute_turnover_accel,
 )
 
+from quant.factor.compute.price._huanfang import compute_turnover_vol, compute_mif, compute_idio_turnover_vol, compute_turnover_accel, compute_vp_divergence
+from quant.factor.compute.price._bb import compute_bb_pct_b, compute_bb_width, compute_bb_squeeze
 from quant.factor.compute.price._alternative import (  # noqa: F401
     _get_limit_pool,
     compute_abn_turnover,
@@ -82,6 +89,8 @@ _PRICE_FN_MAP = {
     "skewness_60d":          (compute_skewness,          _SKEWNESS_WINDOW),
     "idio_vol_126d":         (compute_idiosyncratic_vol, _IDIO_VOL_WINDOW),
     "amihud_250d":           (compute_amihud,            _AMIHUD_WINDOW),
+    "amihud_20d":            (compute_amihud_20d,         20),   # ADR-040
+    "turnover_adj_amihud_20d": (compute_turnover_adj_amihud, 20), # ADR-040
     "rsi_rev_14d":           (compute_rsi_reversal,       14),
     "money_flow_5d":         (compute_money_flow,          5),
     "ma_alignment_20d":      (compute_ma_alignment,       20),
@@ -92,6 +101,9 @@ _PRICE_FN_MAP = {
     "dt_streak":             (compute_dt_streak,          0),
     "lhb_net_buy_20d":       (compute_lhb_net_buy,        20),
     "lhb_post_quality":      (compute_lhb_post_quality,   90),
+    "lhb_intensity_5d":      (compute_lhb_intensity,       5),   # ADR-040
+    "lhb_reversal_5d":       (compute_lhb_reversal,        5),   # ADR-040
+    "lhb_freq_60d":          (compute_lhb_frequency,      60),   # ADR-040
     "margin_balance_chg":     (compute_margin_balance_chg, 5),
     "margin_buy_ratio_5d":    (compute_margin_buy_ratio_price,   5),
     "fund_change":             (compute_fund_change,        0),
@@ -167,6 +179,14 @@ __all__ = [
     "compute_volume_price_corr",
     "compute_volume_ratio",
     "compute_ztd",
+    "compute_turnover_vol",
+    "compute_mif",
+    "compute_idio_turnover_vol",
+    "compute_turnover_accel",
+    "compute_vp_divergence",
+    "compute_bb_pct_b",
+    "compute_bb_width",
+    "compute_bb_squeeze",
     "compute_ctr",
     "compute_hl_volume",
     "compute_turnover_accel",

@@ -5,8 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Optional
-
+from quant.config.paths import MARKET_DB
 from quant.data.repos._base import DatabaseManager, query_all, query_row, query_scalar
 
 logger = logging.getLogger(__name__)
@@ -15,23 +14,47 @@ logger = logging.getLogger(__name__)
 class EvaluationRepo:
     """Operations for evaluation results and factor snapshots."""
 
-    def __init__(self, db_manager: Optional[DatabaseManager] = None,
-                 db_path: str = "quant/data/market.db"):
-        self.db = db_manager or DatabaseManager.get_instance()
+    def __init__(self, db_path: str = MARKET_DB):
         self.db_path = db_path
 
     def _conn(self):
-        return self.db.get_connection(self.db_path)
+        return DatabaseManager.get_connection(self.db_path)
+
+    def _query(self, sql, params=()):
+        conn = self._conn()
+        try:
+            return conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+
+    def _query_one(self, sql, params=()):
+        conn = self._conn()
+        try:
+            return conn.execute(sql, params).fetchone()
+        finally:
+            conn.close()
+
+    def _execute(self, sql, params=()):
+        conn = self._conn()
+        try:
+            cur = conn.execute(sql, params)
+            conn.commit()
+            return cur
+        finally:
+            conn.close()
 
     def save_evaluation(self, phase: str, data_json: str,
                         n_factors: int, n_passed: int) -> int:
         conn = self._conn()
-        conn.execute(
+        try:
+            conn.execute(
             "INSERT INTO evaluation_runs (run_ts, phase, data_json, n_factors, n_passed) "
             "VALUES (datetime('now','localtime'), ?, ?, ?, ?)",
             (phase, data_json, n_factors, n_passed))
-        conn.commit()
-        return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.commit()
+            return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        finally:
+            conn.close()
 
     def get_latest(self, phase: str | None = None) -> dict | None:
         conn = self._conn()

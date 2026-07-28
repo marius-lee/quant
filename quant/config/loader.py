@@ -3,14 +3,20 @@
 支持热更新: 每次 get() 检查 config.yaml 修改时间，文件变更后自动重新加载。
 用 getmtime 系统调用（~1μs），零性能影响。
 
+进程内临时覆盖: override() 上下文管理器 (hyperopt/测试专用, test-v298)。
+config.yaml 仍是唯一真相源 — override 只改进程内单例, 不写文件,
+退出上下文即恢复。
+
 凭证管理: import 时自动加载 config/.env → os.environ。
   config.yaml 中的 ${TUSHARE_TOKEN} 等占位符将从 os.environ 取值。
   config/.env 格式: KEY=VALUE, 一行一个, # 注释。
   config/.env 已在 .gitignore 中, 不会提交。
 """
+import copy
 import os
 import re
 import yaml
+from contextlib import contextmanager
 
 # ── Auto-load config/.env into os.environ ──
 _ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
@@ -98,8 +104,10 @@ def validate() -> None:
     _check(cfg, 'monitor.alert.drawdown_warning', (int, float))
     _check(cfg, 'alpha.weekly_weight', (int, float))
     _check(cfg, 'alpha.sector_rotation', bool)
-    _check(cfg, 'optimizer.min_holding_days', int)
+    _check(cfg, 'optimizer.rebalance_freq', str)
+    _check(cfg, 'optimizer.rebalance_weekday', int)
     _check(cfg, 'optimizer.kelly_fraction', (int, float))
+    _check(cfg, 'recon.cash_drift_tolerance', (int, float))
     _check(cfg, 'factor.compute.zscore_min_count_dense', int)
     _check(cfg, 'factor.compute.zscore_min_count_sparse', int)
     _check_range(cfg, 'factor.stats.ic_min_periods', int, min_val=10)
@@ -146,6 +154,53 @@ def reload() -> dict:
     _config = None
     _config_mtime = 0
     return load()
+
+
+def _set_nested(cfg: dict, key: str, value) -> None:
+    """按点号路径写入嵌套 dict。key 路径必须已存在 (fail-fast 防笔误),
+    禁止通过 override 新增配置项 — 新参数必须先入 config.yaml。
+    """
+    parts = key.split(".")
+    node = cfg
+    for p in parts[:-1]:
+        if not isinstance(node, dict) or p not in node or not isinstance(node[p], dict):
+            raise KeyError(f"config override: 路径 '{key}' 不存在 (中间键 '{p}')")
+        node = node[p]
+    leaf = parts[-1]
+    if leaf not in node:
+        raise KeyError(f"config override: key '{key}' 不存在, 禁止新增配置项")
+    node[leaf] = value
+
+
+@contextmanager
+def override(mapping: dict):
+    """进程内临时覆盖配置 (hyperopt / 测试专用, test-v298)。
+
+    深拷贝当前单例 → 就地写入 mapping → yield; 退出时恢复原单例。
+    覆盖期间将 mtime 钉为 inf, 防止热重载把 override 冲掉。
+    config.yaml 文件本身不被修改。
+
+    Args:
+        mapping: {"alpha.top_fraction": 0.3, ...} 点号路径 → 新值。
+                 所有 key 必须已存在于 config.yaml, 否则 KeyError。
+
+    Example:
+        with loader.override({"optimizer.rebalance_freq": "daily"}):
+            run_backtest(...)
+    """
+    global _config, _config_mtime
+    load()  # 确保单例已加载
+    snapshot = _config
+    snapshot_mtime = _config_mtime
+    _config = copy.deepcopy(_config)
+    for key, value in mapping.items():
+        _set_nested(_config, key, value)
+    _config_mtime = float("inf")
+    try:
+        yield _config
+    finally:
+        _config = snapshot
+        _config_mtime = snapshot_mtime
 
 
 def get(key: str, default=None):

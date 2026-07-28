@@ -11,7 +11,8 @@ _tasks: dict[str, dict] = {}
 
 _GROUPS = {
     "signals": "盘前", "execute": "盘中", "monitor": "盘中",
-    "daily_data": "盘后", "attribution": "盘后", "factor_cache": "盘后", "weekly_eval": "研究",
+    "reconcile": "盘后", "daily_data": "盘后", "attribution": "盘后",
+    "factor_cache": "盘后", "weekly_eval": "研究",
 }
 
 
@@ -45,6 +46,8 @@ def register_all():
              desc="读取信号、获取行情、执行调仓订单", has_multiprocess=True)
     register("monitor",      "09:35-11:30,13:00-14:55", label="盘中风控",
              desc="每30s轮询止损/止盈/熔断，触发后立即卖出")
+    register("reconcile",    "15:05",       label="日终对账",
+             desc="OMS 对账闭环: 持仓/现金/订单三账核对, break 超阈值告警")
     register("daily_data",   "19:00",       label="数据拉取",
              desc="拉取当日 A 股日线行情，更新 market.db")
     register("attribution",  "20:00",       label="盘后归因",

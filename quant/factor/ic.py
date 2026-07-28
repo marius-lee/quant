@@ -2,7 +2,7 @@
 
 消费者:
   - backtest/loop.py: 回测 walk-forward IC 重算 → result["ic_map"]
-  - backtest/diagnostics.py: 因子归因 → result["ic_means"], result["ic_irs"]
+  - evaluation/: 因子归因 → result["ic_means"], result["ic_irs"]
   - factor/stats_cache.py: Phase 2 因子评估 → result["ic_means"], result["ic_irs"],
     result["ic_series"], result["ic_decay"]
 
@@ -88,6 +88,8 @@ def compute_ic(*,
               n, len(symbols), lookback, date)
 
     from quant.factor.compute import compute_all_factors
+    from quant.factor.store import FactorStore
+    from quant.config.paths import FACTOR_CACHE_DB
 
     end_dt = pd.Timestamp(date)
     from quant.factor.windows import max_factor_calendar_days
@@ -174,12 +176,16 @@ def compute_ic(*,
             fundamentals = store.get_fundamentals(symbols, ds)
             # 切片 primitives 到截止 ds, 传给 compute_all_factors 走 FACTOR_SHORTCUT 快捷路径
             ds_prims = {k: v.loc[:ds] for k, v in prims.items() if hasattr(v, 'loc')}
-            factor_vals = compute_all_factors(
-                ds_data, ds, primitives=ds_prims, fundamentals=fundamentals,
-                factor_names=factor_names, status_filter=status_filter,
-                factor_fail_fast=False,
-            )
-            return (ds, factor_vals, fwd)
+            # 从 FactorStore 缓存读取因子值
+            _fs = FactorStore(db_path=FACTOR_CACHE_DB)
+            fv = _fs.load(ds, symbols=symbols, factor_names=factor_names)
+            _fs.close()
+            if not fv:
+                raise RuntimeError(
+                    f"factor_cache miss for {ds} ({len(symbols)} symbols, "
+                    f"{len(factor_names)} factors), run materialization first"
+                )
+            return (ds, fv, fwd)
         except Exception as e:
             _log.warning(f"_compute_one_day failed at {ds}: {type(e).__name__}: {e}")
             return (ds, {}, None)
@@ -211,14 +217,15 @@ def compute_ic(*,
         ic_mean = result["ic_means"].get(name, 0.0)
         ic_ir = result["ic_irs"].get(name, 0.0)
         n_obs = len(result["ic_series"].get(name, {}))
-        weight = abs(ic_ir) if ic_mean > 0 else 0.0
+        # Q7-4 fix: 保留 ic_ir 符号 (负 IC 因子在 composite 模式需反向加权)
+        weight = ic_ir
         ic_map[name] = {
             "ic_mean": round(ic_mean, 4),
             "ic_ir": round(ic_ir, 3),
             "weight": round(weight, 4),
             "n_obs": n_obs,
         }
-    total_w = sum(v["weight"] for v in ic_map.values())
+    total_w = sum(abs(v["weight"]) for v in ic_map.values())
     if total_w > 0:
         for v in ic_map.values():
             v["weight"] = round(v["weight"] / total_w, 4)

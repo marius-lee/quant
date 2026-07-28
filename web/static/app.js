@@ -159,15 +159,17 @@ function renderHeatmap(fd) {
 // ═══════════════════════════════════════════
 async function pollOverview() {
   try {
-    const [state, perf] = await Promise.all([
+    const [state, perf, lgb] = await Promise.all([
       fetchJSON(API + '/state'),
-      fetchJSON(API + '/performance')
+      fetchJSON(API + '/performance'),
+      fetchJSON(API + '/lgb').catch(() => null),
     ]);
     window._stateData = state;
     window._perfData = perf;
     renderKPIs(perf);
     renderSignals(state);
     updateStatusBar(state);
+    if (lgb && lgb.data) renderLGB(lgb.data);
   } catch (e) { console.warn('poll error:', e.message); }
 }
 
@@ -348,7 +350,7 @@ function renderICDecay(fd) {
   Plotly.newPlot('chart-ic-decay', [{
     type: 'scatter', mode: 'lines+markers',
     x: periods, y: vals,
-    line: { color: 'var(--accent)', width: 2 },
+    line: { color: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(), width: 2 },
   }], { ...bg, margin: { l: 50, r: 20, t: 10, b: 30 }, xaxis: { title: '滞后期(日)', ...pf }, yaxis: { title: '均值|IC|', ...pf } }, PLOTLY_CONFIG);
 }
 
@@ -437,7 +439,11 @@ function renderRiskExposure(rd) {
     type: 'bar',
     x: ['VaR 95%', 'CVaR 95%', 'MaxDD'],
     y: [varPct, cvarPct, mdd],
-    marker: { color: ['var(--accent)', 'var(--warn)', 'var(--down)'] },
+    marker: { color: [
+      getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
+      getComputedStyle(document.documentElement).getPropertyValue('--warn').trim(),
+      getComputedStyle(document.documentElement).getPropertyValue('--down').trim(),
+    ] },
   }], { ...bg, margin: { l: 50, r: 20, t: 10, b: 30 }, ...pf }, PLOTLY_CONFIG);
 }
 
@@ -502,6 +508,50 @@ async function loadScheduler() {
       document.getElementById('meta-scheduler').textContent = (data.tasks?.length || 0) + ' 任务';
     }
   } catch (e) { console.warn('scheduler error:', e.message); }
+  loadRecon();
+}
+
+// ── 日终对账 (OMS recon) ──
+async function loadRecon() {
+  try {
+    const data = await fetchJSON(API + '/recon');
+    const meta = document.getElementById('meta-recon');
+    if (!data || !data.date) {
+      meta.textContent = '暂无对账数据';
+      document.getElementById('recon-summary').innerHTML = '';
+      renderTable('table-recon', [], []);
+      return;
+    }
+    const brk = data.status === 'break';
+    meta.textContent = `${data.date} · ${brk ? '⚠ BREAK ×' + data.breaks : 'OK'}`;
+    meta.style.color = brk ? 'var(--down)' : 'var(--up)';
+    // 汇总卡: 现金两检查 + 持仓统计 + 订单数
+    const cashRows = (data.rows || []).filter(r => r.kind === 'cash');
+    const posRows = (data.rows || []).filter(r => r.kind === 'position' && r.status !== 'skip');
+    const ordRows = (data.rows || []).filter(r => r.kind === 'order');
+    const drifted = posRows.filter(r => r.status === 'break').length;
+    const eq = cashRows.find(r => r.symbol === 'equity_cross');
+    document.getElementById('recon-summary').innerHTML =
+      `<span class="recon-chip">持仓 ${posRows.length - drifted}/${posRows.length} 一致</span>` +
+      (eq ? `<span class="recon-chip">现金差异 ${eq.drift == null ? '—' : fmtNum(eq.drift, 2)}</span>` : '') +
+      `<span class="recon-chip">订单组 ${ordRows.length}</span>`;
+    renderTable('table-recon', data.rows, [
+      { key: 'kind', label: '类型' },
+      { key: 'symbol', label: '标的/检查' },
+      { key: 'expected', label: '期望' },
+      { key: 'actual', label: '实际' },
+      { key: 'drift', label: '差异' },
+      { key: 'status', label: '状态' },
+    ], {
+      fmtMap: {
+        expected: v => v == null ? '—' : fmtNum(v, 2),
+        actual: v => v == null ? '—' : fmtNum(v, 2),
+        drift: v => v == null ? '—' : fmtNum(v, 2),
+        status: v => v === 'break' ? '<b style="color:var(--down)">BREAK</b>'
+                   : v === 'skip' ? '<span style="color:var(--text2)">skip</span>' : 'ok',
+      },
+    });
+  } catch (e) { console.warn('recon error:', e.message); }
 }
 
 // ═══════════════════════════════════════════
@@ -528,6 +578,28 @@ function connectSSE() {
     _sseRetry++;
     setTimeout(connectSSE, delay);
   };
+}
+
+function renderLGB(d) {
+  const statusEl = document.getElementById('lgb-status');
+  if (!statusEl) return;
+  if (!d.available) {
+    setText('lgb-status', '未安装');
+    setText('meta-lgb', 'pip install lightgbm');
+    return;
+  }
+  if (!d.trained) {
+    setText('lgb-status', '未训练');
+    setText('meta-lgb', (d.models || []).length ? d.models.length + ' model(s) on disk' : 'run train_lgb_model()');
+    return;
+  }
+  setHTML('lgb-status', '<span style="color:var(--down)">● 就绪</span>');
+  if (d.metadata) {
+    setText('lgb-ic', (d.metadata.ic_mean || 0).toFixed(4));
+    setText('lgb-samples', fmtNum(d.metadata.n_samples || 0));
+    setText('lgb-features', d.metadata.n_features || 0);
+    setText('meta-lgb', 'trained ' + (d.metadata.train_date || '?'));
+  }
 }
 
 // ── Init ──

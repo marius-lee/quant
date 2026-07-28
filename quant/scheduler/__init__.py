@@ -1,6 +1,6 @@
 """调度器 — 单线程编排器 + 独立周频因子评估。
 
-日频: orchestrator 串行 signals(08:30) → execute(09:30) → monitor(09:35-11:30,13:00-14:55) → attribution(15:30)
+日频: orchestrator 串行 signals(08:30) → execute(09:30) → monitor(09:35-11:30,13:00-14:55) → reconcile(15:05) → daily_data(19:00) → attribution(20:00) → factor_cache(21:00)
 周频: weekly 独立线程 (周六 06:00 force_refresh_cache)
 """
 import threading
@@ -13,7 +13,7 @@ _log = get_logger(__name__)
 
 def start_orchestrator():
     _start_orch()
-    _log.info("orchestrator launched (08:30→09:30→monitor→15:30)")
+    _log.info("orchestrator launched (08:30→09:30→monitor→15:05 recon→19:00→20:00→21:00)")
 
 
 def start_weekly():

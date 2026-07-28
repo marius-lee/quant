@@ -79,6 +79,8 @@ def sync_quarter(report_date: str, conn=None) -> int:
               row.get('change_ratio')))
         n += 1
     conn.commit()
+    if close_conn:
+        conn.close()
 
     print(f"  {report_date}: {n} stocks")
     return n

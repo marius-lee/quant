@@ -15,9 +15,10 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v247"
+VERSION = "test-v246"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
+
 def _log_exit(reason: str = ""):
     try:
         from quant.utils.logger import get_logger
@@ -89,10 +90,11 @@ def index():
         position_value = position_cost
         try:
             mc = sqlite3.connect(MARKET_DB)
-            pos_rows = sqlite3.connect(TRADE_DB).execute(
-                "SELECT symbol, SUM(shares) FROM sim_trades WHERE side='buy' AND strategy='quant' AND mode='live'"
-                " AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy='quant' AND mode='live')"
-                " GROUP BY symbol"
+            _tr = sqlite3.connect(TRADE_DB)
+            pos_rows = _tr.execute(
+                "SELECT symbol, SUM(CASE WHEN side='buy' THEN shares ELSE -shares END) AS net_shares"
+                " FROM sim_trades WHERE strategy='quant' AND mode='live'"
+                " GROUP BY symbol HAVING SUM(CASE WHEN side='buy' THEN shares ELSE -shares END) > 0"
             ).fetchall()
             if pos_rows:
                 close_mv = 0.0
@@ -105,6 +107,7 @@ def index():
                 if close_mv > 0:
                     position_value = round(close_mv, 2)
             mc.close()
+            _tr.close()
         except Exception:
             pass  # fall through to position_cost
         total_asset = round(capital + position_value, 2)
@@ -119,6 +122,98 @@ def index():
 def api_state():
     """当前完整状态 (模板6: {data, error} 信封): 资金 + 持仓 + 信号 + 暴露"""
     return _api_response(data=get_state())
+
+
+@app.route("/api/lgb")
+def api_lgb():
+    """LightGBM 模型状态与最新预测 (ADR-037 改进项)."""
+    try:
+        from quant.alpha.qlib_model import get_lgb_model, _check_lightgbm
+        lgb_available = _check_lightgbm()
+        models = []
+        is_trained = False
+        metadata = None
+        latest_pred = None
+
+        if lgb_available:
+            model = get_lgb_model(auto_load=True)
+            is_trained = model.is_trained
+            models = model.list_models()
+            if model.metadata:
+                metadata = {
+                    "ic_mean": model.metadata.ic_mean,
+                    "n_samples": model.metadata.n_samples,
+                    "n_features": model.metadata.n_features,
+                    "train_date": model.metadata.train_date,
+                    "feature_names": model.metadata.feature_names[:10],
+                }
+
+        return _api_response(data={
+            "available": lgb_available,
+            "trained": is_trained,
+            "models": models[-5:],  # last 5 models
+            "metadata": metadata,
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@app.route("/api/signals/quality")
+def api_signals_quality():
+    """信号质量对比 — 今日信号 vs 历史信号统计 (ADR-037 改进项)."""
+    try:
+        from quant.data.repos import TradeRepo
+        repo = TradeRepo()
+        today = datetime.now().strftime("%Y-%m-%d")
+        sig_today = repo.get_latest_signals()
+        today_targets = sig_today.get("targets", []) if sig_today else []
+        today_date = sig_today.get("date", "") if sig_today else ""
+
+        # Historical stats (last 20 signal days)
+        conn = repo._conn()
+        rows = conn.execute(
+            "SELECT date, signals_json FROM daily_signals ORDER BY date DESC LIMIT 20"
+        ).fetchall()
+        conn.close()
+
+        import json
+        hist_counts = []
+        hist_scores = []
+        for d, js in rows:
+            try:
+                targets = json.loads(js) if isinstance(js, str) else js
+                hist_counts.append(len(targets))
+                for t in targets:
+                    if isinstance(t, dict) and t.get("score"):
+                        hist_scores.append(float(t["score"]))
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        today_count = len(today_targets)
+        today_scores = [t.get("score", 0) for t in today_targets if t.get("score")]
+        today_avg_score = sum(today_scores) / max(len(today_scores), 1)
+        hist_avg_count = sum(hist_counts) / max(len(hist_counts), 1)
+        hist_avg_score = sum(hist_scores) / max(len(hist_scores), 1)
+
+        return _api_response(data={
+            "today": {
+                "date": today_date,
+                "count": today_count,
+                "avg_score": round(today_avg_score, 4),
+                "max_score": round(max(today_scores), 4) if today_scores else 0,
+            },
+            "historical": {
+                "avg_count": round(hist_avg_count, 1),
+                "avg_score": round(hist_avg_score, 4),
+                "n_days": len(hist_counts),
+            },
+            "comparison": {
+                "count_pct": round((today_count / max(hist_avg_count, 1) - 1) * 100, 1),
+                "score_diff": round(today_avg_score - hist_avg_score, 4),
+            },
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
 
 
 @app.route("/api/factors")
@@ -141,12 +236,10 @@ def api_factors():
             dist = repo.status_distribution()
             stats["n_total"] = repo.count_total()
             stats["n_active"] = dist.get("active", 0)
-            stats["n_candidate"] = dist.get("candidate", 0)
-            stats["n_rejected"] = dist.get("rejected", 0)
-            stats["n_retired"] = dist.get("retired", 0)
-            stats["n_monitoring"] = dist.get("monitoring", 0)
-            known = stats["n_active"] + stats["n_candidate"] + stats["n_rejected"] + stats["n_retired"] + stats["n_monitoring"]
-            stats["n_registered"] = stats["n_total"] - known
+            stats["n_probation"] = dist.get("probation", 0)
+            stats["n_evaluating"] = dist.get("evaluating", 0)
+            stats["n_archived"] = dist.get("archived", 0)
+            stats["n_registered"] = stats["n_total"] - stats["n_active"] - stats["n_probation"] - stats["n_evaluating"] - stats["n_archived"]
             stats["n_evaluated"] = repo.count_with_ic()
             # Use the same variable name for the except handler
             c = None  # no longer needed
@@ -155,10 +248,9 @@ def api_factors():
             stats["n_total"] = 0
             stats["n_registered"] = 0
             stats["n_active"] = 0
-            stats["n_candidate"] = 0
-            stats["n_rejected"] = 0
-            stats["n_retired"] = 0
-            stats["n_monitoring"] = 0
+            stats["n_probation"] = 0
+            stats["n_evaluating"] = 0
+            stats["n_archived"] = 0
             stats["n_evaluated"] = 0
         return _api_response(data=stats)
     except Exception as e:
@@ -240,6 +332,15 @@ def api_trades():
 def api_record_trade():
     """记录一笔交易 → trades.db (手动交易，strategy='manual')"""
     from flask import request
+    # B-28 fix: 可选鉴权 — 设置 QUANT_API_TOKEN 环境变量后,
+    # 请求必须带 X-API-Token 头 (hmac 比较防时序侧信道)
+    _token = os.environ.get("QUANT_API_TOKEN")
+    if _token:
+        import hmac as _hmac
+        _given = request.headers.get("X-API-Token", "")
+        if not _hmac.compare_digest(_given, _token):
+            return _api_response(error={"code": "UNAUTHORIZED",
+                                        "message": "missing or invalid X-API-Token"}), 401
     data = request.get_json(force=True)
     side = data.get("side")
     strategy = "manual"
@@ -355,7 +456,7 @@ def api_risk():
                 continue
             mean_ret = sum(logrets) / n
             variance = sum((r - mean_ret) ** 2 for r in logrets) / (n - 1)
-            annual_vol = math.sqrt(variance * 252) * 100  # annualized %
+            annual_vol = math.sqrt(variance * _require_cfg("market.annual_trading_days")) * 100  # annualized %
             # max drawdown
             peak = closes[0]
             max_dd = 0.0
@@ -383,7 +484,32 @@ def api_risk():
     for r in result:
         r["weight_pct"] = round(pos_map.get(r["symbol"], 0) / total_val * 100, 1) if total_val > 0 else 0
 
-    return _api_response(data={"symbols": result, "total_value": round(total_val, 2)})
+    # ── portfolio-level summary: VaR/CVaR/ MaxDD from daily_equity ──
+    summary = {"var_95_pct": 0.0, "cvar_95_pct": 0.0, "max_dd_pct": 0.0}
+    try:
+        from quant.risk.var import historical_var, historical_cvar
+        import pandas as pd
+        tconn = sqlite3.connect(TRADE_DB)
+        eq_rows = tconn.execute(
+            "SELECT date, total_equity FROM daily_equity ORDER BY date ASC LIMIT 120"
+        ).fetchall()
+        tconn.close()
+        if len(eq_rows) >= 5:
+            eq = pd.DataFrame(eq_rows, columns=["date", "total_equity"])
+            eq["ret"] = eq["total_equity"].pct_change()
+            rets = eq["ret"].dropna()
+            if len(rets) >= 10:
+                eq["peak"] = eq["total_equity"].cummax()
+                eq["dd"] = (eq["peak"] - eq["total_equity"]) / eq["peak"]
+                max_dd_series = eq["dd"].max()
+                summary = {"var_95_pct": round(float(historical_var(rets)), 2),
+                           "cvar_95_pct": round(float(historical_cvar(rets)), 2),
+                           "max_dd_pct": round(float(max_dd_series * 100), 1)}
+    except Exception as e:
+        logger.warning("Cannot compute portfolio VaR/CVaR: %s", e)
+
+    return _api_response(data={"symbols": result, "summary": summary,
+                                "total_value": round(total_val, 2)})
 
 @app.route("/api/performance")
 def api_performance():
@@ -400,8 +526,8 @@ def api_performance():
     from quant.data.repos import TradeRepo; base = TradeRepo().get_initial_capital(strategy)
     capital = TradeRepo().get_cash(strategy) or base
     position_cost = tc.execute(
-        "SELECT COALESCE(SUM(price*shares),0) FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)",
-        (strategy, strategy)).fetchone()[0]
+        "SELECT COALESCE(SUM(CASE WHEN side='buy' THEN price*shares ELSE -price*shares END),0) FROM sim_trades WHERE strategy=? HAVING SUM(CASE WHEN side='buy' THEN shares ELSE -shares END) > 0",
+        (strategy,)).fetchone()[0]
 
     # 估值: ?quotes=true → 市价; 默认 → 最新收盘, 均失败则账面成本 (test-v203)
     use_quotes = request.args.get("quotes", "").lower() == "true"
@@ -409,19 +535,19 @@ def api_performance():
     valuation_method = "book_cost"
     # shares_map 提前填充, latest_close fallback 不依赖 use_quotes
     shares_map = dict(tc.execute(
-        "SELECT symbol, SUM(shares) FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?) GROUP BY symbol",
-        (strategy, strategy)).fetchall())
+        "SELECT symbol, SUM(CASE WHEN side='buy' THEN shares ELSE -shares END) AS net_shares FROM sim_trades WHERE strategy=? GROUP BY symbol HAVING SUM(CASE WHEN side='buy' THEN shares ELSE -shares END) > 0",
+        (strategy,)).fetchall())
     if use_quotes:
         try:
             pos_symbols = [r[0] for r in tc.execute(
-                "SELECT symbol FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?)",
-                (strategy, strategy)).fetchall()]
+                "SELECT symbol FROM sim_trades WHERE strategy=? GROUP BY symbol HAVING SUM(CASE WHEN side='buy' THEN shares ELSE -shares END) > 0",
+                (strategy,)).fetchall()]
             from quant.execution.quote import fetch_quotes
             quotes = fetch_quotes(pos_symbols)
             if quotes:
                 pos_share_map = dict(tc.execute(
-                    "SELECT symbol, SUM(shares) FROM sim_trades WHERE side='buy' AND strategy=? AND symbol NOT IN (SELECT symbol FROM sim_trades WHERE side='sell' AND strategy=?) GROUP BY symbol",
-                    (strategy, strategy)).fetchall())
+                    "SELECT symbol, SUM(CASE WHEN side='buy' THEN shares ELSE -shares END) AS net_shares FROM sim_trades WHERE strategy=? GROUP BY symbol HAVING SUM(CASE WHEN side='buy' THEN shares ELSE -shares END) > 0",
+                    (strategy,)).fetchall())
                 mv = 0.0
                 for sym, shares in pos_share_map.items():
                     if sym in quotes:
@@ -555,6 +681,19 @@ def api_stream():
             broker.unsubscribe(q)
     return Response(generate(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+@app.route("/api/recon")
+def api_recon():
+    """OMS 日终对账 (reconcile.py 落库). ?date=YYYY-MM-DD 缺省取最近对账日."""
+    from flask import request
+    try:
+        from quant.scheduler.reconcile import get_recon
+        day = request.args.get("date") or None
+        return _api_response(data=get_recon(day=day))
+    except Exception as e:
+        logger.warning(f"api_recon failed: {e}")
+        return _api_response(
+            error={"code": "INTERNAL", "message": "recon query failed"}), 500
 
 @app.route("/api/health")
 def api_health():

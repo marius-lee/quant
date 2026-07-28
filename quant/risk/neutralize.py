@@ -101,30 +101,118 @@ def size_neutralize(
     return result.reindex(scores.index)
 
 
+
+def style_neutralize(
+    scores: pd.Series,
+    exposures: dict[str, pd.Series],
+    min_common: int = None,
+) -> pd.Series:
+    """风格因子中性化: 截面多元回归 alpha ~ style_factors, 取残差.
+
+    消除已知风格因子的暴露, 使 alpha 反映的是"纯特质收益"而非"押注风格"。
+
+    支持风格因子:
+      - value (book-to-price) — Fama-French HML
+      - momentum (trailing return) — Carhart MOM
+      - volatility (idiosyncratic vol) — BARRA
+      - quality (ROE) — BARRA
+
+    Args:
+        scores: index=symbol, alpha 得分
+        exposures: {factor_name: pd.Series(index=symbol, value=exposure)}
+        min_common: 最少共同股票数 (默认从 config 读取)
+
+    Returns: 残差 = 纯特质 alpha (去均值标准化)
+
+    来源:
+      ② Fama & French (2015) — 五因子模型
+      ② BARRA USE4 — 风格因子风险分解
+      ② Carhart (1997) — 四因子动量
+    """
+    if min_common is None:
+        min_common = _MIN_COMMON
+
+    # 构建因子矩阵
+    valid = scores.dropna().index
+    factor_data = {}
+    for name, series in exposures.items():
+        aligned = series.reindex(valid).dropna()
+        factor_data[name] = aligned
+
+    # 取所有因子共有的股票
+    common = valid
+    for series in factor_data.values():
+        common = common.intersection(series.index)
+
+    if len(common) < min_common:
+        logger.warning(f"[neutralize] style: only {len(common)} common stocks "
+                       f"(< {min_common}), skip")
+        return scores
+
+    # 构建回归矩阵: [1, exposure_1, exposure_2, ...]
+    y = scores.loc[common].values
+    X_cols = []
+    X_arr = np.ones((len(common), 1))  # intercept
+    for name in factor_data:
+        vals = factor_data[name].loc[common].values
+        # 截面 z-score 标准化
+        vals = (vals - vals.mean()) / (vals.std(ddof=1) + 1e-8)
+        X_arr = np.column_stack([X_arr, vals])
+        X_cols.append(name)
+
+    if X_arr.shape[1] < 2:
+        return scores
+
+    try:
+        beta = np.linalg.lstsq(X_arr, y, rcond=None)[0]
+        y_pred = X_arr @ beta
+        residuals = y - y_pred
+    except np.linalg.LinAlgError:
+        logger.warning("[neutralize] style: linear algebra error, skip")
+        return scores
+
+    result = pd.Series(residuals, index=common)
+    result = (result - result.mean()) / result.std(ddof=1)
+    logger.debug(f"[neutralize] style: {len(common)} stocks, "
+                 f"factors={X_cols}, adj_R2≈{1 - np.var(residuals) / np.var(y):.3f}")
+    return result.reindex(scores.index)
+
+
 def neutralize(
     scores: pd.Series,
     industries: Optional[pd.Series] = None,
     market_caps: Optional[pd.Series] = None,
+    style_exposures: Optional[dict[str, pd.Series]] = None,
 ) -> pd.Series:
-    """统一的 alpha 中性化入口。
+    """统一的 alpha 中性化入口 (行业 + 市值 + 风格).
 
-    顺序: 行业中性化 → 市值中性化（两者都提供时）
+    顺序: 行业中性化 → 市值中性化 → 风格中性化
 
-    scores: index=symbol, alpha 得分
-    industries: 行业分类 (可选)
-    market_caps: 总市值 (可选)
+    Args:
+        scores: index=symbol, alpha 得分
+        industries: 行业分类 (可选)
+        market_caps: 总市值 (可选)
+        style_exposures: {"value": Series, "momentum": Series, ...} (可选, BARRA 风格)
 
-    返回: 中性化后的得分
+    Returns: 中性化后的得分
+
+    来源:
+      ② BARRA USE4 — 多因子风险中性化标准流程
+      ② Grinold & Kahn (2000) Ch.4 — 先行业后风格的回归顺序
     """
     result = scores.copy()
     ind_flag = "Y" if industries is not None else "N"
     sz_flag = "Y" if market_caps is not None else "N"
-    logger.info(f"[neutralize] industry={ind_flag} size={sz_flag}")
+    st_flag = "Y" if style_exposures else "N"
+    logger.info(f"[neutralize] industry={ind_flag} size={sz_flag} style={st_flag}")
 
     if industries is not None:
         result = industry_neutralize(result, industries)
 
     if market_caps is not None:
         result = size_neutralize(result, market_caps)
+
+    if style_exposures:
+        result = style_neutralize(result, style_exposures)
 
     return result

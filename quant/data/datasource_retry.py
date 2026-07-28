@@ -5,7 +5,7 @@
 来源: GitHub akfamily/akshare#5762 (2025.3) + 社区实测:
   - 东方财富底层约3次/秒触发封禁, 连续4次不同函数即可触发rate limit
   - 指数退避 1s→2s→4s→8s 是社区最广泛使用的方案
-  - 随机抖动 (jitter) 强烈推荐, 模拟人工操作避免被识别为爬虫
+  - 随机抖动 (jitter=(0,1)) 已实现, 模拟人工操作避免被识别为爬虫
 
 用法:
   from quant.data.datasource_retry import datasource_retry, quote_retry
@@ -49,8 +49,8 @@ def datasource_retry(func=None, *, tries=4, delay=1, backoff=2):
       - https://blog.gitcode.com/866b91c47d325e42e9ec7f28fbd68c33.html
     """
     if func is not None:
-        return retry(Exception, tries=tries, delay=delay, backoff=backoff)(func)
-    return lambda f: retry(Exception, tries=tries, delay=delay, backoff=backoff)(f)
+        return retry(Exception, tries=tries, delay=delay, backoff=backoff, jitter=(0, 1))(func)
+    return lambda f: retry(Exception, tries=tries, delay=delay, backoff=backoff, jitter=(0, 1))(f)
 
 
 def quote_retry(func=None, *, tries=3, delay=0.5, backoff=2):
@@ -75,5 +75,5 @@ def quote_retry(func=None, *, tries=3, delay=0.5, backoff=2):
       - blog.gitcode.com: HTTP行情接口瞬时失败率高, 轻量重试收益大
     """
     if func is not None:
-        return retry(Exception, tries=tries, delay=delay, backoff=backoff)(func)
-    return lambda f: retry(Exception, tries=tries, delay=delay, backoff=backoff)(f)
+        return retry(Exception, tries=tries, delay=delay, backoff=backoff, jitter=(0, 1))(func)
+    return lambda f: retry(Exception, tries=tries, delay=delay, backoff=backoff, jitter=(0, 1))(f)

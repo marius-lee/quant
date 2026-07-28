@@ -128,7 +128,8 @@ def stress_test(positions, weights):
 
     Returns: dict[scenario_name] = estimated loss (RMB)
     """
-    conn = sqlite3.connect(_MARKET_DB)
+    from quant.data.repos._base import DatabaseManager
+    conn = DatabaseManager.market()
     syms = [p["symbol"] for p in positions] if isinstance(positions, list) else positions
     placeholders = ",".join("?" * len(syms))
     results = {}
@@ -251,7 +252,8 @@ def update_daily_risk(engine, strategy="quant"):
 
     # Persist to daily_risk table for backtest audit trail
     _db = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "trades.db")
-    _conn = sqlite3.connect(_db)
+    from quant.data.repos._base import DatabaseManager as _DM
+    _conn = DatabaseManager.market()
     _conn.execute("""CREATE TABLE IF NOT EXISTS daily_risk (
         date TEXT PRIMARY KEY,
         var_95 REAL, var_95_pct REAL, cvar_95 REAL, cvar_95_pct REAL,

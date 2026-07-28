@@ -15,7 +15,7 @@ _log = get_logger(__name__)
 
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
-    rid = _tk_start("weekly_eval", today)
+    rid = _tk_start("weekly_eval", today, grace_seconds=7200)  # 对齐 _TIMEOUTS (test-v301)
     if rid is None:
         _log.info(f"[{today}] weekly_eval already running, skip duplicate trigger")
         return
@@ -26,10 +26,37 @@ def _run(today: str):
     stats = force_refresh_cache()
     n_factors = len(stats.get("factors", []))
 
+    # ── IC 衰减检查 (报告 §6.4: 原 phase5_monitor._check_ic_decay 死代码活化) ──
+    # 复用刚刷新的 stats["decay"] (零额外计算). retention=|IC_20d/IC_1d| < 0.3
+    # → 长期 IC 不到短期 1/3, 信号快衰减, 周频评审告警 (因子生命周期域).
+    decay = stats.get("decay", {})
+    decaying = []
+    for name, d in decay.items():
+        try:
+            ic_1d, ic_20d = (d[0], d[2]) if isinstance(d, (list, tuple)) and len(d) >= 3 \
+                else (d.get("1d", 0), d.get("20d", 0))
+            if ic_1d and abs(ic_1d) > 1e-6:
+                retention = abs(ic_20d / ic_1d)
+                if retention < 0.3:
+                    decaying.append((name, ic_1d, ic_20d, retention))
+        except (TypeError, IndexError, AttributeError):
+            continue
+    if decaying:
+        for name, ic_1d, ic_20d, ret in decaying:
+            _log.warning(f"[{today}] IC decay alert: {name} IC_1d={ic_1d:+.4f} "
+                         f"IC_20d={ic_20d:+.4f} retention={ret:.0%} (<30%)")
+        _m.inc("scheduler.weekly.ic_decay_alerts", len(decaying))
+    else:
+        _log.info(f"[{today}] IC decay check: {len(decay)} factors OK (retention >= 30%)")
+
     elapsed = _time.time() - t0
-    _log.info(f"[{today}] weekly factor evaluation done: {n_factors} factors ({elapsed:.1f}s)")
-    _tk_finish("weekly_eval", today, "ok", summary={"factors": n_factors, "elapsed": round(elapsed, 1)})
-    _log.info(f"[SCHEDULER] {today} | TASK=weekly_eval | STATUS=OK | factors={n_factors} | elapsed={elapsed:.1f}s")
+    _log.info(f"[{today}] weekly factor evaluation done: {n_factors} factors, "
+              f"{len(decaying)} decay alerts ({elapsed:.1f}s)")
+    _tk_finish("weekly_eval", today, "ok",
+               summary={"factors": n_factors, "decay_alerts": len(decaying),
+                        "elapsed": round(elapsed, 1)})
+    _log.info(f"[SCHEDULER] {today} | TASK=weekly_eval | STATUS=OK | "
+              f"factors={n_factors} decay_alerts={len(decaying)} | elapsed={elapsed:.1f}s")
     _m.inc("scheduler.weekly.ok")
 
 

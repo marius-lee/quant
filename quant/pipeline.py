@@ -13,25 +13,22 @@ import pandas as pd
 
 from quant.data.store import DataStore
 
-from quant.factor.compute import compute_all_factors
 from quant.risk.neutralize import neutralize
 
-from quant.factor.stats_cache import load_ic_map_from_cache
+from quant.factor.stats_cache import load_ic_map_from_cache, _bayesian_shrink_ic_map
 from quant.risk.covariance import covariance_matrix
 from quant.risk.constraints import RiskLimits, apply_all_filters
 from quant.risk.var import compute_var
 from quant.optimizer.portfolio import PortfolioConstructor
-from quant.optimizer.rebalance import compute_trades, validate_orders
 from quant.execution.cost import CostModel
-from quant.execution.engine import ExecutionEngine, Order
+from quant.execution.engine import ExecutionEngine
 from quant.monitor.report import generate_report, push_to_web
 from quant.config.constants import _require_cfg
+from quant.config.paths import TRADE_DB
 from quant.core.phase_tracker import PhaseTracker, PhaseResult
 from quant.utils.logger import get_logger
 
-# ── HTTP state push (P69: 抽取到 web/state_pusher.py) ──
 import uuid as _uuid
-from web.state_broker import broker
 
 logger = get_logger("pipeline")
 
@@ -41,11 +38,21 @@ LOT_SIZE = _require_cfg("backtest.lot_size")
 
 def generate_signals(date_str: str = None, capital: float = None, strategy: str = "quant",
                      skip_pull: bool = False, store=None, status_filter: str = "using",
+                     scope: str = "live",
                      suppress_push: bool = False, universe_size: int = None,
-                     db_path: str = "quant/data/trades.db", exclude_symbols: list = None, ic_map: dict = None, combine_mode: str = None, preloaded_data=None, primitives: dict = None, factor_store=None) -> dict:
+                     db_path: str = TRADE_DB, exclude_symbols: list = None, ic_map: dict = None, combine_mode: str = None, preloaded_data=None, primitives: dict = None, factor_store=None,
+                     regime_label: str = None, regime_probs: dict = None,
+                     ctx: "PipelineContext | None" = None) -> dict:
     """Pipeline 阶段一: 盘前信号生成 (Steps 0-5, 不执行交易)。
 
     用 T-1 收盘数据计算因子 → alpha → 风险过滤 → 组合优化 → 输出目标持仓。
+    status_filter: 控制因子计算池 ('using'=active+monitoring, 'backtesting'=backtest池)
+    scope: 控制 IC 权重来源 ('live'=factor_registry, 'backtest'=factor_ic_daily)
+    ic_map: 显式传入 IC 权重 (回测用), 传入后跳过 scope 参数
+    regime_label/regime_probs: §8.2 regime 条件合成 (test-v299)。
+        实盘 (scope=live) 缺省自动调 get_current_regime() (pickle 缓存 HMM);
+        回测 (scope=backtest) 必须由 loop.py 注入 point-in-time 值 —
+        自动拉取会用全量历史训练的模型, 构成前视, 故 backtest scope 下不自动取。
     返回: {date, strategy, total_capital, target_positions: [{symbol, shares, price, side}]}
     """
     if date_str is None:
@@ -56,6 +63,19 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     _set_tid(tid)
     from quant.monitor.metrics import metrics as _m
     _m.inc("pipeline.runs")
+    # A3: resolve dependencies from PipelineContext if provided
+
+    if ctx is not None:
+        store = store or ctx.store
+        factor_store = factor_store or ctx.factor_store
+        db_path = db_path or ctx.db_path
+        suppress_push = suppress_push or ctx.suppress_push
+        if ctx.preloaded_data is not None:
+            preloaded_data = preloaded_data or ctx.preloaded_data
+        if ctx.primitives:
+            primitives = primitives or ctx.primitives
+        if ctx.ic_map is not None:
+            ic_map = ic_map if ic_map is not None else ctx.ic_map
 
     t0 = time.time()
     results = {"date": date_str, "steps": {}}
@@ -64,6 +84,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     _ph_t0 = _time_ph.time()
     _ph_start = _time_ph.time()
     if not suppress_push:
+        from web.state_broker import broker
         broker.update({"status": "signals_started", "progress": "0/5", "date": date_str, "trace_id": tid})
     logger.info(f"generate_signals started trace_id={tid} date={date_str}")
 
@@ -71,14 +92,16 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     _store_in = store
     store = store or DataStore()  # DataStore 始终用 quant/data/market.db
     engine = ExecutionEngine(db_path=db_path)
-    cost_model = CostModel()
+    cost_model = CostModel.from_config()
     constructor = PortfolioConstructor()
 
     from quant.data.repos import TradeRepo
     seed = TradeRepo(db_path=db_path).get_initial_capital(strategy)
     if not engine.is_initialized(strategy):
         engine.set_initial_capital(strategy, seed)
-    total_capital = seed  # 用初始本金, 不用剩余现金 (get_cash 会随持仓变化缩小)
+    # B-12 fix: 显式传入 capital 时按当前权益 sizing (回测 walk-forward 复利);
+    # 未传入时 (实盘) 保持原行为用初始本金。
+    total_capital = capital if capital else seed
     logger.info(f"[0/5] init: DataStore+Engine ready")
 
     # ── Step 1: Data Update ──
@@ -188,7 +211,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     # ── Step 2.6: Cooling-off exclude (backtest only) ──
     if exclude_symbols:
         symbols = [s for s in symbols if s not in exclude_symbols]
-        data = data.loc[:, data.columns.get_level_values(1).isin(symbols)] if symbols else data.iloc[:, :0]
+        data = data.loc[:, data.columns.get_level_values(1).isin(symbols)] if symbols else data.iloc[:, []]
         fundamentals = fundamentals[fundamentals.index.isin(symbols)]
     # ── Step 3: Factor + Alpha ──
     actual_date = date_str
@@ -207,32 +230,46 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     _ztd_dates = [d for d in pd.date_range(start=pd.Timestamp(hist_start), end=pd.Timestamp(date_str), freq="B") if _is_td(d.date())]
     preload_ztd_cache([d.strftime("%Y-%m-%d") for d in _ztd_dates], symbols)
 
-    # ── 因子值来源: factor_store (缓存) 优先, 否则实时计算 ──
-    factor_values = None
-    if factor_store is not None:
-        try:
-            factor_values = factor_store.load(actual_date, symbols=symbols, factor_names=None)
-            if factor_values:
-                logger.info(f"step 3: loaded {len(factor_values)} factors from factor_cache for {actual_date}")
-        except Exception:
-            pass
+    # ── 因子值来源: factor_store (缓存) 优先, 无缓存直接抛错 ──
+    if factor_store is None:
+        raise RuntimeError(
+            f"step 3: factor_store is None for {actual_date}, "
+            f"run factor_cache materialization first: PYTHONPATH=. .venv/bin/python3 -c "
+            f"'from quant.scheduler.factor_cache import _run; _run({actual_date!r})'"
+        )
+    factor_values = factor_store.load(actual_date, symbols=symbols, factor_names=None)
+    if factor_values:
+        logger.info(f"step 3: loaded {len(factor_values)} factors from factor_cache for {actual_date}")
 
     if not len(symbols):
         logger.warning(f"[2.5] no symbols left for date={actual_date}, returning empty signals")
         return {"date": actual_date, "target_positions": [], "signal_count": 0, "steps": results["steps"]}
     if not factor_values:
-        logger.info(f"step 3 starting: computing factors for {len(symbols)} symbols on {actual_date}...")
-        factor_values = compute_all_factors(data, actual_date,
-                                        fundamentals=fundamentals,
-                                        status_filter=status_filter,
-                                        benchmark_ret=benchmark_ret,
-                                        primitives=primitives)
+        raise RuntimeError(
+            f"step 3: factor_cache miss for {actual_date} ({len(symbols)} symbols), "
+            f"run factor_cache materialization first"
+        )
     n_valid = sum(1 for v in factor_values.values() if isinstance(v, pd.Series) and v.notna().sum() > 0)
 
     from quant.alpha.model import AlphaModel
-    am = AlphaModel()
-    ic_map = ic_map if ic_map is not None else load_ic_map_from_cache(factor_values, status_filter=status_filter)
-    alpha_raw = am.combine(factor_values, ic_map=ic_map)
+    # B-12 fix: combine_mode 参数此前被静默忽略 (回测 warmup→ic_weighted 切换无效)
+    am = AlphaModel(combine_mode=combine_mode)
+    ic_map = ic_map if ic_map is not None else load_ic_map_from_cache(factor_values, scope=scope)
+    ic_map = _bayesian_shrink_ic_map(ic_map)
+    # test-v299 §8.2: regime 条件合成 (HMM 牛/熊/震荡 → 因子权重偏置)
+    if _require_cfg("alpha.regime_combine"):
+        if regime_label is None and scope == "live":
+            from quant.regime.detector import get_current_regime
+            regime_label, regime_probs = get_current_regime()
+        if regime_label is not None:
+            alpha_raw = am.combine_regime(factor_values, ic_map=ic_map,
+                                          regime_label=regime_label,
+                                          regime_probs=regime_probs or {})
+        else:
+            # backtest scope 未注入 point-in-time regime → 标准合成 (防前视)
+            alpha_raw = am.combine(factor_values, ic_map=ic_map)
+    else:
+        alpha_raw = am.combine(factor_values, ic_map=ic_map)
     alpha = am.rank(alpha_raw)
 
     results["_factor_values"] = {k: v for k, v in factor_values.items() if isinstance(v, pd.Series)}
@@ -263,6 +300,9 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     # Step 4 candidates: alpha_neut already within investable universe (pre-filtered in Step 2.3)
     # Risk pre-filters (liquidity/price/ST) are already applied — no re-filtering here.
     # Only stocks with valid alpha scores pass through to the optimizer.
+    # Ensure both Series have string indices for DataFrame construction
+    alpha_neut.index = alpha_neut.index.astype(str)
+    prices.index = prices.index.astype(str)
     candidates = pd.DataFrame({
         "alpha": alpha_neut, "close": prices,
     })
@@ -284,17 +324,31 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
                 if _var and abs(_var / _exposure) > 0.03:
                     logger.warning("[4/5] VaR warning: daily VaR=%.1f (%.1f%% of exposure)",
                                    abs(_var), abs(_var / _exposure) * 100)
-    except Exception:
-        pass
+    except Exception as _var_err:
+        # Q7-5 fix: VaR 检查失败必须可观测 (原裸 except: pass 吞错)
+        logger.warning(f"[4/5] VaR check skipped (non-fatal): {_var_err}")
     if not suppress_push:
         broker.update({"status": "risk_filtered", "progress": "4/5", "candidates": len(filtered), "trace_id": tid})
 
     # ── Step 5: Optimizer (generate target positions, do NOT execute) ──
+    # §8.3 成本感知换仓 (Grinold α−λ·TC): 当前持仓传入优化器, 效益 < λ×成本
+    # 的换股被拦截。engine 的 db_path 回测=BACKTEST_DB / 实盘=TRADE_DB,
+    # 两侧同一持仓口径, 行为自动一致。
+    _held = engine.get_positions(strategy)
+    current_lots = pd.Series(
+        {p["symbol"]: int(p["shares"]) // LOT_SIZE for p in _held
+         if int(p["shares"]) >= LOT_SIZE},
+        dtype=int,
+    )
     portfolio = constructor.construct(
         filtered["alpha"], filtered["close"],
         total_capital,
         covariance=cov, ic_map=ic_map,
+        current_lots=current_lots, cost_model=cost_model,
     )
+    if portfolio.tc_suppressed:
+        logger.info(f"[5/5] tc_band: {portfolio.tc_suppressed} swap(s) suppressed "
+                    f"(held={len(current_lots)} lots)")
     # Build target positions list for the scheduler to consume
     target_positions = []
     for sym, lots in portfolio.lots.items():
@@ -317,10 +371,17 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
                                   max_factors=3)
     for i, tp in enumerate(target_positions):
         tp["reason"] = attr_map.get(tp["symbol"], f"#{i+1}")
+    # §8.3 成本带标注: 被拦截而留仓的持仓在 reason 中标记 (进 daily_signals, web 可见)
+    if portfolio.tc_suppressed:
+        _cur_syms = set(current_lots.index)
+        for tp in target_positions:
+            if tp["symbol"] in _cur_syms:
+                tp["reason"] = "tc_hold(成本带留仓) " + tp.get("reason", "")
     results["target_positions"] = target_positions
     results["steps"]["optimizer"] = {
         "method": portfolio.method, "positions": portfolio.positions,
         "invested": round(portfolio.invested, 2), "status": "ok",
+        "tc_suppressed": portfolio.tc_suppressed,
     }
     logger.info(f"[5/5] optimizer: {portfolio.method}, {portfolio.positions} pos, invested=Y{portfolio.invested:,.0f}")
     if not suppress_push:
@@ -343,19 +404,28 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
 
 
 def execute_signals(target_positions: list[dict], date_str: str, strategy: str = "quant",
-                    prices: dict = None, db_path: str = "quant/data/trades.db",
-                    suppress_push: bool = False) -> dict:
+                    prices: dict = None, db_path: str = TRADE_DB,
+                    suppress_push: bool = False, ctx = None,
+                    risk_only: bool = False) -> dict:
     """Pipeline 阶段二: 开盘执行 (Step 6)。
 
     prices: 预提供的开盘价dict (回测用); None则由fetch_quotes获取实时报价.
     db_path: 交易数据库路径 (回测用); None使用默认.
     suppress_push: True→不调用 broker.update (回测用).
+    risk_only: True→只跑硬止损, 不再平衡 (weekly 非调仓日, rebalance_freq).
     """
     from quant.utils.logger import get_trace_id, set_trace_id as _set_tid
     tid = get_trace_id() or _uuid.uuid4().hex[:12]
     _set_tid(tid)
     from quant.monitor.metrics import metrics as _m
     _m.inc("pipeline.runs")
+    # A3: resolve dependencies from PipelineContext if provided
+    if ctx is not None:
+        db_path = db_path or ctx.db_path
+        suppress_push = suppress_push or ctx.suppress_push
+        # B-10 fix: execute_signals 没有 store/factor_store/preloaded_data/primitives/ic_map
+        # 这些变量 — 原代码从 generate_signals 复制粘贴, 传 ctx 即 NameError.
+        # execute 阶段只需要 db_path 与 suppress_push.
 
     t0 = time.time()
     results = {"date": date_str, "steps": {}}
@@ -366,7 +436,7 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
     logger.info(f"execute_signals started trace_id={tid} date={date_str} strategy={strategy}")
 
     engine = ExecutionEngine(db_path=db_path)
-    cost_model = CostModel()
+    cost_model = CostModel.from_config()
 
     # Get current positions
     current_positions = engine.get_positions(strategy)
@@ -416,48 +486,25 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
                 prices[tp["symbol"]] = q.get("price", 0) or q.get("open", 0)
     prices = pd.Series(prices)
 
-    # Compute total capital
-    cash = engine.get_cash(strategy)
-    position_value = 0.0
-    for p in current_positions:
-        px = prices.get(p["symbol"], p.get("price", 0))
-        if pd.isna(px) or px <= 0:
-            px = p.get("price", 0)
-        position_value += p["shares"] * float(px)
-    total_capital = round(cash + position_value, 2)
-
-    # ── Stop-Loss check ──
-    sl_pct = _require_cfg("risk.stop_loss_pct")
-    for p in current_positions:
-        cost_basis = p.get("price", 0)
-        current_px = prices.get(p["symbol"], None)
-        if current_px is None or current_px <= 0 or cost_basis <= 0 or pd.isna(current_px):
-            continue
-        drop = (float(current_px) - cost_basis) / cost_basis
-        if drop <= -sl_pct:
-            shares = int(p["shares"])
-            if shares > 0:
-                logger.warning(f"[SL] execute stop-loss: {p['symbol']} drop={drop:.1%}, selling {shares}")
-                engine.execute(
-                    [Order(symbol=p["symbol"], side="sell", shares=shares, price=float(current_px), cost=0)],
-                    date_str, strategy)
-        current_positions = engine.get_positions(strategy)
-        current_lots = {p2["symbol"]: p2["shares"] // LOT_SIZE for p2 in current_positions}
-
-    # ── Compute trades (delta) ──
-    current_lots_series = pd.Series(current_lots, dtype=int)
-    target_lots_series = pd.Series(target_lots, dtype=int)
-    orders = compute_trades(
-        target_lots_series, current_lots_series, prices, cost_model,
-        capital=total_capital, cash=engine.get_cash(strategy),
+    # ── 统一执行链 (报告 §1.2/§6.1, ExecutionModel 重构) ──
+    # 回测/实盘共用: 冷却过滤 → 固定止损 → delta → validate+按alpha裁剪 → 成交.
+    # 行为变化: validate 失败原"全部丢弃"(回测过于悲观) → 现与实盘一致按
+    # alpha 边际成本公式裁剪 (B-13). 止损标的当日剔除 + stopped_out 写入由模型完成.
+    # pipeline 语义 = 按给定价格立即成交 → BacktestExecutionModel
+    # (限价挂单语义在 scheduler/execute 的 LiveExecutionModel).
+    from quant.execution.execution_model import (
+        BacktestExecutionModel, ExecutionContext,
     )
-    if orders:
-        is_valid, msg = validate_orders(orders, engine.get_cash(strategy))
-        if not is_valid:
-            logger.warning(f"execute: validate_orders failed: {msg}, skipping")
-            orders = []
-        else:
-            engine.execute(orders, date_str, strategy)
+    _exec_ctx = ExecutionContext(
+        engine=engine, strategy=strategy, today=date_str, prices=prices,
+        cost_model=cost_model,
+    )
+    _exec_res = BacktestExecutionModel().run(target_positions, _exec_ctx,
+                                             risk_only=risk_only)
+    orders = _exec_res.orders
+    if _exec_res.stopped_out:
+        # Q7-2 fix: stopped_out 必须写入 — loop.py 冷却依赖此字段 (原死代码)
+        results["stopped_out"] = _exec_res.stopped_out
 
     results["steps"]["execution"] = {
         "orders": len(orders),
@@ -467,13 +514,16 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
     }
     logger.info(f"execute: {len(orders)} orders ({results['steps']['execution']['buys']} buys, {results['steps']['execution']['sells']} sells)")
     if not suppress_push:
+        from web.state_broker import broker
         broker.update({"status": "trades_executed", "progress": "6/7", "orders": len(orders), "trace_id": tid, "signals": target_positions})
     _m.inc("pipeline.trades", len(orders))
 
     # ── Step 7: Monitor ──
     positions = engine.get_positions(strategy)
     trades = engine.get_trades(strategy, limit=50)
-    total_wealth = engine.get_capital(strategy)
+    # B-06 fix: 监控口径按执行价 MTM (原成本价 → 总财富不含浮动盈亏)
+    total_wealth = engine.get_capital(
+        strategy, prices={s: float(v) for s, v in prices.items() if v and v > 0})
     cash_balance = engine.get_cash(strategy)
     from quant.data.repos import TradeRepo
     seed = TradeRepo(db_path=db_path).get_initial_capital(strategy)

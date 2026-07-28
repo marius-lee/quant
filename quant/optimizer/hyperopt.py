@@ -2,10 +2,22 @@
 
 Requires: pip install optuna
 Usage:
-    PYTHONPATH=. python3 optimizer/hyperopt.py
+    PYTHONPATH=. python3 -m quant.optimizer.hyperopt
 
-Runs 200 Optuna trials, each running a full backtest (from backtest.loop),
+Runs N Optuna trials, each running a full backtest (from backtest.loop),
 and saves the best parameters to config/best_params.json.
+
+test-v298 (待办 #9): 参数注入机制修复 — 旧版把 11 个参数写进 OPTUNA_*
+环境变量, 但全项目无任何代码读这些变量, Optuna 实际在优化常数目标函数。
+现改为: config 参数经 loader.override() 直接覆盖 config 单例 (回测内
+运行时 _require_cfg 全部生效); universe_size / combine_mode 作为
+run_backtest() 显式参数传入。
+
+搜索空间说明 (死维度已修):
+  - lookback_days 下限 400: 低于 max_factor_calendar_days(=378) 的值会被
+    pipeline `_eff_days = max(lookback, 378)` clamp 成常数, 旧范围 60-365 全无效。
+  - max_single_position 已删除: Nano 层 (capital=5000) _rank_concentrated
+    不使用该参数, 是死维度。
 """
 
 import os, sys, json, time
@@ -17,6 +29,26 @@ from quant.utils.logger import get_logger
 
 _log = get_logger("optimizer.hyperopt")
 
+# ── 搜索参数 → config key 映射 (test-v298) ──
+# 消费点核实 (2026-07-26, 全部运行时读取, override 即时生效):
+#   data.lookback_days       → pipeline Step 2 `_eff_days` (每次 generate_signals)
+#   alpha.top_fraction       → AlphaModel.__init__ (pipeline 每次新建)
+#   risk.max_positions       → PortfolioConstructor.__init__ (每次新建)
+#   risk.covariance.window   → covariance.py covariance_matrix() 内
+#   risk.atr_mult_*          → stop_loss.py RiskManager.__init__ (每次新建)
+#   optimizer.rebalance_freq → loop.py is_rebalance_day (每个交易日)
+# universe_size / combine_mode 不在此表 — 走 run_backtest 显式参数。
+_PARAM_TO_CONFIG = {
+    "lookback_days": "data.lookback_days",
+    "top_fraction": "alpha.top_fraction",
+    "max_positions": "risk.max_positions",
+    "covariance_window": "risk.covariance.window",
+    "atr_sl": "risk.atr_mult_stop_loss",
+    "atr_tp1": "risk.atr_mult_take_profit_1",
+    "atr_tp2": "risk.atr_mult_take_profit_2",
+    "rebalance_freq": "optimizer.rebalance_freq",
+}
+
 
 def objective(trial):
     """Optuna objective: run backtest with trial params, return net Sharpe."""
@@ -27,14 +59,14 @@ def objective(trial):
         return 0.0
 
     from quant.backtest.loop import run_backtest
+    from quant.config import loader as _cfg_loader
 
-    # ── Hyperparameters to optimize (11 params) ──
+    # ── Hyperparameters to optimize (10 params) ──
     params = {
         "n_symbols": trial.suggest_int("n_symbols", 200, 800, step=100),
-        "lookback_days": trial.suggest_int("lookback_days", 60, 365, step=60),
+        "lookback_days": trial.suggest_int("lookback_days", 400, 800, step=100),
         "top_fraction": trial.suggest_float("top_fraction", 0.1, 0.5, step=0.05),
         "max_positions": trial.suggest_int("max_positions", 5, 30, step=5),
-        "max_single_position": trial.suggest_float("max_single_position", 0.03, 0.15, step=0.02),
         "covariance_window": trial.suggest_int("covariance_window", 30, 120, step=30),
         "atr_sl": trial.suggest_float("atr_sl", 1.5, 3.0, step=0.25),
         "atr_tp1": trial.suggest_float("atr_tp1", 1.5, 3.0, step=0.25),
@@ -43,27 +75,23 @@ def objective(trial):
         "rebalance_freq": trial.suggest_categorical("rebalance_freq", ["daily", "weekly"]),
     }
 
-    # ── Apply params to config (in-process override) ──
-    # We use environment variables to override config during backtest
-    os.environ["OPTUNA_N_SYMBOLS"] = str(params["n_symbols"])
-    os.environ["OPTUNA_LOOKBACK"] = str(params["lookback_days"])
-    os.environ["OPTUNA_TOP_FRAC"] = str(params["top_fraction"])
-    os.environ["OPTUNA_MAX_POS"] = str(params["max_positions"])
-    os.environ["OPTUNA_MAX_SINGLE"] = str(params["max_single_position"])
-    os.environ["OPTUNA_COV_WIN"] = str(params["covariance_window"])
-    os.environ["OPTUNA_ATR_SL"] = str(params["atr_sl"])
-    os.environ["OPTUNA_ATR_TP1"] = str(params["atr_tp1"])
-    os.environ["OPTUNA_ATR_TP2"] = str(params["atr_tp2"])
-    os.environ["OPTUNA_COMBINE_MODE"] = params["combine_mode"]
-    os.environ["OPTUNA_REBALANCE"] = params["rebalance_freq"]
+    # ── Apply params: config 单例覆盖 + run_backtest 显式参数 ──
+    overrides = {_PARAM_TO_CONFIG[k]: v for k, v in params.items()
+                 if k in _PARAM_TO_CONFIG}
 
-    # ── Run backtest (shorter period for speed) ──
-    result = run_backtest(
-        start_date="2023-01-01",
-        end_date="2024-12-31",
-        capital=5000,
-        strategy=f"optuna_{trial.number}",
-    )
+    try:
+        with _cfg_loader.override(overrides):
+            result = run_backtest(
+                start_date="2023-01-01",
+                end_date="2024-12-31",
+                capital=5000,
+                strategy=f"optuna_{trial.number}",
+                universe_size=params["n_symbols"],
+                combine_mode=params["combine_mode"],
+            )
+    except Exception as e:
+        _log.error(f"trial {trial.number} backtest crashed: {e}")
+        return 0.0
 
     if "error" in result:
         return 0.0
@@ -129,11 +157,6 @@ def run_optimization(n_trials=200, study_name="quant_hyperopt"):
     with open(best_path, "w") as f:
         json.dump(best, f, indent=2, ensure_ascii=False)
     _log.info(f"Best params saved to {best_path}")
-
-    # Clean up env vars
-    for k in list(os.environ.keys()):
-        if k.startswith("OPTUNA_"):
-            del os.environ[k]
 
     return best
 

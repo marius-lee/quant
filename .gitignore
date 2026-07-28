@@ -42,3 +42,6 @@ appendonly.aof
 *.db
 *.db-shm
 *.db-wal
+factor_cache/*.csv.gz
+factor_cache/*.jsonl
+quant/data/factor_cache/

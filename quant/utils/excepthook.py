@@ -26,12 +26,14 @@ def _is_backtest_context(exc_tb) -> bool:
     return False
 
 
+_installed = False
+
 def setup():
+    """Install the global exception hook. Idempotent."""
     global _installed
     if _installed:
         return
     _installed = True
-    """Install the global exception hook. Idempotent."""
     _original = _sys.excepthook
 
     def _hook(exc_type, exc_value, exc_tb):

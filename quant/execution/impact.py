@@ -117,6 +117,7 @@ def get_stock_volume_snapshot(
             if r[1] and r[1] > 0:
                 result[r[0]] = float(r[1])
 
+    conn.close()
     return result
 
 
@@ -158,4 +159,5 @@ def get_stock_volatility_snapshot(
                 rets = np.diff(np.log(closes))
                 result[sym] = float(np.std(rets))
 
+    conn.close()
     return result

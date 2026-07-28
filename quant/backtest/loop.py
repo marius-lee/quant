@@ -16,11 +16,11 @@ import pandas as pd
 from datetime import datetime, timedelta
 import traceback
 from quant.utils.logger import get_logger, set_trace_id, offline_mode
-from quant.backtest.diagnostics import compute_pre_backtest_ic
 from quant.backtest.analyze import FactorTracker, diagnose, apply_diagnosis
 from quant.backtest.broker import SimulatedBroker
 from quant.config.constants import _require_cfg
-from quant.factor.ic import compute_ic as _compute_ic
+from quant.config import loader as cfgl
+from quant.factor.stats_cache import compute_backtest_ic
 from quant.alpha.model import AlphaModel
 
 _log = get_logger("backtest.loop")
@@ -43,11 +43,61 @@ def _get_prices(symbols, date_str, store, field="open"):
 BACKTEST_DB = os.path.join(_root, "data", "backtest_trades.db")
 
 
+def _persist_backtest_result(strategy, start, end, capital, metrics, diagnosis, elapsed, avg_signals, errors):
+    """ADR-037: 回测结果持久化到 backtest_runs 表，便于历史对比。"""
+    import json, sqlite3
+    try:
+        conn = sqlite3.connect(BACKTEST_DB)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS backtest_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy TEXT NOT NULL,
+                started_at TEXT DEFAULT (datetime('now','localtime')),
+                start_date TEXT, end_date TEXT,
+                initial_capital REAL,
+                sharpe REAL, cagr_pct REAL, max_dd_pct REAL,
+                sortino REAL, calmar REAL, win_rate REAL,
+                alpha REAL, info_ratio REAL, beta REAL,
+                final_equity REAL, total_return_pct REAL,
+                n_days INTEGER, avg_signals REAL,
+                errors INTEGER, elapsed_sec REAL,
+                diagnosis_json TEXT,
+                UNIQUE(strategy, started_at)
+            )
+        """)
+        conn.execute(
+            "INSERT OR REPLACE INTO backtest_runs "
+            "(strategy, start_date, end_date, initial_capital, "
+            "sharpe, cagr_pct, max_dd_pct, sortino, calmar, win_rate, "
+            "alpha, info_ratio, beta, final_equity, total_return_pct, "
+            "n_days, avg_signals, errors, elapsed_sec, diagnosis_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (strategy, start, end, capital,
+             metrics.get("sharpe"), metrics.get("cagr_pct"),
+             metrics.get("max_drawdown_pct"),
+             metrics.get("sortino"), metrics.get("calmar"),
+             metrics.get("win_rate"),
+             metrics.get("alpha"), metrics.get("info_ratio"),
+             metrics.get("beta"),
+             metrics.get("final_equity"), metrics.get("total_return_pct"),
+             metrics.get("n_days"), avg_signals,
+             errors, elapsed,
+             json.dumps(diagnosis.get("factor_report", {}), default=str)),
+        )
+        conn.commit()
+        conn.close()
+        _log.info("backtest: result persisted to backtest_runs")
+    except Exception as e:
+        _log.warning(f"backtest: failed to persist result (non-fatal): {e}")
+
+
 
 
 
 def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
     """Compute Sharpe, MDD, CAGR, win rate, Sortino, Calmar, Alpha, IR, Beta from equity curve."""
+    ann_days = _require_cfg("market.annual_trading_days")
     df = pd.DataFrame(equity_curve)
     if df.empty or len(df) < 2:
         return {"sharpe": 0, "max_drawdown_pct": 0, "cagr_pct": 0, "final_equity": 0}
@@ -61,7 +111,8 @@ def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
     # Sharpe (daily → annualized)
     mean_ret = returns.mean()
     std_ret = returns.std()
-    sharpe = (mean_ret / std_ret * np.sqrt(244)) if std_ret > 0 else 0.0
+    ann_days = _require_cfg("market.annual_trading_days")
+    sharpe = (mean_ret / std_ret * np.sqrt(ann_days)) if std_ret > 0 else 0.0
 
     # Max drawdown
     cum = (1 + returns).cumprod()
@@ -70,7 +121,7 @@ def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
     max_dd = float(drawdown.min())
 
     # CAGR
-    years = len(returns) / 244
+    years = len(returns) / ann_days
     final = df["equity"].iloc[-1]
     initial = df["equity"].iloc[0]
     cagr = (final / initial) ** (1 / max(years, 0.5)) - 1 if initial > 0 else 0
@@ -82,7 +133,7 @@ def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
     # Sortino (annualized): only penalize downside deviation
     downside = returns[returns < 0]
     if len(downside) > 1 and downside.std() > 0:
-        sortino = (mean_ret / downside.std() * np.sqrt(244))
+        sortino = (mean_ret / downside.std() * np.sqrt(ann_days))
     else:
         sortino = 0.0
 
@@ -115,10 +166,10 @@ def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
                                 beta = round(float(beta_val), 3)
                             if beta is not None:
                                 daily_alpha = (strat - beta_val * bm).mean()
-                                alpha = round(float(daily_alpha * 244), 4)
-                                tracking_err = (strat - bm).std() * np.sqrt(244)
+                                alpha = round(float(daily_alpha * ann_days), 4)
+                                tracking_err = (strat - bm).std() * np.sqrt(ann_days)
                                 if tracking_err > 0:
-                                    ir = round(float(daily_alpha * 244 / tracking_err), 3)
+                                    ir = round(float(daily_alpha * ann_days / tracking_err), 3)
         except (TypeError, ValueError, IndexError):
             pass
 
@@ -139,9 +190,9 @@ def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
     }
 
 
-def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq=None,
+def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, retrain_freq=None, mode='full',
                     universe_size=None, ic_lookback=None, factor_status_filter="backtesting",
-                    factor_store=None):
+                    factor_store=None, combine_mode=None):  # deprecated: now auto-initialized from FACTOR_CACHE_DB
     """Run a full walk-forward backtest.
 
     Args:
@@ -155,6 +206,8 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
             None=all factors)
         factor_store: FactorStore instance (因子值物化缓存). If provided, generate_signals()
             will read from cache instead of re-computing factors each day.
+        combine_mode: walk-forward 合成模式覆盖 (None=默认: warmup 后切 ic_weighted)。
+            test-v298: hyperopt 把 combine_mode 纳入 Optuna 搜索空间用。
 
     Returns:
         dict with keys: equity_curve, metrics, signals_per_day, errors
@@ -165,9 +218,27 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
         from quant.execution.engine import ExecutionEngine
         from quant.execution.cost import CostModel
         from quant.backtest.naming import next_backtest_name
+        from quant.factor.store import FactorStore
+        from quant.config.paths import FACTOR_CACHE_DB
 
         if strategy is None:
             strategy = next_backtest_name()
+
+        # ── Mode-based defaults: smoke (22d×10 stocks) vs full (244d×all) ──
+        if mode == 'smoke':
+            if start_date is None or end_date is None:
+                end_date = end_date or datetime.now().strftime('%Y-%m-%d')
+                start_date = start_date or (pd.Timestamp(end_date) - pd.DateOffset(months=1)).strftime('%Y-%m-%d')
+            universe_size = _require_cfg('backtest.smoke.universe_size')  # 10
+            _log.info(f'backtest: SMOKE mode — {start_date}→{end_date}, {universe_size} stocks')
+        else:  # full
+            if end_date is None:
+                end_date = datetime.now().strftime('%Y-%m-%d')
+            if start_date is None:
+                start_date = (pd.Timestamp(end_date) - pd.DateOffset(months=12)).strftime('%Y-%m-%d')
+            if universe_size is None:
+                u_cfg = cfgl.get('backtest.universe_size'); universe_size = u_cfg if u_cfg is not None else 0
+            _log.info(f'backtest: FULL mode — {start_date}→{end_date}, {universe_size or "all"} stocks')
 
         set_trace_id(_uuid.uuid4().hex[:12])
         _log.info(f"backtest: {start_date} → {end_date}, capital=Y{capital:,}, strategy={strategy}")
@@ -178,6 +249,10 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
         # ── Setup: initialize strategy in backtest DB ──
         engine = ExecutionEngine(db_path=BACKTEST_DB)
         engine.set_initial_capital(strategy, capital)  # always fresh for each run
+
+        # ── Factor cache: use materialized values instead of daily recomputation ──
+        _fstore = FactorStore(db_path=FACTOR_CACHE_DB)
+        _log.info(f"backtest: factor_store from {FACTOR_CACHE_DB}")
 
         _log.info(f"backtest: initialized {strategy} with Y{capital:,}")
 
@@ -192,7 +267,7 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
 
         store = DataStore()
         broker = SimulatedBroker(store, engine, BACKTEST_DB)
-        cost_model = CostModel()
+        cost_model = CostModel.from_config()
 
         # ── Generate trading day list ──
         start_dt = pd.Timestamp(start_date)
@@ -216,13 +291,12 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
             retrain_freq = _require_cfg("alpha.retrain_freq")
         ic_lookback = ic_lookback if ic_lookback is not None else _require_cfg("backtest.diagnosis_ic_window")
         bt_factor_names = get_factor_names(status_filter=factor_status_filter)
-        _current_ic_map_raw = _compute_ic(
-            factor_names=bt_factor_names, date=trading_days[0],
-            symbols=store.get_universe(trading_days[0])[:_require_cfg("factor.evaluation.n_symbols")],
-            lookback=ic_lookback, store=store, status_filter=factor_status_filter or "backtesting"
+        _current_ic_map = compute_backtest_ic(
+            start_date=trading_days[0],
+            n_train_days=ic_lookback,
+            status_filter=factor_status_filter or "backtesting"
         )
         _last_retrain_idx = 0
-        _current_ic_map = _current_ic_map_raw["ic_map"]
         _log.info("backtest: initial IC: %d factors, retrain every %dd", len(_current_ic_map), retrain_freq)
 
         # ── Pre-load all daily data once (eliminates 843 DB queries) ──
@@ -244,10 +318,36 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
         tracker = FactorTracker()
         _last_signals = None
         # ── Cooling-off: prevent rebuy after stop-loss ──
-        _cooloff = {}  # {symbol: end_date}
+        # Q7-2 重构: 冷却注册表收敛到统一 RiskManager (内存 dict — 回测热路径无 DB 写)
+        from quant.execution.stop_loss import RiskManager
+        _rm = RiskManager(strategy=strategy, cooloff_store={})
 
         # ── Combine mode: warmup with sleeve, switch to ic_weighted after lookback ──
         warmup_days = _require_cfg("factor.evaluation.lookback")
+
+        # ── rebalance_freq: weekly → 仅调仓日生成信号+再平衡, 非调仓日只跑风控 ──
+        _rebalance_freq = _require_cfg("optimizer.rebalance_freq")
+        from quant.execution.calendar import is_rebalance_day
+
+        # ── test-v299 §8.2: point-in-time regime (无前视) ──
+        # 起始日前训练 HMM; 逐调仓日用截止当日的 benchmark returns 前向滤波。
+        # (模块级 get_current_regime 用全量历史训练, 仅实盘可用, 回测禁用)
+        _regime_detector = None
+        _bm_rets = None
+        if _require_cfg("alpha.regime_combine"):
+            try:
+                from quant.regime.detector import RegimeDetector
+                _bm_rets = store.get_benchmark(
+                    _require_cfg("backtest.benchmark"),
+                    start=_require_cfg("regime.train_start")) * 100
+                _train_rets = _bm_rets[_bm_rets.index < pd.Timestamp(start_date)]
+                _regime_detector = RegimeDetector().train(_train_rets)
+                _log.info("backtest: PIT regime HMM trained on %d days (< %s)",
+                          len(_train_rets), start_date)
+            except ImportError:
+                _log.warning("backtest: hmmlearn not installed, regime detection disabled")
+            except Exception as _re:
+                _log.warning("backtest: regime detection skipped (non-fatal): %s", _re)
 
         # ── Main loop ──
         equity_curve = [{"date": trading_days[0], "equity": float(capital)}]
@@ -259,74 +359,105 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
             next_day = trading_days[i + 1]
             _day_t0 = time.time()
 
+            # 调仓日判定 (执行日口径): daily 恒 True; weekly 仅本周首个交易日
+            _is_reb = is_rebalance_day(pd.Timestamp(next_day).date(),
+                                       freq=_rebalance_freq)
+
             from quant.pipeline import generate_signals
             # Filter out cooling-off symbols
-            cooloff_syms = [s for s, d in _cooloff.items() if pd.Timestamp(d) > pd.Timestamp(today)]
+            cooloff_syms = list(_rm.get_cooloff_symbols(today))
+            # B-06 fix: sizing 用当日收盘 MTM 权益 (原成本价 → 无复利且亏损后仍满仓)
+            _held = engine.get_positions(strategy)
+            _held_close = _get_prices([p["symbol"] for p in _held], today, store, field="close") if _held else {}
             kwargs = {
                 "date_str": today,
-                "capital": engine.get_capital(strategy),
+                "capital": engine.get_capital(strategy, prices=_held_close),
                 "strategy": strategy,
                 "skip_pull": True,
                 "status_filter": factor_status_filter or "backtesting",
+                "scope": "backtest",
                 "suppress_push": True,
-                "universe_size": universe_size if universe_size is not None else _require_cfg("backtest.universe_size"),
+                "universe_size": universe_size,
                 "db_path": BACKTEST_DB,
                 "store": store,
                 "exclude_symbols": cooloff_syms,
                 "preloaded_data": data_full,
                 "primitives": data_prims,
-                "factor_store": factor_store,
+                "factor_store": _fstore,
             }
-            # Switch combine_mode from sleeve (warmup) to ic_weighted (walk-forward)
+            # Switch combine_mode from sleeve (warmup) to ic_weighted (walk-forward);
+            # test-v298: run_backtest(combine_mode=...) 可覆盖 walk-forward 模式 (hyperopt)
             if i >= warmup_days:
-                kwargs["combine_mode"] = "ic_weighted"
+                kwargs["combine_mode"] = combine_mode or "ic_weighted"
             # Walk-forward IC retrain
             if retrain_freq > 0 and (i - _last_retrain_idx) >= retrain_freq and bt_factor_names:
                 _log.info("backtest: retraining IC at day %d (%s)", i, today)
-                _current_ic_map_raw = _compute_ic(
-                    factor_names=bt_factor_names, date=pd.Timestamp(today) - pd.Timedelta(days=1),
-                    symbols=store.get_universe(today)[:_require_cfg("factor.evaluation.n_symbols")],
-                    lookback=ic_lookback, store=store, status_filter=factor_status_filter or "backtesting"
+                _current_ic_map = compute_backtest_ic(
+                    start_date=(pd.Timestamp(today) - pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
+                    n_train_days=ic_lookback,
+                    status_filter=factor_status_filter or "backtesting"
                 )
                 _last_retrain_idx = i
             kwargs["ic_map"] = _current_ic_map
-            signals = generate_signals(**kwargs)
-            _last_signals = signals
-            targets = signals.get("target_positions", [])
-            signal_counts.append(len(targets))
-            # ── Record factor contributions for attribution ──
-            fv = signals.get("_factor_values", {})
-            ar = signals.get("_alpha_raw", pd.Series(dtype=float))
-            # Get next-day returns for PnL tracking
-            all_syms_track = list(set([tp["symbol"] for tp in targets]))
-            next_close = _get_prices(all_syms_track, next_day, store, field="close") if all_syms_track and targets else {}
-            today_close = _get_prices(all_syms_track, today, store, field="close") if all_syms_track and targets else {}
-            if isinstance(next_close, dict) and next_close:
-                ret_series = pd.Series({s: (next_close[s] / today_close[s] - 1) for s in next_close if s in today_close and today_close.get(s, 0) > 0})
-            else:
-                ret_series = pd.Series(dtype=float)
-            if fv and not ar.empty and not ret_series.empty:
-                tracker.record_day(today, fv, ar, targets, ret_series)
+            # B-22 fix: 单日异常计入 errors 并跳过当日 (原 errors 计数器从未递增,
+            # 且单日异常会中断整个回测)
+            try:
+                if not _is_reb:
+                    # 非调仓日 (weekly): 跳过信号生成 (省 ~80% 计算), 只跑硬止损.
+                    # 组合不再平衡; 风控每日不断. signal_counts 不计入 (该计数
+                    # 描述"信号生成日", 非调仓日本就不生成信号).
+                    signals = {"date": today, "target_positions": []}
+                    exec_result = broker.execute_risk_only(next_day, strategy=strategy)
+                    if exec_result.get("skipped"):
+                        equity_curve.append({"date": next_day, "equity": broker.get_mtm_capital(strategy, next_day)})
+                        continue
+                else:
+                    # point-in-time regime 注入 (test-v299 §8.2)
+                    if _regime_detector is not None:
+                        _rets = _bm_rets[_bm_rets.index <= pd.Timestamp(today)]
+                        kwargs["regime_label"], kwargs["regime_probs"] = \
+                            _regime_detector.predict_proba(_rets)
+                    signals = generate_signals(**kwargs)
+                    _last_signals = signals
+                    targets = signals.get("target_positions", [])
+                    signal_counts.append(len(targets))
+                    # ── Record factor contributions for attribution ──
+                    fv = signals.get("_factor_values", {})
+                    ar = signals.get("_alpha_raw", pd.Series(dtype=float))
+                    # Get next-day returns for PnL tracking
+                    all_syms_track = list(set([tp["symbol"] for tp in targets]))
+                    next_close = _get_prices(all_syms_track, next_day, store, field="close") if all_syms_track and targets else {}
+                    today_close = _get_prices(all_syms_track, today, store, field="close") if all_syms_track and targets else {}
+                    if isinstance(next_close, dict) and next_close:
+                        ret_series = pd.Series({s: (next_close[s] / today_close[s] - 1) for s in next_close if s in today_close and today_close.get(s, 0) > 0})
+                    else:
+                        ret_series = pd.Series(dtype=float)
+                    if fv and not ar.empty and not ret_series.empty:
+                        tracker.record_day(today, fv, ar, targets, ret_series)
 
-            if not targets:
-                # Record equity without trading
-                wealth = engine.get_capital(strategy)
-                equity_curve.append({"date": next_day, "equity": wealth})
-                continue
+                    if not targets:
+                        # Record equity without trading (B-06: MTM)
+                        wealth = broker.get_mtm_capital(strategy, next_day)
+                        equity_curve.append({"date": next_day, "equity": wealth})
+                        continue
 
-            # ── Step 2: Execute at next-day open prices ──
-            exec_result = broker.execute(targets, next_day, strategy=strategy)
-            if exec_result.get("skipped"):
-                _log.warning(f"backtest {next_day}: no open prices available, skipping")
-                equity_curve.append({"date": next_day, "equity": broker.get_capital(strategy)})
+                    # ── Step 2: Execute at next-day open prices ──
+                    exec_result = broker.execute(targets, next_day, strategy=strategy)
+                    if exec_result.get("skipped"):
+                        _log.warning(f"backtest {next_day}: no open prices available, skipping")
+                        equity_curve.append({"date": next_day, "equity": broker.get_mtm_capital(strategy, next_day)})
+                        continue
+            except Exception as _day_err:
+                errors += 1
+                _log.error(f"backtest {today}: day failed ({errors} total): {_day_err}")
+                equity_curve.append({"date": next_day, "equity": broker.get_mtm_capital(strategy, next_day)})
                 continue
 
             # ── Step 2.5: Update cooling-off from stop-loss events ──
             stopped = exec_result.get("stopped_out", [])
             if stopped:
-                cooloff_end = pd.Timestamp(next_day) + pd.Timedelta(days=_require_cfg("risk.stop_loss_cooloff_days"))
                 for s in stopped:
-                    _cooloff[s] = cooloff_end.strftime("%Y-%m-%d")
+                    _rm.set_cooloff(s, next_day)
 
             bt_tracker.phases.append(PhaseResult(name=f"day_{today}", started=_day_t0, finished=time.time(), status="ok", extra={"signals": len(signals.get("target_positions",[])) if signals else 0}))
             # ── Step 3: Record equity ──
@@ -342,7 +473,10 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
 
         elapsed = time.time() - t0
         # Fetch benchmark returns before closing store
-        _bm_returns = store.get_benchmark("000300", start=start_date)
+        _bm_levels = store.get_benchmark("000300", start=start_date)
+        # B-07 fix: get_benchmark 返回指数点位(如 3900 点), 必须先转日收益率
+        # 再与策略日收益算 cov/beta/alpha/IR (此前直接拿点位算, 三个指标全是垃圾值)
+        _bm_returns = _bm_levels.pct_change().dropna() if not _bm_levels.empty else _bm_levels
         _bm_returns = _bm_returns.reindex(pd.to_datetime([e["date"] for e in equity_curve]), method='ffill')
         store.close()
 
@@ -365,6 +499,8 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
         # 回测诊断仅内部使用; 独立诊断模块 (run_diagnostics.py) 负责写入 evaluation_runs
         # 因子状态变更由 evaluation pipeline Phase 5b (sync_factor_status) 统一处理
         _adj_ic_map = apply_diagnosis(_current_ic_map, diag)
+        # B-22 fix: 调整后的 IC map 此前算出即丢弃 — 随 diagnosis 返回供调用方使用
+        diag["adjusted_ic_map"] = _adj_ic_map
 
         # Stress test on final portfolio holdings
         try:
@@ -377,16 +513,17 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
                     _pv = _p.get("price", 0) * _p.get("shares", 0)
                     _fw[_p["symbol"]] = _pv / max(_fw_val, 1)
                 diag["stress_test"] = stress_test(_fp, _fw)
-        except Exception:
-            pass
+        except Exception as _st_err:
+            # Q7-5 fix: stress test 失败必须可观测 (原裸 except: pass 吞错)
+            _log.warning(f"stress test skipped (non-fatal): {_st_err}")
         _log.info("diagnosis: %s", diag["summary"])
         for adj in diag["adjustments"]:
             _log.info("  adjust: %s", adj)
 
-
-
-
         avg_signals = sum(signal_counts) / max(len(signal_counts), 1)
+
+        # ADR-037: 回测结果持久化到 backtest_runs 表
+        _persist_backtest_result(strategy, start_date, end_date, capital, metrics, diag, elapsed, avg_signals, errors)
         _log.info("=" * 70)
         _log.info(f"  BACKTEST END: {strategy} | {len(trading_days)}d | elapsed={elapsed:.1f}s "
                     f"| CAGR={metrics['cagr_pct']}% | Sharpe={metrics['sharpe']} | MDD={metrics['max_drawdown_pct']}%")
@@ -417,17 +554,19 @@ def run_backtest(start_date, end_date, capital=5000, strategy=None, retrain_freq
         }
 
 
-    class BacktestEngine:
-        """Convenience wrapper for parameterized backtesting."""
+# B-04 fix: BacktestEngine 之前缩进在 run_backtest 函数体内 return 之后,
+# 是不可达死代码 (from quant.backtest.loop import BacktestEngine 会 ImportError).
+class BacktestEngine:
+    """Convenience wrapper for parameterized backtesting."""
 
-        def __init__(self, start="2022-01-01", end="2024-12-31", capital=5000):
-            self.start = start
-            self.end = end
-            self.capital = capital
+    def __init__(self, start="2022-01-01", end="2024-12-31", capital=5000):
+        self.start = start
+        self.end = end
+        self.capital = capital
 
-        def run(self):
-            return run_backtest(self.start, self.end, self.capital)
+    def run(self):
+        return run_backtest(self.start, self.end, self.capital)
 
-        @property
-        def default_params(self):
-            return {"start": self.start, "end": self.end, "capital": self.capital}
+    @property
+    def default_params(self):
+        return {"start": self.start, "end": self.end, "capital": self.capital}

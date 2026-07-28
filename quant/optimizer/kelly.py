@@ -29,6 +29,7 @@ def compute_kelly_fractions(
     alpha: pd.Series,
     ic_map: dict = None,
     fraction: float = None,
+    cov: np.ndarray = None,
 ) -> pd.Series:
     """计算每只候选股的 Kelly 分数.
 
@@ -73,8 +74,16 @@ def compute_kelly_fractions(
     # 来源: CSRC 2025年度报告 + 2026-07-21 audit C5
     # alpha.var() 是截面方差(~1.0), 非收益率方差, 会导致 Kelly ~0
     # B28: default return variance (σ≈2%), should be overridden by covariance matrix
-DEFAULT_RETURN_VAR = 0.0004
+    # ALG5: dynamic return variance — prioritize covariance diag, fallback to default.
+    # Default 0.0004 = σ_daily≈2% per CSRC 2025 report.
+    DEFAULT_RETURN_VAR = 0.0004
     var = DEFAULT_RETURN_VAR
+    if cov is not None:
+        # Extract diagonal as per-stock variance estimates
+        cov_diag = np.diag(cov) if isinstance(cov, np.ndarray) else np.array(cov).diagonal()
+        if len(cov_diag) > 0 and cov_diag.mean() > 1e-8:
+            var = float(np.mean(cov_diag))
+            _log.debug("kelly: dynamic var=%.6f from cov diag", var)
 
     # Kelly: f = (μ - r_f) / σ², r_f=0 (A股无风险利率极低)
     kelly_raw = mu / max(var, 1e-8)

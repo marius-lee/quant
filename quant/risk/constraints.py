@@ -116,7 +116,8 @@ def filter_sealed_limit_up(candidates, prev_date: str, seal_ratio_threshold: flo
     """
     import sqlite3
     from quant.config.paths import MARKET_DB
-    conn = sqlite3.connect(MARKET_DB)
+    from quant.data.repos._base import DatabaseManager
+    conn = DatabaseManager.market()
     try:
         rows = conn.execute(
             "SELECT symbol, lock_capital, amount FROM limit_up_pool WHERE date=?",

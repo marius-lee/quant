@@ -62,8 +62,22 @@ def factor_pnl_attribution(
         if data.empty:
             return {}
 
-        from quant.factor.compute import compute_all_factors
-        factor_values = compute_all_factors(data, date, fundamentals=fundamentals, status_filter="using")
+        from quant.factor.store import FactorStore
+        from quant.config.paths import FACTOR_CACHE_DB
+
+        # 从 FactorStore 缓存读取因子值
+        _fs = FactorStore(db_path=FACTOR_CACHE_DB)
+        factor_values = _fs.load(date, symbols=symbols, factor_names=active_names)
+        _fs.close()
+        if not factor_values:
+            # test-v301: raise → warning + {}。attribution 20:00 跑在 factor_cache
+            # 21:00 物化之前, 当日因子值尚未生成是排程不变量而非错误;
+            # 原 raise 让 G4 每个交易日拖垮整个 attribution (含 Step E/基准记录)。
+            _log.warning(
+                f"[{date}] factor cache miss ({len(symbols)} symbols, "
+                f"{len(active_names)} factors) — 当日 21:00 物化后可用, G4 skip"
+            )
+            return {}
         factor_values = {k: v for k, v in factor_values.items() if isinstance(v, pd.Series)}
 
         if not factor_values:

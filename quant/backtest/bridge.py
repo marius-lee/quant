@@ -53,7 +53,8 @@ def evaluation_to_backtest() -> tuple[list[str], dict]:
                 ic_map[name] = {
                     "ic_mean": ic_mean,
                     "ic_ir": ic_irs.get(name, 0),
-                    "weight": abs(ic_mean),
+                    # Q7-4 fix: 保留符号 — 负 IC 因子必须反向加权
+                    "weight": ic_mean,
                 }
     if not ic_map:
         raise ValueError(

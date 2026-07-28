@@ -28,9 +28,16 @@ def _run(today: str):
         from quant.data.store import DataStore
 
         store = DataStore()
+        # 使用 today 和 2026-01-01 中较早的作为起始日期
+        # (手动调用 _run('2025-08-01') 时需要回溯到更早日期)
+        _cache_start = min('2026-01-01', today)
+        # 结束日期取 daily 表最新日期（不是 today，手动回溯时 today 是过去日期）
+        _latest = store._connect().execute(
+            'SELECT MAX(date) FROM daily').fetchone()[0]
+        _cache_end = max(today, _latest) if _latest else today
         dates = [r[0] for r in store._connect().execute(
             'SELECT DISTINCT date FROM daily WHERE date >= ? AND date <= ? ORDER BY date',
-            ('2026-01-01', today)).fetchall()]
+            (_cache_start, _cache_end)).fetchall()]
         symbols = UniverseRepo().get_symbols(exclude_market='BJ')
         # B-17 fix: 物化池 = backtesting ∪ using — 原只物化 backtesting 池
         # (candidate+monitoring+retired, 排除 active), 而实盘信号用 using 池

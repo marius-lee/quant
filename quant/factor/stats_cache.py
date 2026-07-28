@@ -92,7 +92,7 @@ def compute_factor_stats(
 
     # 2. 获取评估日期
     if factor_names is None:
-        # 回测池 = registered + candidate + monitoring + retired
+        # 回测池 = candidate + monitoring + retired (ADR-026)
         # 排除: active(已投产, 实盘模块管理), rejected(永久淘汰)
         if status_filter is None:
             status_filter = 'backtesting'
@@ -175,15 +175,19 @@ def compute_factor_stats(
     from quant.factor.store import FactorStore
     _fs = FactorStore()
     factor_values_by_date = {name: {} for name in factor_names}
+    _fv_miss = 0  # Q7-5 fix: 加载失败计数 (原裸 except: pass 吞错)
     for _ds in eval_date_strs:
         try:
             _fv = _fs.load(_ds, symbols=symbols, factor_names=factor_names)
             for _fn, _series in _fv.items():
                 if isinstance(_series, pd.Series) and _series.notna().sum() >= 30:
                     factor_values_by_date[_fn][_ds] = _series.dropna()
-        except Exception:
-            pass
+        except Exception as _load_err:
+            _fv_miss += 1
+            logger.debug(f"factor_cache: FactorStore.load({_ds}) failed ({_fv_miss} misses): {_load_err}")
     _fs.close()
+    if _fv_miss:
+        logger.warning(f"factor_cache: {_fv_miss}/{len(eval_date_strs)} dates failed FactorStore.load")
 
     logger.info(
         f"factor_cache: loaded IC data for {_n_valid} factors, "
@@ -308,7 +312,7 @@ def _empty_result(factor_names: list = None) -> dict:
     """返回空结果（数据不足时）。使用传入 factor_names，None 时回退到全量因子。"""
     if factor_names is None:
         from quant.factor.compute import get_factor_names
-        # 回测池 = registered + candidate + monitoring + retired
+        # 回测池 = candidate + monitoring + retired (ADR-026)
         # 排除: active(已投产, 实盘模块管理), rejected(永久淘汰)
         if status_filter is None:
             status_filter = 'backtesting'
@@ -390,49 +394,198 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
         _COMPUTE_LOCK.release()
 
 
-def _load_ic_from_db(filter_names=None, status_filter='using') -> dict:
-    """从 factor_registry 表加载因子 IC 权重。
+def _load_ic_from_db(filter_names=None, scope='live') -> dict:
+    """从 factor_ic_daily 表加载因子 IC 权重 (按 scope 隔离).
 
-    status_filter: 'using'→active+monitoring (实盘), 'backtesting'→registered+candidate+monitoring+retired (回测池, 与 _registry.py 对齐).
+    scope: 'live' (实盘, 读 factor_registry.ic_mean for active+monitoring),
+           'backtest' (回测, 读 factor_ic_daily scope='backtest' 的末端 IC 均值).
+
+    注意: live scope 读 factor_registry.ic_mean (由 nightly attribution sync 写入);
+          backtest scope 读 factor_ic_daily (由 compute_backtest_ic 写入).
     """
-    if status_filter == 'backtesting':
-        statuses = ('registered', 'candidate', 'monitoring', 'retired')
-    elif status_filter == 'using':
-        statuses = ('active', 'monitoring')  # 与 _resolve_statuses('using') 对齐
-    elif isinstance(status_filter, (list, tuple)):
-        statuses = tuple(status_filter)
-    else:
-        statuses = (status_filter,)
+    from quant.data.repos import FactorRepo
+    repo = FactorRepo()
+    ic_map = {}
 
-    try:
-        from quant.data.repos import FactorRepo
-        repo = FactorRepo()
-        rows = repo.get_factors_with_ic(statuses)
+    if scope == 'live':
+        # 实盘: 从 factor_registry 读 active+monitoring 的 ic_mean
+        rows = repo.get_factors_with_ic(('active', 'probation'))
         if not rows:
+            logger.warning("IC weights: no active/monitoring factors with ic_mean in factor_registry")
             return {}
-        ic_map = {}
         for r in rows:
             ic_map[r["name"]] = r["ic_mean"] if isinstance(r["ic_mean"], (int, float)) else 0.0
-        if filter_names and ic_map:
-            ic_map = {k: v for k, v in ic_map.items() if k in filter_names}
-        total = sum(abs(v) for v in ic_map.values())
-        if total > 0:
-            ic_map = {k: v / total for k, v in ic_map.items()}
-        logger.info(f"IC weights loaded from DB: {len(ic_map)} factors")
-        return ic_map
-    except Exception as e:
-        logger.error(f"factor_registry IC load failed — cannot proceed without IC weights: {e}")
-        return {}
+    elif scope == 'backtest':
+        # 回测: 从 factor_ic_daily 读取 scope='backtest' 最近一条的 ic_value
+        # 获取所有 backtesting 因子
+        from quant.factor.compute._registry import get_factor_names
+        bt_names = get_factor_names(status_filter='backtesting')
+        if not bt_names:
+            logger.warning("IC weights: no backtesting factors")
+            return {}
+        conn = repo._conn()
+        try:
+            ph = ",".join("?" * len(bt_names))
+            rows = conn.execute(
+                f"SELECT factor_name, ic_value FROM factor_ic_daily "
+                f"WHERE scope='backtest' AND factor_name IN ({ph}) "
+                f"AND date = (SELECT MAX(date) FROM factor_ic_daily WHERE scope='backtest')",
+                tuple(bt_names)
+            ).fetchall()
+            for r in rows:
+                ic_map[r[0]] = r[1] if isinstance(r[1], (int, float)) else 0.0
+        finally:
+            conn.close()
+    else:
+        raise ValueError(f"Invalid scope: {scope}")
+
+    if filter_names and ic_map:
+        ic_map = {k: v for k, v in ic_map.items() if k in filter_names}
+    total = sum(abs(v) for v in ic_map.values())
+    if total > 0:
+        ic_map = {k: v / total for k, v in ic_map.items()}
+    logger.info(f"IC weights loaded from DB: {len(ic_map)} factors (scope={scope})")
+    return ic_map
 
 
-def load_ic_map_from_cache(factor_values: dict = None, status_filter='using') -> dict:
-    """从 factor_registry 表加载 IC 权重（单一数据源，不再依赖 JSON 文件）。
+def compute_backtest_ic(start_date: str, n_train_days: int = 120,
+                       status_filter: str = 'backtesting') -> dict:
+    """计算回测用 IC 权重 — 训练期 OOS 验证 → 写入 factor_ic_daily(scope='backtest').
+
+    start_date: 回测开始日期 (如 '2026-01-01')
+    n_train_days: 训练期天数, 从 start_date 往前数
+    status_filter: 因子池 ('backtesting' = candidate+monitoring+retired, ADR-026)
+
+    返回: {factor_name: weight} 归一化 IC 权重, 供 generate_signals(ic_map=...) 使用.
+    同时写入 factor_ic_daily(scope='backtest') 持久化.
+    """
+    from datetime import timedelta
+    import pandas as pd
+
+    train_end = start_date
+    start_dt = pd.Timestamp(start_date)
+    train_start = (start_dt - timedelta(days=n_train_days)).strftime("%Y-%m-%d")
+    logger.info(f"backtest IC: computing for {status_filter} pool, train window={train_start}→{train_end}")
+
+    from quant.scheduler.oos_verify import run_oos_check
+    result = run_oos_check(
+        train_end,
+        status_filter=status_filter,
+        train_days=n_train_days,
+        test_days=_require_cfg("oos_verify.test_window_days"),
+        decay_warn_threshold=_require_cfg("oos_verify.decay_warn_threshold"),
+        n_symbols=_require_cfg("oos_verify.backtest_n_symbols"),
+    )
+    if result.get("alert"):
+        logger.warning(f"backtest IC: OOS decay alert for {train_end}")
+
+    per_factor = result.get("details", {}).get("per_factor", {})
+    ic_daily = result.get("ic_daily", {})
+
+    # Write to factor_ic_daily with scope='backtest'
+    from quant.data.repos import FactorRepo
+    f_repo = FactorRepo()
+    f_repo.ensure_ic_daily_table()
+    written = 0
+    for fname, daily_ics in ic_daily.items():
+        for ds, ic_val in daily_ics.items():
+            f_repo.insert_ic_daily(ds, fname, float(ic_val),
+                                   n_stocks=len(per_factor),
+                                   scope='backtest')
+            written += 1
+    logger.info(f"backtest IC: wrote {written} rows to factor_ic_daily(scope='backtest')")
+
+    # Build ic_map from OOS IR (more robust than raw ic_mean for 1-day IC)
+    ic_map = {}
+    for fname, info in per_factor.items():
+        ic_mean = float(info.get("ic_mean", 0))
+        ic_ir = float(info.get("oos_ir", info.get("is_ir", 0)))
+        # Q7-4 fix: 保留 ic_ir 符号 (原 abs → 负 IC 因子在 composite
+        # 模式信号方向被反向); 归一化仍按 sum(abs(weight))
+        weight = ic_ir
+        ic_map[fname] = {
+            "ic_mean": ic_mean,
+            "ic_ir": ic_ir,
+            "weight": weight,
+        }
+
+    # Normalize weights
+    total = sum(abs(v["weight"]) for v in ic_map.values())
+    if total > 0:
+        for k in ic_map:
+            ic_map[k]["weight"] = ic_map[k]["weight"] / total
+    logger.info(f"backtest IC: {len(ic_map)} factors with weights (train_end={train_end})")
+    return ic_map
+
+
+def _bayesian_shrink_ic_map(ic_map: dict) -> dict:
+    """ALG2: Bayesian shrinkage of IC estimates toward cross-sectional prior.
+
+    Grinold & Kahn (1999) Eq. 6.16:
+      IC_bayes = (σ²_prior × IC_sample + σ²_sample × IC_prior) / (σ²_prior + σ²_sample)
+
+    Intuition: factors with noisy IC estimates (high standard error) are shrunk
+    more aggressively toward the prior mean. Stable factors retain their signal.
+    """
+    if len(ic_map) < 3:
+        # Ensure float output even with < 3 factors
+        return _extract_float_weights(ic_map)
+    import numpy as np
+    # Handle both scalars (from cache) and dicts (from compute_ic → {"ic": val, "ir": val})
+    raw_vals = list(ic_map.values())
+    if raw_vals and isinstance(raw_vals[0], dict):
+        values = np.array([v.get("ic_mean", v.get("ic", 0)) if isinstance(v, dict) else v for v in raw_vals])
+    else:
+        values = np.array(raw_vals)
+    ic_prior = float(np.mean(values))
+    sigma2_prior = float(np.var(values)) if len(values) > 2 else max(float(np.var(values)), 1e-6)
+    if sigma2_prior < 1e-8:
+        # All ICs essentially equal — return float weights (not raw dict)
+        return _extract_float_weights(ic_map)
+
+    # σ²_sample: approximate standard error of each IC estimate.
+    # Using 1/√n assumption where n ≈ 120 trading days (config factor.evaluation.lookback).
+    # More precise: each factor's ic_std from factor_ic_daily, but this is a robust default.
+    from quant.config.constants import _require_cfg
+    n_obs = _require_cfg("factor.evaluation.lookback")
+    sigma2_sample = 1.0 / n_obs  # var(IC_est) ≈ 1/n under null
+
+    shrunk = {}
+    for name, ic_val in ic_map.items():
+        ic = ic_val.get("ic_mean", ic_val.get("ic", ic_val)) if isinstance(ic_val, dict) else ic_val
+        numerator = sigma2_prior * ic + sigma2_sample * ic_prior
+        denominator = sigma2_prior + sigma2_sample
+        shrunk[name] = float(numerator / denominator)
+
+    logger = __import__("quant.utils.logger", fromlist=["get_logger"]).get_logger("quant.factor.stats_cache")
+    logger.debug(
+        "Bayesian shrinkage: %d factors, prior=%.4f σ²_prior=%.6f → max shrinkage %.0f%%",
+        len(shrunk), ic_prior, sigma2_prior,
+        (1 - sigma2_prior / (sigma2_prior + sigma2_sample)) * 100
+    )
+    return shrunk
+
+
+def _extract_float_weights(ic_map: dict) -> dict:
+    """Convert dict-valued ic_map to {name: float_weight} for early-return paths.
+
+    The main path (len >= 3, sigma2_prior >= 1e-8) builds `shrunk` dict inline.
+    Early-return paths (too few factors or zero variance) call this to avoid
+    returning dict-valued entries to callers that expect floats (e.g. AlphaModel.combine).
+    """
+    result = {}
+    for name, v in ic_map.items():
+        result[name] = float(v.get("ic_mean", v.get("ic", v)) if isinstance(v, dict) else v)
+    return result
+
+def load_ic_map_from_cache(factor_values: dict = None, scope='live') -> dict:
+    """从 DB 加载 IC 权重 (scope 隔离).
 
     返回: {factor_name: weight} 字典，已归一化。
     factor_values: 可选，用于过滤只保留实际计算出的因子。
-    status_filter: 'using'→实盘, 'backtesting'→回测.
+    scope: 'live' (实盘, 读 factor_registry) 或 'backtest' (回测, 读 factor_ic_daily).
     """
-    return _load_ic_from_db(factor_values, status_filter=status_filter)
+    return _load_ic_from_db(factor_values, scope=scope)
 
 
 def force_refresh_cache(n_symbols: int = None) -> dict:

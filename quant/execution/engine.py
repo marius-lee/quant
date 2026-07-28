@@ -12,8 +12,18 @@ from quant.execution.cost import CostModel
 from quant.data.store import market_conn  # P69: 统一连接层
 from quant.data.repos import TradeRepo
 from quant.config.paths import TRADE_DB, MARKET_DB
-# A-share daily price limit: ±10% (沪深交易所交易规则). Gap > 10% → ex-dividend event.
-EX_DIVIDEND_THRESHOLD = 0.10
+
+
+def _price_limit_pct(symbol: str) -> float:
+    """B-16 fix: 板块差异化涨跌停幅度 (此前统一 10%, 创业板 20%/北交所 30% 被误判为除权).
+
+    688 科创板 / 30x 创业板: ±20%; 4xx/8xx/92x 北交所: ±30%; 主板: ±10%.
+    """
+    if symbol.startswith(("68", "30")):
+        return 0.20
+    if symbol.startswith(("4", "8", "92")):
+        return 0.30
+    return 0.10
 
 
 @dataclass
@@ -27,20 +37,38 @@ class Order:
 
 
 class ExecutionEngine:
-    """模拟执行引擎: 订单执行 → trades.db, 更新 capital_after。"""
+    """模拟执行引擎: 订单执行 → trades.db, 更新 capital_after。
 
-    def __init__(self, db_path: str = TRADE_DB, cost_model: CostModel = CostModel()):
+    broker_adapter 注入 (ADR-036):
+      传入 BrokerAdapter 实例后, execute() 调用 adapter 替代 SQLite 模拟写入。
+      不传或传 None → 保持原有行为 (直接写 sim_trades 表)。
+      这是为了支持 vnpy 券商对接, 同时不破坏回测路径。
+    """
+
+    def __init__(self, db_path: str = TRADE_DB, cost_model: CostModel | None = None,
+                 broker_adapter=None):
         self.db_path = db_path
-        self.cost_model = cost_model
+        self.cost_model = cost_model if cost_model is not None else CostModel.from_config()
+        self.broker_adapter = broker_adapter  # ADR-036: 外部券商适配器 (None=模拟)
         # Schema auto-managed by TradeRepo.__init__()
         TradeRepo(db_path=self.db_path)
 
-    def get_capital(self, strategy: str = "quant") -> float:
-        """获取当前策略总资产 (现金 + 持仓市值) — 委托 TradeRepo。"""
+    def get_capital(self, strategy: str = "quant", prices: dict | None = None) -> float:
+        """获取当前策略总资产 (现金 + 持仓价值) — 委托 TradeRepo。
+
+        B-06 fix: 支持按市价计价 (MTM)。不传 prices 时保持原行为 (成本价),
+        传入 {symbol: price} 后持仓按市价估值, 用于净值曲线/绩效/基准跟踪。
+        """
         repo = TradeRepo(self.db_path)
         cash = repo.get_cash(strategy)
         positions = repo.get_positions(strategy)
-        pos_value = sum((p.get('price', 0) or 0) * (p.get('shares', 0) or 0) for p in positions)
+        if prices:
+            pos_value = sum(
+                (float(prices.get(p['symbol']) or 0) or (p.get('price', 0) or 0))
+                * (p.get('shares', 0) or 0)
+                for p in positions)
+        else:
+            pos_value = sum((p.get('price', 0) or 0) * (p.get('shares', 0) or 0) for p in positions)
         return cash + pos_value
 
     def get_cash(self, strategy: str = "quant") -> float:
@@ -58,8 +86,9 @@ class ExecutionEngine:
     def _check_ex_dividend(self, symbol: str, order_price: float, date: str) -> bool:
         """除权除息检测: 对比昨日收盘 vs 订单价格。
 
-        A股涨跌停限制为 ±10% (交易所硬规则)。若订单价格与前一交易日收盘价
-        偏差超过 10%, 无法用正常交易解释, 判定为除权除息事件, 跳过买入。
+        A股涨跌停限制按板块区分 (B-16: 主板 ±10%, 创业板/科创板 ±20%, 北交所 ±30%)。
+        若订单价格与前一交易日收盘价偏差超过该板块涨跌停幅度, 无法用正常交易解释,
+        判定为除权除息事件, 跳过买入。
 
         Args:
             symbol: 股票代码
@@ -77,11 +106,12 @@ class ExecutionEngine:
         if row and row[0]:
             prev_close = float(row[0])
             gap = abs(order_price / prev_close - 1)
-            if gap > EX_DIVIDEND_THRESHOLD:
+            threshold = _price_limit_pct(symbol)
+            if gap > threshold:
                 from quant.utils.logger import get_logger
                 get_logger("execution.engine").warning(
                     f"Ex-dividend detected: {symbol} order_price={order_price:.2f} "
-                    f"prev_close={prev_close:.2f} gap={gap:.1%} > {EX_DIVIDEND_THRESHOLD:.0%} — skipping buy"
+                    f"prev_close={prev_close:.2f} gap={gap:.1%} > {threshold:.0%} — skipping buy"
                 )
                 return True
         return False
@@ -171,4 +201,4 @@ class ExecutionEngine:
 
     def get_trades(self, strategy: str = "quant", limit: int = 50) -> list[dict]:
         """获取最近交易记录 — 委托 TradeRepo。"""
-        return TradeRepo(self.db_path).get_trades(strategy, limit)
+        return TradeRepo(self.db_path).get_trades(strategy, limit=limit)

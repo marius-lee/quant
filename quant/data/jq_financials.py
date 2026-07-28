@@ -34,7 +34,7 @@ def ensure_tables(conn: sqlite3.Connection):
             total_current_liability REAL,
             shortterm_loan REAL,
             longterm_loan REAL,
-            created_at TEXT DEFAULT (datetime('now')),
+            created_at TEXT DEFAULT (datetime('now','localtime')),
             PRIMARY KEY (symbol, stat_date)
         );
         CREATE TABLE IF NOT EXISTS financial_income (
@@ -49,7 +49,7 @@ def ensure_tables(conn: sqlite3.Connection):
             total_profit REAL,
             income_tax_expense REAL,
             administration_expense REAL,
-            created_at TEXT DEFAULT (datetime('now')),
+            created_at TEXT DEFAULT (datetime('now','localtime')),
             PRIMARY KEY (symbol, stat_date)
         );
         CREATE TABLE IF NOT EXISTS financial_cash_flow (
@@ -62,7 +62,7 @@ def ensure_tables(conn: sqlite3.Connection):
             cash_and_equivalents_at_end REAL,
             goods_sale_and_service_render_cash REAL,
             fix_intan_other_asset_acqui_cash REAL,
-            created_at TEXT DEFAULT (datetime('now')),
+            created_at TEXT DEFAULT (datetime('now','localtime')),
             PRIMARY KEY (symbol, stat_date)
         );
         CREATE INDEX IF NOT EXISTS idx_fin_balance_date ON financial_balance(stat_date);

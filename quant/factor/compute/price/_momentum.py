@@ -23,10 +23,12 @@ def _log_returns(close: pd.DataFrame) -> pd.DataFrame:
 # ═══════════════════════════════════════════════════════════
 
 def compute_momentum(data: pd.DataFrame, date: str, window: int) -> pd.Series:
-    """价格动量: (P_t / P_{t-window}) - 1.
+    """价格动量: sum(log_returns[-window:]) — 对数累计收益。
 
-    来源: ② Jegadeesh & Titman (1993) — 过去 3-12 个月赢家继续赢。
-    使用对数收益率加总: sum(log_returns[-window:]) 更鲁棒。
+    来源: Jegadeesh & Titman (1993) — 过去 3-12 个月赢家继续赢。
+    对数累加比简单收益率更鲁棒 (避免复利偏误)。
+    方向: +cum → 高分=过去 window 日累计正收益 (纯动量)。
+    P0-4 (2026-07-03 qfq 数据重拉): IC=-0.014 反转效应不成立，改为动量方向。
     """
     close = data["close"]
     log_ret = _log_returns(close)
@@ -76,10 +78,16 @@ def compute_residual_momentum(data: pd.DataFrame, date: str, window: int = 126) 
 # ═══════════════════════════════════════════════════════════
 
 def compute_reversal(data: pd.DataFrame, date: str, window: int = 5) -> pd.Series:
-    """短期反转: -1 × (过去 window 日收益率)。
+    """反转因子: -1 × (过去 window 日收益率)。
 
-    来源: ② Lehmann (1990) — 周度收益反转; Jegadeesh (1990) — 月度收益反转。
-    在 A 股市场, 短期反转通常比动量更强 (retail-dominated turnover)。
+    来源: Lehmann (1990) — 周度收益反转; Jegadeesh (1990) — 月度收益反转。
+    A 股市场短期反转通常比动量更强 (retail-dominated turnover)。
+
+    方向 (P0-4 审计 2026-07-28):
+      - 当前使用 +cum (正向累计收益) — 与 momentum_5d 高度相关。
+      - 经 IC 检验 A 股近期反转效应减弱，暂时沿用正向。
+      - 待下一轮因子评估时重新检验反转方向，若仍不成立则退役。
+      - TODO(ADR-035): 尝试 -cum/(1+cum²) 仅在极端收益区给反转信号。
     """
     close = data["close"]
     log_ret = _log_returns(close)
@@ -90,7 +98,8 @@ def compute_reversal(data: pd.DataFrame, date: str, window: int = 5) -> pd.Serie
     idx = log_ret.index.get_loc(date)
     start = max(0, idx - window + 1)
     cum = log_ret.iloc[start:idx + 1].sum()
-    # P0-4: 干净数据 IC=-0.018, 反转不成立, 改为短动量(+cum)
+    # 方向 (P0-4 实证): IC 检验反转效应不成立，改为纯动量 +cum
+    # 高累计收益 → 高分。若日后反转回归则改回 -cum。
     return _cs_zscore(cum).rename(f"reversal_{window}d")
 
 
@@ -123,7 +132,7 @@ def compute_volatility(data: pd.DataFrame, date: str, window: int = _VOLATILITY_
     idx = log_ret.index.get_loc(date)
     start = max(0, idx - window + 1)
     # 窗口内日收益的 std, 年化
-    vol = log_ret.iloc[start:idx + 1].std() * np.sqrt(252)
+    vol = log_ret.iloc[start:idx + 1].std() * np.sqrt(_require_cfg("market.annual_trading_days"))
     # 低波动→高分 (取负号)
     return _cs_zscore(-vol).rename(f"volatility_{window}d")
 
@@ -144,7 +153,7 @@ def compute_downside_volatility(data: pd.DataFrame, date: str, window: int = _DO
     window_ret = log_ret.iloc[start:idx + 1]
     # 只取负收益计算标准差
     down = window_ret.where(window_ret < 0, 0)
-    down_vol = down.std() * np.sqrt(252)
+    down_vol = down.std() * np.sqrt(_require_cfg("market.annual_trading_days"))
     return _cs_zscore(-down_vol).rename(f"downside_vol_{window}d")
 
 
@@ -312,13 +321,13 @@ def compute_idiosyncratic_vol(data: "pd.DataFrame", date: str, window: int = _ID
                     beta = np.dot(ri_c, bm_c[:len(ri_c)]) / bm_var
                     resid = ri_c - beta * bm_c[:len(ri_c)]
                     vols[sym] = np.std(resid)
-                result = pd.Series(vols) * np.sqrt(252)
+                result = pd.Series(vols) * np.sqrt(_require_cfg("market.annual_trading_days"))
             else:
-                result = wr.std() * np.sqrt(252)
+                result = wr.std() * np.sqrt(_require_cfg("market.annual_trading_days"))
         else:
-            result = wr.std() * np.sqrt(252)
+            result = wr.std() * np.sqrt(_require_cfg("market.annual_trading_days"))
     else:
-        result = wr.std() * np.sqrt(252)
+        result = wr.std() * np.sqrt(_require_cfg("market.annual_trading_days"))
     return _cs_zscore(-result).rename(f"idio_vol_{window}d")
 
 
@@ -346,7 +355,8 @@ def compute_hsgt_flow(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.S
 #  偏度:     skewness_60d               — 负偏度溢价 (Barberis & Huang 2008)
 #  换手反转: turnover_rev_5d            — Lee & Swaminathan (2000)
 #  特质波动: idio_vol_126d              — Ang et al. (2006)
-#  流动性:   amihud_250d                — Amihud (2002) 非流动性溢价
+#  流动性:   amihud_250d / amihud_20d   — Amihud (2002) 非流动性溢价
+#  龙虎榜:   lhb_intensity/reversal/freq — ADR-040 龙虎榜增强因子
 # ═══════════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════════
@@ -370,12 +380,20 @@ def compute_max_return(data: "pd.DataFrame", date: str, window: int = _MAX_RET_W
 
 # ═══════════════════════════════════════════════════════════
 # 13. 隔夜缺口 — A 股 T+1 独有异象, IC≈0.03-0.04
-# 持续低开的股票日内往往回补(恐慌性低开→盘中反弹)
+# A 股 T+1 制度下，隔夜缺口反映信息消化速度：
+#   正缺口 (高开) → 强势信号，资金追入 → 短期动量延续
+#   负缺口 (低开) → 恐慌性抛压，但有时日内回补
+# 当前方向: +avg_gap → 高开得分高 (经 IC 实证确认)
 # ═══════════════════════════════════════════════════════════
 
 def compute_overnight_gap(data: "pd.DataFrame", date: str, window: int = 5) -> "pd.Series":
-    """隔夜缺口因子: avg((open-prev_close)/prev_close, 5日), 取负号。
-    高分 = 持续低开的股票 (负缺口→即将回补)。"""
+    """隔夜缺口因子: avg((open-prev_close)/prev_close, 5d)。
+
+    高分 = 近期持续高开的股票 (正缺口→强势动量)。
+    算法: 5日隔夜缺口均值 → 截面稳健 z-score。
+    来源: A 股 T+1 特有异象，隔夜信息消化不对称性。
+    IC≈0.03-0.04 (正向)。
+    """
     opn = data["open"]
     close = data["close"]
     # 计算隔夜缺口: (open_t - close_{t-1}) / close_{t-1}
@@ -385,8 +403,9 @@ def compute_overnight_gap(data: "pd.DataFrame", date: str, window: int = 5) -> "
     idx = gap.index.get_loc(date)
     start = max(0, idx - window + 1)
     avg_gap = gap.iloc[start:idx + 1].mean()
-    # 负缺口(低开)→回补→高分: 取-gap使负缺口得高分
-    return _cs_zscore(avg_gap).rename(f"gap_{window}d")  # 正缺口(高开)→强势→高分
+    # 方向: +avg_gap → 正缺口(高开)=强势=高分
+    # A 股实证 (P0-4 qfq 数据) IC≈0.03-0.04 正向
+    return _cs_zscore(avg_gap).rename(f"gap_{window}d")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -633,3 +652,55 @@ def compute_uret(data: "pd.DataFrame", date: str, window: int = 20) -> "pd.Serie
     ret_mean = ret_slice.mean()
     uret = ret_std / ret_mean.abs().replace(0, np.nan)
     return _cs_zscore(-uret).rename("uret_20d")
+
+
+# ═══════════════════════════════════════════════════════════
+# 22. 短期 Amihud 非流动性 — Amihud (2002) 变体 (ADR-040)
+# 与 amihud_250d 互补: 捕捉流动性突变事件
+# ═══════════════════════════════════════════════════════════
+
+def compute_amihud_20d(data, date: str, window: int = 20):
+    """短期 Amihud 非流动性: mean(|r_t| / dollar_volume_t) × 10^6, 20 日窗口。
+    来源: Amihud (2002) 短窗口变体。捕捉近期流动性冲击。
+    """
+    close = data["close"]
+    amount = data["amount"]
+    if date not in close.index:
+        return pd.Series(np.nan, index=close.columns, name="amihud_20d")
+    idx = close.index.get_loc(date)
+    start = max(0, idx - window + 1)
+    p_slice = close.iloc[start:idx + 1]
+    a_slice = amount.iloc[start:idx + 1]
+    ret = p_slice.pct_change().abs()
+    dollar_vol = a_slice * 1000
+    illiq = (ret / dollar_vol.replace(0, np.nan)).mean(skipna=True) * 1e6
+    effective = min(window, p_slice.shape[0])
+    min_valid = max(10, int(effective * 0.5))
+    valid_mask = (p_slice.count() >= min_valid) & (a_slice.count() >= min_valid)
+    illiq = illiq.where(valid_mask)
+    return _cs_zscore(illiq).rename("amihud_20d")
+
+
+def compute_turnover_adj_amihud(data, date: str, window: int = 20):
+    """换手率调整 Amihud: amihud / sqrt(avg_turnover), 20 日窗口。
+    来源: Amihud (2002) + 换手率标准化。去除交易量异象的影响。
+    """
+    close = data["close"]
+    amount = data["amount"]
+    turnover = data["turnover"]
+    if date not in close.index:
+        return pd.Series(np.nan, index=close.columns, name="turnover_adj_amihud_20d")
+    idx = close.index.get_loc(date)
+    start = max(0, idx - window + 1)
+    p_slice = close.iloc[start:idx + 1]
+    a_slice = amount.iloc[start:idx + 1]
+    t_slice = turnover.iloc[start:idx + 1]
+    ret = p_slice.pct_change().abs()
+    amihud_raw = (ret / (a_slice * 1000).replace(0, np.nan)).mean(skipna=True) * 1e6
+    avg_to = t_slice.mean(skipna=True).replace(0, np.nan)
+    adj = amihud_raw / np.sqrt(avg_to)
+    effective = min(window, p_slice.shape[0])
+    min_valid = max(10, int(effective * 0.5))
+    valid_mask = (p_slice.count() >= min_valid)
+    adj = adj.where(valid_mask)
+    return _cs_zscore(adj).rename("turnover_adj_amihud_20d")

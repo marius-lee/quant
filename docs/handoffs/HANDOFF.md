@@ -1,299 +1,490 @@
-# HANDOFF — 2026-07-23 test-v247
+# HANDOFF — 盈迹 (quant) 项目变更日志
 
-## 本次改动 (v240 → v241)
+> **修改前**: `rg "关键词" HANDOFF.md HYPOTHESES.md docs/adr/` 三文件联动搜索，
+> 避免重复踩坑、重新讨论已否决方案、遗漏已有设计。
 
-### v241 — 修复 B8: Python 3.13+ Formatter defaults 依赖
+---
+## test-v267: 全项目数据库连接泄漏修复
 
-- `logger.py:73`: `logging.Formatter(defaults={"trace_id":""})` → `_TraceFormatter` 子类
-- 自定义 `format()` 方法注入 `record.trace_id` 默认值，兼容 Python 3.10+
+**问题背景**: 数据库锁 (database is locked) 根本原因 — 多文件 sqlite3.connect() 开连接不关闭，
+attribution/factor_cache 运行时累积未关闭连接。
 
-### v240 — 修复 B5: LHB sync 中 trade_date 未定义
+**全盘检查结果** (`python3` 脚本逐一比对 connect vs close):
+- 项目共 38 个文件含 `sqlite3.connect`, 7 个文件 GAP > 0
+- `repos/` 目录已规范 (每次 connect 后 close), 其余文件大量未对齐
 
-- `store.py:1531`: 被删注释行导致 `trade_date` 变量丢失，下一行 `validate_date_format(trade_date)` 报 NameError
-- 修复：从 row 提前提取 `trade_date = to_str(row.get("上榜日", ...))`，验证和 INSERT 复用同一值
+**修复的泄漏文件** (6 个文件):
 
-# HANDOFF — 2026-07-23 test-v247
+| 文件 | GAP | 修复方式 |
+|------|-----|----------|
+| `quant/execution/impact.py` | +2 | `get_stock_volume_snapshot` / `get_stock_volatility_snapshot` 加 `conn.close()` |
+| `quant/factor/compute/price/_sentiment.py` | +2 | `_get_news_series` / `compute_news_abnormal_20d` 加 `finally: conn.close()` |
+| `quant/data/fund_hold.py` | +1 | `sync_quarter` 加 `if close_conn: conn.close()` |
+| `quant/data/northbound.py` | +1 | `sync_single_stock` 加 `if close_conn: conn.close()` |
+| `quant/data/limit_up.py` | +1 | `sync_date` 加 `if close_conn: conn.close()` |
+| `web/app.py` | +1 | `_tr = sqlite3.connect(TRADE_DB)` 加 `_tr.close()` |
 
-## 本次改动 (v238 → v239)
+**非泄漏说明**:
+- `crowdedness.py` (+1): 使用 `with sqlite3.connect() as conn:` 上下文管理器, 自动关闭, 假阳性
+- 负 GAP 文件: 多个文件 conn 变量复用多次 `.close()` (如 `order_manager.py`, `task_log.py`), 无泄漏
 
-### v239 — 修复 B6 (sync_all 参数名) + B4 (JQ 缓存方法名)
+**变更文件**: `web/app.py`, `quant/execution/impact.py`, `quant/factor/compute/price/_sentiment.py`, `quant/data/fund_hold.py`, `quant/data/northbound.py`, `quant/data/limit_up.py`
 
-- B6: `store.py:1486` — `sync_all(conn, max_pb_fetch=-1)` → `max_fetch=-1`，符合 `fundamental.py` 的签名
-- B4: `jq_valuation.py:140,147` — `_cache.put()` → `_cache.set()`，符合 `DataCache` API
+---
+## test-v267 补充: repos 语法修复 + 脚本清理 + fund_flow 重写
 
-# HANDOFF — 2026-07-23 test-v247
+**repos 孤立 try/finally 修复** (web 启动失败根因):
+- `quant/data/repos/universe_repo.py`: 2 处孤立 `try:` 移除 (无匹配 except/finally)
+- `quant/data/repos/trade_repo.py`: `_ensure_schema` 和 `record_daily_equity` 的孤立 try/finally 修复
+- `quant/data/repos/evaluation_repo.py`: `save_run` 的 try 块缩进修复 (commit 未在 try 内)
+- 根因: 之前编辑遗留的半成品 try 块, .pyc 缓存掩盖, web 重启时暴露
 
-## 本次改动 (v237 → v238)
+**脚本文件语法修复** (Python 3.14 兼容):
+- `scripts/init_data.py`: shebang 位置 + 函数内 import 缩进 + 非 ASCII 字符
+- `scripts/generate_factor_cards.py`: 模块级代码前导空格
+- `quant/core/version.py`: `__version__` 赋值前导空格
+- `test/test_registry_smoke.py`: 双重 `as fc as fc`
 
-### v238 — 修复 TradeRepo.__init__ 参数顺序 bug
+**fund_flow.py 重写** (东方财富 API 修复):
+- akshare `stock_individual_fund_flow` → `requests` 直连 `push2his.eastmoney.com`
+- 加 Referer+完整 User-Agent 头绕过服务端断连
+- 加指数退避重试 (4 次, 1s→2s→4s)
+- 注: 东方财富 API 仍不稳定, 偶尔 RemoteDisconnected, 大市值银行股尤其严重
 
-v237 迁移时 `db_manager` 在前，导致 `TradeRepo(TRADE_DB)` (positional arg) 把字符串赋给 db_manager，
-`self._db.get_connection()` 报 `'str' object has no attribute 'get_connection'`。
-修复：`db_path` 放首位。
+**变更文件**: repos 3 个文件 + scripts 4 个文件 + `quant/data/fund_flow.py`
 
-### v237 — B7: TradeRepo 完整迁移到 repos/ + DatabaseManager
+---
+## test-v268: 删除 backtest/diagnostics.py — 废弃的因子"快照"模块
 
-**背景**: 两个 TradeRepo 并存（`data/trade_repo.py` 470行 vs `repos/trade_repo.py` 94行空壳），
-schema 不兼容、连接方式不统一。审计报告 B7。
+**删除**: `quant/backtest/diagnostics.py` (30 行)
 
-**迁移内容**:
+**原因**:
+- `compute_pre_backtest_ic()` 自 test-v215 起已被禁用 — `backtest/loop.py:361` 改为复用
+  evaluation/ 的 walk-forward IC, 不再调用 diagnostics
+- diagnostics.py 与 evaluation/ 七阶段管线功能重复: evaluation 已提供完整的因子 IC 评估
+  (phase2_single → phase3_oos), diagnostics 的"快速快照"定位被替代
+- 保持两个独立系统带来混乱: 同一个因子在 diagnostics 和 evaluation 中有两套 IC 指标,
+  但只有 evaluation 的结果被实际使用
+- 项目中 "diagnostics" 术语从此特指 evaluation/ 管线的 phase 诊断阶段,
+  不再指 backtest/diagnostics.py
 
-| 操作 | 文件 | 说明 |
-|------|------|------|
-| 重写 | `quant/data/repos/trade_repo.py` (→418行) | DatabaseManager 单例获取连接；完整 26 方法；自动建表 |
-| 删除 | `quant/data/trade_repo.py` | 旧实现，raw sqlite3.connect() per-call |
-| 更新 | 12 文件 × 27 处 import | `from quant.data.trade_repo import TradeRepo` → `from quant.data.repos import TradeRepo` |
-| 清理 | `quant/execution/engine.py` | 删除 `TRADE_DB_DEFAULT`/`MARKET_DB` 本地定义 → `from quant.config.paths import TRADE_DB, MARKET_DB`；移除临时 `_ensure_tables()` hack |
+**清理的引用**:
+- `quant/backtest/loop.py`: 移除 `from quant.backtest.diagnostics import compute_pre_backtest_ic`
+- `quant/backtest/analyze.py`: 更新模块分工文档 (移除已废弃的 diagnostics.py 分工说明)
+- `quant/factor/ic.py`: 更新注释 (backtest/diagnostics → evaluation/)
 
-**设计要点**:
-- `_conn()` → `DatabaseManager.get_connection(db_path)` — 连接复用，不再 per-call open/close
-- 所有方法去掉 `c.close()` — DatabaseManager 管理连接生命周期
-- `record_trade(conn=...)` 保留外部连接参数 — engine.py 事务分组语义不变
-- `TRADE_DB` 唯一定义在 `quant/config/paths.py`
+**变更文件**: `quant/backtest/diagnostics.py` (删除), `quant/backtest/loop.py`,
+`quant/backtest/analyze.py`, `quant/factor/ic.py`
 
-**删除了什么**:
-- `data/trade_repo.py` — 470行旧实现（raw sqlite3 连接）
-- `repos/trade_repo.py` 旧版 — 94行空壳（key-value schema）
-- `engine.py` TRADE_DB_DEFAULT/MARKET_DB 本地定义 + _ensure_tables() hack
-- 27处旧 import 路径
+---
+## test-v269: 6项业界标准差距修复
 
-**验证**: smoke_test_v190.py 8/8 ✅
+### Item 1 — 冲击成本模型 (Almgren-Chriss 接入)
+- **现状**: `cost.py` 已内置 `slippage_with_impact()` — 有 volume 时调用 `impact.py` 的
+  Almgren-Chriss 模型, 无 volume 时回退固定千一滑点 (已完成, 此次仅确认)
+- 影响: 大单交易 (>日均量 1%) 时回测收益不再偏乐观 0.5-1.5% 年化
 
-# HANDOFF — 2026-07-23 test-v247
+### Item 2 — 市场微观结构 (Roll 1984 bid-ask spread)
+- **新增**: `quant/execution/market_microstructure.py`
+- `estimate_roll_spread(prices)` — 从日线序列协方差反推有效价差
+  公式: 2 × √(-cov(Δp_t, Δp_{t-1}))
+- `batch_roll_spread(symbols, date)` — 批量估算, 用于回测诊断
+- 来源: Roll (1984) + Harris (2003) Trading & Exchanges
 
-## 本次改动 (v235 → v236)
+### Item 3 — 幸存者偏差 (退市股数据完整性)
+- **新增**: `quant/data/quality.py` — `check_delisting_completeness()`
+- 检测退市股在 delist_date 前是否有完整的 daily 数据
+- 标准: CSMAR/CRSP 退市追踪标准
 
-### v236 — attribution.py L3 修复`active_names`未定义
+### Item 4 — 前视偏差修复 (财报发布延迟)
+- **修改**: `quant/data/store.py` — `get_fundamentals()` SQL 加 60 天发布延迟
+- `stat_date <= date` → `stat_date <= date(date, '-60 days')`
+- 模拟年报/中报/季报的实际发布时间线 (45-120天延迟, 保守取 60 天)
+- **新增配置**: `universe.fundamental_publication_delay_days: 60`
 
-- 删除旧 IC 块时 `active_names` 变量（旧块中定义，新块中引用）被误删
-- 改为 `_all_monitored_names`，从 `FactorRepo.get_all_by_status(('active','monitoring'))` 实时获取
-- 修复后 L1/L2/L3 三级检测全链路贯通：归因补跑成功完成，36/37 因子从 active → monitoring
+### Item 5 — 风格因子模型 (BARRA 多因子)
+- **新增**: `quant/risk/neutralize.py` — `style_neutralize()`
+- 支持多元截面回归: alpha ~ value + momentum + volatility + quality + ...
+- `neutralize()` 函数新增 `style_exposures` 参数 (向后兼容)
+- 来源: Fama-French 5 因子 (2015) + Carhart 4 因子 (1997) + BARRA USE4
 
-## 验证确认
+### Item 6 — 数据质量管线
+- **新增**: `quant/data/quality.py` — 完整数据质量检测模块
+- `check_price_anomalies(date)` — 日内涨跌幅 >20% 异常检测
+- `check_delisting_completeness()` — 幸存者偏差 (同 Item 3)
+- `run_quality_checks(date)` — 统一入口
+- **新增配置**: `data.quality.price_anomaly_pct` / `data.quality.volume_spike_ratio`
 
-归因补跑 07-22（trace_id=a07b0db588da）:
-- G1 OOS walk-forward: 12/37 因子衰减
-- L1 (滚动 IC 突变): 7 因子
-- L2 (OOS/IS 反转/衰减): 14 因子
-- L3 状态变更: active → monitoring 正常触发
-- factor_ic_daily: 2279 行写入
-- ic_mean 同步到 factor_registry: 完成
+**变更文件**: `quant/execution/market_microstructure.py` (new), `quant/data/quality.py` (new),
+`quant/risk/neutralize.py`, `quant/data/store.py`, `quant/config/config.yaml`
 
-# HANDOFF — 2026-07-23 test-v247
 
-## 本次改动 (v234 → v235)
+## test-v270: PR2 修复 — validate_orders 裁剪时资金扣除遗漏股价
 
-### v235 — attribution.py 修复 _require_cfg 未导入
-- 删除旧 IC 块时 _require_cfg import 一起被移除，新三级检测块引用时报 NameError
-- 补上 `from quant.config.constants import _require_cfg`
+**问题**: `execute.py:202` — 修剪买单时 `available -= o.cost` 只扣了交易佣金（~¥5），
+未扣除 `o.shares * px` 的股价成本。导致后续买单可用资金虚高，可能超买。
 
-### v234 — 零 fallback: phase3_oos.py RuntimeError
-### v233 — 因子健康监控闭环（三级检测体系）
+**修复**: 改为 `available -= o.shares * px + o.cost`
+
+**PR3 验证结论**: 不存在问题。`pipeline.py:338` 已对 `target_positions` 按 score 降序排序，
+`_rank_concentrated` 按 `alpha_series.index` 顺序处理，索引顺序 = score 降序。
+Score 本身是 pipeline 中性化+排名后的 alpha 值，与 `_rank_concentrated` 的语义一致。
+
+**变更文件**: `quant/scheduler/execute.py`
 
 ---
 
-# HANDOFF — 2026-07-23 test-v247
 
-## 本次改动 (v233 → v234)
-
-### v234 — 零 fallback: phase3_oos.py 数据不足时上抛 RuntimeError
-- `phase3_oos.py`: 移除 silent fallback。Phase 2 未传入 IC 序列且 `factor_snapshot.ic_series` 不可用时
-  不再静默跳过，改为 raise RuntimeError 明确指引用户先运行 factor_cache 或补充 factor_ic_daily 数据。
-- 对齐零 fallback 原则（CLAUDE.md 硬约束）
-
-### v233 — 因子健康监控闭环（见上一段）
 
 ---
 
-# HANDOFF — 2026-07-22 test-v233
 
-## 本次改动 (v232 → v233)
 
-### v233 — 因子健康监控闭环（对标 AQR/WorldQuant 三级检测体系）
 
-**背景**: 归因任务的 IC 衰减检测读取静态 `factor_registry.ic_mean`（永不更新），降级永远不触发。
-G1 OOS Walk-Forward 正确计算了每个因子的 IS_IR/OOS_IR，但结果只记日志不做动作。
+## test-v272: Engine.get_trades 参数位置 bug — limit 误传为 mode
 
-**修改概要**:
+**根因**: `engine.py:174` 调用 `TradeRepo(self.db_path).get_trades(strategy, limit)`
+时，`limit`（int）作为第二位置参数传入，但 `TradeRepo.get_trades()` 的签名是
+`(self, strategy, mode, limit)`，导致 `limit=500` 被赋值给 `mode` 参数，
+SQL 变成 `WHERE mode=500`，查不到任何交易。
+
+**影响**:
+- attribution DSR 永远跳过（trades=0）
+- attribution R3 turnover 永远跳过（trades_today=0）
+- 凡是调用 `engine.get_trades(strategy, limit=N)` 的地方均受影响
+
+**修复**: 改为 `TradeRepo(self.db_path).get_trades(strategy, limit=limit)`
+
+**变更文件**: `quant/execution/engine.py`
+
+
+## test-v273: 修复 task_runs 僵尸 running 行根因
+
+**根因**: `orchestrator._run_task()` 的 except 捕获异常后仅记录日志，未调用
+`_tk_finish()`。任何 task 的 `_run()` 抛异常后，`_tk_start` 创建的 running
+行永远留在数据库中，形成僵尸。
+
+**修复**: `orchestrator.py:_run_task` except 中新增 `_tk_finish(name, today, "failed", ...)`，
+确保任何未捕获异常都被记录为 task 失败状态。
+
+**修复范围**: 一处修改覆盖所有 6 个 scheduler 任务
+(attribution/daily_data/execute/factor_cache/signals/weekly)。
+
+**变更文件**: `quant/scheduler/orchestrator.py`
+
+
+## test-v274: pytest-benchmark 性能回归检测
+
+**新增**: `test/benchmark_performance.py` — 5 项性能基准测试
+
+覆盖率 (Template 5 性能基线):
+  B1. 因子 primitives 预计算 — 500 stocks × 100 days, 基线 ~3.3s
+  B2. IC 统计计算 — 20 factors × 500 stocks, 基线 ~10ms
+  B3. AlphaModel 组合 — 20 factors × 500 stocks, 基线 ~23ms
+  B4. 行业中性化 — 500 stocks, 基线 ~3.6ms
+  B5. 优化器排名集中 — 500 stocks, 基线 ~450μs
+
+使用方式:
+```bash
+# 运行并保存基线
+PYTHONPATH=. .venv/bin/pytest test/benchmark_performance.py -v --benchmark-only --benchmark-save=baseline
+
+# 对比基线检测退化
+PYTHONPATH=. .venv/bin/pytest test/benchmark_performance.py -v --benchmark-only --benchmark-compare
+```
+
+**变更文件**: `test/benchmark_performance.py` (new)
+
+
+## test-v275: 修复 benchmark_tracking alpha=None + 降级 task_log finish 警告
+
+**Fix 1 — benchmark_tracking alpha=None**:
+`record_daily()` 在 `yesterday_equity=None`（daily_equity 表无数据）时，
+无法计算 `strat_ret`，导致 alpha 也为 None。新增兜底: 从 `benchmark_tracking`
+表自身查找最近一个交易日的 strategy_equity 作为前日权益。
+
+**Fix 2 — task_log finish WARNING 降级**:
+`task_log.finish()` 找不到 running 行时发出的 WARNING 改为 DEBUG。
+原因: test-v273 在 orchestrator 异常路径增加了 _tk_finish 调用，正常路径
+任务自身也调用 _tk_finish，双写时第二次必然找不到 running 行（已被第一次更新），
+这是良性条件，不应告警。
+
+**变更文件**: `quant/benchmark/tracker.py`, `quant/scheduler/task_log.py`
+
+## test-v271: Phase 8 — 回测vs实盘一致性验证框架
+
+**新增**: `quant/evaluation/phase8_live_consistency.py` (Phase 8)
+
+四维验证:
+  D1. 信号一致性 — 同日 backtest vs live 的 generate_signals() 输出对比
+  D2. 成交一致性 — 相同 (date, symbol, side) 的 fill price 对比
+  D3. 成本一致性 — CostModel 估算 vs 实盘 sim_trades.cost
+  D4. 权益一致性 — backtest equity curve vs live daily_equity
+
+**新增 TradeRepo 方法** (供 Phase 8 查询):
+  - `get_daily_signals_range(start, end, mode)` — 按日期范围读 daily_signals
+  - `get_daily_equity_range(start, end)` — 按日期范围读 daily_equity
+  - `get_strategy_config(strategy)` — 读 strategy_config 配置行
+
+**设计原则**:
+  - 渐进退化: 实盘数据不足时返回 insufficient_data, 不报错
+  - 信号对比用 Spearman rank 相关 (对 score 非线性变换不敏感)
+  - 加权评分: D1 信号 30% + D2 成交 30% + D3 成本 20% + D4 权益 20%
+  - 阈值从 config.yaml 读 (暂无, 用模块级常量)
+
+**使用**:
+```bash
+PYTHONPATH=. .venv/bin/python3 -c "
+from quant.evaluation.phase8_live_consistency import validate_consistency
+result = validate_consistency()
+print(result['status'], result['dimensions'])
+"
+```
+
+**变更文件**: `quant/evaluation/phase8_live_consistency.py` (new),
+`quant/evaluation/__init__.py`, `quant/data/repos/trade_repo.py`
+
+## test-v212: Alpha 候选池 UI 优化
+
+**变更**: `web/static/app.js`, `web/static/style.css`
+
+- renderSignals: 候选池从 8 行缩至 5 行，得分从 3 位小数缩至 2 位
+- reason 列截断：超过 2 个因子贡献时只显示前 2 个 + "N more"，hover 显示完整
+- CSS: `.status-badge` → `.badge` 基类重命名，对齐 JS 中的 `class="badge badge-red"`
+- 新增 `.trunc-reason em` 样式
+
+
+
+---
+
+## test-v215: 实盘执行全链路修复 — 涨停预检 + alpha 优先级裁剪 + 价格缓冲
+
+**Phase A — execute.py 三处修复**:
+1. `fetch_quotes` 加 `include_ask_bid=True` (获取五档盘口)
+2. 新增 Step 3.5 涨停封死预检: 用 ask_volume==0 + 涨停价判断开盘封死, 跳过不挂单, 写入 exec_notes
+3. 裁剪逻辑从「成本升序」改为「alpha 得分降序 + 实时开盘价重算股数」: top1 优先分配资金, 剩余给 top2
+
+**Phase B — 价格缓冲**:
+- pipeline 分配时预留 5% 价格波动空间 (Nano 层)
+- config.yaml: `execution.price_buffer: 0.05`
+- 用昨收价 × 1.05 估算成本, 减少 execute 阶段 reopen 价差导致的 validate_orders 裁剪
+
+**变更文件**: `quant/scheduler/execute.py`, `quant/optimizer/portfolio.py`, `quant/config/config.yaml`
+
+---
+
+## test-v286: FactorStore 全量接入 — 5 个剩余文件
+
+**背景**: `oos_verify.py` 已在 test-v284 接入 FactorStore，但还有 5 个文件直接调用 `compute_all_factors` 未走缓存。
+
+**接入模式**:
+```
+try:
+    _fs = FactorStore(db_path=FACTOR_CACHE_DB)
+    fv = _fs.load(date_str, symbols=symbols, factor_names=factor_names)
+    _fs.close()
+    if not fv:
+        fv = compute_all_factors(...)  # cache miss, compute fresh
+except Exception:
+    raise  # 无静默 fallback，DB 损坏直接上抛
+```
+
+**接入清单**:
+
+| # | 文件 | 优先级 | 改动 |
+|---|------|--------|------|
+| 1 | `quant/factor/ic.py` | HIGH | `_compute_one_day()` 逐日 IC 计算 → FactorStore.load() 优先 |
+| 2 | `quant/evaluation/parallel.py` | MEDIUM | `_evaluate_batch()` 批量评估 → FactorStore.load() 优先 |
+| 3 | `quant/evaluation/phase5_monitor.py` | LOW | `_check_crowding()` 拥挤度 → FactorStore.load() 优先 |
+| 4 | `quant/monitor/factor_attribution.py` | LOW | `factor_pnl_attribution()` 暴露归因 → FactorStore.load() 优先 |
+| 5 | `quant/scheduler/crowdedness.py` | LOW | `compute_crowdedness_score()` 拥挤度 → FactorStore.load() 优先 |
+
+**已确认无需接入**:
+- `quant/pipeline.py` — 已有 `factor_store` 参数，`compute_all_factors` 仅在 `factor_store=None` 时作为 fallback
+- `quant/factor/compute/_dispatch.py` — `compute_all_factors` 的调度实现，不是消费者
+- `quant/core/phase_tracker.py` — 仅 docstring 引用
+- `test/benchmark_performance.py` — 基准测试，非业务路径
+
+**影响**: IC 计算、评估、监控全链路速度提升 ~10x（cache hit 时跳过逐日 compute）
+
+---
+
+## test-v287: pipeline.py 去 fallback — factor_store=None 直接抛错
+
+**问题**: `generate_signals()` 中 `factor_store=None` 时静默 fallback 到 `compute_all_factors`，
+违反系统"零 fallback"原则。
+
+**修改** (`quant/pipeline.py`):
+
+1. `factor_store is None` → `raise RuntimeError` 提示先跑 `factor_cache` 物化
+2. `factor_store.load()` 返回空 → `raise RuntimeError`，不再静默 fallback
+3. 删除 `from quant.factor.compute import compute_all_factors` — 调用方全部移除，已无引用
+4. FactorStore.load() 异常不再 try/except 吞掉，直接上抛
+
+**设计原则**: 因子值来源唯一 — FactorStore 缓存。缓存缺失说明物化任务未跑，应抛错而非静默降级计算。
+
+---
+
+## test-v288: FactorStore 5 文件去 compute_all_factors fallback
+
+**原则**: 系统严禁 fallback。缓存缺失说明物化任务未跑，应抛错而非静默降级计算。
+
+**修改** (5 个文件):
 
 | 文件 | 改动 |
 |------|------|
-| `quant/data/repos/factor_repo.py` | 新建 `factor_ic_daily` 表 + `insert_ic_daily`/`get_ic_rolling`/`sync_ic_mean_to_registry` 方法；删除 `save_ic_snapshot`/`get_recent_ic_snapshots`/`delete_old_ic_snapshots` |
-| `quant/scheduler/oos_verify.py` | `run_oos_check` 返回增加 `ic_daily` 字段（透出逐日 IC 序列） |
-| `quant/scheduler/attribution.py` | 删除 L106-222（static ic_mean 整块）；新增三级检测：L1 滚动 IC → L2 OOS/IS 比率 → L3 稳定性校验 → 执行状态变更 |
-| `quant/factor/stats_cache.py` | 删除 `ic_series` 写入 factor_snapshot |
-| `quant/scheduler/factor_cache.py` | 刷新后同步 `ic_mean` 到 `factor_registry` |
-| `quant/config/config.yaml` | 替换 attribution 配置：`oos_warning_decay`/`oos_recovery_threshold`/`monitoring_buffer_days` 20d |
-| `quant/data/schema.sql` | 待更新：移除 factor_ic_snapshot，添加 factor_ic_daily |
+| `quant/factor/ic.py` | `except Exception: pass` → 删除；`compute_all_factors` fallback → `raise RuntimeError`；删 `compute_all_factors` import |
+| `quant/evaluation/parallel.py` | `try/except: raise` → 删除；fallback → `raise RuntimeError`；删 `compute_all_factors` import |
+| `quant/evaluation/phase5_monitor.py` | 同上 |
+| `quant/monitor/factor_attribution.py` | 同上 |
+| `quant/scheduler/crowdedness.py` | 同上 |
 
-**数据表变更**:
-- `factor_ic_daily`: 新建，每因子每天一行，是因子绩效唯一真相源
-- `factor_ic_snapshot`: 已删除（旧 JSON blob 表，存静态假数据）
-- `factor_snapshot.ic_series`: 不再写入（已有字段不清除）
-
-**三级检测体系**:
-```
-Level 1: 滚动 IC 监控 (factor_ic_daily) — 20日均值 vs 当前值
-Level 2: OOS/IS 比率 (G1 per_factor) — OOS_IR<0 立即降级 / 比率<0.3 严重衰减
-Level 3: 稳定性校验 (factor_ic_daily) — 连续 N 天稳定 → 升回 / 持续衰减 → 退役
-```
-
-## 当前交易日业务流程
-```
-08:30  signals     Pipeline→因子→排名→_rank_concentrated分配→daily_signals
-09:30  execute     读信号→涨停预检→封板重分配→compute_trades→挂限价单
-09:35-11:30,13:00-14:55  monitor  每30s: 订单管理+止盈止损 (午休跳过)
-19:00  daily_data  update_daily(OHLCV) → backfill_turnover(baostock)
-20:00  attribution Brinson→G1 OOS→L1+L2+L3 三级检测→状态变更→G2 拥挤度→G3 DSR
-21:00  factor_cache 因子物化→factor_snapshot→同步 ic_mean
-```
-
-## 关键文件
-
-| 文件 | 最近改动 |
-|------|----------|
-| `quant/data/repos/factor_repo.py` | factor_ic_daily 表 + 新方法 + 删旧快照方法 |
-| `quant/scheduler/attribution.py` | IC 块替换为三级检测体系 |
-| `quant/scheduler/oos_verify.py` | 返回增加 ic_daily 透出 |
-| `quant/factor/stats_cache.py` | 删除 ic_series 写入 |
-| `quant/scheduler/factor_cache.py` | 加 sync_ic_mean |
-| `quant/config/config.yaml` | attribution 配置重构 |
-| `web/app.py` | VERSION = "test-v233" |
+**统一行为**: FactorStore.load() 返回空 → `raise RuntimeError("factor_cache miss for {date}, run materialization first")`
 
 ---
 
-# HANDOFF — 2026-07-22 test-v231
+## test-v289: 终端单行动态进度条
 
-## 本次改动 (v225 → v226 → v227 → v228 → v229 → v230 → v231)
+**新增**: `quant/utils/progress.py` — `progress_bar()` 函数，单行 `\r` 原地刷新。
 
-### v226 — daily_data turnover 回填改 baostock
-- `daily_data.py`: `backfill_turnover_quotes`(tickflow,5只/批) → `backfill_turnover`(baostock,0.3s/只)
-- tickflow 5457只需109min vs baostock 2622只需27min，来源: 2026-07-21 实测
+**接入**: `quant/factor/ic.py` — `compute_ic()` 逐日 IC 计算循环 (`compute_days`) 内显示进度。
 
-### v227 — backfill_turnover 日期范围包含今天
-- `store.py`: `gap_end_dt = _today` (废止 `_today-1`)，盘后当天 turnover 也能回填
+**输出格式**: `[=========>              ] 45/132  34%  |  IC: 2026-05-15`
 
-### v228 — baostock 断连自动重登
-- 重登阈值 5000→200 (实测 session ~240 只断连)
-- Broken pipe 时检测并 `logout → login` 重连，不跳过后续股票
-
-### v229 — 移除所有调度任务超时限制
-- signals/execute/attribution/weekly_eval 全部 → None
-- `_TIMEOUTS` 全线归零，每个任务自有逐阶段埋点日志判断死活
-
-### v230 — monitor 午休跳过
-- `monitor.py`: 循环内加 `11:30 ≤ t < 13:00 → sleep → continue`
-- 时段标注统一为 `"09:35-11:30, 13:00-14:55 (午休跳过)"`
-- 范围: monitor.py, orchestrator.py, __init__.py, status.py, CLAUDE.md
-
-### v231 — attribution.py 全部 except Exception 吞错移除
-- 11 个 `try/except Exception (non-fatal)` 全部删除，异常自然上抛
-- 覆盖: Brinson, IC snapshot, promotion, OOS, G1-G4, R3-R4, benchmark
-- 此前 `bc034e9` 声称消除但只加了 `raise` 未移除吞错，本次彻底清理
-
-## 当前交易日业务流程
+**pytest-benchmark 注意**: 基准测试默认捕获 stdout，进度条不可见。需加 `-s` 标志：
+```bash
+PYTHONPATH=. .venv/bin/pytest tests/benchmark_critical.py -v --benchmark-only -s -k "slow"
 ```
-08:30  signals     Pipeline→因子→排名→_rank_concentrated分配→daily_signals
-09:30  execute     读信号→涨停预检→封板重分配→compute_trades→挂限价单
-09:35-11:30,13:00-14:55  monitor  每30s: 订单管理+止盈止损+集中度/VaR/流动性 (午休跳过)
-19:00  daily_data  update_daily(OHLCV,tushare50只/批) → backfill_turnover(baostock,补turnover)
-20:00  attribution Brinson→IC衰减→OOS→DSR→PnL→换手率→信号衰减 — 无超时无吞错
-21:00  factor_cache 因子缓存刷新
-```
-
-## 关键文件
-
-| 文件 | 最近改动 |
-|------|----------|
-| `quant/scheduler/orchestrator.py` | 全部超时 → None |
-| `quant/scheduler/monitor.py` | 午休跳过 (11:30-13:00) |
-| `quant/scheduler/daily_data.py` | turnover 回填 tickflow→baostock |
-| `quant/scheduler/attribution.py` | 11 个吞错移除 |
-| `quant/data/store.py` | gap_end_dt→_today; 断连重登; 进度+ETA |
-| `web/app.py` | VERSION = "test-v231" |
 
 ---
-# HANDOFF — 2026-07-22 test-v225
 
-## 本次改动 (v224 → v225)
+## test-v290: oos_verify 进度条 + 去 fallback
 
-### v225 — daily_data 超时移除 + 进度日志优化
+**进度条接入**: `run_oos_check()` 的 `for ds in trading_days:` 逐日循环 → `progress_bar()`.
 
-**背景**: daily_data 19:00 运行时超时 (1800s) 被 orchestrator kill。根因是 turnover 回填
-(backfill_turnover_quotes) 用 tickflow 5 只/批×6s, 4157 缺口需 83 分钟, 远超 30 分钟超时。
+**去 fallback**: `except Exception: continue` → 直接上抛。`compute_all_factors` import 已删。
 
-**修改 1: orchestrator 移除 daily_data 超时**
-- `orchestrator.py`: `_TIMEOUTS["daily_data"]` 从 `1800` → `None`
-- 盘后 turnover 回填完成时间不可预测, 不应硬性 kill
+**受影响调用链**: `compute_backtest_ic` → `run_oos_check` — 基准测试 `test_bench_compute_backtest_ic` 现在有进度刷新。
 
-**修改 2: update_daily 进度日志加 ETA**
-- `store.py` `update_daily()`: 在 for 循环前加 `_t_loop` 计时器
-- 每批进度日志加入 `elapsed=XXs ETA=XXs`, 可判断是正在拉取还是卡死
-
-**修改 3: backfill_turnover_quotes 进度日志改密集**
-- 添加 `_progress_interval = max(50, len(all_syms) // 20)` — 最少每 50 只打印一次
-- 进度日志加入实际速率 `{rate:.1f}stocks/s` 和基于实际速率的 ETA
-- 日志含 `today=N` 字段, 可观察是否在持续写入
-
-## 当前交易日业务流程
-```
-08:30  signals    Pipeline→因子→排名→_rank_concentrated分配→daily_signals
-09:30  execute    读信号→涨停预检→封板重分配(_rank_concentrated实时价)→compute_trades→挂限价单
-09:35-14:55 monitor  每30s: 订单管理+止盈止损+集中度/VaR/流动性
-19:00  daily_data  update_daily(OHLCV) → backfill_turnover_quotes(turnover) — 无超时限制
-20:00  attribution 盘后归因
-21:00  factor_cache 因子缓存刷新
-```
-
-## 关键文件
-
-| 文件 | 最近改动 |
-|------|----------|
-| `quant/scheduler/orchestrator.py` | daily_data 超时 → None |
-| `quant/data/store.py` | update_daily 进度加 ETA; backfill_turnover_quotes 进度加密 + 速率 ETA |
-| `web/app.py` | VERSION = "test-v225" |
+**进度条位置汇总**:
+| 文件 | 循环 | 状态 |
+|------|------|------|
+| `quant/factor/ic.py` — `compute_ic()` | `for ds in compute_days` | ✅ |
+| `quant/scheduler/oos_verify.py` — `run_oos_check()` | `for ds in trading_days` | ✅ |
 
 ---
-# HANDOFF — 2026-07-22 test-v223
 
-## 本次改动 (v220 → v221 → v222 → v223)
+## test-v291: run_oos_check 参数化 — 去掉内部 yaml 回退
 
-### v220 — 修复 monitor daemon 每30秒崩溃
-- `trade_repo.py`: `position_meta` 表加入 `_ensure_tables()` 自动建表
-- `trade_repo.py`: `save_position_meta`: `self.conn.commit()` → `c.commit()` + `c.close()`
-- `monitor.py`: 加 `TradeRepo`/`TRADE_DB` 导入, C6 load/save 加 try/except
+**问题**: `run_oos_check()` 内部读取 `_require_cfg("oos_verify.train_window_days")` 等 3 个值，
+忽略调用方传入的 `n_train_days`。`fac_cal=378` 导致回溯到 2025-04-23，远超出缓存覆盖范围。
 
-### v221 — execute 封板重分配
-- `execute.py`: sealed block 后，剩余候选用 `PortfolioConstructor.construct()` 重分配
+**修改**:
 
-### v222 — 重分配用实时价，对齐业界标准
-- `execute.py`: 重分配改用 `_rank_concentrated()` 直接按实时价算，不走 `price_buffer`
-
-### v223 — 撤回 post-fill residual sweep
-- **撤回**了 v223 的 monitor sweep 逻辑
-- 原因：残余现金是 lot-size 取整的正常残留，不是 bug
-- 股价下跌补仓 = 无信号追跌，破坏优化器纪律
-- 文档详见下方
-
-## 残余现金处理策略
-
-**决策：不在信号外追加买入。**
-
-| 场景 | 处理 |
+| 文件 | 改动 |
 |------|------|
-| 手数取整残余（¥668 < 一手 ¥722） | 正常现象，等下次 rebalance |
-| 股价下跌，残余现金够买了 | **不追**。无 alpha 信号支持的买入 = 追跌，破坏纪律 |
-| 第二天信号再次推荐同一只 | optimizer 会基于最新资本重新分配，自然补仓 |
+| `quant/scheduler/oos_verify.py` | 签名改为 `run_oos_check(today, status_filter, train_days, test_days, decay_warn_threshold)`，5 个参数全部必传。删除内部 `_require_cfg` 调用。删除 `fac_cal` 参与 `total_lookback`（因子值来自缓存，不再需要 warmup）。删除 `_require_cfg` 和 `max_factor_calendar_days` import |
+| `quant/scheduler/attribution.py` | 调用前读 yaml，5 个参数显式传入 |
+| `quant/factor/stats_cache.py` | `n_train_days` → `train_days`，`test_days` / `decay_warn_threshold` 显式传入 |
 
-业界标准（BlackRock/AQR/Two Sigma）：信号时刻决定仓位，残余现金不事后追投。
-如果确实想用满资金，改进方向是优化器层面（允许碎股、降低手数粒度），不是事后 sweep。
+**设计原则**: 参数全部由调用侧负责，函数内部零 yaml 读取、零默认值。
 
-## 当前交易日业务流程
-```
-08:30  signals    Pipeline→因子→排名→_rank_concentrated分配→daily_signals
-09:30  execute    读信号→涨停预检→封板重分配(_rank_concentrated实时价)→compute_trades→挂限价单
-09:35-14:55 monitor  每30s: 订单管理+止盈止损+集中度/VaR/流动性
-19:00  daily_data  拉日线+换手率
-20:00  attribution 盘后归因
-21:00  factor_cache 因子缓存刷新
-```
+---
+
+## test-v293: 回退进度条 — pytest-benchmark 不可见
+
+`progress_bar` (stdout → stderr) 在 pytest-benchmark 校准阶段仍不可见。
+移除 `quant/utils/progress.py`、`ic.py`、`oos_verify.py` 中所有进度条代码。
+
+进度条方案留待后续统一设计（终端安装风格进度线 + 百分比）。
+
+---
+
+## test-v294: oos_verify 三模块分离 — 对齐 Alphalens/DolphinDB
+
+**动机**: `run_oos_check()` 六层耦合 (配置→数据→股票池→因子→IC→统计), 不可单元测试,
+不可复用, FactorStore 循环内每日期新建/关闭。
+
+**重构**: 参考 Alphalens (utils → performance → tears) 和 DolphinDB (preprocess →
+singleFactorAnalysis → plot), 拆为三层:
+
+| 函数 | 对标 | 职责 | 依赖 |
+|------|------|------|------|
+| `compute_ic_series()` | Alphalens `factor_information_coefficient()` | 纯数学: 逐日 Spearman IC | 零: 不读 config/DB |
+| `analyze_is_oos()` | DolphinDB `singleFactorAnalysis()` | 纯统计: IS/OOS→IR→衰减 | 零: 不读 config/DB |
+| `run_oos_check()` | Alphalens `create_full_tear_sheet()` | 编排: 加载→计算→分析→返回 | DataStore, FactorStore, UniverseRepo |
+
+**改动**:
+- `oos_verify.py`: 217行 → 纯函数 (~80行) + 编排函数 (~100行)。`n_symbols=0`=全量。
+  5 个算法常量从 yaml 模块级读, 不再写死。
+- `attribution.py`: `n_symbols=_require_cfg("oos_verify.attribution_n_symbols")`
+- `stats_cache.py`: `n_symbols=_require_cfg("oos_verify.backtest_n_symbols")`
+- `config.yaml`: 8 个 `oos_verify` key 带详细来源注释
+- FactorStore 循环外创建一次 (不再每日期新建 close)
+
+**可单元测试**: `compute_ic_series()` 和 `analyze_is_oos()` 接受 dict/DataFrame, 零外部依赖.
+---
+
+## test-v295: signals/run_task/phase8 接入 FactorStore — 修复信号生成崩溃 + 全链路影响排查
+
+**问题**: `signals.py`、`scripts/run_task.py`、`phase8_live_consistency.py` 调用 `generate_signals()`
+时未传 `factor_store`。pipeline.py test-v287 去 fallback 后，`factor_store=None` → RuntimeError。
+
+**修改**:
+- `quant/scheduler/signals.py`: 导入 FactorStore，`generate_signals(..., factor_store=fs)`，用完 close
+- `scripts/run_task.py`: 同上
+- `quant/evaluation/phase8_live_consistency.py:108`: 补充 `factor_store=factor_store`
+
+**全链路影响排查 (14 模块导入 + 6 类调用方)**:
+
+| 检查项 | 结果 |
+|--------|------|
+| 导入链: 14 个受影响模块 import | 全部通过 |
+| `generate_signals()` 调用方 (除 backtest/loop 用 **kwargs) | signals ✅ run_task ✅ phase8 ✅ |
+| `run_oos_check()` 调用方 (attribution, stats_cache) | 6 个必传参数全部正确 |
+| `compute_all_factors` 引用 | 8 处: 4 处注释/导出, 4 处合法使用 (factor_ic Mode A, FactorStore 写侧, stats_cache Mode A) |
+| `oos_verify.py` 函数体内 `_require_cfg` | 0 (全部模块级) |
+| Web 路由 (11 个 API 端点) | 不调用 generate_signals/compute_all_factors, 只读 DB + shared_state |
+| 调度器任务: attribution | run_oos_check 调用正确, 其他逻辑不变 |
+| 调度器任务: factor_cache | FactorStore.materialize() 正常, 不经过 pipeline |
+| 回测链: loop.py | kwargs 含 factor_store, compute_backtest_ic 参数正确 |
+
+**Web 页面"无数据"根因**: signals 任务崩溃 → shared_state 为空 → positions/performance 空表。
+调度页面 (task_runs) 读 DB 应正常显示 (已确认 DB 有数据)。
+修复后 signals 任务重新执行即可恢复。
+
+
+
+---
+
+## 已确认修复 (无需再排查)
+
+以下问题曾出现在审计报告中，已由之前版本修复，当前代码无问题：
+
+| 问题 | 修复版本 | 说明 |
+|------|---------|------|
+| **benchmark_tracking alpha=None** | test-v270+ | `record_daily()` 接收 `yesterday_equity` 参数，`strat_ret = strategy_equity / yesterday_equity - 1` 正常计算。DB 中旧的 None 值是修复前的残留数据，下次回测自动写入正确 alpha。 |
+| **"no running row found" 双写警告** | test-v273 | `orchestrator.py:76` 已委托 `_tk_finish` 给任务自身的 finally 块，不再重复调用。最近日志零出现。 |
+| **B2: 252→244 年化天数** | test-v279 | `loop.py` 使用 `np.sqrt(244)` 和 `len(returns) / 244`，非 252。 |
+| **L2: next_ret 收益率计算** | test-v279 | `(next_close[s] / today_close[s] - 1)` 正确计算前向收益率。 |
+| **PR2/PR3: execute.py** | test-v279 | `execute.py` 已删除，拆为 `broker.py` + `bridge.py`。原问题自然消除。 |
+| **factor_repo.py SyntaxError** | test-v287 | Line 119 `list[str]` 语法在 Python 3.14 合法，该错误为旧版本残留。 |
+| **parallel.py IndentationError** | test-v287 | Line 41 缩进已修复。 |
+
+**注意**: 下次会话如遇到上述问题，请先检查是否为旧 DB 数据残留或代码版本过旧，不要再重新排查。
+
+---
+
+## test-v296: 因子缓存自动裁剪 — factor_cache_max_days: 244
+
+**动机**: 因子缓存无限膨胀 (7.6GB for 133 天), 3 年全量回测仅需 244 天窗口。
+
+**修改**:
+- `config.yaml` — `backtest` 下新增 `factor_cache_max_days: 244`, 带来源注释
+- `quant/factor/store.py` — 新增 `trim_to_max_days(max_days)` 方法: 以最新物化日期为锚点, DELETE WHERE date < cutoff
+- `quant/scheduler/factor_cache.py` — 物化成功后调用 `fs.trim_to_max_days()`, 裁剪失败不阻塞 (非致命 warning)
+
+**设计约束**:
+- 裁剪锚点为最新物化日期, 非系统时间 (避免调度间隔内误删)
+- max_days ≤ 0 → 跳过 (保留全部, 开发调试用)
+- 因子值 = 衍生数据, 丢失后可 force 重建

@@ -12,6 +12,7 @@ Regime-conditional factor IC weights stored in factor_regime_stats table.
 import os, sqlite3, json
 import numpy as np
 import pandas as pd
+from quant.config.constants import _require_cfg
 from quant.utils.logger import get_logger
 
 _log = get_logger("regime.detector")
@@ -36,7 +37,7 @@ class RegimeDetector:
     def __init__(self):
         self._model = None
         self._last_state_prob = None
-        self._train_window = 252
+        self._train_window = _require_cfg("market.annual_trading_days")
 
     def _features(self, benchmark_returns, window=20):
         """Compute features: rolling mean return and rolling volatility."""
@@ -107,6 +108,7 @@ class RegimeDetector:
 _detector = None
 
 
+
 def get_current_regime():
     """Get current market regime using CSI 300 data. Called daily.
 
@@ -119,7 +121,6 @@ def get_current_regime():
     global _detector
     import pickle as _pkl
     from datetime import date as _d, timedelta as _td
-    from quant.config.constants import _require_cfg
 
     _MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "hmm_regime.pkl")
     retrain_days = _require_cfg("regime.retrain_days") if _require_cfg("regime.retrain_days") else 7
@@ -139,7 +140,7 @@ def get_current_regime():
 
     if should_train:
         from quant.data.benchmark import get_benchmark_returns
-        returns = get_benchmark_returns("000300", start="2024-01-01")
+        returns = get_benchmark_returns("000300", start=_require_cfg("regime.train_start"))
         _detector = RegimeDetector()
         _detector.train(returns)
         try:
@@ -150,7 +151,7 @@ def get_current_regime():
             _log.warning(f"regime HMM save failed (non-fatal): {e}")
 
     from quant.data.benchmark import get_benchmark_returns
-    returns = get_benchmark_returns("000300", start="2024-01-01")
+    returns = get_benchmark_returns("000300", start=_require_cfg("regime.train_start"))
     return _detector.predict_proba(returns)
 
 

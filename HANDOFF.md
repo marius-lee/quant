@@ -49,7 +49,7 @@
 | `test/test_v305_factor_cache_trailing_slice.py` | stub_market_conn 每次新建连接 |
 
 ### 测试
-207 passed (4 个已知失败: optuna 未安装 + hmmlearn 未安装)
+221 passed (全部通过)
 
 
 

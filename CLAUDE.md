@@ -132,8 +132,8 @@ PYTHONPATH=. python3 -c "from quant.scheduler.factor_cache import _run; _run('20
 # LightGBM 模型训练 (需 pip install lightgbm)
 PYTHONPATH=. python3 -c "from quant.alpha.qlib_model import train_lgb_model; train_lgb_model()"
 
-# 运行测试 (test/ 目录)
-PYTHONPATH=. python3 -m pytest test/ -v
+# 运行测试 (test/ 目录) — 注意: 须用 .venv, optuna/hmmlearn 安装在 .venv 中
+PYTHONPATH=. .venv/bin/python -m pytest test/ -v
 
 # 端到端验证
 PYTHONPATH=. python3 scripts/validate_lgb_e2e.py

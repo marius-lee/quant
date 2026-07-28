@@ -51,6 +51,9 @@
 ### 测试
 221 passed (全部通过)
 
+注意: optuna (4.9.0) + hmmlearn (0.3.3) 安装在 `.venv/` 中。
+测试需用 `.venv/bin/python -m pytest`, 直接用系统 `python3` 会报 ModuleNotFoundError。
+
 
 
 ## test-v247~248 (2026-07-28 晚): UI 对齐 + DSR + sleeve 回退

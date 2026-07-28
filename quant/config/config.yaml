@@ -1,7 +1,3 @@
-# quant — A股量化选股系统 配置文件 (单一真相源)
-# 所有参数均有文献或业界依据, 详见行内注释。
-# ADR-041: 参数全面对齐业界标准 (2026-07-28)
-
 alpha:
   lgb:
     train:
@@ -75,7 +71,7 @@ backtest:
   diagnosis_ic_window: 120
   progress_log_interval: 60
   min_trading_days: 10
-  factor_cache_max_days: 244
+  factor_cache_max_days: 2000
   universe_filter_affordable: true
   smoke:
     universe_size: 10
@@ -349,65 +345,3 @@ regime:
   train_start: '2024-01-01'
 market:
   annual_trading_days: 244
-
-
-# ═══════════════════════════════════════════════════════════
-# 参数来源对照表 (ADR-041: 全面对齐业界标准)
-# ═══════════════════════════════════════════════════════════
-# 参数                            值       来源
-# ─────────────────────────────   ──────   ──────────────────────────────────
-# alpha.retrain_freq              60       Grinold & Kahn Ch.6: IC 月度重估
-# alpha.sleeve.positions_per_factor 20     Grinold & Kahn: N=IR²/λ, IR≈0.3→N≈10-30
-# alpha.top_fraction              0.30     Qlib topk=0.3 软截断
-# alpha.train_window              500      LightGBM 文档: 2年训练数据足够
-# alpha.weekly_weight             0.30     Faber (2007) 双均线周权重
-# attribution.ic_rolling_window   60       Barra USE4: 60日滚动IC窗口
-# attribution.ic_degradation_threshold 0.30 Grinold & Kahn: IC衰减>30%需review
-# attribution.promotion_stability_days 10 Barra: 至少10日稳定IC恢复
-# attribution.dsr_degraded_threshold 0.50 Bailey & De Prado (2014) DSR<0.5=运气
-# attribution.dsr_recover_threshold 0.95  Bailey & De Prado DSR≥0.95=显著
-# attribution.cpcv_lookback_days  120      De Prado (2018) AFML Ch.7: 6个月回看
-# backtest.diagnosis_ic_window    120      Qlib: IC回看60-120天
-# backtest.factor_cache_max_days  244      A股 1年交易日 (244d)
-# backtest.universe_size          800      中证800指数对标
-# data.batch_size                 50       tushare 单次查询上限
-# data.lookback_days              365      1年回看窗口
-# factor.compute.winsorize_pct    0.01     Barra USE4: 1%/99%分位裁剪
-# factor.compute.earnings_decay_lambda 0.0077 ln(2)/90 半衰期 90天 (季报间隔)
-# factor.evaluation.min_abs_ic    0.02     Qlib: IC<0.02无经济意义
-# factor.evaluation.min_icir      0.25     Grinold & Kahn: IR=0.25=弱, 0.5=合格, 1.0=优秀
-# factor.evaluation.pbo_max       0.20     De Prado (2015): PBO>0.20=过拟合
-# factor.evaluation.t_threshold   2.0      标准t检验 Dual-tail 5%显著性
-# factor.evaluation.cpcv_groups   5        De Prado (2018) purged 5-fold CPCV
-# factor.evaluation.embargo_days  5        对齐前向收益 horizon=5d (De Prado purge)
-# factor.evaluation.n_symbols     800      中证800, Spearman SE=1/√797≈0.036
-# factor.evaluation.n_days        252      A股1年交易日
-# factor.evaluation.lookback      252      De Prado: 至少1年回看
-# factor.synth.zscore_clip        3.0      3σ裁剪 (正态分布99.7%范围)
-# oos_verify.train_window_days    170      Qlib 标准滚动窗口≥120天
-# oos_verify.test_window_days     20       Qlib OOS测试≥20天
-# oos_verify.sample_interval      3        3日采样间隔 (25 IS观测≥min_is_points=20)
-# oos_verify.min_is_points        20       Qlib: IC计算最少20期
-# optimizer.kelly_fraction         0.5      Half-Kelly (Vince 1990): 最优风险调整
-# optimizer.tc_lambda             1.0      Grinold & Kahn: λ=1全额成本门槛
-# recon.cash_drift_tolerance      1.0      现金对账容差
-# risk.max_single_position        0.05     US mutual fund 单票上限5% (UCITS:10%)
-# risk.max_sector_exposure        0.35     UCITS 行业集中度上限35%
-# risk.atr_period                 14       Wilder (1978) 标准ATR周期
-# risk.atr_mult_stop_loss         2.0      2×ATR 止损 (Turtle Trading)
-# risk.atr_mult_take_profit_1     2.0      2×ATR 第一止盈目标
-# risk.atr_mult_take_profit_2     3.0      3×ATR 第二止盈目标
-# risk.atr_mult_trailing          1.5      1.5×ATR 移动止盈 (Turtle Trading)
-# risk.max_hold_days              20       Grinold & Kahn: 信号衰减 20天
-# risk.stop_loss_pct              0.08     8%硬止损 (ATR止损不触发时的兜底)
-# risk.covariance.window          252      Ledoit-Wolf: T>N 需要足够样本
-# risk.covariance.min_periods     60       最少60天协方差
-# monitor.circuit_breaker_pct     10.0     对冲基金标准: 10-20% drawdown熔断
-# monitor.max_single_concentration 0.10    UCITS: 单票集中度≤10%
-# monitor.max_drawdown_pct        20       20%最大回撤告警
-# execution.commission            0.0003   A股万三佣金率 (证监会标准)
-# execution.min_commission        5        最低¥5/笔 (证监会标准)
-# execution.stamp_tax             0.0005   印花税万五 (2023-08-28减半, 财政部公告2023年第39号)
-# execution.slippage              0.001    千一滑点 (A股散户标准)
-# execution.impact_eta            0.10     Almgren & Chriss (2001): A股冲击系数η≈0.1
-# market.annual_trading_days      244      A股年均交易日 (2019-2024平均)

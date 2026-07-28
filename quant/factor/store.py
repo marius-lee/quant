@@ -351,10 +351,25 @@ class FactorStore:
     # ── 维护 ──
 
     def trim_to_max_days(self, max_days: int) -> int:
-        """删除超过 max_days 天前的旧缓存文件。"""
+        """删除超过 max_days 天前的旧缓存文件。
+
+        max_days: 保留的交易日数 (如 244 = 一年A股交易日)。
+        cutoff 按日历日估算: max_days 交易日 ≈ max_days + 120 日历日。
+        锚点: 缓存中最新的日期 (非系统时间), 避免物化期间误删。
+        """
         if max_days <= 0:
             return 0
-        cutoff = (pd.Timestamp.now() - pd.Timedelta(days=max_days * 2)).strftime("%Y-%m-%d")
+        # 找到缓存中最新的日期作为锚点
+        latest = None
+        for f in sorted(os.listdir(self._cache_dir), reverse=True):
+            if f.endswith('.csv.gz'):
+                latest = f.replace('.csv.gz', '')
+                break
+        if not latest:
+            return 0
+        cutoff = (pd.Timestamp(latest) - pd.Timedelta(days=max_days + 120)).strftime("%Y-%m-%d")
+        _log.info("factor_cache: trim — anchor=%s, cutoff=%s (max_days=%d)",
+                  latest, cutoff, max_days)
         deleted = 0
         for f in sorted(os.listdir(self._cache_dir)):
             if not f.endswith('.csv.gz'):
@@ -364,8 +379,7 @@ class FactorStore:
                 os.remove(os.path.join(self._cache_dir, f))
                 deleted += 1
         if deleted:
-            _log.info("factor_cache: trimmed %d files before %s (max_days=%d)",
-                      deleted, cutoff, max_days)
+            _log.info("factor_cache: trimmed %d files before %s", deleted, cutoff)
         return deleted
 
     def _log_materialization(self, start, end, n_factors, n_symbols,

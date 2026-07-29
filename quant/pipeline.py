@@ -273,7 +273,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     alpha = am.rank(alpha_raw)
 
     # test-v249: 周线多周期信号确认 (MultiTimeframeConfirmer, 压制逆势信号)
-    if _require_cfg("alpha.multi_tf_confirm", False):
+    if _require_cfg("alpha.multi_tf_confirm"):
         try:
             from quant.alpha.multi_tf import MultiTimeframeConfirmer
             mtf = MultiTimeframeConfirmer()

@@ -398,10 +398,15 @@ class FactorStore:
         return factors
 
     def is_materialized(self, date_range: list[str], factor_names: list[str]) -> bool:
-        """检查最新日期是否覆盖了全部因子。"""
+        """检查是否所有日期都覆盖了全部因子 (不只最新日期)。"""
         if not date_range:
             return False
-        return self._date_has_data(date_range[-1], factor_names)
+        # 抽查策略: 最新 + 最早 + 每隔 N 天抽一个
+        check_dates = [date_range[0], date_range[-1]]
+        step = max(1, len(date_range) // 20)
+        for i in range(step, len(date_range) - 1, step):
+            check_dates.append(date_range[i])
+        return all(self._date_has_data(d, factor_names) for d in check_dates)
 
     def _date_has_data(self, date_str: str, factor_names: list[str]) -> bool:
         return len(self._get_existing_factors(date_str)) >= len(factor_names)

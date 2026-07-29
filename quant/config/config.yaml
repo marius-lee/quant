@@ -49,6 +49,8 @@ attribution:
   annual_periods: 252
   risk_free_rate: 0.02
   corr_redundant_threshold: 0.7
+  oos_warning_decay: 0.5
+  oos_recovery_threshold: 1.5
 oos_verify:
   train_window_days: 170
   test_window_days: 20

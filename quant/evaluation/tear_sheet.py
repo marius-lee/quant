@@ -83,14 +83,14 @@ def generate_report(
     # Equity curve data
     equity_json = json.dumps({
         "dates": [str(d)[:10] for d in equity_curve.index],
-        "values": [round(v, 2) for v in equity_curve.values],
-        "benchmark": [round(v, 2) for v in benchmark.values] if benchmark is not None else None,
+        "values": [round(float(v), 2) for v in equity_curve.values],
+        "benchmark": [round(float(v), 2) for v in benchmark.values] if benchmark is not None else [],
     })
 
     # Drawdown data
     dd_json = json.dumps({
         "dates": [str(d)[:10] for d in drawdown.index],
-        "values": [round(v * 100, 2) for v in drawdown.values],
+        "values": [round(float(v) * 100, 2) for v in drawdown.values],
     })
 
     # Monthly returns heatmap
@@ -246,7 +246,7 @@ def generate_report_from_backtest(
 
     if equity.empty:
         _log.warning("tear_sheet: no daily_equity data, generating empty report")
-        equity = pd.Series({start: capital})
+        equity = pd.Series({start: float(capital)})
 
     if bm.empty:
         bm = None

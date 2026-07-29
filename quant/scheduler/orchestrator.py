@@ -238,6 +238,23 @@ _TIMEOUTS = {
 # 无上限导致 2026-07-23 factor_cache 一夜重跑 4 次的重试风暴)
 _MAX_TASK_RETRIES = 2
 
+def _cleanup_zombie_tasks():
+    """启动时清理今天残留的 running 行 (上次进程被 kill 遗留)."""
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        conn = sqlite3.connect(MARKET_DB)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            "UPDATE task_runs SET status='aborted', finished_at=datetime('now','localtime') "
+            "WHERE date=? AND status='running'", (today,))
+        n = conn.rowcount if hasattr(conn, 'rowcount') else 0
+        conn.commit()
+        conn.close()
+        if n:
+            _log.info(f"orchestrator startup: cleaned {n} zombie running rows for {today}")
+    except Exception:
+        pass
+
 def _check_timeouts(today: str):
     """扫描 task_runs 中 status='running' 的行, 超时则标为 aborted."""
     try:

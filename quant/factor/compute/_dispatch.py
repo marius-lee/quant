@@ -21,8 +21,11 @@ def compute_all_factors(data: pd.DataFrame, date: str,
                       status_filter: str = "using",
                       preloaded_financials: pd.DataFrame = None,
                       preloaded_fundamentals: pd.DataFrame = None,
-                      factor_fail_fast: bool = True) -> dict:
+                      factor_fail_fast: bool = True,
+                      quiet: bool = False) -> dict:
     """批量计算所有已注册因子 -> {factor_name: Series(index=symbol)}。
+
+    quiet=True: 抑制逐因子日志 (批量物化场景, 减少 I/O)。
 
     当 factor_fail_fast=False 时, 单个因子异常不阻塞其他因子 (用于批量诊断/IC 计算)。
 
@@ -58,11 +61,12 @@ def compute_all_factors(data: pd.DataFrame, date: str,
         _plog.warning('  no symbols in data, skipping factor computation')
         return {}
     _aux = preload_aux_data(_syms, date)
-    if _aux:
+    if _aux and not quiet:
         _plog.info("  aux data preloaded: %d tables", len(_aux))
 
     for name, (cat, win, fn) in price_factors.items():
-        _plog.info(f"  computing {name}...")
+        if not quiet:
+            _plog.info(f"  computing {name}...")
         # 优先使用预计算算子 — 零 fallback: shortcut 必须成功
         from quant.factor.compute._primitives import FACTOR_SHORTCUT
         fn_name = getattr(fn, '__name__', '')
@@ -75,7 +79,7 @@ def compute_all_factors(data: pd.DataFrame, date: str,
                 )
             results[name] = shortcut_result
             done_pf += 1
-            if done_pf % 5 == 0 or done_pf == total_pf:
+            if not quiet and (done_pf % 5 == 0 or done_pf == total_pf):
                 _plog.info(f"  price factors: {done_pf}/{total_pf} ({done_pf*100//total_pf}%, {_time.time()-_t0:.0f}s)")
             continue
         # 不在 shortcut 中 — 走原始因子函数
@@ -95,7 +99,8 @@ def compute_all_factors(data: pd.DataFrame, date: str,
         done_pf += 1
         if done_pf % 5 == 0 or done_pf == total_pf:
             _plog.info(f"  price factors: {done_pf}/{total_pf} ({done_pf*100//total_pf}%, {_time.time()-_t0:.0f}s)")
-    _plog.info(f"  price factors done: {total_pf} in {_time.time()-_t0:.0f}s")
+    if not quiet:
+        _plog.info(f"  price factors done: {total_pf} in {_time.time()-_t0:.0f}s")
 
     if fundamentals is not None and not fundamentals.empty:
         financials = None
@@ -103,7 +108,8 @@ def compute_all_factors(data: pd.DataFrame, date: str,
             if preloaded_financials is not None:
                 financials = preloaded_financials.get(date)
                 if financials is None:
-                    _plog.warning(f"No financials preloaded for {date}, fundamental factors will use DB fallback")
+                    if not quiet:
+                        _plog.warning(f"No financials preloaded for {date}, fundamental factors will use DB fallback")
             else:
                 from quant.data.store import DataStore
                 store = DataStore()
@@ -114,7 +120,8 @@ def compute_all_factors(data: pd.DataFrame, date: str,
         import time as _time2
         _t1 = _time2.time()
         for name, (cat, fn) in fund_factors.items():
-            _plog.info(f"  computing {name}...")
+            if not quiet:
+                _plog.info(f"  computing {name}...")
             kwargs = {}
             if name in _FIN_FACTORS and financials is not None:
                 kwargs['financials'] = financials
@@ -132,9 +139,10 @@ def compute_all_factors(data: pd.DataFrame, date: str,
             else:
                 results[name] = fn(fundamentals, date, **_fn_kwargs)
             done_ff += 1
-            if done_ff % 5 == 0 or done_ff == total_ff:
+            if not quiet and (done_ff % 5 == 0 or done_ff == total_ff):
                 _plog.info(f"  fundamental factors: {done_ff}/{total_ff} ({done_ff*100//total_ff}%, {_time2.time()-_t1:.0f}s)")
-        _plog.info(f"  fundamental factors done: {total_ff} in {_time2.time()-_t1:.0f}s")
+        if not quiet:
+            _plog.info(f"  fundamental factors done: {total_ff} in {_time2.time()-_t1:.0f}s")
 
         # ADR-035 audit: 季报真空期衰减
         # 基本面因子在季报发布间隔期 (最长4个月) 值不变，但其预测力随时间衰减。

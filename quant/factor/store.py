@@ -175,10 +175,67 @@ class FactorStore:
             # ztd 缓存 (按块日期)
             preload_ztd_cache(chunk_dates, symbols)
 
-            # fundamentals (按块日期)
+            # fundamentals (按块日期) — 批量加载优化: 一次 SQL 取全天范围, 内存 PIT
             chunk_fundamentals = {}
-            for date_str in chunk_dates:
-                chunk_fundamentals[date_str] = store.get_fundamentals(symbols, date=date_str)
+            if chunk_dates:
+                # 一次取全部 daily_valuation (含 pe_ttm/pb/market_cap)
+                val_start = chunk_dates[0]
+                val_end = chunk_dates[-1]
+                mconn2 = store._connect()
+                val_df = pd.read_sql_query(
+                    "SELECT symbol, date, pe_ttm, pb, ps_ttm, pcf_ttm, market_cap FROM daily_valuation "
+                    "WHERE date >= ? AND date <= ? ORDER BY date",
+                    mconn2, params=(val_start, val_end)
+                )
+                # 一次取 stocks 表
+                ph_stocks = ",".join("?" * len(symbols))
+                stocks_df = pd.read_sql_query(
+                    f"SELECT symbol, pe, pe_ttm, pb, total_mv, roe, industry, high_52w, eps, bvps "
+                    f"FROM stocks WHERE symbol IN ({ph_stocks})",
+                    mconn2, params=symbols
+                ).set_index("symbol")
+                # 一次取 daily close (用于 PIT + high_52w)
+                daily_df = pd.read_sql_query(
+                    f"SELECT symbol, date, close FROM daily "
+                    f"WHERE symbol IN ({ph_stocks}) AND date >= ? AND date <= ? ORDER BY date",
+                    mconn2, params=symbols + [val_start, val_end]
+                )
+                # 内存 PIT: 每日期取 ≤date 的最新估值
+                if not val_df.empty:
+                    val_df["date"] = pd.to_datetime(val_df["date"])
+                    val_piv = val_df.pivot(index="date", columns="symbol", values=["pe_ttm", "pb", "market_cap"])
+                    val_piv = val_piv.ffill()
+                if not daily_df.empty:
+                    daily_df["date"] = pd.to_datetime(daily_df["date"])
+                    close_piv = daily_df.pivot(index="date", columns="symbol", values="close").ffill()
+                for date_str in chunk_dates:
+                    ts = pd.Timestamp(date_str)
+                    result = stocks_df.copy()
+                    # PIT valuation
+                    if not val_df.empty and ts in val_piv.index:
+                        row = val_piv.loc[ts]
+                        for col in ["pe_ttm", "pb", "market_cap"]:
+                            if col in result.columns:
+                                result[col] = row[col] if col in row else None
+                    # PIT close + high_52w
+                    if not daily_df.empty and ts in close_piv.index:
+                        result["close_latest"] = close_piv.loc[ts]
+                        # 52-week high: max close in last ~244 trading days
+                        early = ts - pd.Timedelta(days=365)
+                        mask = (close_piv.index <= ts) & (close_piv.index >= early)
+                        if mask.any():
+                            result["high_52w"] = close_piv.loc[mask].max()
+                    # derive ROE from PB/PE
+                    null_roe = result["roe"].isna() | (result["roe"] <= 0)
+                    if null_roe.any():
+                        derived = result["pb"] / result["pe"].replace(0, None)
+                        derived = derived.where((derived > 0) & (derived < 100))
+                        result.loc[null_roe, "roe"] = derived.loc[null_roe]
+                    # filter extreme PE/PB
+                    result.loc[result["pe"] <= 0, "pe"] = None
+                    result.loc[result["pe"] > 1000, "pe"] = None
+                    result.loc[result["pb"] <= 0, "pb"] = None
+                    chunk_fundamentals[date_str] = result
 
             # 逐日计算
             chunk_rows = 0
@@ -206,6 +263,7 @@ class FactorStore:
                     factor_names=missing,
                     status_filter=None,
                     factor_fail_fast=False,
+                    quiet=True,
                 )
 
                 # 写入 gzip CSV

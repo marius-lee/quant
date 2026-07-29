@@ -1082,6 +1082,65 @@ class DataStore:
         return rows
 
 
+    def _fetch_longbridge_daily(self, symbols: list, start_date: str = None) -> list:
+        """Longbridge (longport) 日线 — 前复权, vol=股✅, amt=元✅。
+
+        需要: pip install longport + 配置 LONGPORT_APP_KEY/LONGPORT_APP_SECRET/LONGPORT_ACCESS_TOKEN
+        未安装或未配置 → 静默回退下一源。
+        免费额度: 日K线 100次/分钟, 每次最多 200 只股票。
+        """
+        try:
+            import longport as _lb
+        except ImportError:
+            logger.info("[longbridge] longport not installed, skip — pip install longport")
+            return []
+
+        app_key = os.environ.get("LONGPORT_APP_KEY")
+        app_secret = os.environ.get("LONGPORT_APP_SECRET")
+        access_token = os.environ.get("LONGPORT_ACCESS_TOKEN")
+        if not all([app_key, app_secret, access_token]):
+            logger.info("[longbridge] missing credentials (LONGPORT_APP_KEY/SECRET/TOKEN), skip")
+            return []
+
+        try:
+            config = _lb.Config(
+                app_key=app_key, app_secret=app_secret, access_token=access_token
+            )
+            ctx = _lb.QuoteContext(config)
+        except Exception as e:
+            logger.warning(f"[longbridge] connection failed: {e}, skip")
+            return []
+
+        rows = []
+        try:
+            for sym in symbols:
+                try:
+                    # A股 → longport 格式: 000001.SZ → 000001.SZ
+                    resp = ctx.history_candlesticks_by_offset(
+                        sym, _lb.Period.Day, _lb.AdjustType.Forward,
+                        count=1, end_date=datetime.now()
+                    )
+                    if resp and len(resp) > 0:
+                        c = resp[0]
+                        rows.append({
+                            "symbol": sym.replace(".SZ", "").replace(".SH", ""),
+                            "date": c.timestamp.strftime("%Y-%m-%d"),
+                            "open": float(c.open), "high": float(c.high),
+                            "low": float(c.low), "close": float(c.close),
+                            "volume": int(c.volume), "amount": float(c.volume * (c.high + c.low + c.close) / 3) if c.amount == 0 else float(c.amount),
+                            "turnover": None,
+                        })
+                except Exception:
+                    continue
+        finally:
+            try:
+                ctx.close() if hasattr(ctx, 'close') else None
+            except Exception:
+                pass
+
+        logger.info(f"[longbridge] {len(rows)} rows for {len(symbols)} symbols")
+        return rows
+
     def _fetch_pytdx_daily(self, symbols: list, start_date: str) -> list:
         """Pytdx 通达信日线 + 前复权计算: vol=手, amt=元→/1000→千元。
 
@@ -1618,6 +1677,7 @@ class DataStore:
             # 来源: 2026-07-20 scripts/test_all_sources_rate.py 全源实测; 2026-07-21 全链路逻辑分析
             all_sources = [
                 ("tickflow", lambda: self._fetch_tickflow_daily(chunk, batch_start)),
+                ("longbridge", lambda: self._fetch_longbridge_daily(chunk, batch_start)),
                 ("zzshare", lambda: self._fetch_zzshare_daily(chunk, batch_start)),
                 ("pytdx", lambda: self._fetch_pytdx_daily(chunk, batch_start)),
                 ("tencent", lambda: self._fetch_tencent_daily(chunk, batch_start)),

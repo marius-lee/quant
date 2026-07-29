@@ -411,8 +411,8 @@ class FactorStore:
     def trim_to_max_days(self, max_days: int) -> int:
         """删除超过 max_days 天前的旧缓存文件。
 
-        max_days: 保留的交易日数 (如 244 = 一年A股交易日)。
-        cutoff 按日历日估算: max_days 交易日 ≈ max_days + 120 日历日。
+        max_days: 保留的交易日数 (如 2000 ≈ 2000×365/244 ≈ 2990 日历日)。
+        cutoff 按交易日→日历日转换: max_days * 365 // 244。
         锚点: 缓存中最新的日期 (非系统时间), 避免物化期间误删。
         """
         if max_days <= 0:
@@ -425,7 +425,7 @@ class FactorStore:
                 break
         if not latest:
             return 0
-        cutoff = (pd.Timestamp(latest) - pd.Timedelta(days=max_days + 120)).strftime("%Y-%m-%d")
+        cutoff = (pd.Timestamp(latest) - pd.Timedelta(days=max_days * 365 // 244)).strftime("%Y-%m-%d")
         _log.info("factor_cache: trim — anchor=%s, cutoff=%s (max_days=%d)",
                   latest, cutoff, max_days)
         deleted = 0

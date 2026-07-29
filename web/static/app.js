@@ -546,11 +546,13 @@ async function loadRecon() {
       { key: 'status', label: '状态' },
     ], {
       fmtMap: {
+        kind: v => ({ position: '持仓', cash: '现金', order: '订单' })[v] || v,
+        symbol: v => ({ invariant: '现金≥0', equity_cross: '现金×权益', pnl_cross: 'PnL交叉' })[v] || v,
         expected: v => v == null ? '—' : fmtNum(v, 2),
         actual: v => v == null ? '—' : fmtNum(v, 2),
         drift: v => v == null ? '—' : fmtNum(v, 2),
-        status: v => v === 'break' ? '<b style="color:var(--down)">BREAK</b>'
-                   : v === 'skip' ? '<span style="color:var(--text2)">skip</span>' : 'ok',
+        status: v => v === 'break' ? '<b style="color:var(--down)">异常</b>'
+                   : v === 'skip' ? '<span style="color:var(--text2)">跳过</span>' : '正常',
       },
     });
   } catch (e) { console.warn('recon error:', e.message); }

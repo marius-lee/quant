@@ -164,6 +164,53 @@ def _run(today: str):
     _n_significant = sum(1 for v in cpcv_verdicts.values() if v.get("verdict") == "significant")
     _log.info(f"[{today}] CPCV+DSR: {len(cpcv_verdicts)} factors → {_n_degraded_dsr} degraded, {_n_significant} significant")
 
+    # ── Step A.6: 因子冗余检测 (P1-1, IC-rank 相关性去重) ──
+    # 用 factor_ic_daily 序列计算 pairwise Spearman ρ; |ρ| > 阈值 → IC 低的因子降级
+    from quant.factor.state_manager import FactorStateManager
+    fsm = FactorStateManager()
+    CORR_REDUNDANT_THRESHOLD = _require_cfg("attribution.corr_redundant_threshold")
+    _ap = f_repo.get_all_by_status(("active", "probation"))
+    _ap_names = [f["name"] for f in _ap]
+    if len(_ap_names) >= 2:
+        try:
+            from scipy.stats import spearmanr as _spearmanr
+            # 收集各因子最近 N 天 IC 序列
+            _ic_series = {}
+            for fn in _ap_names:
+                rows = f_repo.get_ic_rolling(fn, n_days=_require_cfg("attribution.ic_rolling_window"))
+                vals = [r["ic_value"] for r in rows if r["ic_value"] is not None]
+                if len(vals) >= 10:
+                    _ic_series[fn] = vals
+            redundant_pairs = []
+            _names = list(_ic_series.keys())
+            for i in range(len(_names)):
+                for j in range(i + 1, len(_names)):
+                    si, sj = _ic_series[_names[i]], _ic_series[_names[j]]
+                    rho, _ = _spearmanr(si, sj)
+                    if abs(rho) > CORR_REDUNDANT_THRESHOLD:
+                        ic_i = abs(np.mean(si))
+                        ic_j = abs(np.mean(sj))
+                        loser = _names[i] if ic_i <= ic_j else _names[j]
+                        winner = _names[j] if ic_i <= ic_j else _names[i]
+                        redundant_pairs.append({
+                            "loser": loser, "winner": winner,
+                            "corr": round(float(rho), 3),
+                            "loser_ic": round(ic_i, 4), "winner_ic": round(ic_j, 4),
+                        })
+            for pair in redundant_pairs:
+                name = pair["loser"]
+                current_status = next((f["status"] for f in _ap if f["name"] == name), None)
+                if current_status in ("active", "probation"):
+                    reason = (f"[LIVE] 因子IC冗余: ρ={pair['corr']:.2f} with {pair['winner']} "
+                              f"(IC={pair['loser_ic']:.4f} < {pair['winner_ic']:.4f})")
+                    fsm.transition(name, "FACTOR_REDUNDANT", reason)
+                    _log.warning(f"[{today}] {name}: {current_status} → degraded (FACTOR_REDUNDANT, ρ={pair['corr']:.2f})")
+                    _m.inc("scheduler.attribution.factor_redundant", 1)
+            if redundant_pairs:
+                _log.warning(f"[{today}] G5 redundancy: {len(redundant_pairs)} redundant pairs detected")
+        except Exception as e:
+            _log.warning(f"[{today}] redundancy check failed (non-fatal): {e}")
+
     # ── Step B: Level 1 — 滚动 IC 监控 ──
     degraded_l1 = set()
     active_factors = f_repo.get_all_by_status(('active',))

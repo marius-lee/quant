@@ -38,6 +38,10 @@ _TRANSITIONS: dict[tuple[str, str], str] = {
     ("probation",   "IC_RECOVERED"):    "active",
     ("probation",   "IC_PERSISTENT"):   "archived",
 
+    # 因子冗余 (相关性去重, P1-1)
+    ("active",      "FACTOR_REDUNDANT"): "probation",
+    ("probation",   "FACTOR_REDUNDANT"): "archived",
+
     # 快速降级 (ADR-040: 数据源死亡直接归档)
     ("active",      "DATA_SOURCE_DEAD"): "archived",
     ("probation",   "DATA_SOURCE_DEAD"): "archived",

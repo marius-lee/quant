@@ -379,6 +379,80 @@ class LgbAlphaModel:
         ])
         return models
 
+    def feature_importance(self) -> dict[str, float]:
+        """P2-3: LGB 特征重要性 (gain-based)。
+
+        Returns:
+            {factor_name: importance_score} 按重要性降序排列
+        """
+        if not self.is_trained:
+            return {}
+        importance = self._lgb.booster_.feature_importance(importance_type="gain")
+        total = importance.sum() or 1
+        result = {}
+        for i, fn in enumerate(self._feature_names):
+            if i < len(importance):
+                result[fn] = round(float(importance[i] / total), 4)
+        return dict(sorted(result.items(), key=lambda x: x[1], reverse=True))
+
+    def shap_explain(self, factor_values: dict,
+                     symbols: list[str] = None, max_samples: int = 500) -> dict:
+        """P2-3: SHAP 值分解 — 每个因子对预测的边际贡献。
+
+        Args:
+            factor_values: {factor_name: Series(index=symbol)} — 当日截面因子值
+            symbols: 样本股票 (None=取前 max_samples 只)
+            max_samples: shap 计算样本上限
+
+        Returns:
+            {factor_name: mean_abs_shap, top_contributors: [(symbol, shap_val)]}
+            需要 pip install shap
+        """
+        if not self.is_trained:
+            return {}
+        try:
+            import shap
+        except ImportError:
+            _log.warning("shap not installed — pip install shap")
+            return {}
+
+        if symbols is None:
+            syms = set()
+            for series in factor_values.values():
+                if isinstance(series, pd.Series):
+                    syms.update(series.dropna().index)
+            symbols = sorted(syms)[:max_samples]
+
+        if not symbols:
+            return {}
+
+        X = np.column_stack([
+            factor_values.get(fn, pd.Series(0, index=symbols))
+            .reindex(symbols).fillna(0).values
+            for fn in self._feature_names
+            if fn in factor_values
+        ])
+
+        explainer = shap.TreeExplainer(self._lgb)
+        shap_values = explainer.shap_values(X)
+
+        # 每个因子的平均绝对 SHAP
+        result = {}
+        for i, fn in enumerate(self._feature_names):
+            if i < shap_values.shape[1]:
+                mean_abs = float(np.abs(shap_values[:, i]).mean())
+                # 每个因子找 top 3 贡献股票
+                top_idx = np.argsort(np.abs(shap_values[:, i]))[-3:][::-1]
+                top_contributors = [
+                    (symbols[j], round(float(shap_values[j, i]), 6))
+                    for j in top_idx if j < len(symbols)
+                ]
+                result[fn] = {"mean_abs_shap": round(mean_abs, 6),
+                              "top_contributors": top_contributors}
+
+        _log.info(f"SHAP: {len(result)} factors explained over {len(symbols)} samples")
+        return result
+
 
 # ═══════════════════════════════════════════════════════════
 # 工具函数

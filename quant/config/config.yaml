@@ -48,6 +48,7 @@ attribution:
   ic_daily_retention_days: 252
   annual_periods: 252
   risk_free_rate: 0.02
+  corr_redundant_threshold: 0.7
 oos_verify:
   train_window_days: 170
   test_window_days: 20
@@ -215,6 +216,8 @@ factor:
     pbo_max: 0.2
     sharpe_decay_max: 0.5
     t_threshold: 2.0
+    max_lag: 20
+    n_quantiles: 5
   high52w:
     clip_high: 2
     clip_low: -2
@@ -274,6 +277,7 @@ optimizer:
   tc_lambda: 1.0
   tc_horizon_days: 5
   tc_ic_ref: 0.015
+  min_weight: 0.01
 recon:
   cash_drift_tolerance: 1.0
 risk:

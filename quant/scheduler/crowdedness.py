@@ -183,7 +183,8 @@ def _get_prev_crowd_index(store, today: str) -> float | None:
                 (prev, today),
             ).fetchone()
         return round(float(rows[0]), 4) if rows and rows[0] is not None else None
-    except Exception:
+    except Exception as e:
+        _log.warning(f"[_get_prev_crowd_index] DB read failed: {e}")
         return None
 
 

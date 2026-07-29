@@ -326,6 +326,10 @@ class PortfolioConstructor:
         # ── §8.3 成本带 (Grinold α − λ·TC): 拦截不划算的换仓 ──
         if current_lots is not None and len(current_lots) > 0 and cost_model is not None:
             result = self._apply_tc_band(result, current_lots, a, p, cost_model, ic_map)
+
+        # ── P1-3: min_weight 过滤 — 剔除权重过低的噪声仓位 ──
+        result = self._apply_min_weight(result, p, capital)
+
         return result
 
     def _apply_tc_band(
@@ -453,6 +457,40 @@ class PortfolioConstructor:
                 f"cheapest_lot={prices.loc[alpha.index[:n_stocks]].min() * LOT_SIZE:,.0f}"
             )
         return TargetPortfolio(lots, cash, "kelly_greedy", total_value)
+
+    @staticmethod
+    def _apply_min_weight(
+        result: TargetPortfolio, prices: pd.Series, capital: float
+    ) -> TargetPortfolio:
+        """P1-3: 剔除权重过低的噪声仓位 (min_weight).
+
+        单只持仓市值 < capital × min_weight → 清仓, 回收现金。
+        阈值从 config optimizer.min_weight 读取 (默认 0.01 = 1%).
+        """
+        min_wt = _require_cfg("optimizer.min_weight")
+        if min_wt <= 0 or result.lots.sum() == 0:
+            return result
+        threshold = capital * min_wt
+        keep_mask = pd.Series(True, index=result.lots.index)
+        reclaimed = 0.0
+        for sym in result.lots.index:
+            if result.lots[sym] <= 0:
+                continue
+            pos_value = result.lots[sym] * prices.get(sym, 0) * LOT_SIZE
+            # 用原始价重算 (prices 可能是 buffered 价, 但 min_weight 按 nominal 判断即可)
+            if pos_value < threshold:
+                keep_mask[sym] = False
+                reclaimed += pos_value
+                logger.info(
+                    f"[portfolio] min_weight trim: {sym} ¥{pos_value:,.0f} "
+                    f"< {min_wt*100:.0f}% threshold (¥{threshold:,.0f})"
+                )
+        trimmed_lots = result.lots[keep_mask]
+        if len(trimmed_lots) == len(result.lots):
+            return result  # no trimming occurred
+        adjusted_cash = result.cash_reserve + reclaimed
+        trimmed_val = (trimmed_lots * prices.loc[trimmed_lots.index] * LOT_SIZE).sum() if len(trimmed_lots) > 0 else 0
+        return TargetPortfolio(trimmed_lots, adjusted_cash, result.method, trimmed_val, result.tc_suppressed)
 
     def _rank_concentrated(
         self, alpha: pd.Series, prices: pd.Series, capital: float,

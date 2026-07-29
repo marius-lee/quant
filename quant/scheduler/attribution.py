@@ -107,7 +107,15 @@ def _run(today: str):
     # G1: 在线 Walk-Forward OOS 验证
     # ═══════════════════════════════════════════════════════
     from quant.scheduler.oos_verify import run_oos_check
-    oos_result = run_oos_check(today)
+    from quant.config.constants import _require_cfg as _ecfg
+    oos_result = run_oos_check(
+        today,
+        status_filter="using",
+        train_days=_ecfg("oos_verify.train_window_days"),
+        test_days=_ecfg("oos_verify.test_window_days"),
+        decay_warn_threshold=_ecfg("oos_verify.decay_warn_threshold"),
+        n_symbols=_ecfg("oos_verify.attribution_n_symbols"),
+    )
     if oos_result.get("alert"):
         _log.warning(
             f"[{today}] G1 OOS walk-forward: {oos_result.get('oos_decay_count', 0)}/{oos_result.get('n_factors', 0)} "

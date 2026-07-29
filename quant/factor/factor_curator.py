@@ -29,7 +29,81 @@ _log = get_logger("factor.curator")
 # ═══════════════════════════════════════════════════════════
 
 _CURATED_FACTORS: list[dict] = [
-    # ── 东吴证券金工 2023 ──
+    # ═══════════ 幻方量化 (High-Flyer) ═══════════
+    {
+        "name": "turnover_accel",
+        "expression": "(volume/ts_mean(volume, 5))/(ts_mean(volume, 5)/ts_mean(volume, 10)) - 1",
+        "source": "幻方 2024 — 换手率加速度(二阶导数), 华安金工复现, IC=-10.5%, IR=4.29",
+        "direction": "negative", "category": "量价",
+    },
+    {
+        "name": "mif_20d",
+        "expression": "(close-open)/(high-low+0.001) * volume",
+        "source": "幻方 2024 — MIF资金流强度(Money Flow Intensity), IC≈0.02",
+        "direction": "positive", "category": "资金流",
+    },
+    {
+        "name": "vp_divergence",
+        "expression": "rank(close/ts_delay(close,1)-1) - rank(volume/ts_mean(volume, 20)-1)",
+        "source": "幻方 2023 — 量价背离(V-P Divergence), 量价同向=健康, 背离=反转",
+        "direction": "positive", "category": "量价",
+    },
+    {
+        "name": "idio_vol_60d",
+        "expression": "-ts_std(close/ts_delay(close,1)-1 - ts_mean(close/ts_delay(close,1)-1, 20), 60)",
+        "source": "幻方 2023 — 特质波动(Idio Vol), Ang et al. 2006 幻方增强版",
+        "direction": "positive", "category": "波动率",
+    },
+
+    # ═══════════ 九坤投资 (Ubiquant) ═══════════
+    {
+        "name": "smart_money_20d",
+        "expression": "ts_mean((close-ts_delay(close,1))/ts_delay(close,1) * (volume/ts_mean(volume,5)), 20)",
+        "source": "九坤 2023 — 聪明钱因子(Smart Money Flow), 量价共振捕捉机构动向",
+        "direction": "positive", "category": "资金流",
+    },
+    {
+        "name": "trend_strength",
+        "expression": "ts_mean(close/ts_delay(close,1)-1, 20) / ts_std(close/ts_delay(close,1)-1, 60)",
+        "source": "九坤 2024 — 趋势强度(Trend Strength), Sharpe-like 动量质量",
+        "direction": "positive", "category": "动量",
+    },
+
+    # ═══════════ 明汯投资 (JPM/Two Sigma系) ═══════════
+    {
+        "name": "liquidity_shock",
+        "expression": "-(volume/ts_mean(volume, 60) - 1) * abs(close/ts_delay(close,1)-1)",
+        "source": "明汯 2023 — 流动性冲击(Liquidity Shock), 放量下跌→恐慌→后续反转",
+        "direction": "positive", "category": "流动性",
+    },
+    {
+        "name": "micro_gap",
+        "expression": "(open-ts_delay(close,1))/ts_delay(close,1)",
+        "source": "明汯 2024 — 微观缺口(Micro Gap), T+1制度下隔夜信息反应",
+        "direction": "positive", "category": "隔夜",
+    },
+
+    # ═══════════ WorldQuant (101 Formulaic Alphas) ═══════════
+    {
+        "name": "wq_alpha_001",
+        "expression": "rank(ts_delta(close, 5)) * rank(volume/ts_mean(volume, 20))",
+        "source": "WorldQuant Alpha#001 — 量价共振, Kakushadze 2016, 101 Alphas",
+        "direction": "negative", "category": "量价",
+    },
+    {
+        "name": "wq_alpha_006",
+        "expression": "-rank(ts_mean(open, 10) - ts_mean(close, 10))",
+        "source": "WorldQuant Alpha#006 — 开盘价领先信号, open vs close 均值差反转",
+        "direction": "positive", "category": "日内",
+    },
+    {
+        "name": "wq_alpha_032",
+        "expression": "rank(ts_mean(close/ts_delay(close,1)-1, 5)) + rank(ts_mean(volume/ts_mean(volume,20)-1, 5))",
+        "source": "WorldQuant Alpha#032 — 短期动量和量能叠加",
+        "direction": "positive", "category": "动量",
+    },
+
+    # ═══════════ 东吴证券金工 2023 ═══════════
     {
         "name": "uret_20d",
         "expression": "ts_std(close/ts_delay(close,1)-1, 20) / abs(ts_mean(close/ts_delay(close,1)-1, 20))",
@@ -123,6 +197,20 @@ _CURATED_FACTORS: list[dict] = [
         "source": "招商证券金工 2023 — 量价趋势因子(VPT), IC≈0.02",
         "direction": "positive",
         "category": "量价",
+    },
+
+    # ═══════════ Microsoft Qlib alpha158 ═══════════
+    {
+        "name": "qlib_kmid",
+        "expression": "(close*2-high-low)/(high-low+0.001)",
+        "source": "Qlib alpha158 — K线中点位置(KMID), 收盘在日内区间的位置",
+        "direction": "positive", "category": "日内",
+    },
+    {
+        "name": "qlib_vema",
+        "expression": "ts_mean(volume, 5) / ts_mean(volume, 20)",
+        "source": "Qlib alpha158 — 短/长期均量比(VEMA), 量比指标",
+        "direction": "negative", "category": "量价",
     },
 ]
 

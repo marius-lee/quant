@@ -525,7 +525,7 @@ async function loadRecon() {
       return;
     }
     const brk = data.status === 'break';
-    meta.textContent = `${data.date} · ${brk ? '⚠ BREAK ×' + data.breaks : 'OK'}`;
+    meta.textContent = `${data.date} · ${brk ? '⚠ 异常 ×' + data.breaks : '正常'}`;
     meta.style.color = brk ? 'var(--down)' : 'var(--up)';
     // 汇总卡: 现金两检查 + 持仓统计 + 订单数
     const cashRows = (data.rows || []).filter(r => r.kind === 'cash');

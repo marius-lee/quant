@@ -409,6 +409,11 @@ async function loadPortfolio() {
       const rd = await fetchJSON(API + '/risk?symbols=' + pos.map(p => p.symbol).join(','));
       if (rd) renderRiskExposure(rd);
     } catch (e) {}
+    // Stress test
+    try {
+      const st = await fetchJSON(API + '/stress');
+      if (st && st.scenarios) renderStressTest(st);
+    } catch (e) {}
   } catch (e) { console.warn('portfolio error:', e.message); }
 }
 
@@ -447,6 +452,27 @@ function renderRiskExposure(rd) {
       getComputedStyle(document.documentElement).getPropertyValue('--down').trim(),
     ] },
   }], { ...bg, margin: { l: 50, r: 20, t: 10, b: 30 }, ...pf }, PLOTLY_CONFIG);
+}
+
+function renderStressTest(data) {
+  const el = document.getElementById('stress-test');
+  if (!el || !data.scenarios) return;
+  const names = Object.keys(data.scenarios);
+  const worst = names.reduce((a, b) => data.scenarios[a].loss_pct > data.scenarios[b].loss_pct ? a : b);
+  el.innerHTML = `
+    <div class="section-header"><h2>⚠ 压力测试</h2></div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px">
+      <div class="kpi"><div class="label">资产</div><div class="value">¥${fmtNum(data.capital)}</div></div>
+      <div class="kpi"><div class="label">最严重</div><div class="value" style="color:#e74c3c">${worst} ${data.scenarios[worst].loss_pct}%</div></div>
+      <div class="kpi"><div class="label">预估损失</div><div class="value" style="color:#e74c3c">¥${fmtNum(data.scenarios[worst].portfolio_loss_est)}</div></div>
+    </div>
+    ${names.map(n => {
+      const s = data.scenarios[n];
+      const pct = s.loss_pct;
+      const color = pct > 20 ? '#e74c3c' : pct > 10 ? '#eab308' : '#4caf50';
+      return '<div style="display:flex;justify-content:space-between;padding:6px 12px;margin:2px 0;background:var(--bg2);border-radius:4px"><span>'+n+'</span><span style="color:'+color+'">−'+pct+'%</span><span style="color:var(--text2);font-size:0.85rem">'+s.description+'</span></div>';
+    }).join('')}
+  `;
 }
 
 // ═══════════════════════════════════════════

@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v263"
+VERSION = "test-v264"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 
@@ -549,6 +549,22 @@ def api_risk():
 
     return _api_response(data={"symbols": result, "summary": summary,
                                 "total_value": round(total_val, 2)})
+
+
+@app.route("/api/stress")
+def api_stress():
+    """Stress Test — 历史极端场景冲击测试."""
+    try:
+        state = broker.get()
+        positions = state.get("positions", [])
+        capital = state.get("total_asset", state.get("capital", 5000))
+        from quant.risk.stress_test import run_stress_tests
+        result = run_stress_tests(positions, capital)
+        return _api_response(data=result)
+    except Exception as e:
+        logger.warning(f"api_stress failed: {e}")
+        return _api_response(error={"code": "INTERNAL", "message": str(e)}), 500
+
 
 @app.route("/api/performance")
 def api_performance():

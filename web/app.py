@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v257"
+VERSION = "test-v258"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 
@@ -519,6 +519,7 @@ def api_risk():
     try:
         from quant.risk.var import historical_var, historical_cvar
         import pandas as pd
+        # Compute from daily_equity first
         tconn = sqlite3.connect(TRADE_DB)
         eq_rows = tconn.execute(
             "SELECT date, total_equity FROM daily_equity ORDER BY date ASC LIMIT 120"
@@ -535,6 +536,14 @@ def api_risk():
                 summary = {"var_95_pct": round(float(historical_var(rets)), 2),
                            "cvar_95_pct": round(float(historical_cvar(rets)), 2),
                            "max_dd_pct": round(float(max_dd_series * 100), 1)}
+
+        # Fallback: 从持仓个股数据估算 (daily_equity 数据不足时)
+        if summary["var_95_pct"] == 0 and summary["max_dd_pct"] == 0 and result:
+            wtd_vol = sum(r["annual_vol_pct"] * r["weight_pct"] / 100 for r in result if r["weight_pct"] > 0)
+            wtd_mdd = max((r["max_dd_pct"] for r in result if r["weight_pct"] > 0), default=0)
+            summary = {"var_95_pct": round(wtd_vol * 1.65 / 100, 2),
+                       "cvar_95_pct": round(wtd_vol * 2.0 / 100, 2),
+                       "max_dd_pct": round(wtd_mdd, 1)}
     except Exception as e:
         logger.warning("Cannot compute portfolio VaR/CVaR: %s", e)
 

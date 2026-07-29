@@ -38,9 +38,11 @@ def _run(today: str):
 
         # ── rebalance_freq: 非调仓日只跑风控 (硬止损), 不要求有信号 ──
         from quant.execution.calendar import is_rebalance_day
+        from quant.config.constants import _require_cfg as _ecfg
         _rebalance = is_rebalance_day(datetime.strptime(today, "%Y-%m-%d").date())
+        _freq = _ecfg("optimizer.rebalance_freq")
         if not _rebalance:
-            _log.info(f"[{today}] 非调仓日 (rebalance_freq=weekly): risk-only 模式, "
+            _log.info(f"[{today}] 非调仓日 (rebalance_freq={_freq}): risk-only 模式, "
                       f"不建仓/不调仓, 仅硬止损")
 
         # ── Step 1: 读取信号 + 持仓 ──

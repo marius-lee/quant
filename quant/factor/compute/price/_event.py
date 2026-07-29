@@ -527,7 +527,8 @@ def compute_lhb_intensity(data, date: str, window: int = 5, aux=None):
     recent["intensity"] = recent["net_buy"] / recent["circ_mv"].replace(0, np.nan)
     avg = recent.groupby("symbol")["intensity"].mean()
     result = pd.Series(0.0, index=symbols)
-    result.loc[avg.index] = avg.values
+    common = avg.index.intersection(symbols)
+    result.loc[common] = avg.loc[common].values
     return _cs_zscore(result).rename(f"lhb_intensity_{window}d")
 
 
@@ -552,7 +553,8 @@ def compute_lhb_reversal(data, date: str, window: int = 5, aux=None):
     # -post_return: 越大跌幅 → 越高反转预期
     avg = recent.groupby("symbol")[col].mean() * -1
     result = pd.Series(0.0, index=symbols)
-    result.loc[avg.index] = avg.values
+    common = avg.index.intersection(symbols)
+    result.loc[common] = avg.loc[common].values
     return _cs_zscore(result).rename(f"lhb_reversal_{window}d")
 
 
@@ -574,5 +576,6 @@ def compute_lhb_frequency(data, date: str, window: int = 60, aux=None):
     counts = recent.groupby("symbol").size()
     freq = np.log1p(counts)
     result = pd.Series(0.0, index=symbols)
-    result.loc[freq.index] = -freq.values  # 负号: 高频→低分
+    common = freq.index.intersection(symbols)
+    result.loc[common] = -freq.loc[common].values  # 负号: 高频→低分
     return _cs_zscore(result).rename(f"lhb_freq_{window}d")

@@ -585,6 +585,31 @@ async function loadRecon() {
   } catch (e) { console.warn('recon error:', e.message); }
 }
 
+// ── 因子策展提交 ──
+async function submitCurator() {
+  const name = document.getElementById('curator-name').value.trim();
+  const expr = document.getElementById('curator-expr').value.trim();
+  const source = document.getElementById('curator-source').value.trim();
+  const dir = document.getElementById('curator-dir').value;
+  const msg = document.getElementById('curator-msg');
+  if (!name || !expr || !source) { msg.textContent = '请填写全部字段'; msg.style.color = 'var(--down)'; return; }
+  msg.textContent = '提交中...'; msg.style.color = 'var(--text2)';
+  try {
+    const resp = await fetch(API + '/curator/submit', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name, expression: expr, source, direction: dir})
+    });
+    const data = await resp.json();
+    if (data.data && data.data.status === 'submitted') {
+      msg.textContent = '已提交, 下次策展时自动评估';
+      msg.style.color = 'var(--up)';
+    } else {
+      msg.textContent = (data.data?.error || data.error?.message || '未知错误');
+      msg.style.color = 'var(--down)';
+    }
+  } catch (e) { msg.textContent = '网络错误'; msg.style.color = 'var(--down)'; }
+}
+
 // ═══════════════════════════════════════════
 // SSE
 // ═══════════════════════════════════════════

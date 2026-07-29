@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v265"
+VERSION = "test-v266"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 
@@ -122,6 +122,26 @@ def index():
 def api_state():
     """当前完整状态 (模板6: {data, error} 信封): 资金 + 持仓 + 信号 + 暴露"""
     return _api_response(data=get_state())
+
+
+@app.route("/api/curator/submit", methods=["POST"])
+def api_curator_submit():
+    """因子策展提交 — 手动添加因子到内置库."""
+    try:
+        from flask import request
+        body = request.get_json(force=True)
+        name = body.get("name", "").strip()
+        expression = body.get("expression", "").strip()
+        source = body.get("source", "").strip()
+        direction = body.get("direction", "positive")
+        if not name or not expression or not source:
+            return _api_response(error={"code": "INVALID", "message": "name/expression/source required"}), 400
+        from quant.factor.factor_curator import submit_factor
+        result = submit_factor(name, expression, source, direction=direction)
+        return _api_response(data=result)
+    except Exception as e:
+        logger.warning(f"curator submit failed: {e}")
+        return _api_response(error={"code": "INTERNAL", "message": str(e)}), 500
 
 
 @app.route("/api/lgb")

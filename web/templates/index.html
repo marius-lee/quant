@@ -106,6 +106,31 @@
     <div class="chart-box" id="chart-ic-decay"></div>
   </div>
   <div class="chart-box section" id="chart-correlation" style="min-height:400px"></div>
+
+  <!-- 因子策展: 手动提交新因子 -->
+  <div class="section">
+    <div class="section-header"><h2>🧪 提交新因子</h2></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div>
+        <label style="font-size:0.85rem;color:var(--text2)">因子名称 (英文, 唯一)</label>
+        <input id="curator-name" placeholder="my_factor" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)">
+      </div>
+      <div>
+        <label style="font-size:0.85rem;color:var(--text2)">来源</label>
+        <input id="curator-source" placeholder="华泰金工 2024 — xxx因子" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)">
+      </div>
+    </div>
+    <label style="font-size:0.85rem;color:var(--text2);margin-top:8px;display:block">表达式 (expr_compiler 语法)</label>
+    <input id="curator-expr" placeholder="ts_mean(close/ts_delay(close,1)-1, 20)" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:monospace">
+    <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+      <select id="curator-dir" style="padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)">
+        <option value="positive">正向 (高分=高收益)</option>
+        <option value="negative">负向 (高分=低收益)</option>
+      </select>
+      <button onclick="submitCurator()" style="padding:8px 16px;background:var(--accent);border:none;border-radius:4px;color:#fff;cursor:pointer">提交策展</button>
+      <span id="curator-msg" style="font-size:0.85rem"></span>
+    </div>
+  </div>
 </section>
 
 <!-- ════════════ TAB: 持仓 ════════════ -->

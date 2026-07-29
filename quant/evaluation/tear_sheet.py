@@ -1,17 +1,29 @@
-"""回测 Tear Sheet 报告生成器 (P2-4).
+"""回测 Tear Sheet 报告生成器 (P2-4, test-v262).
 
-对标 Alphalens / Qlib 标准报告:
-  - 累计收益曲线 + 基准对比
-  - 月度收益热力图
-  - 回撤曲线
-  - 换手率分析
-  - 因子暴露分解
-  - 绩效统计表
+对标 Alphalens / Qlib 标准报告，从 daily_equity + sim_trades 表读取数据，
+生成自包含 HTML 文件 (内嵌 Plotly.js CDN, 无需本地依赖)。
+
+报告四部分:
+  ① 绩效统计卡 — 累计收益/年化波动/Sharpe/最大回撤/胜率
+  ② 累计权益曲线 — 策略 vs 基准 (CSI 300) 叠加图
+  ③ 回撤曲线 — 阴影面积填充，红色高亮回撤区间
+  ④ 月度收益热力图 — 绿涨红跌，仿 Alphalens create_returns_tear_sheet
+
+数据源:
+  - daily_equity 表 → 权益曲线 (晚间链 reconcile 写入)
+  - benchmark_daily 表 → CSI 300 基准
+  - sim_trades 表 → 交易记录 (胜率计算)
+
+约束:
+  - float() 显式转换: numpy int64/float64 → Python float，避免 json.dumps TypeError
+  - daily_equity 表为空时 → 占位单点曲线 (初始资金)，非报错
+  - 基准归一化: bm / bm[0] * capital，使策略与基准可比
+  - Plotly CDN: 2.35.2 稳定版，web/static/plotly.min.js 用 2.x API 兼容
 
 Usage:
-    from quant.evaluation.tear_sheet import generate_report
-    html = generate_report(equity_curve, benchmark, trades, factor_exposures)
-    with open('report.html', 'w') as f: f.write(html)
+    from quant.evaluation.tear_sheet import generate_report_from_backtest
+    path = generate_report_from_backtest()                    # 用 config 默认日期
+    path = generate_report_from_backtest('2024-01-01', '2025-12-31', capital=100000)
 """
 
 import json
@@ -50,17 +62,22 @@ def generate_report(
     if equity_curve.empty:
         return f"<html><body><h1>{title}</h1><p>无数据</p></body></html>"
 
-    # ── 1. 基础指标 ──
+    # ── 1. 基础指标 (对标 Alphalens create_summary_tear_sheet) ──
+    # 日收益率序列: 用于计算波动率/Sharpe
     returns = equity_curve.pct_change().dropna()
+    # 累计收益: (终值-初值)/初值 × 100
     total_return = (equity_curve.iloc[-1] / capital - 1) * 100
+    # 年化波动: 日收益 std × √244 (annual_trading_days = 244)
     annual_vol = returns.std() * np.sqrt(_require_cfg("market.annual_trading_days")) * 100
+    # Sharpe: 日收益 mean/std × √244 (年化)
     sharpe = (returns.mean() / returns.std() * np.sqrt(244)) if returns.std() > 0 else 0
 
+    # 最大回撤: (当前值 - 历史峰值) / 历史峰值 的最小值
     peak = equity_curve.cummax()
     drawdown = (equity_curve - peak) / peak
     max_dd = drawdown.min() * 100
 
-    # Win rate from trades
+    # 胜率: 卖出交易中盈利笔数/总卖出笔数
     if trades:
         sell_trades = [t for t in trades if t.get("side") == "sell"]
         wins = sum(1 for t in sell_trades if t.get("pnl", 0) > 0)
@@ -134,6 +151,7 @@ def generate_report(
 <div class="chart" id="chart-monthly" style="height:300px"></div>
 
 <script>
+// ── Plotly 图表配置 (v2.35.2, 兼容 web/static/plotly.min.js) ──
 const equity = {equity_json};
 const dd = {dd_json};
 const heatmap = {json.dumps(heatmap_data)};
@@ -196,9 +214,26 @@ def generate_report_from_backtest(
     capital: float = None,
     output: str = None,
 ) -> str:
-    """便捷入口: 从回测结果生成报告并保存。
+    """一键生成: 从 DB 读取回测数据 → 生成 HTML 报告。
 
-    从 daily_equity 表读取权益曲线, 从 sim_trades 读取交易记录。
+    数据源 (按优先级):
+      1. daily_equity 表 — 每日权益 (晚间链 reconcile 写入)
+      2. benchmark_daily 表 — CSI 300 基准收盘价
+      3. sim_trades 表 — 交易记录
+
+    参数:
+      start: 起始日期 (None=backtest.default_start, 2020-01-01)
+      end:   结束日期 (None=backtest.default_end)
+      capital: 初始资金 (None=backtest.default_capital, 5000)
+      output: 输出路径 (None=自动生成 reports/tear_sheet_YYYYMMDD_HHMM.html)
+
+    约束:
+      - daily_equity 为空时 (新账户无历史) → 占位单点曲线，非抛错
+      - 基准归一化到策略初值 = bm/bm[0]×capital，使曲线可同比
+      - HTML 内嵌 Plotly CDN (2.35.2)，离线环境需本地 plotly.min.js
+      - float() 转换 numpy→Python，避免 json.dumps TypeError
+
+    Returns: 输出文件路径
     """
     import sqlite3, os
     from quant.config.paths import TRADE_DB, MARKET_DB

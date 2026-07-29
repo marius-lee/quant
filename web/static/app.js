@@ -30,6 +30,7 @@ const fmtNum = (v, d = 2) => { if (v == null || isNaN(v)) return '—'; return v
 const clsPnl = (v) => v >= 0 ? 'up' : 'down';
 
 function setText(id, text) { const el = document.getElementById(id); if (el) el.textContent = text; }
+function setHTML(id, html) { const el = document.getElementById(id); if (el) el.innerHTML = html; }
 
 // ── Build factor objects from parallel arrays (API returns [names] + [ics] separately)
 function buildFactorObjs(fd) {

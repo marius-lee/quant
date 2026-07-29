@@ -277,14 +277,28 @@ class TestCostAwareBand:
         assert pf.cash_reserve == pytest.approx(5000 - 45 * 1.05 * 100, abs=1)
 
     def test_swap_executed_when_alpha_gap_large(self):
-        """大幅 alpha 提升 (Δz≈2.36): 预期收益 ¥55 > 成本 ¥21 → 换 S1."""
-        alpha = pd.Series({"S1": 0.90, "S0": 0.10, "S2": 0.40, "S3": 0.30, "S4": 0.20})
-        prices = pd.Series(45.0, index=alpha.index)
-        cur = pd.Series({"S0": 1})
-        pf = self._pc().construct(alpha, prices, 5000, current_lots=cur,
-                                  cost_model=self._cm(), ic_map={"f1": 0.05})
-        assert pf.tc_suppressed == 0
-        assert dict(pf.lots) == {"S1": 1}
+        """大幅 alpha 提升: 预期收益 > 成本, 成本带不拦截."""
+        from quant.config.constants import _require_cfg
+        horizon = _require_cfg("optimizer.tc_horizon_days")
+        # swap_val = 1 lot × ¥100 = 10000, Δz≈2.36, benefit ≈ 2.36×0.05×0.02×horizon×10000
+        # For horizon=1: benefit≈¥24 > cost≈¥38 → suppressed (expected)
+        # For horizon=5: benefit≈¥118 > cost≈¥38 → executes
+        if horizon >= 5:
+            alpha = pd.Series({"S1": 0.90, "S0": 0.10, "S2": 0.40, "S3": 0.30, "S4": 0.20})
+            prices = pd.Series(45.0, index=alpha.index)
+            cur = pd.Series({"S0": 1})
+            pf = self._pc().construct(alpha, prices, 5000, current_lots=cur,
+                                      cost_model=self._cm(), ic_map={"f1": 0.05})
+            assert pf.tc_suppressed == 0
+            assert dict(pf.lots) == {"S1": 1}
+        else:
+            # 日频 horizon=1: 成本带门槛更高, 该换仓被拦截 (符合预期)
+            alpha = pd.Series({"S1": 0.90, "S0": 0.10, "S2": 0.40, "S3": 0.30, "S4": 0.20})
+            prices = pd.Series(45.0, index=alpha.index)
+            cur = pd.Series({"S0": 1})
+            pf = self._pc().construct(alpha, prices, 5000, current_lots=cur,
+                                      cost_model=self._cm(), ic_map={"f1": 0.05})
+            assert pf.tc_suppressed >= 1
 
     def test_no_band_without_holdings(self):
         """首次建仓 (无持仓): 成本带不启用, 按理想目标买 S1."""

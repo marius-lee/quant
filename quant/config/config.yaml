@@ -269,13 +269,13 @@ factor:
     squeeze_lookback: 125
 optimizer:
   method: hrp
-  rebalance_freq: weekly
+  rebalance_freq: daily
   rebalance_weekday: 0
   nano_cap: 30000
   micro_cap: 100000
   kelly_fraction: 0.5
   tc_lambda: 1.0
-  tc_horizon_days: 5
+  tc_horizon_days: 1
   tc_ic_ref: 0.015
   min_weight: 0.01
 recon:

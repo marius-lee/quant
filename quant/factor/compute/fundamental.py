@@ -190,6 +190,7 @@ def _get_financial_historical(table: str, date: str, forward_days: int = 90) -> 
         f"SELECT * FROM {table} WHERE stat_date <= ? ORDER BY stat_date",
         conn, params=(max_stat,),
     )
+    conn.close()
     return df
 
 
@@ -400,6 +401,7 @@ def compute_ihn(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
     if not rows:
         return pd.Series(dtype=float, name="ihn")
     s = pd.Series({r[0]: np.log1p(r[1]) if r[1] is not None and r[1] > 0 else np.nan for r in rows})
+    conn.close()
     return s.dropna().rename("ihn")
 
 
@@ -414,6 +416,7 @@ def compute_insider_increase(fundamentals: "pd.DataFrame", date: str) -> "pd.Ser
         (lookback_start, date)
     ).fetchall()
     if not rows:
+        conn.close()
         return pd.Series(dtype=float, name="insider_increase")
 
     increase_vol = pd.Series({r[0]: r[1] for r in rows})
@@ -424,6 +427,9 @@ def compute_insider_increase(fundamentals: "pd.DataFrame", date: str) -> "pd.Ser
         conn2 = _db_connect()
         mv_df = pd.read_sql("SELECT symbol, total_mv FROM stocks WHERE total_mv > 0", conn2)
         market_cap = mv_df.set_index("symbol")["total_mv"] if not mv_df.empty else pd.Series(dtype=float)
+        conn.close()
+        conn2.close()
+
 
     aligned = increase_vol.index.intersection(market_cap.index)
     if len(aligned) == 0:
@@ -443,6 +449,7 @@ def compute_earnings_revision(fundamentals: "pd.DataFrame", date: str) -> "pd.Se
         (date,)
     ).fetchall()
     if not rows:
+        conn.close()
         return pd.Series(dtype=float, name="earnings_revision")
     records = {}
     for r in rows:
@@ -479,6 +486,7 @@ def _load_daily_valuation_pe(lookback_start: str, date: str) -> "pd.DataFrame":
         if len(_DV_CACHE) > 3:
             oldest = next(iter(_DV_CACHE))
             del _DV_CACHE[oldest]
+        conn.close()
     return _DV_CACHE[cache_key]
 
 

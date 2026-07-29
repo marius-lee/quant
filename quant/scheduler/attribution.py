@@ -98,6 +98,7 @@ def _run(today: str):
             _log.info(f"[{today}] Brinson (mkt-cap weighted): alloc={result['allocation']:.4f} select={result['selection']:.4f} interact={result['interaction']:.4f} total={result['total']:.4f}")
         else:
             _log.warning(f"[{today}] no daily data for Brinson")
+        conn.close()
     else:
         _log.info(f"[{today}] no positions, skip attribution")
 

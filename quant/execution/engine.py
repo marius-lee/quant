@@ -113,7 +113,9 @@ class ExecutionEngine:
                     f"Ex-dividend detected: {symbol} order_price={order_price:.2f} "
                     f"prev_close={prev_close:.2f} gap={gap:.1%} > {threshold:.0%} — skipping buy"
                 )
+                mc.close()
                 return True
+        mc.close()
         return False
 
     def execute(

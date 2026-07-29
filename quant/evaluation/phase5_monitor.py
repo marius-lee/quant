@@ -228,6 +228,7 @@ def sync_factor_status() -> dict:
     for name in sorted(active_to_update):
         _log.info(f"  [ACTIVE]   {name} — {reasons[name]}")
 
+    conn.close()
     return {
         "rejected": sorted(rejected_to_update),
         "retired": sorted(retired_to_update),

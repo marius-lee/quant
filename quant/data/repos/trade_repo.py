@@ -472,8 +472,8 @@ class TradeRepo:
         try:
             c.execute(
                 "INSERT INTO sim_trades(date, symbol, side, price, shares, "
-                "pnl, pnl_pct, strategy, board_count, mode, cost) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "pnl, pnl_pct, strategy, board_count, mode, cost, created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?, datetime('now','localtime'))",
                 (date, symbol, side, price, shares, pnl, pnl_pct,
                  strategy, board_count, mode, cost))
             if own_conn:

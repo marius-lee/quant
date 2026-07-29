@@ -552,12 +552,13 @@ def api_performance():
     win_trades = sum(1 for r in sells if r[0] and r[0] > 0)
     total_sells = len(sells)
     win_rate = round(win_trades / total_sells * 100, 1) if total_sells > 0 else 0
-    buys = tc.execute("SELECT COUNT(*) FROM sim_trades WHERE side='buy' AND strategy=?", (strategy,)).fetchone()[0]
+    buys = (tc.execute("SELECT COUNT(*) FROM sim_trades WHERE side='buy' AND strategy=?", (strategy,)).fetchone() or [0])[0]
     from quant.data.repos import TradeRepo; base = TradeRepo().get_initial_capital(strategy)
     capital = TradeRepo().get_cash(strategy) or base
-    position_cost = tc.execute(
+    pos_row = tc.execute(
         "SELECT COALESCE(SUM(CASE WHEN side='buy' THEN price*shares ELSE -price*shares END),0) FROM sim_trades WHERE strategy=? HAVING SUM(CASE WHEN side='buy' THEN shares ELSE -shares END) > 0",
-        (strategy,)).fetchone()[0]
+        (strategy,)).fetchone()
+    position_cost = pos_row[0] if pos_row else 0
 
     # 估值: ?quotes=true → 市价; 默认 → 最新收盘, 均失败则账面成本 (test-v203)
     use_quotes = request.args.get("quotes", "").lower() == "true"

@@ -3,8 +3,8 @@
   "display_name": "epa",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.0217,
-  "icir_12m": -0.2453,
+  "ic_mean_12m": -0.024,
+  "icir_12m": -0.1995,
   "last_evaluated": "auto",
-  "n_obs": 32
+  "n_obs": 33
 }

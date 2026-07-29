@@ -33,3 +33,4 @@ appendonly.aof
 
 # Python venv
 .venv-tushare/
+.venv-py312/

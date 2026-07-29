@@ -218,7 +218,7 @@ function renderSignals(state) {
         return '<span title="' + v + '" class="trunc-reason">' + shown + ', <em>+' + (parts.length - 2) + ' more</em></span>';
       },
       exec_note: v => {
-        if (!v) return '';
+        if (!v) return '<span class="badge badge-blue">待执行</span>';
         const map = { abandoned_sealed: '封死', abandoned_funds: '资金不足' };
         const label = map[v] || v;
         return '<span class="badge badge-red">' + label + '</span>';

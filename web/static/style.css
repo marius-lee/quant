@@ -345,6 +345,7 @@ td.down { color: var(--down); }
   white-space: nowrap;
 }
 .badge-green  { background: #16a34a22; color: #16a34a; }
+.badge-blue   { background: #3b82f622; color: #3b82f6; }
 .badge-yellow { background: #eab30822; color: #b45309; }
 .badge-red    { background: #dc262622; color: #dc2626; }
 .badge-gray

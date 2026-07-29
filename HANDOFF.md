@@ -5,6 +5,50 @@
 
 
 
+## test-v252 (2026-07-29): 限价单执行对齐业界标准
+
+### 变更
+
+#### 1. 时间紧迫度曲线 (Kissell IS 算法)
+旧: 固定 runaway_threshold=2%, 09:30 和 14:30 一样等。
+新: 线性衰减曲线 — 09:30 容忍 3%, 14:30 只容忍 0.5%。
+```
+urgency(t) = max(0.5%, 3% - 2.5% × minutes_open / 320)
+```
+| 时间 | 紧迫度 | 含义 |
+|------|--------|------|
+| 09:30 | 3.0% | 开盘流动性好, 耐心等 |
+| 11:00 | ~1.9% | 半天过去了 |
+| 14:00 | ~0.9% | 快收盘了 |
+| 14:30 | ~0.7% | 赶紧买 |
+| 14:50 | 不等 | 市价全买 |
+
+#### 2. 成交量限制
+单量 > 日均成交量 1% → 跳过本轮, 等下个周期 (避免冲击成本)。
+config: execution.limit_order.volume_limit_pct=0.01
+
+#### 3. TCA 成交追踪
+每笔 fill 记录 arrival_price vs fill_price 滑点 (bp)。
+日志格式: `TCA {symbol}: arrival=¥X fill=¥Y slip=±Zbp`
+
+### config 变更
+| 参数 | 旧 | 新 |
+|------|-----|-----|
+| chase_threshold | 0.01 | 删除 (不可达) |
+| runaway_threshold | 0.02 | 删除 |
+| runaway_start | — | 0.03 |
+| runaway_end | — | 0.005 |
+| volume_limit_pct | — | 0.01 |
+
+### 变更文件
+- quant/scheduler/order_manager.py
+- quant/config/config.yaml
+
+### 测试
+221 passed
+
+
+
 ## test-v251 (2026-07-29): 调仓频率 weekly → daily
 
 ### 背景

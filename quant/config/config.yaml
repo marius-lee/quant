@@ -167,8 +167,9 @@ execution:
     max_batch_workers: 4
   limit_order:
     discount_pct: 0.002
-    chase_threshold: 0.01
-    runaway_threshold: 0.02
+    runaway_start: 0.03
+    runaway_end: 0.005
+    volume_limit_pct: 0.01
     force_fill_time: '14:50'
     quote_ttl_sec: 30
   price_buffer: 0.05

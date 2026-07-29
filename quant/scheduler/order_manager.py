@@ -6,10 +6,18 @@ Monitor 每 5s 调一次 check_and_manage, 不靠定时轮询。
 状态机: pending → filled | cancelled → (force_filled)
 事件触发:
   A: ask ≤ limit_price → 成交
-  C: ask > limit_price 且价差 > runaway_threshold → 放弃, 市价买入
+  C: ask > limit_price 且价差 > 紧迫度阈值(随时间衰减) → 放弃, 市价买入
   D: 时间 ≥ force_fill_time → 全部未成交市价补单
+  V: 单量 > 日均成交量1% → 跳过 (流动性不足)
 
- (B-11 fix: 原事件 B "ask 远低于 limit → 追价下调" 不可达 — ask ≤ limit 已被
+时间紧迫度曲线 (test-v252, 对齐 Kissell IS 算法):
+  09:30: 容忍 3% 偏离 (不急, 开盘流动性好)
+  11:30: 容忍 ~2% 偏离
+  14:00: 容忍 ~1% 偏离
+  14:30: 容忍 ~0.7% 偏离 (快收盘了, 赶紧买入)
+  14:50: 不等待, 市价补单
+
+(b-11 fix: 原事件 B "ask 远低于 limit → 追价下调" 不可达 — ask ≤ limit 已被
   事件 A 成交, 且买价走低时主动下调限价等于放弃更优成交价, 逻辑上也不成立, 已移除)
 """
 from quant.utils.logger import get_logger
@@ -28,8 +36,9 @@ DB_PATH = TRADE_DB
 
 # ── 阈值 (config-driven) ──
 DISCOUNT_PCT = _require_cfg("execution.limit_order.discount_pct")
-CHASE_THRESHOLD = _require_cfg("execution.limit_order.chase_threshold")
-RUNAWAY_THRESHOLD = _require_cfg("execution.limit_order.runaway_threshold")
+RUNAWAY_START = _require_cfg("execution.limit_order.runaway_start")
+RUNAWAY_END = _require_cfg("execution.limit_order.runaway_end")
+VOLUME_LIMIT_PCT = _require_cfg("execution.limit_order.volume_limit_pct")
 _force_fill_str = _require_cfg("execution.limit_order.force_fill_time")
 _hh, _mm = _force_fill_str.split(":")
 FORCE_FILL_TIME = time(int(_hh), int(_mm))
@@ -128,11 +137,11 @@ class OrderManager:
         """对每个 pending 订单评估事件:
 
         A: ask <= limit → execute fill
-        B: ask < limit && gap > chase_threshold → chase (上调 limit)
-        C: ask > limit && gap > runaway_threshold → abandon → market fill
+        C: ask > limit && gap > urgency(t) → abandon → market fill
         D: now >= force_fill_time → force fill all
+        V: order_size > avg_daily_volume × 1% → skip (流动性不足)
 
-        返回: [{"symbol": ..., "action": "fill/chase/abandon", "shares": ..., "price": ...}, ...]
+        紧迫度: 时间衰减曲线, 对齐 Kissell IS 算法.
         """
         now = datetime.now()
         hhmm = time(now.hour, now.minute)
@@ -143,14 +152,20 @@ class OrderManager:
 
         for po in pending:
             q = quotes.get(po.symbol, {})
-            # 优先使用卖一价 (include_ask_bid), 回退到最新成交价
             ask = q.get("ask", None) or q.get("price", 0) or q.get("open", 0) or 0
             if ask <= 0:
                 continue
 
-            # ── 封死涨停检测 (include_ask_bid 提供 ask_volume) ──
-            # 卖一量为0 + 价格触及涨停价 → 无人卖出, 无法成交 → 立即放弃
-            # 来源: ADR-033 限价单设计, include_ask_bid 实现在 quant/execution/quote.py
+            # ── V: 流动性检查 — 单量 > 日均量1% → 跳过 ──
+            _daily_vol = q.get("volume", 0) or 0
+            if _daily_vol > 0:
+                _order_pct = po.target_shares / (_daily_vol * 100) if _daily_vol * 100 > 0 else 1.0
+                if _order_pct > VOLUME_LIMIT_PCT and not force_now:
+                    _log.info(f"[order_manager] SKIP {po.symbol}: "
+                              f"order={po.target_shares}股 > {VOLUME_LIMIT_PCT*100:.0f}% vol, wait")
+                    continue
+
+            # ── 封死涨停检测 ──
             _av = q.get("ask_volume")
             if _av is not None and _av == 0 and not force_now:
                 _pc = q.get("prev_close", 0) or 0
@@ -167,38 +182,38 @@ class OrderManager:
                         self._cancel(po.id, "sealed_limit_up")
                         actions.append({"symbol": po.symbol, "action": "abandon",
                                         "reason": "封死涨停(ask_volume=0), 无法买入"})
-                        _log.info(f"[order_manager] ABANDON {po.symbol}: 封死涨停 "
-                                  f"(ask={ask:.2f} ask_vol=0), 放弃买入")
+                        _log.info(f"[order_manager] ABANDON {po.symbol}: 封死涨停")
                         self._note_signal(day, po.symbol, "abandoned_sealed")
                         continue
 
             gap = (ask - po.limit_price) / po.limit_price if po.limit_price > 0 else 0
 
+            # ── 时间紧迫度曲线 (线性衰减 09:30→14:50) ──
+            _mins_open = max(0, (now.hour - 9) * 60 + now.minute - 30)
+            _total_mins = 320  # 09:30→14:50 = 320 min
+            _progress = min(1.0, _mins_open / _total_mins)
+            urgency = max(RUNAWAY_END, RUNAWAY_START - (RUNAWAY_START - RUNAWAY_END) * _progress)
+
             if force_now:
-                # 事件 D: 尾盘强制补单
                 self._fill(po, ask, day)
                 actions.append({"symbol": po.symbol, "action": "force_fill",
                                 "shares": po.target_shares, "price": ask})
-                _log.info(f"[order_manager] force fill {po.symbol} @¥{ask:.2f} "
-                          f"({po.target_shares}股)")
+                _log.info(f"[order_manager] force fill {po.symbol} @¥{ask:.2f}")
 
             elif ask <= po.limit_price:
-                # 事件 A: 价格到位 → 成交
                 self._fill(po, ask, day)
                 actions.append({"symbol": po.symbol, "action": "fill",
                                 "shares": po.target_shares, "price": ask})
                 _log.info(f"[order_manager] filled {po.symbol} @¥{ask:.2f} ≤ "
                           f"limit=¥{po.limit_price:.2f}")
 
-            elif gap > RUNAWAY_THRESHOLD:
-                # 事件 C: 价格跑远了 → 取消限价, 市价买入
+            elif gap > urgency:
                 self._cancel(po.id, "runaway")
                 self._fill(po, ask, day)
                 actions.append({"symbol": po.symbol, "action": "abandon_fill",
                                 "shares": po.target_shares, "price": ask})
                 _log.info(f"[order_manager] runaway {po.symbol}: "
-                          f"ask=¥{ask:.2f} vs limit=¥{po.limit_price:.2f} "
-                          f"(gap={gap:+.1%}), executing market")
+                          f"gap={gap:+.1%} > urgency={urgency:+.1%}, executing market")
 
         return actions
 
@@ -264,6 +279,13 @@ class OrderManager:
             (po.target_shares, price, po.id))
         c.commit()
         c.close()
+
+        # ── TCA: 记录到达价 vs 成交价滑点 ──
+        if po.reference_price and po.reference_price > 0:
+            slip_bp = round((price / po.reference_price - 1) * 10000, 1)
+            _log.info(f"[order_manager] TCA {po.symbol}: "
+                      f"arrival=¥{po.reference_price:.2f} fill=¥{price:.2f} "
+                      f"slip={slip_bp:+.1f}bp")
 
     def _chase(self, order_id: int, new_limit: float):
         c = _conn()

@@ -5,6 +5,43 @@
 
 
 
+## 当前状态 (test-v268, 2026-07-29 晚)
+
+### 已完成的 (test-v252 → test-v268)
+- daily 调仓频率: weekly → daily (tc_horizon_days: 5 → 1)
+- 限价单: 时间紧迫度曲线 + 成交量限制 + TCA
+- 因子缓存: 1591 天全量, 分块物化, 批量加载优化
+- LGB 训练: IC=0.4459, 2138 万样本, 51 特征
+- 模型集成: LGB + MLP 投票 (EnsembleAlphaModel)
+- 滚动 CV: 5 折时间序列交叉验证
+- 因子策展: 22 个因子 (幻方/九坤/明汯/WorldQuant/Qlib + 8 家券商), 界面提交
+- Stress Test: 6 个 A 股历史极端场景, 界面展示
+- 连接泄漏: 全项目清零 (153 文件, 128 处连接打开, 0 泄漏)
+- 硬编码: 全项目清零
+- CI/CD: GitHub Actions 自动跑 221 测试
+- 界面: LGB 面板/风险图/对账中文/候选池股价列/压力测试/策展表单
+- 数据源: 修复 _analyze_daily_gaps 逐股判断缺口 + Longbridge 集成 + akshare 提前
+- 数据库: 从 git 追踪中移除所有 .db 文件
+- 文档: CLAUDE.md 精简, 日终对账归档, 专业平台对标分析, 代码审计报告
+
+### 待完成 (重启后)
+1. 07-29 日线数据补全: zzshare 拉 3933 只缺口股 (已在跑, ~3h)
+2. 晚间链: 日线完成后自动 factor_cache → attribution
+3. 明天 08:30 开盘: 全自动 signals → execute → monitor
+4. git push: 本地 commits 未推到 GitHub
+
+### 首次会话操作
+1. 读 HANDOFF.md（本文件）
+2. 检查 task_runs 是否有僵尸 running 行
+3. 检查 daily_data 是否完成 (SELECT COUNT(*) FROM daily WHERE date='2026-07-29')
+4. 如果 daily 数据不全 → 跑 evening chain: _run('2026-07-29')
+5. 如果 daily 全了但 factor_cache 缺失 → 单独跑 factor_cache
+
+### 版本号
+web/app.py VERSION = "test-v268"
+
+
+
 ## test-v252 (2026-07-29): 限价单执行对齐业界标准
 
 ### 变更

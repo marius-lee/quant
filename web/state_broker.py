@@ -83,7 +83,8 @@ class InProcessBroker:
                     "buy_time": p.get("buy_time", ""),
                     "current": close_px,
                     "pnl_pct": round((close_px / p.get("price", 1) - 1) * 100, 2),
-                    "value": round(p["shares"] * close_px, 2)
+                    "value": round(p["shares"] * close_px, 2),
+                    "industry": None, "sector": None,
                 })
             pos_value = sum(p["value"] for p in positions)
             state["capital"] = round(capital, 2)
@@ -118,13 +119,17 @@ class InProcessBroker:
                     if syms:
                         placeholders = ",".join(["?"] * len(syms))
                         rows = mc.execute(
-                            f"SELECT symbol, name FROM stocks WHERE symbol IN ({placeholders})",
+                            f"SELECT symbol, name, industry FROM stocks WHERE symbol IN ({placeholders})",
                             syms
                         ).fetchall()
                         name_map = {r[0]: r[1] for r in rows}
+                        ind_map = {r[0]: r[2] for r in rows if r[2]}
                         for p in positions:
                             if name_map.get(p["symbol"]):
                                 p["name"] = name_map[p["symbol"]]
+                            if ind_map.get(p["symbol"]):
+                                p["industry"] = ind_map[p["symbol"]]
+                                p["sector"] = ind_map[p["symbol"]]
                     mc.close()
             except Exception:
                 logging.getLogger("web.state_broker").warning("_init_state: stock close prices query failed", exc_info=True)

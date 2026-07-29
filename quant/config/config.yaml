@@ -66,7 +66,7 @@ backtest:
   benchmark: '000300'
   default_capital: 5000
   default_end: '2026-06-30'
-  default_start: '2023-01-01'
+  default_start: '2020-01-01'
   lot_size: 100
   min_backtest_days: 250
   rebalance_interval_days: 5

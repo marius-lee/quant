@@ -1678,10 +1678,10 @@ class DataStore:
             all_sources = [
                 ("tickflow", lambda: self._fetch_tickflow_daily(chunk, batch_start)),
                 ("longbridge", lambda: self._fetch_longbridge_daily(chunk, batch_start)),
+                ("akshare", lambda: self._fetch_akshare_daily(chunk, batch_start)),
                 ("zzshare", lambda: self._fetch_zzshare_daily(chunk, batch_start)),
                 ("pytdx", lambda: self._fetch_pytdx_daily(chunk, batch_start)),
                 ("tencent", lambda: self._fetch_tencent_daily(chunk, batch_start)),
-                ("akshare", lambda: self._fetch_akshare_daily(chunk, batch_start)),
             ]
             if self.token:
                 all_sources.insert(0, ("tushare", lambda: self._fetch_batch_tushare(chunk, batch_start)))

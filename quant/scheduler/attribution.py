@@ -108,8 +108,16 @@ def _run(today: str):
     # ═══════════════════════════════════════════════════════
     from quant.scheduler.oos_verify import run_oos_check
     from quant.config.constants import _require_cfg as _ecfg
+    # 用最近有因子缓存的日期 (盘中 today 可能还没物化)
+    from quant.factor.store import FactorStore
+    import os as _os
+    _fs = FactorStore()
+    _cached = sorted(f.replace(".csv.gz", "") for f in _os.listdir(_fs._cache_dir) if f.endswith(".csv.gz"))
+    _check_date = _cached[-1] if _cached and today not in _cached else today
+    if _check_date != today:
+        _log.info(f"[{today}] OOS verify: using latest cached date {_check_date} (today not yet materialized)")
     oos_result = run_oos_check(
-        today,
+        _check_date,
         status_filter="using",
         train_days=_ecfg("oos_verify.train_window_days"),
         test_days=_ecfg("oos_verify.test_window_days"),

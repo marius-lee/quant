@@ -203,6 +203,7 @@ function renderSignals(state) {
   renderTable('table-signals', signals.slice(0, 5), [
     { key: 'symbol', label: '代码' },
     { key: 'name', label: '名称' },
+    { key: 'price', label: '股价' },
     { key: 'score', label: '得分' },
     { key: 'reason', label: '信号' },
     { key: 'exec_note', label: '状态' },

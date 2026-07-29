@@ -23,6 +23,20 @@ def _run(today: str):
     t0 = _time.time()
 
     from quant.factor.stats_cache import force_refresh_cache
+
+    # ── 因子策展: 检查内置库有无新因子, 自动 IC 评估 + 注册 (test-v265) ──
+    try:
+        from quant.factor.factor_curator import FactorCurator
+        curator = FactorCurator()
+        curated = curator.curate(n_symbols=500, n_dates=120, auto_register=True)
+        _log.info(f"[{today}] factor curation: {curated['n_evaluated']} new, "
+                  f"{curated['n_registered']} registered")
+        if curated.get('results'):
+            for r in curated['results'][:3]:
+                _log.info(f"  {r['name']}: IC={r['mean_ic']:.4f} → {r['verdict']} ({r['source'][:30]})")
+    except Exception as e:
+        _log.warning(f"[{today}] factor curation failed (non-fatal): {e}")
+
     stats = force_refresh_cache()
     n_factors = len(stats.get("factors", []))
 

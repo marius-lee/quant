@@ -1560,25 +1560,19 @@ class DataStore:
         except Exception:
             most_recent_td = today_str
 
-        recent_stale = global_max < most_recent_td  # DB 落后于最近交易日?
-        if recent_stale:
-            logger = __import__("quant.utils.logger", fromlist=["get_logger"]).get_logger("quant.data.store")
-            logger.warning(
-                f"daily DB latest={global_max} < recent_td={most_recent_td} — "
-                f"all symbols need pull (stale_recent mode)"
-            )
-
         # 所有 stocks 符号
         all_symbols = {r[0] for r in conn.execute("SELECT symbol FROM stocks WHERE market!=\"BJ\"").fetchall()}
         have_data = set()
 
+        # 每个 symbol 单独判断是否缺最新交易日数据
         stale, stale_recent, full = [], [], []
         for sym, min_d, max_d in rows:
             have_data.add(sym)
             if max_d < cutoff:
                 stale.append(sym)
                 continue
-            if recent_stale:
+            # 逐股检查是否缺最新交易日数据 (而非全局 recent_stale)
+            if max_d < most_recent_td:
                 stale_recent.append(sym)
                 continue
             full.append(sym)

@@ -171,7 +171,7 @@ async function pollOverview() {
     renderKPIs(perf);
     renderSignals(state);
     updateStatusBar(state);
-    if (lgb && lgb.data) renderLGB(lgb.data);
+    if (lgb) renderLGB(lgb);
   } catch (e) { console.warn('poll error:', e.message); }
 }
 

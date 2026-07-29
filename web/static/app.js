@@ -443,7 +443,7 @@ function renderRiskExposure(rd) {
     y: [varPct, cvarPct, mdd],
     marker: { color: [
       getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
-      getComputedStyle(document.documentElement).getPropertyValue('--down').trim(),
+      '#e74c3c',
       getComputedStyle(document.documentElement).getPropertyValue('--down').trim(),
     ] },
   }], { ...bg, margin: { l: 50, r: 20, t: 10, b: 30 }, ...pf }, PLOTLY_CONFIG);

@@ -49,6 +49,7 @@ def _run_continuous_inner(today: str):
 
         # 午休 11:30-13:00 — 市场休市, sleep 到 13:00 (来源: 2026-07-22 审查)
         if time(11, 30) <= hhmm < time(13, 0):
+            _set_monitor_stage("lunch")
             _time.sleep(_require_cfg("quant.scheduler.poll_interval"))
             continue
 
@@ -61,6 +62,9 @@ def _run_continuous_inner(today: str):
             pass  # 未开盘 (status 从 task_runs DB 读取)
             _time.sleep(_require_cfg("quant.scheduler.poll_interval"))
             continue
+
+        # 午休结束, 恢复 running 状态
+        _set_monitor_stage("running")
 
         # ── 盘中检查 ──
         state = broker.get()
@@ -359,6 +363,22 @@ def _run_continuous(today: str):
         _log.exception(f"[{today}] monitor crashed: {e}")
         _tk_finish("monitor", today, "failed", error=str(e))
         raise
+
+def _set_monitor_stage(stage: str):
+    """更新 monitor task_runs 状态 (running → lunch → running)."""
+    import sqlite3
+    from quant.config.paths import MARKET_DB
+    from datetime import date
+    today = date.today().strftime("%Y-%m-%d")
+    try:
+        c = sqlite3.connect(MARKET_DB)
+        c.execute(
+            "UPDATE task_runs SET status=? WHERE date=? AND task_name='monitor' AND status IN ('running','lunch')",
+            (stage, today))
+        c.commit()
+        c.close()
+    except Exception:
+        pass
 
 def _loop():
     """启动风控监控 daemon 线程."""

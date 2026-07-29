@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v258"
+VERSION = "test-v259"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 
@@ -851,6 +851,10 @@ def api_scheduler():
             except Exception:
                 t["status_label"] = _badge("blue", "运行中")
                 t["status"] = "running"
+        elif run and run["status"] == "lunch":
+            t["status_label"] = _badge("yellow", "午休中")
+            t["status"] = "lunch"
+            t["last_run"] = (run["started_at"] or "")[:16].replace("T", " ")
             t["last_run"] = (run["started_at"] or "")[:16].replace("T", " ")
         elif run and run["status"] == "ok":
             t["status_label"] = _badge("green", "今日已执行")

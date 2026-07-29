@@ -59,6 +59,9 @@ def _run():
 
     register_all()
 
+    # 启动时清理今天剩下的僵尸 running 行 (上次进程被 kill 残留)
+    _cleanup_zombie_tasks()
+
     _log.info("orchestrator started — daily sequence: 08:30 signals → 09:30 execute → "
               "09:35-11:30,13:00-14:55 monitor → 15:05 reconcile → "
               "19:00 daily_data → factor_cache → attribution → lgb_train(Mon/Thu)")

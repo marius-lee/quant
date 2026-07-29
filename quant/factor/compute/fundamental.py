@@ -106,7 +106,9 @@ def compute_size(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
     来源: Fama & French (1993) — 市值因子
     A股实证: IC=-0.101 → 大盘股跑赢, 与传统SMB反向
     """
-    size = np.log(fundamentals["total_mv"])
+    mv = fundamentals["total_mv"].replace([np.inf, -np.inf], np.nan)
+    mv = mv.where(mv.notna() & (mv > 0))
+    size = np.log(mv)
     size = size.replace([np.inf, -np.inf], np.nan)
     return _cs_zscore(size, sparse=True).rename("size")
 
@@ -668,7 +670,6 @@ def compute_asset_growth(fundamentals, date, financials=None):
     """, _syms).fetchall()
 
     # 按 symbol 分组, 取最新和去年同期
-    import pandas as pd
     df_hist = pd.DataFrame(rows, columns=['symbol', 'stat_date', 'total_assets'])
     df_hist['stat_date'] = pd.to_datetime(df_hist['stat_date'])
     df_hist = df_hist.sort_values('stat_date')
@@ -696,6 +697,7 @@ def compute_asset_growth(fundamentals, date, financials=None):
     ag_series = pd.Series(results, name="asset_growth")
     ag_series = ag_series.replace([np.inf, -np.inf], np.nan)
     ag_series = ag_series.where((ag_series > -1) & (ag_series < 10))
+    conn.close()
     # 高资产增速→低收益: 取负号 (IC为负)
     return _cs_zscore(-ag_series, sparse=True).rename("asset_growth")
 
@@ -810,6 +812,7 @@ def compute_sue(fundamentals, date, financials=None):
     sue_series = sue_series.replace([np.inf, -np.inf], np.nan)
     sue_series = sue_series.clip(-5, 5)
     # 高SUE→高分
+    conn.close()
     return _cs_zscore(sue_series, sparse=True).rename("sue")
 
 
@@ -853,6 +856,7 @@ def compute_holder_reduction(fundamentals, date, financials=None):
     result = result.replace([float('inf'), float('-inf')], float('nan'))
     # 高减持→低分 (IC为负)
     # 注: akshare 只返回绝对股数, 横截面 z-score 标准化已处理量纲差异
+    conn.close()
     return _cs_zscore(-result, sparse=True).rename("holder_reduction")
 
 
@@ -896,6 +900,7 @@ def compute_pledge_ratio(fundamentals, date, financials=None):
     result = pd.Series(vals, name="pledge_ratio")
     result = result.clip(0, 1)
     # 高质押→低分
+    conn.close()
     return _cs_zscore(-result, sparse=True).rename("pledge_ratio")
 
 
@@ -951,6 +956,7 @@ def compute_dividend_yield(fundamentals, date, financials=None):
     result = pd.Series(vals, name="dividend_yield")
     result = result.replace([float('inf'), float('-inf')], float('nan'))
     # 高股息→高分
+    conn.close()
     return _cs_zscore(result, sparse=True).rename("dividend_yield")
 
 
@@ -1039,6 +1045,7 @@ def compute_ocfp(fundamentals, date, financials=None):
             raw = pd.Series(resid, index=common)
 
     # 正向: 高OCFP→高分
+    _conn.close()
     return _cs_zscore(raw, sparse=True).rename("ocfp")
 
 
@@ -1106,6 +1113,7 @@ def compute_insider_cluster(data, date, window=60):
             # Signal: number of insiders + total ratio
             score = n_insiders * 0.3 + min(total_ratio / 100, 1.0)
             result[sym] = score if n_insiders >= 2 else 0
+    conn.close()
     return _cs_zscore(result).rename("insider_cluster")
 
 
@@ -1141,6 +1149,7 @@ def compute_earnings_upgrade(data, date, window=90):
                 bull_ratio = ((row["buy"] or 0) + (row["overweight"] or 0)) / total
                 bear_ratio = (row["underweight"] or 0) / total
                 result[sym] = bull_ratio - bear_ratio
+    conn.close()
     return _cs_zscore(result, sparse=True).rename("earnings_upgrade")
 
 
@@ -1157,7 +1166,9 @@ def _get_macro_value(indicator: str, date: str) -> float:
         "SELECT value FROM macro_indicator WHERE indicator=? AND date <= ? ORDER BY date DESC LIMIT 1",
         (indicator, date)
     ).fetchone()
-    return row[0] if row else None
+    result = row[0] if row else None
+    conn.close()
+    return result
 
 
 def compute_macro_pmi_diff(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":

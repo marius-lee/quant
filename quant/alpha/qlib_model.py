@@ -455,6 +455,243 @@ class LgbAlphaModel:
 
 
 # ═══════════════════════════════════════════════════════════
+# 模型集成 — LGB + MLP 投票 (P0-①, test-v262)
+# ═══════════════════════════════════════════════════════════
+
+class EnsembleAlphaModel:
+    """集成 Alpha 模型: LGB + MLP (sklearn 神经网络) 平均投票。
+
+    动机:
+      - 单模型 (LGB only) 过拟合风险高: train IC=0.45 可能虚高
+      - 两个异质模型 (树模型 LGB + 神经网络 MLP) 误差不相干 → 投票降方差
+      - MLP 用 sklearn MLPRegressor, 零额外依赖
+      - 最终 alpha = 0.5 × LGB_pred + 0.5 × MLP_pred
+
+    Usage:
+        model = EnsembleAlphaModel()
+        model.train(factor_panels, forward_returns)
+        alpha = model.predict(factor_values)
+    """
+
+    def __init__(self, lgb_weight: float = 0.5):
+        self.lgb_weight = lgb_weight
+        self._lgb = None
+        self._mlp = None
+        self._feature_names: list[str] = []
+        self._scaler = None  # StandardScaler for MLP
+
+    @property
+    def is_trained(self) -> bool:
+        return self._lgb is not None and self._mlp is not None
+
+    def train(self, factor_values, forward_returns,
+              feature_names=None, lgb_params=None) -> dict:
+        """训练 LGB + MLP 双模型。
+
+        Returns:
+            {lgb_ic, mlp_ic, ensemble_ic, n_samples, n_features}
+        """
+        if feature_names is None:
+            feature_names = list(factor_values.keys())
+        self._feature_names = feature_names
+
+        _log.info("ensemble: building training matrix...")
+
+        # 复用 LGB 训练逻辑构建 X, y
+        fwd_dates = sorted(set(forward_returns.index.get_level_values(0)))
+        min_factors = max(1, int(len(feature_names) * 0.6))
+
+        X_chunks, y_chunks = [], []
+        for ts in fwd_dates:
+            date_str = ts.strftime("%Y-%m-%d")
+            syms = set()
+            n_avail = 0
+            for fn in feature_names:
+                fv = factor_values.get(fn)
+                if fv is not None and date_str in fv.index:
+                    row = fv.loc[date_str].dropna()
+                    syms.update(row.index)
+                    n_avail += 1
+            if n_avail < min_factors:
+                continue
+            syms = list(syms)
+            if len(syms) < 30:
+                continue
+            X_day = np.column_stack([
+                factor_values[fn].loc[date_str].reindex(syms).fillna(0).values
+                if fn in factor_values and date_str in factor_values[fn].index
+                else np.zeros(len(syms))
+                for fn in feature_names
+            ])
+            y_day = forward_returns.loc[ts].reindex(syms).fillna(0).values
+            mask = ~np.isnan(y_day)
+            if mask.sum() < 20:
+                continue
+            X_chunks.append(X_day[mask])
+            y_chunks.append(y_day[mask])
+
+        X = np.vstack(X_chunks)
+        y = np.concatenate(y_chunks)
+        y_upper, y_lower = np.percentile(y, 99), np.percentile(y, 1)
+        y = np.clip(y, y_lower, y_upper)
+
+        _log.info(f"ensemble: {len(y)} samples × {X.shape[1]} features")
+
+        # ── LGB ──
+        import lightgbm as lgb
+        self._lgb = lgb.LGBMRegressor(
+            **(lgb_params or {"objective": "regression", "n_estimators": 200,
+                              "num_leaves": 31, "learning_rate": 0.05,
+                              "verbose": -1, "min_data_in_leaf": 20}))
+        self._lgb.fit(X, y)
+        y_lgb = self._lgb.predict(X)
+        lgb_ic = np.corrcoef(y_lgb, y)[0, 1]
+
+        # ── MLP (sklearn 神经网络, 零额外依赖) ──
+        from sklearn.neural_network import MLPRegressor
+        from sklearn.preprocessing import StandardScaler
+        self._scaler = StandardScaler()
+        X_scaled = self._scaler.fit_transform(X)
+        self._mlp = MLPRegressor(
+            hidden_layer_sizes=(64, 32), activation='relu',
+            max_iter=200, early_stopping=True, random_state=42)
+        self._mlp.fit(X_scaled, y)
+        y_mlp = self._mlp.predict(X_scaled)
+        mlp_ic = np.corrcoef(y_mlp, y)[0, 1]
+
+        # ── 集成 ──
+        y_ens = self.lgb_weight * y_lgb + (1 - self.lgb_weight) * y_mlp
+        ens_ic = np.corrcoef(y_ens, y)[0, 1]
+
+        _log.info(f"ensemble trained: LGB_IC={lgb_ic:.4f}, MLP_IC={mlp_ic:.4f}, Ensemble_IC={ens_ic:.4f}")
+        return {"lgb_ic": round(lgb_ic, 4), "mlp_ic": round(mlp_ic, 4),
+                "ensemble_ic": round(ens_ic, 4), "n_samples": len(y),
+                "n_features": X.shape[1]}
+
+    def predict(self, factor_values: dict, symbols=None) -> pd.Series:
+        """集成预测: 0.5×LGB + 0.5×MLP。"""
+        if not self.is_trained:
+            raise RuntimeError("EnsembleAlphaModel not trained")
+
+        if symbols is None:
+            syms = set()
+            for series in factor_values.values():
+                if isinstance(series, pd.Series):
+                    syms.update(series.dropna().index)
+            symbols = sorted(syms)
+        if not symbols:
+            return pd.Series(dtype=float)
+
+        X = np.column_stack([
+            factor_values.get(fn, pd.Series(0, index=symbols))
+            .reindex(symbols).fillna(0).values
+            for fn in self._feature_names if fn in factor_values
+        ])
+
+        # LGB
+        y_lgb = self._lgb.predict(X)
+        # MLP (标准化)
+        X_scaled = self._scaler.transform(X)
+        y_mlp = self._mlp.predict(X_scaled)
+        # 平均投票
+        y_ens = self.lgb_weight * y_lgb + (1 - self.lgb_weight) * y_mlp
+        return pd.Series(y_ens, index=symbols, name="alpha_ensemble").dropna()
+
+
+# 滚动训练 + 时间序列 CV (P0-②, test-v262)
+def rolling_train_cv(
+    factor_values: dict[str, pd.DataFrame],
+    forward_returns: pd.Series,
+    n_splits: int = 5,
+    train_window_days: int = 252,
+    test_window_days: int = 60,
+    feature_names: list[str] = None,
+) -> dict:
+    """滚动时间序列交叉验证。
+
+    对标 Qlib RollingTrainer + PurgedGroupTimeSeriesSplit:
+      - 按日期升序分窗，逐窗训练 → OOS 预测 → 收集 IC
+      - 窗口间不重叠，保时序
+
+    Returns: {fold_ics, mean_ic, std_ic, n_splits}
+    """
+    if feature_names is None:
+        feature_names = list(factor_values.keys())
+    fwd_dates = sorted(set(forward_returns.index.get_level_values(0)))
+    if len(fwd_dates) < train_window_days + test_window_days:
+        return {"fold_ics": [], "mean_ic": 0, "n_splits": 0}
+
+    fold_ics = []
+    for fold in range(n_splits):
+        train_end = len(fwd_dates) - test_window_days - fold * test_window_days
+        if train_end < train_window_days:
+            break
+        train_dates = fwd_dates[train_end - train_window_days:train_end]
+        test_dates = fwd_dates[train_end:train_end + test_window_days]
+
+        # 构建训练矩阵 (复用 train 逻辑)
+        X_tr, y_tr = [], []
+        for ts in train_dates:
+            ds = ts.strftime("%Y-%m-%d")
+            syms = set()
+            for fn in feature_names:
+                fv = factor_values.get(fn)
+                if fv is not None and ds in fv.index:
+                    syms.update(fv.loc[ds].dropna().index)
+            syms = list(syms)
+            if len(syms) < 30:
+                continue
+            X = np.column_stack([
+                (factor_values[fn].loc[ds].reindex(syms).fillna(0).values
+                 if fn in factor_values and ds in factor_values[fn].index
+                 else np.zeros(len(syms))) for fn in feature_names])
+            y = forward_returns.loc[ts].reindex(syms).fillna(0).values
+            m = ~np.isnan(y)
+            if m.sum() < 20:
+                continue
+            X_tr.append(X[m]); y_tr.append(y[m])
+        if not X_tr:
+            continue
+        X_tr = np.vstack(X_tr); y_tr = np.concatenate(y_tr)
+
+        from lightgbm import LGBMRegressor
+        m = LGBMRegressor(n_estimators=200, num_leaves=31, learning_rate=0.05,
+                          verbose=-1, min_data_in_leaf=20)
+        m.fit(X_tr, y_tr)
+
+        # OOS 预测
+        yp_all, yt_all = [], []
+        for ts in test_dates:
+            ds = ts.strftime("%Y-%m-%d")
+            syms = set()
+            for fn in feature_names:
+                fv = factor_values.get(fn)
+                if fv is not None and ds in fv.index:
+                    syms.update(fv.loc[ds].dropna().index)
+            syms = list(syms)
+            if len(syms) < 30:
+                continue
+            X_te = np.column_stack([
+                (factor_values[fn].loc[ds].reindex(syms).fillna(0).values
+                 if fn in factor_values and ds in factor_values[fn].index
+                 else np.zeros(len(syms))) for fn in feature_names])
+            y_te = forward_returns.loc[ts].reindex(syms).fillna(0).values
+            mask = ~np.isnan(y_te)
+            if mask.sum() < 20:
+                continue
+            yp_all.append(m.predict(X_te[mask]))
+            yt_all.append(y_te[mask])
+        if yp_all:
+            ic = np.corrcoef(np.concatenate(yp_all), np.concatenate(yt_all))[0, 1]
+            fold_ics.append(round(float(ic), 4))
+
+    mean_ic = round(float(np.mean(fold_ics)), 4) if fold_ics else 0
+    _log.info(f"rolling CV: mean_IC={mean_ic:.4f} ({len(fold_ics)} folds)")
+    return {"fold_ics": fold_ics, "mean_ic": mean_ic,
+            "n_splits": len(fold_ics)}
+
+
+# ═══════════════════════════════════════════════════════════
 # 工具函数
 # ═══════════════════════════════════════════════════════════
 

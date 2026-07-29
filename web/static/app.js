@@ -219,9 +219,10 @@ function renderSignals(state) {
       },
       exec_note: v => {
         if (!v) return '<span class="badge badge-blue">待执行</span>';
-        const map = { abandoned_sealed: '封死', abandoned_funds: '资金不足' };
+        const map = { abandoned_sealed: '封死', abandoned_funds: '资金不足', filled: '已成交', engine_skip: '跳过' };
         const label = map[v] || v;
-        return '<span class="badge badge-red">' + label + '</span>';
+        const cls = v === 'filled' ? 'badge-green' : 'badge-red';
+        return '<span class="badge ' + cls + '">' + label + '</span>';
       }
     },
     rank: true

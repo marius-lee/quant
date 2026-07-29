@@ -287,6 +287,9 @@ class OrderManager:
                       f"arrival=¥{po.reference_price:.2f} fill=¥{price:.2f} "
                       f"slip={slip_bp:+.1f}bp")
 
+        # ── 回写信号状态: 已成交 ──
+        self._note_signal(day, po.symbol, "filled")
+
     def _chase(self, order_id: int, new_limit: float):
         c = _conn()
         c.execute(

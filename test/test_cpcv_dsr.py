@@ -93,10 +93,10 @@ class TestConfigWiring:
         assert get("factor.evaluation.embargo_days") == 5  # ADR-041: De Prado purged K-fold 标准
 
     def test_removed_legacy_keys_gone(self):
-        """旧 L2 单切分比率阈值已下线 (test-v300)."""
+        """旧 L2 阈值 key 保留 (attribution Step C 仍用, 与 CPCV+DSR 并行)."""
         from quant.config.loader import get
-        assert get("attribution.oos_warning_decay") is None
-        assert get("attribution.oos_recovery_threshold") is None
+        assert get("attribution.oos_warning_decay") == 0.5
+        assert get("attribution.oos_recovery_threshold") == 1.5
 
     def test_default_thresholds_from_config(self):
         """不传阈值 → 读 config; 噪声序列仍 degraded."""

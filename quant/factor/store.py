@@ -221,7 +221,7 @@ class FactorStore:
                     if not daily_df.empty and ts in close_piv.index:
                         result["close_latest"] = close_piv.loc[ts]
                         # 52-week high: max close in last ~244 trading days
-                        early = ts - pd.Timedelta(days=365)
+                        early = ts - pd.Timedelta(days=_require_cfg("data.lookback_days"))
                         mask = (close_piv.index <= ts) & (close_piv.index >= early)
                         if mask.any():
                             result["high_52w"] = close_piv.loc[mask].max()

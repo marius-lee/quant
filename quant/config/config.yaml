@@ -79,6 +79,7 @@ backtest:
     universe_size: 10
     start: '2026-06-24'
     end: '2026-07-24'
+  factor_cache_start: '2020-01-01'
 cache: null
 calendar:
   max_lookup_days: 30

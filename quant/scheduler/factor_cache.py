@@ -28,9 +28,10 @@ def _run(today: str):
         from quant.data.store import DataStore
 
         store = DataStore()
-        # 使用 today 和 2026-01-01 中较早的作为起始日期
-        # (手动调用 _run('2025-08-01') 时需要回溯到更早日期)
-        _cache_start = min('2026-01-01', today)
+        # 缓存起始日期: min(配置默认, 调用传入日期)
+        # 手动回溯时 today 更早 → 从 today 开始; 日常增量更新用配置默认值
+        from quant.config.constants import _require_cfg as _ecfg
+        _cache_start = min(_ecfg("backtest.factor_cache_start"), today)
         # 结束日期取 daily 表最新日期（不是 today，手动回溯时 today 是过去日期）
         _latest = store._connect().execute(
             'SELECT MAX(date) FROM daily').fetchone()[0]

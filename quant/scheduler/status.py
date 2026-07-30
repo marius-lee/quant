@@ -50,17 +50,22 @@ def register_all():
              desc="OMS 对账闭环: 持仓/现金/订单三账核对, break 超阈值告警")
     register("daily_data",   "19:00",       label="数据拉取",
              desc="拉取当日 A 股日线行情，更新 market.db")
-    register("attribution",  "20:00",       label="盘后归因",
+    register("factor_cache", "daily_data完成后", label="因子物化",
+             desc="增量更新 factor_cache，用当日行情计算回测因子值")
+    register("attribution",  "factor_cache完成后", label="盘后归因",
              desc="Brinson 归因 + IC 衰减 + OOS 验证 + 因子归因")
-    register("factor_cache", "21:00",       label="因子物化",
-             desc="增量更新 factor_cache.db，为新交易日计算回测因子值")
     register("weekly_eval",  "周六 06:00",   label="因子评估",
              desc="评估管线五阶段：回测诊断因子 → 正式认证 → 状态变更")
+    register("lgb_train",    "周一/周四 factor_cache完成后", label="模型训练",
+             desc="LightGBM 模型重训 (仅周一/周四)")
 
 
 def _next_scheduled_time(schedule: str) -> str:
-    """计算下次执行时间 (北京时间)."""
+    """计算下次执行时间 (北京时间). 依赖型任务返回空串."""
     _WEEKDAY_MAP = {"周一": 0, "周二": 1, "周三": 2, "周四": 3, "周五": 4, "周六": 5, "周日": 6}
+    # 依赖型任务 (无固定时间, 由上游触发)
+    if "完成后" in schedule:
+        return ""
     for wd_name, wd_num in _WEEKDAY_MAP.items():
         if schedule.startswith(wd_name):
             time_part = schedule[len(wd_name):].strip()
@@ -74,6 +79,9 @@ def _next_scheduled_time(schedule: str) -> str:
     # 简单 HH:MM 格式
     parts = schedule.split("-")
     time_str = parts[-1].strip() if "-" in schedule else schedule.strip()
+    # lgb_train 类型: "周一/周四 factor_cache完成后"
+    if "完成后" in time_str:
+        return ""
     hh, mm = (int(x) for x in time_str.split(":"))
     now = datetime.now()
     target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)

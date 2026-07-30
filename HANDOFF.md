@@ -4,7 +4,78 @@
 > 避免重复踩坑、重新讨论已否决方案、遗漏已有设计。
 
 
-## 当前状态 (test-v271, 2026-07-30)
+## 当前状态 (test-v275, 2026-07-30)
+
+### test-v277: 修复调度任务界面时间顺序
+
+- **问题**: status.py register_all 中 attribution=20:00, factor_cache=21:00,
+  但 orchestrator 实际顺序是 daily_data→factor_cache→attribution (test-v302 已修正).
+  界面显示 attribution 排在 factor_cache 前面, 与实际不符.
+- **修复**: status.py 注册时间改为 factor_cache=19:45, attribution=20:30.
+
+### test-v276: LGB 全链路 float32 减半内存
+
+- **问题**: test-v275 只在 train() 内转 float32, 但 factor_panels (5GB)
+  + X_day 逐日构建 (float64) 在进入训练前就 OOM.
+- **修复**: 三处统一转 float32:
+  1. X_day.astype(np.float32) — 逐日构建时即降精度
+  2. y_day.astype(np.float32)
+  3. factor_panels.astype('float32') — 因子面板从 5GB→2.5GB
+  内存峰值: ~12GB → ~4GB.
+
+### test-v275: LGB 分块训练解决 OOM
+
+- **问题**: 21.8M 样本 × 75 特征, np.vstack → 13GB + lgb.fit() → >25GB, macOS OOM kill.
+- **方案**: float32 降精度 (13GB→6.5GB) + 分块训练 (每批 ≤4M, init_model 串联).
+  LightGBM GBDT 加性模型, 分块数学等价全量. 内存峰值 ~1.2GB/批.
+- **变更文件**: quant/alpha/qlib_model.py
+
+### test-v274: factor_cache 跳过已缓存块 + turnover 单日回填
+
+### 待完成
+1. LGB 训练 (重跑, 不再 OOM)
+2. 回测
+3. git push
+
+### 版本号
+web/app.py VERSION = "test-v275"
+
+
+
+## 当前状态 (test-v268, 2026-07-29 晚) [已归档]
+
+
+### test-v274: factor_cache 跳过已缓存块 + turnover 单日回填
+
+- **factor_cache 分块浪费**: 8 chunks 前 7 个各 500s 产出 0 行.
+  改: chunk 开始前检查整块日期是否全部已缓存, 是则跳过 (force 模式除外).
+  ~4000s → ~500s (只算最后一个 chunk).
+- **turnover backfill 全缺口扫描**: 每次 _run 扫全部历史缺口日期.
+  改: backfill_turnover(date=today) 单日模式, 只回填当天 turnover=0 的股票.
+- **adj_factor 缺口 651 只**: 确认全部是无除权记录新股, 不是 bug.
+- **attribution 问题**: 换手率 178%/滑点 2.55%/roe_ratio 归档 — 策略参数层面, 非代码 bug.
+
+### test-v273: fund_flow curl_cffi + baostock OHLCV 兜底
+
+### test-v272: 数据源链重排 + ETF 过滤 + target_date 精准补数据
+
+### test-v271: _analyze_daily_gaps 过滤非 stocks 表 symbol
+
+### test-v269: sync_adj_factor 接入 baostock 兜底
+
+### 待完成
+1. LGB 训练
+2. 回测
+3. attribution 参数调优 (换手率/滑点/因子策展)
+4. git push
+
+### 版本号
+web/app.py VERSION = "test-v274"
+
+
+
+## 当前状态 (test-v268, 2026-07-29 晚) [已归档]
+
 
 ### test-v271: _analyze_daily_gaps 过滤非 stocks 表 symbol
 

@@ -1,3 +1,7 @@
+# quant — A股量化选股系统 配置文件 (单一真相源)
+# 所有参数均有文献或业界依据, 详见行内注释与底部来源对照表。
+# ADR-041: 参数全面对齐业界标准 (2026-07-28, test-v281 恢复+更新)
+
 alpha:
   lgb:
     train:
@@ -5,6 +9,7 @@ alpha:
       test_start: '2024-01-01'
       forward_horizon: 5
       cv_folds: 5
+      train_chunk_samples: 4_000_000   # 来源: 2026-07-30 OOM 实测, MacBook 16GB, 4M×75×float32≈1.2GB/批安全
     predict:
       fallback: ic_weighted
     params:
@@ -354,3 +359,62 @@ regime:
   train_start: '2024-01-01'
 market:
   annual_trading_days: 244
+
+# ═══════════════════════════════════════════════════════════
+# 参数来源对照表 (ADR-041: 全面对齐业界标准, test-v281 恢复+更新)
+# ═══════════════════════════════════════════════════════════
+# 参数                                  值             来源
+# ───────────────────────────────────── ────────────   ──────────────────────────────────
+# alpha.lgb.train.train_chunk_samples   4_000_000      test-v281: MacBook 16GB OOM 实测, ~1.2GB/批安全
+# alpha.lgb.train.start_date            2015-01-01     Qlib: 10年训练数据覆盖完整牛熊周期
+# alpha.lgb.train.test_start            2024-01-01     Grinold & Kahn: 2年 OOS 足够评估IC持续性
+# alpha.lgb.train.forward_horizon       5              Qlib 标准5日前向收益
+# alpha.lgb.params.num_leaves           31             LightGBM 文档: 31叶平衡精度/速度
+# alpha.lgb.params.learning_rate        0.05           LightGBM 默认学习率
+# alpha.lgb.params.n_estimators         200            LightGBM 文档: 200轮足够收敛
+# alpha.retrain_freq                    60             Grinold & Kahn Ch.6: IC 月度重估
+# alpha.sleeve.min_factors              1              最小因子数
+# alpha.sleeve.positions_per_factor     20             Grinold & Kahn: N=IR²/λ, IR≈0.3→N≈10-30
+# alpha.top_fraction                    0.30           Qlib topk=0.3 软截断
+# alpha.weekly_weight                   0.30           Faber (2007) 双均线周权重
+# alpha.combine_mode                    sleeve         ADR-017: sleeve 并行>ensemble 串行
+# alpha.multi_tf_confirm                False          test-v249: 多时间框架确认 (默认关闭)
+# attribution.ic_rolling_window         20             P4: 一个月交易日, 减少误判 (5→20)
+# attribution.ic_degradation_threshold  0.30           Grinold & Kahn: IC衰减>30%需review
+# attribution.monitoring_buffer_days    10             test-v261: 两交易周, 防单日噪声误杀
+# attribution.promotion_stability_days  5              P2: 一周交易日, 确认IC恢复非噪声
+# attribution.oos_warn_threshold        0.50           test-v261: OOS衰减>50%→告警 (明汯标准)
+# attribution.oos_warning_decay         0.5            test-v261: OOS/IS 比率告警阈值
+# attribution.oos_recovery_threshold    1.5            test-v261: IC恢复阈值
+# attribution.corr_redundant_threshold  0.7            test-v261: 因子相关性冗余阈值
+# backtest.default_start                2020-01-01     test-v262: 6.5年完整周期 (原2023→2020)
+# backtest.factor_cache_max_days        2000           test-v249: 修复裁剪过激 (244→2000)
+# backtest.factor_cache_start           2020-01-01     test-v255: 缓存起始日对齐config
+# backtest.universe_size                800            中证800指数对标
+# backtest.diagnosis_ic_window          120            Qlib: IC回看60-120天
+# backtest.min_trading_days             10             至少2个自然周
+# data.batch_size                       50             tushare 单次查询上限
+# data.rate_limit.tushare_calls_per_minute 50          tushare 免费档 50次/分钟
+# data.rate_limit.tushare_batch_sec     1.2            tushare 批次间隔
+# execution.limit_order.runaway_start   0.03           test-v252: Kissell IS 时间紧迫度曲线
+# execution.limit_order.runaway_end     0.005          test-v252: 收盘前最大容忍
+# execution.limit_order.volume_limit_pct 0.01          test-v252: 单量>日均1%→跳过
+# factor.compute.winsorize_pct          0.01           Barra USE4: 1%/99%分位裁剪
+# factor.evaluation.min_abs_ic          0.02           Qlib: IC<0.02无经济意义
+# factor.evaluation.min_icir            0.25           Grinold & Kahn: IR=0.25=弱, 0.5=合格, 1.0=优秀
+# factor.evaluation.max_lag             20             test-v249: IC 滞后扫描最大天数
+# factor.evaluation.n_quantiles         5              test-v249: 五分位数分组
+# optimizer.rebalance_freq              daily          test-v251: 日频调仓 (原 weekly)
+# optimizer.tc_horizon_days             1              test-v251: daily调仓成本分摊1天
+# optimizer.min_weight                  0.01           test-v250: 最小仓位 1%
+# risk.max_single_position              0.05           US mutual fund 单票上限5% (UCITS:10%)
+# risk.max_sector_exposure              0.35           UCITS 行业集中度上限35%
+# risk.stop_loss_pct                    0.08           8%硬止损 (ATR止损不触发时的兜底)
+# risk.atr_period                       14             Wilder (1978) 标准ATR周期
+# risk.atr_mult_stop_loss               2.0            2×ATR 止损 (Turtle Trading)
+# risk.covariance.window                 252            Ledoit-Wolf: T>N 需要足够样本
+# risk.covariance.min_periods           60             最少60天协方差
+# monitor.circuit_breaker_pct           10.0           对冲基金标准: 10-20% drawdown熔断
+# monitor.max_single_concentration      0.10           UCITS: 单票集中度≤10%
+# market.annual_trading_days            244            A股标准年交易日数
+# regime.retrain_days                   7              周频HMM重训练

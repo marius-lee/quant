@@ -107,8 +107,8 @@ class LgbAlphaModel:
         Returns:
             ModelMetadata: 训练元数据
 
-        Memory: 逐日构建 X_day 并直接喂入 lgb.Dataset, 不 vstack 全量矩阵。
-                峰值 ~ (max_daily_symbols × n_features × 8B) ≈ 5000×65×8 ≈ 2.6MB。
+        Memory: float32 降精度 + 分块训练 (每批 ≤4M 样本, init_model 串联).
+                峰值 ~4M×75×4B ≈ 1.2GB. 21.8M 样本分 6 批训练, 数学等价全量.
         """
         if not self._is_available:
             raise ImportError(
@@ -179,8 +179,8 @@ class LgbAlphaModel:
                 if fn in factor_values and date_str in factor_values[fn].index
                 else np.zeros(len(syms))
                 for fn in feature_names
-            ])
-            y_day = forward_returns.loc[ts].reindex(syms).fillna(0).values
+            ]).astype(np.float32)  # float32 减半内存
+            y_day = forward_returns.loc[ts].reindex(syms).fillna(0).values.astype(np.float32)
 
             mask = ~np.isnan(y_day)
             if mask.sum() < 20:
@@ -204,9 +204,9 @@ class LgbAlphaModel:
                 "No valid training samples — check factor_values and forward_returns alignment"
             )
 
-        # 合并 (已按50天分批 flush, X_chunks 最多 50 段)
-        X = np.vstack(X_chunks)
-        y = np.concatenate(y_chunks)
+        # 合并并降精度 (float32 减半内存, 21.8M×75×4B ≈ 6.5GB)
+        X = np.vstack(X_chunks).astype(np.float32)
+        y = np.concatenate(y_chunks).astype(np.float32)
 
         # 释放中间列表
         del X_chunks, y_chunks
@@ -221,12 +221,38 @@ class LgbAlphaModel:
             len(y), X.shape[1], len(dates_used),
         )
 
+        # ── 分块训练: 每批 ≤4M 样本, 用 init_model 串联 ──
+        # LightGBM GBDT 是加性模型, 分块训练数学等价于全量训练.
+        # 内存峰值 ~4M×75×4B ≈ 1.2GB (vs 全量 21.8M → ~25GB OOM).
+        # 来源: 2026-07-30 OOM kill 后改造.
+        CHUNK_SAMPLES = _require_cfg("alpha.lgb.train.train_chunk_samples")
+        n_total = len(y)
         self._lgb = lgb.LGBMRegressor(**lgb_params)
-        self._lgb.fit(X, y)
 
-        # ── 评估训练集 IC ──
-        y_pred = self._lgb.predict(X)
+        for batch_start in range(0, n_total, CHUNK_SAMPLES):
+            batch_end = min(batch_start + CHUNK_SAMPLES, n_total)
+            batch_n = batch_end - batch_start
+            _log.info("lgb train: batch %d-%d/%d (%.1fM samples)",
+                      batch_start, batch_end, n_total, batch_n / 1e6)
+            self._lgb.fit(
+                X[batch_start:batch_end],
+                y[batch_start:batch_end],
+                init_model=self._lgb.booster_ if batch_start > 0 else None,
+            )
+
+        # ── 评估训练集 IC (分块 predict, 避免 21.9M 全量内存峰值) ──
+        y_pred_chunks = []
+        for batch_start in range(0, n_total, CHUNK_SAMPLES):
+            batch_end = min(batch_start + CHUNK_SAMPLES, n_total)
+            y_pred_chunks.append(self._lgb.predict(X[batch_start:batch_end]))
+        y_pred = np.concatenate(y_pred_chunks)
         ic = np.corrcoef(y_pred, y)[0, 1] if len(y) > 1 else 0.0
+        ic_std = round(float(np.std(y_pred - y)), 6)
+        n_samples_val = len(y)
+        n_features_val = X.shape[1]
+
+        # 释放 X/y (后续只保留 booster + metadata)
+        del X, y, y_pred, y_pred_chunks
 
         # ── 保存模型 ──
         train_date = pd.Timestamp.now().strftime("%Y-%m-%d")
@@ -241,11 +267,11 @@ class LgbAlphaModel:
             train_date=train_date,
             train_start=dates_used[0] if dates_used else "",
             train_end=dates_used[-1] if dates_used else "",
-            n_samples=len(y),
-            n_features=X.shape[1],
+            n_samples=n_samples_val,
+            n_features=n_features_val,
             feature_names=list(feature_names),
             ic_mean=round(float(ic), 4),
-            ic_std=round(float(np.std(y_pred - y)), 6),
+            ic_std=ic_std,
             model_hash=model_hash,
             lgb_params=lgb_params,
         )
@@ -258,7 +284,7 @@ class LgbAlphaModel:
 
         _log.info(
             "lgb model saved: %s (IC=%.4f, %d features, %d samples)",
-            model_path, ic, len(feature_names), len(y),
+            model_path, ic, len(feature_names), n_samples_val,
         )
         return self._metadata
 
@@ -522,8 +548,8 @@ class EnsembleAlphaModel:
                 if fn in factor_values and date_str in factor_values[fn].index
                 else np.zeros(len(syms))
                 for fn in feature_names
-            ])
-            y_day = forward_returns.loc[ts].reindex(syms).fillna(0).values
+            ]).astype(np.float32)  # float32 减半内存
+            y_day = forward_returns.loc[ts].reindex(syms).fillna(0).values.astype(np.float32)
             mask = ~np.isnan(y_day)
             if mask.sum() < 20:
                 continue
@@ -846,7 +872,8 @@ def train_lgb_model(
             _log.info("train_lgb: loaded %d/%d dates", i + 1, len(train_dates))
 
     # 转换 dict → DataFrame
-    factor_panels = {name: pd.DataFrame(series_dict).T for name, series_dict in factor_panels.items() if series_dict}
+    # 转 float32 减半内存 (~5GB→~2.5GB)
+    factor_panels = {name: pd.DataFrame(series_dict).T.astype('float32') for name, series_dict in factor_panels.items() if series_dict}
 
     if not factor_panels:
         raise ValueError("No factor data loaded from cache. Run factor_cache materialization first.")

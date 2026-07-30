@@ -239,21 +239,36 @@ _TIMEOUTS = {
 _MAX_TASK_RETRIES = 2
 
 def _cleanup_zombie_tasks():
-    """启动时清理今天残留的 running 行 (上次进程被 kill 遗留)."""
+    """启动时清理今天残留的 running 行 — 仅当 OS 进程已死才标 aborted (test-v281: PID 检测)."""
     try:
+        import os as _os
         today = datetime.now().strftime("%Y-%m-%d")
         conn = sqlite3.connect(MARKET_DB)
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute(
-            "UPDATE task_runs SET status='aborted', finished_at=datetime('now','localtime') "
-            "WHERE date=? AND status='running'", (today,))
-        n = conn.rowcount if hasattr(conn, 'rowcount') else 0
+        rows = conn.execute(
+            "SELECT id, pid FROM task_runs WHERE date=? AND status='running'", (today,)
+        ).fetchall()
+        cleaned = 0
+        for rid, pid in rows:
+            if pid is None:
+                # 旧记录无 pid → 保守: 不处理, 等超时兜底
+                continue
+            # 检查 OS 进程是否存活
+            try:
+                _os.kill(pid, 0)  # 信号0: 只检查不杀
+            except (OSError, ProcessLookupError):
+                # 进程不存在 → 真僵尸, 标 aborted
+                conn.execute(
+                    "UPDATE task_runs SET status='aborted', finished_at=datetime('now','localtime'), "
+                    "error='进程已死 (PID ' || ? || ' 不存在)' WHERE id=?", (pid, rid))
+                cleaned += 1
+            # else: 进程存活 → 保留 running, 不处理
         conn.commit()
         conn.close()
-        if n:
-            _log.info(f"orchestrator startup: cleaned {n} zombie running rows for {today}")
-    except Exception:
-        pass
+        if cleaned:
+            _log.info(f"orchestrator startup: cleaned {cleaned} dead-pid zombie rows for {today}")
+    except Exception as _e:
+        _log.warning(f"startup zombie check failed (non-fatal): {_e}")
 
 def _check_timeouts(today: str):
     """扫描 task_runs 中 status='running' 的行, 超时则标为 aborted."""

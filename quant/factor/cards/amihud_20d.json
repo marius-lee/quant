@@ -3,8 +3,8 @@
   "display_name": "amihud_20d",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.0036,
-  "icir_12m": -0.0309,
+  "ic_mean_12m": 0.0003,
+  "icir_12m": 0.0032,
   "last_evaluated": "auto",
   "n_obs": 130
 }

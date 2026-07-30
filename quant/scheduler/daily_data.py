@@ -38,7 +38,7 @@ def _run(today: str):
         import traceback
         try:
             s = DataStore()
-            tn = s.backfill_turnover(today)
+            tn = s.backfill_turnover(date=today)
             s.close()
             if tn > 0:
                 _log.info(f"[{today}] turnover backfill: {tn} stocks updated (safety net triggered)")

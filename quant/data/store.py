@@ -1476,63 +1476,72 @@ class DataStore:
             logger.info(f"[pytdx] {len(symbols)} stocks: {len(rows)} rows (vol=手, amt/1000→千元, qfq manual adj)")
         return rows
 
-    def backfill_turnover(self, limit: int = 0):
+    def backfill_turnover(self, date: str = None):
         """回填换手率 — baostock 逐只拉取 K 线, 取 turn 字段 UPDATE daily。
 
+        date: 指定时只回填该日; None 时扫描全缺口 (历史存量回填).
         baostock 免费无需注册, 无硬限速, 建议 0.3s/只间隔 (来源: 2026-07-21 实测)。
         turn 值与 tushare daily_basic turnover_rate 完全一致 (600519: 0.8492%)。
         来源: scripts/check_turnover_sources.py 实测 + baostock 官方文档。
         """
         import time as _time
+        from datetime import datetime, timedelta
+        from quant.execution.calendar import is_trading_day
         conn = self._connect()
 
         # ── 确定回填日期范围 ──
-        last_good = conn.execute("SELECT MAX(date) FROM daily WHERE turnover>0").fetchone()[0]
-        if last_good is None:
-            logger.info("turnover backfill: no turnover>0 data")
-            return 0
-
-        from datetime import datetime, timedelta
-        from quant.execution.calendar import is_trading_day
-        _today = datetime.today()
-        gap_start_dt = datetime.strptime(last_good, "%Y-%m-%d")
-        gap_end_dt = _today  # 包含今天(盘后): daily_data 已写入 OHLCV, turnover=0 需回填 (来源: 2026-07-22)
-
-        # 收集所有缺口日期 (含 last_good 当天 — 只有6只BJ有turnover, 其余5421只需补)
-        gap_dates = []
-        for d_offset in range((gap_end_dt - gap_start_dt).days + 1):
-            d = (gap_start_dt + timedelta(days=d_offset)).strftime("%Y-%m-%d")
-            if is_trading_day(datetime.strptime(d, "%Y-%m-%d").date()):
-                gap_dates.append(d)
-
-        if not gap_dates:
-            logger.info("turnover backfill: no trading days in gap, nothing to do")
-            return 0
-
-        logger.info(f"turnover backfill: gap {gap_dates[0]} to {gap_dates[-1]} "
-                    f"({len(gap_dates)} trading days) via baostock")
-
-        # ── baostock 标的代码映射 ──
-        def _bs_code(sym):
-            if sym.startswith('920'): return f"bj.{sym}"
-            if sym.startswith(('6','9')): return f"sh.{sym}"
-            return f"sz.{sym}"
-
-        # ── 收集需回填的 (symbol, date) ──
-        needs_fill = {}  # date -> [symbol, ...]
-        for d in gap_dates:
+        if date:
+            # 单日模式: 只回填指定日期, 跳过全缺口扫描
+            needs_fill = {}
             syms = [r[0] for r in conn.execute(
-                "SELECT symbol FROM daily WHERE date=? AND (turnover=0 OR turnover IS NULL)", (d,)
+                "SELECT symbol FROM daily WHERE date=? AND (turnover=0 OR turnover IS NULL)", (date,)
             ).fetchall()]
             if syms:
-                needs_fill[d] = syms
+                needs_fill[date] = syms
+            if not needs_fill:
+                logger.info(f"turnover backfill {date}: all stocks have turnover, nothing to do")
+                return 0
+            total_stocks = len(syms)
+            gap_dates = [date]
+            gap_start_dt = datetime.strptime(date, "%Y-%m-%d")
+            gap_end_dt = gap_start_dt
+        else:
+            # 全量模式: 扫描所有缺口日期
+            last_good = conn.execute("SELECT MAX(date) FROM daily WHERE turnover>0").fetchone()[0]
+            if last_good is None:
+                logger.info("turnover backfill: no turnover>0 data")
+                return 0
 
-        if not needs_fill:
-            logger.info("turnover backfill: all dates have complete turnover, nothing to do")
-            return 0
+            _today = datetime.today()
+            gap_start_dt = datetime.strptime(last_good, "%Y-%m-%d")
+            gap_end_dt = _today
 
-        total_stocks = sum(len(v) for v in needs_fill.values())
-        _est_sec = total_stocks * 0.3 + total_stocks * 0.15  # 0.3s间隔 + ~0.15s/只 baostock查询
+            gap_dates = []
+            for d_offset in range((gap_end_dt - gap_start_dt).days + 1):
+                d = (gap_start_dt + timedelta(days=d_offset)).strftime("%Y-%m-%d")
+                if is_trading_day(datetime.strptime(d, "%Y-%m-%d").date()):
+                    gap_dates.append(d)
+
+            if not gap_dates:
+                logger.info("turnover backfill: no trading days in gap, nothing to do")
+                return 0
+
+            # ── 收集需回填的 (symbol, date) ──
+            needs_fill = {}
+            for d in gap_dates:
+                syms = [r[0] for r in conn.execute(
+                    "SELECT symbol FROM daily WHERE date=? AND (turnover=0 OR turnover IS NULL)", (d,)
+                ).fetchall()]
+                if syms:
+                    needs_fill[d] = syms
+
+            if not needs_fill:
+                logger.info("turnover backfill: all dates have complete turnover, nothing to do")
+                return 0
+
+            total_stocks = sum(len(v) for v in needs_fill.values())
+
+        _est_sec = total_stocks * 0.3 + total_stocks * 0.15
         logger.info(f"turnover backfill: {total_stocks} stock×dates via baostock, ~{_est_sec/60:.0f}min estimated")
 
         # ── baostock login ──

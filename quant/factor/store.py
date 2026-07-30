@@ -153,6 +153,19 @@ class FactorStore:
             _log.info("factor_cache: chunk %d/%d — %s → %s (%d dates)",
                       ci + 1, n_chunks, chunk_start_dt, chunk_end_dt, len(chunk_dates))
 
+            # ── 快速跳过: 整块日期均已缓存且非 force → 省掉数据加载+原语计算 ──
+            if not force:
+                all_cached = True
+                for date_str in chunk_dates:
+                    existing = self._get_existing_factors(date_str)
+                    if any(f not in existing for f in factor_names):
+                        all_cached = False
+                        break
+                if all_cached:
+                    _log.info("factor_cache: chunk %d/%d — all %d dates already cached, skip",
+                              ci + 1, n_chunks, len(chunk_dates))
+                    continue
+
             t_chunk = _time.time()
 
             # 分块加载: 只加载该块数据 + 回顾窗

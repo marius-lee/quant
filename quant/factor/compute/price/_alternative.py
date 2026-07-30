@@ -194,7 +194,7 @@ def compute_str(data, date, window=20):
     ).fetchall()
     conn2.close()
     mv_map = {r[0]: r[1] for r in rows}
-    log_mv = pd.Series({s: np.log(mv_map[s]) for s in raw.index if s in mv_map})
+    log_mv = pd.Series({s: np.log(np.float64(mv_map[s])) for s in raw.index if s in mv_map})
     common = raw.index.intersection(log_mv.index)
     if len(common) >= 30:
         from sklearn.linear_model import LinearRegression

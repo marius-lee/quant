@@ -168,7 +168,7 @@ def compute_all_factors(data: pd.DataFrame, date: str,
                                 try:
                                     days = max(0, (pd.Timestamp(date) - pd.Timestamp(latest[sym])).days)
                                     if days > 30:  # 30天内不衰减 (刚发布)
-                                        _decayed_series[sym] *= np.exp(-_decay_lambda * days)
+                                        _decayed_series[sym] *= np.exp(np.float64(-_decay_lambda * days))
                                 except (ValueError, TypeError):
                                     pass
                         break  # 用一个表即可 (income 覆盖最广)

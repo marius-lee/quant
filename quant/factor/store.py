@@ -153,16 +153,18 @@ class FactorStore:
             _log.info("factor_cache: chunk %d/%d — %s → %s (%d dates)",
                       ci + 1, n_chunks, chunk_start_dt, chunk_end_dt, len(chunk_dates))
 
-            # ── 快速跳过: 整块日期均已缓存且非 force → 省掉数据加载+原语计算 ──
+            # ── 快速跳过: 日期文件已存在 → 跳过数据加载+原语计算 ──
+            # test-v274 原逻辑比 factor_names 完整性, 但新因子不可能在旧缓存中,
+            # 导致 all_cached 永 False. test-v286 改为只检查文件存在性,
+            # 新因子对旧日期返回 NaN, pipeline 端会处理.
             if not force:
-                all_cached = True
+                all_exist = True
                 for date_str in chunk_dates:
-                    existing = self._get_existing_factors(date_str)
-                    if any(f not in existing for f in factor_names):
-                        all_cached = False
+                    if not os.path.exists(self._path(date_str)):
+                        all_exist = False
                         break
-                if all_cached:
-                    _log.info("factor_cache: chunk %d/%d — all %d dates already cached, skip",
+                if all_exist:
+                    _log.info("factor_cache: chunk %d/%d — all %d dates cached, skip",
                               ci + 1, n_chunks, len(chunk_dates))
                     continue
 

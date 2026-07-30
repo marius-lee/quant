@@ -4,8 +4,46 @@
 > 避免重复踩坑、重新讨论已否决方案、遗漏已有设计。
 
 
+## 当前状态 (test-v271, 2026-07-30)
 
-## 当前状态 (test-v268, 2026-07-29 晚)
+### test-v271: _analyze_daily_gaps 过滤非 stocks 表 symbol
+
+- **问题**: ETF/退市股等在 daily 表有历史数据但不在 stocks 表, _analyze_daily_gaps
+  的 for 循环遍历 daily 全表把它们判为 stale_recent → 混进拉取链 → 浪费 API.
+- **方案**: for 循环加 `if sym not in all_symbols: continue`.
+  新股不受影响 (新股走 missing = all_symbols - have_data 路径).
+
+### test-v270: update_daily 加 target_date 精准补数据
+
+- **问题**: update_daily 的 _analyze_daily_gaps 永远以今天为 staleness 基准.
+  补 07-29 数据时, 所有已有 07-29 的股票因缺 07-30 被误判为 stale_recent,
+  5,481 只全进拉取链浪费 API 配额+时间.
+- **方案**: update_daily + _analyze_daily_gaps 新增 target_date 参数.
+  指定时以 target_date 为 staleness 基准, 已有该日数据的股票 → full, 直接跳过.
+  target_date 未指定时行为完全不变 (向后兼容).
+- **快速路由守卫**: target_date 不为 None 时跳过快速路由 (快速路由写死 start=today).
+- **变更文件**: quant/data/store.py, quant/scheduler/daily_data.py
+
+### test-v269: sync_adj_factor 接入 baostock 兜底
+
+- **问题**: tushare adj_factor 接口免费档限流 ~3-4 批/天, 5481 股需 36 天铺满.
+- **方案**: sync_adj_factor 双源策略 — tushare 批量 + baostock query_adjust_factor 兜底.
+- **baostock**: 免费无 API key, 无严格限流, 5481 股 ≈ 25 分钟铺满. 已跑通, 覆盖 4,874 股 (88%).
+- **数据源顺序**: tickflow/longbridge 移到最后.
+- **变更文件**: quant/data/store.py
+
+### 待完成
+1. 07-29 日线数据补全 (现在 target_date 精准, 只拉 ~230 只缺口)
+2. 因子缓存物化
+3. 晚间链
+4. git push
+
+### 版本号
+web/app.py VERSION = "test-v270"
+
+
+
+## 当前状态 (test-v268, 2026-07-29 晚) [已归档]
 
 ### 已完成的 (test-v252 → test-v268)
 - daily 调仓频率: weekly → daily (tc_horizon_days: 5 → 1)

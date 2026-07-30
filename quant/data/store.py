@@ -515,17 +515,22 @@ class DataStore:
         return out
 
     def sync_adj_factor(self, max_batches: int = 1, batch_size: int = 50) -> dict:
-        """从 tushare 拉 adj_factor 落本地表 (接口限流 1次/小时 — 每次调用拉满 50 股全历史)。
+        """同步全市场复权因子 (adj_factor) 落本地表。
 
-        选股顺序: 本地无因子的优先, 其次按 updated_at 最旧 (维护模式)。
-        每批成功后自动 rebase 因子跳变股票的 daily 历史 (除权重基准)。
-        设计为 hourly cron 每次跑 1 批: 5400 股 ≈ 108 批 ≈ 4.5 天铺满。
+        双源策略:
+          1. tushare adj_factor 接口 — 批量 50 股, 速度快但限流极严 (免费档 ~3-4次/天).
+          2. baostock query_adjust_factor — 逐只拉取, 无公开限流, tushare 限流后自动接盘.
 
-        返回: {'batches': k, 'rows': n, 'rate_limited': bool, 'remaining': m}
+        选股顺序: 本地无因子的优先, 其次按 updated_at 最旧 (维护模式).
+        每批成功后自动 rebase 因子跳变股票的 daily 历史 (除权重基准).
+
+        tushare 铺满: ~108 批 × 50 股, 但受限于 ~3-4 批/天 → 需 30+ 天.
+        baostock 铺满: 5481 股 × ~0.3s/只 ≈ 27 分钟 (无严格限流).
+        设计: cron 每小时调一次, tushare 限流后 baostock 补位.
+
+        返回: {'batches': k, 'rows': n, 'rate_limited': bool, 'remaining': m,
+                'source': 'tushare'|'baostock'|'mixed'}
         """
-        if not self.token:
-            logger.warning("sync_adj_factor: no tushare token")
-            return {"batches": 0, "rows": 0, "rate_limited": False, "remaining": -1}
         conn = self._connect()
         self._ensure_adj_factor_tables(conn)
         # 本地无因子或最久未更新的股票优先
@@ -539,64 +544,218 @@ class DataStore:
         """).fetchall()]
         if not pending:
             logger.info("sync_adj_factor: all symbols covered")
-            return {"batches": 0, "rows": 0, "rate_limited": False, "remaining": 0}
+            return {"batches": 0, "rows": 0, "rate_limited": False, "remaining": 0,
+                    "source": "none"}
 
-        import tushare as ts
-        ts.set_token(self.token)
-        pro = ts.pro_api(timeout=_require_cfg("data.http_timeout.tushare"))
         start = to_compact(_require_cfg("data.start_date"))
-
-        _init_cache()  # 初始化 _tushare_limiter (与 _fetch_batch_tushare 同一模式)
+        source_used = "none"
         total_rows, batches, rate_limited = 0, 0, False
-        for bi in range(0, min(len(pending), max_batches * batch_size), batch_size):
-            chunk = pending[bi:bi + batch_size]
-            codes = self._ts_codes(chunk)
-            if not codes:
-                continue
-            _tushare_limiter.wait()
-            try:
-                fdf = pro.adj_factor(
-                    ts_code=",".join(codes),
-                    start_date=start,
-                    end_date=to_compact(datetime.today()),
-                    fields="ts_code,trade_date,adj_factor",
-                )
-            except Exception as e:
-                msg = str(e)
-                if "频率超限" in msg or "freq" in msg.lower() or "限" in msg:
-                    logger.warning(f"sync_adj_factor: rate limited at batch {bi // batch_size}: {e}")
-                    rate_limited = True
-                    break
-                logger.warning(f"sync_adj_factor: batch {bi // batch_size} failed: {e}")
-                continue
-            if fdf is None or fdf.empty:
-                logger.warning(f"sync_adj_factor: empty factor for batch {bi // batch_size}")
-                continue
-            rows = [
-                (r["ts_code"].split(".")[0],
-                 f"{r['trade_date'][:4]}-{r['trade_date'][4:6]}-{r['trade_date'][6:]}",
-                 float(r["adj_factor"]))
-                for _, r in fdf.iterrows()
-                if r.get("adj_factor") is not None
-            ]
-            conn.executemany(
-                "INSERT INTO adj_factor (symbol, date, factor) VALUES (?,?,?) "
-                "ON CONFLICT(symbol, date) DO UPDATE SET factor=excluded.factor, "
-                "updated_at=datetime('now','localtime')",
-                rows)
-            conn.commit()
-            total_rows += len(rows)
-            batches += 1
-            logger.info(f"sync_adj_factor: batch {bi // batch_size} {len(chunk)} symbols, "
-                        f"{len(rows)} rows (total {total_rows})")
-            # 因子落地后立即重基准: 该批中因子跳变的股票重写 daily 历史
-            rebased = self._rebase_ex_dividend(conn, chunk)
-            if rebased:
-                logger.info(f"sync_adj_factor: rebased {rebased} ex-dividend symbols")
 
-        remaining = len(pending) - batches * batch_size
+        # ── 阶段 1: tushare 批量拉取 (首选, 批量 50 股) ──
+        if self.token:
+            import tushare as ts
+            ts.set_token(self.token)
+            pro = ts.pro_api(timeout=_require_cfg("data.http_timeout.tushare"))
+            _init_cache()  # 初始化 _tushare_limiter
+
+            for bi in range(0, min(len(pending), max_batches * batch_size), batch_size):
+                chunk = pending[bi:bi + batch_size]
+                codes = self._ts_codes(chunk)
+                if not codes:
+                    continue
+                _tushare_limiter.wait()
+                try:
+                    fdf = pro.adj_factor(
+                        ts_code=",".join(codes),
+                        start_date=start,
+                        end_date=to_compact(datetime.today()),
+                        fields="ts_code,trade_date,adj_factor",
+                    )
+                except Exception as e:
+                    msg = str(e)
+                    if "频率超限" in msg or "freq" in msg.lower() or "限" in msg:
+                        logger.warning(
+                            f"sync_adj_factor: tushare rate limited at batch {bi // batch_size} "
+                            f"(免费档 ~3-4批/天, cron 每小时触发一次, 限流属正常); "
+                            f"→ 回退 baostock")
+                        rate_limited = True
+                        break
+                    logger.warning(f"sync_adj_factor: tushare batch {bi // batch_size} failed: {e}")
+                    continue
+                if fdf is None or fdf.empty:
+                    logger.warning(f"sync_adj_factor: tushare empty factor for batch {bi // batch_size}")
+                    continue
+                rows = [
+                    (r["ts_code"].split(".")[0],
+                     f"{r['trade_date'][:4]}-{r['trade_date'][4:6]}-{r['trade_date'][6:]}",
+                     float(r["adj_factor"]))
+                    for _, r in fdf.iterrows()
+                    if r.get("adj_factor") is not None
+                ]
+                conn.executemany(
+                    "INSERT INTO adj_factor (symbol, date, factor) VALUES (?,?,?) "
+                    "ON CONFLICT(symbol, date) DO UPDATE SET factor=excluded.factor, "
+                    "updated_at=datetime('now','localtime')",
+                    rows)
+                conn.commit()
+                total_rows += len(rows)
+                batches += 1
+                source_used = "tushare"
+                logger.info(f"sync_adj_factor: [tushare] batch {bi // batch_size} {len(chunk)} symbols, "
+                            f"{len(rows)} rows (total {total_rows})")
+                rebased = self._rebase_ex_dividend(conn, chunk)
+                if rebased:
+                    logger.info(f"sync_adj_factor: rebased {rebased} ex-dividend symbols")
+
+        # ── 阶段 2: baostock 逐只兜底 (tushare 限流或无 token 时) ──
+        processed_tushare = batches * batch_size
+        remaining_stocks = pending[processed_tushare:]
+        if (rate_limited or not self.token) and remaining_stocks:
+            bs_batches, bs_rows = self._sync_adj_factor_baostock(
+                conn, remaining_stocks[:max_batches * batch_size], start)
+            if bs_rows > 0:
+                total_rows += bs_rows
+                batches += bs_batches
+                source_used = "mixed" if source_used == "tushare" else "baostock"
+                logger.info(f"sync_adj_factor: [baostock] {bs_batches} stocks, "
+                            f"{bs_rows} rows (total {total_rows})")
+
+        remaining = len(pending) - (batches * batch_size if source_used == "tushare"
+                                    else processed_tushare + len(remaining_stocks[:max_batches * batch_size]))
         return {"batches": batches, "rows": total_rows,
-                "rate_limited": rate_limited, "remaining": max(remaining, 0)}
+                "rate_limited": rate_limited, "remaining": max(remaining, 0),
+                "source": source_used}
+
+    def _sync_adj_factor_baostock(self, conn, symbols: list, start: str) -> tuple:
+        """baostock (证券宝) 复权因子同步 — 逐只拉取, 无公开限流.
+
+        baostock query_adjust_factor 返回字段:
+          - code:              股票代码 (如 sz.000001)
+          - dividOperateDate:  除权除息日 (YYYY-MM-DD)
+          - foreAdjustFactor:  前复权因子
+          - backAdjustFactor:  后复权因子
+          - adjustFactor:      复权因子 (本表使用此字段, 与 tushare adj_factor 语义一致)
+
+        baostock 是免费开源 Python 包, 由证券宝 (www.baostock.com) 提供,
+        数据来自交易所公开信息, 无 API key, 无严格频率限制.
+        单个股票全历史 ~10 条记录 (仅在除权日变化), 非常轻量.
+        已在 Python 3.14 (baostock ≥0.9.20) 实测兼容.
+
+        限流/超时对策:
+          - 每 200 只自动重登, 防 session 超时 (baostock 免费服务 ~1-2h, 同 backfill_turnover)
+          - 每 50 只进度日志 + 速率 ETA
+          - 逐只间隔 0.15s, 避免压垮 baostock 服务器
+          - 重登失败不中断, 继续下一只
+
+        来源: 2026-07-30 — tushare adj_factor 免费档限流 ~3-4批/天,
+              5481 股需 36 天铺满, 改为 baostock ~27 分钟铺满.
+        """
+        import time as _time
+
+        try:
+            import baostock as bs
+        except ImportError:
+            logger.warning("baostock not installed, skip adj_factor fallback")
+            return 0, 0
+
+        lg = bs.login()
+        if lg.error_code != "0":
+            logger.warning(f"baostock login failed: {lg.error_msg}")
+            return 0, 0
+
+        total_rows, stock_count, processed = 0, 0, 0
+        t0 = _time.time()
+        total = len(symbols)
+        end_date = datetime.today().strftime("%Y-%m-%d")
+        done_symbols = []  # 成功写入因子的股票代码, 用于最后 rebase
+
+        def _baostock_code(sym: str) -> str:
+            """6位数代码 → baostock 格式. sh.6xxxxx/sh.9xxxxx, sz.0xxxxx/sz.2xxxxx/sz.3xxxxx."""
+            if sym.startswith(("6", "9")):
+                return f"sh.{sym}"
+            return f"sz.{sym}"
+
+        try:
+            for sym in symbols:
+                bs_code = _baostock_code(sym)
+
+                # ── 重登: 每 200 只防 session 超时 ──
+                if processed > 0 and processed % 200 == 0:
+                    logger.info(f"baostock adj_factor: re-login at {processed} stocks "
+                                f"(防 session 超时, baostock 免费服务 ~1-2h)")
+                    bs.logout()
+                    lg = bs.login()
+                    if lg.error_code != "0":
+                        logger.warning(f"baostock re-login failed at {processed}: {lg.error_msg}; "
+                                       "continuing with old session")
+                    else:
+                        _time.sleep(0.5)  # 重登后稍等
+
+                try:
+                    rs = bs.query_adjust_factor(
+                        code=bs_code, start_date=start, end_date=end_date)
+                except Exception as e:
+                    logger.warning(f"baostock adj_factor {bs_code}: query failed: {e}")
+                    processed += 1
+                    continue
+
+                if rs.error_code != "0":
+                    processed += 1
+                    continue  # 无因子记录 (如新股) — 静默跳过
+
+                stock_rows = 0
+                while rs.next():
+                    row_data = rs.get_row_data()
+                    # row_data: [code, dividOperateDate, foreAdjustFactor,
+                    #            backAdjustFactor, adjustFactor]
+                    date_str = row_data[1]
+                    try:
+                        factor_val = float(row_data[4]) if row_data[4] else None
+                    except (ValueError, TypeError):
+                        factor_val = None
+                    if factor_val is None:
+                        continue
+                    conn.execute(
+                        "INSERT INTO adj_factor (symbol, date, factor) VALUES (?,?,?) "
+                        "ON CONFLICT(symbol, date) DO UPDATE SET factor=excluded.factor, "
+                        "updated_at=datetime('now','localtime')",
+                        (sym, date_str, factor_val))
+                    stock_rows += 1
+
+                if stock_rows > 0:
+                    conn.commit()
+                    total_rows += stock_rows
+                    stock_count += 1
+                    done_symbols.append(sym)
+
+                processed += 1
+
+                # ── 进度日志: 每 50 只 ──
+                if processed % 50 == 0:
+                    elapsed = _time.time() - t0
+                    rate = processed / elapsed if elapsed > 0 else 0
+                    eta = (total - processed) / rate if rate > 0 else 0
+                    logger.info(f"baostock adj_factor: {processed}/{total} "
+                                f"({100*processed//total}%) {total_rows} rows | "
+                                f"{elapsed:.0f}s ETA {eta:.0f}s")
+
+                # 逐只间隔 0.15s: baostock 免费服务器无公开限流,
+                # 但避免短时间内大量 TCP 连接压垮对方
+                _time.sleep(0.15)
+
+            # ── 重基准: 因子落地的股票重写 daily 历史 ──
+            if done_symbols:
+                rebased = self._rebase_ex_dividend(conn, done_symbols)
+                if rebased:
+                    logger.info(f"sync_adj_factor: [baostock] rebased {rebased} ex-dividend symbols")
+
+        finally:
+            bs.logout()
+
+        elapsed = _time.time() - t0
+        logger.info(f"baostock adj_factor done: {stock_count} stocks, {total_rows} rows, "
+                    f"{elapsed:.0f}s ({elapsed/60:.1f}min)")
+        return stock_count, total_rows
 
     def _rebase_ex_dividend(self, conn, symbols: list = None) -> int:
         """除权重基准: 因子最新值与 state 不一致的股票, daily 全历史 × F_old/F_new。
@@ -774,6 +933,75 @@ class DataStore:
             import time as _time
             _time.sleep(_require_cfg("data.rate_limit.sina_per_stock_sec"))
         return rows
+
+    def _fetch_baostock_daily(self, symbols: list, start_date: str) -> list:
+        """baostock (证券宝) 日线: qfq 前复权, vol=股→手, amt=元→千元, turnover✅.
+
+        baostock 免费开源, 无 API key, 无严格限流. 用 query_history_k_data_plus
+        接口拉取前复权日线 (adjustflag=2), 数据质量可靠但逐只拉取 (0.3s/只).
+        适合作为 tushare/zzshare/pytdx 之后的兜底源.
+
+        baostock 符号格式: sh.6xxxxx/sh.9xxxxx, sz.0xxxxx/sz.2xxxxx/sz.3xxxxx.
+        已在 Python 3.14 (baostock ≥0.9.20) 实测兼容.
+        来源: 2026-07-30 — akshare IP 封禁, baostock 补位 OHLCV 兜底.
+        """
+        import time as _time
+        try:
+            import baostock as bs
+        except ImportError:
+            return None
+
+        lg = bs.login()
+        if lg.error_code != "0":
+            logger.warning(f"baostock login failed: {lg.error_msg}")
+            return None
+
+        rows = []
+        try:
+            for i, sym in enumerate(symbols):
+                # 6位数代码 → baostock 格式
+                if sym.startswith(("6", "9")):
+                    bs_code = f"sh.{sym}"
+                else:
+                    bs_code = f"sz.{sym}"
+
+                try:
+                    rs = bs.query_history_k_data_plus(
+                        code=bs_code,
+                        fields="date,open,high,low,close,volume,amount,turn",
+                        start_date=start_date,
+                        end_date=datetime.today().strftime("%Y-%m-%d"),
+                        frequency="d",
+                        adjustflag="2",  # 2=前复权
+                    )
+                except Exception as e:
+                    logger.warning(f"baostock daily {bs_code}: query failed: {e}")
+                    continue
+
+                if rs.error_code != "0":
+                    continue
+
+                while rs.next():
+                    row_data = rs.get_row_data()
+                    # row_data: [date, open, high, low, close, volume, amount, turn]
+                    try:
+                        d = row_data[0]
+                        o = float(row_data[1])
+                        h = float(row_data[2])
+                        l = float(row_data[3])
+                        c = float(row_data[4])
+                        vol = float(row_data[5]) / 100.0  # 股→手
+                        amt = float(row_data[6]) / 1000.0  # 元→千元
+                        turnover = float(row_data[7]) if row_data[7] else 0.0
+                    except (ValueError, IndexError, TypeError):
+                        continue
+                    rows.append(self._norm_row(sym, d, o, h, l, c, vol, amt, turnover))
+
+                _time.sleep(0.15)  # 逐只间隔, 避免压垮服务器
+        finally:
+            bs.logout()
+
+        return rows if rows else None
 
     def _fetch_tencent_daily(self, symbols: list, start_date: str) -> list:
         """东方财富 K线: vol=手, amt=元→/1000→千元.
@@ -1142,9 +1370,13 @@ class DataStore:
         return rows
 
     def _fetch_pytdx_daily(self, symbols: list, start_date: str) -> list:
-        """Pytdx 通达信日线 + 前复权计算: vol=手, amt=元→/1000→千元。
+        """Pytdx (通达信) 日线 + 前复权: vol=手, amt=元→/1000→千元。
 
-        数据源: 通达信标准行情 (pytdx), 服务器 180.153.18.170:7709。
+        数据源: 通达信 (Tong Da Xin) 标准行情协议 — 国内最老牌的免费行情协议。
+        提供商: 财富趋势科技 (已上市, 股票代码 688318), 通达信客户端覆盖绝大多数券商。
+        服务器: 180.153.18.170:7709 (TCP 直连, 无需 API key, 无需认证).
+        特点: 数据质量可靠、稳定运行 30 年+、无频率限制 (TCP 逐只拉取).
+        缺点: 不提供换手率 (turnover=0 回填)、未复权需手算前复权因子、逐只拉取慢.
         Pytdx 返回未复权数据，通过 get_xdxr_info 获取除权除息记录手算前复权因子。
 
         来源: ③ Pytdx 是国内最老牌的免费行情协议，数据质量可靠。
@@ -1528,15 +1760,18 @@ class DataStore:
         logger.info(f"industry sync (akshare individual): {updated} updates, {classified}/{total}")
         return updated
 
-    def _analyze_daily_gaps(self, conn) -> dict:
+    def _analyze_daily_gaps(self, conn, target_date: str = None) -> dict:
         """分析日线数据缺口 — missing（从未有数据） vs stale（超250天未更新） vs stale_recent（近期缺数据） vs full（完整）。
 
         用于增量更新前的精准拉取决策, 只拉缺口 + 过期数据, 不浪费 API 配额。
 
+        target_date: 指定时以此为 staleness 基准 (替代今天), 已有该日数据的股票 → full.
+                    用于补历史单日数据时避免全市场重拉.
+
         两级检查:
           1. 长期过期: max(date) < stale_days 天前 → stale
-          2. 近期缺失: 最新 DB 日期落后于最近交易日 → 所有有数据的股票判为 stale_recent
-             (例如 DB 最新 07-13 但今天 07-16, 则全部股票需补拉 07-14/15/16)
+          2. 近期缺失: 最新 DB 日期落后于参考日期 → 所有有数据的股票判为 stale_recent
+             (例如 DB 最新 07-13 但参考日期 07-16, 则全部股票需补拉 07-14/15/16)
         """
         from datetime import datetime, timedelta
         stale_days = _require_cfg("data.stale_days")  # 数据过期阈值
@@ -1551,14 +1786,15 @@ class DataStore:
         # global latest date — 用于近期缺失检测
         global_max = conn.execute("SELECT MAX(date) FROM daily WHERE date >= '2000-01-01' AND date < '2100-01-01'").fetchone()[0] or "2020-01-01"
 
-        # 最近交易日 (取本地日历; 在线不可用时用今天近似)
+        # 最近交易日 — target_date 指定时以此为基准, 否则取今天
         today_str = datetime.now().strftime("%Y-%m-%d")
+        ref_date = target_date if target_date else today_str
         try:
             from quant.execution.calendar import get_trading_days
             all_td = sorted(get_trading_days())
-            most_recent_td = [d for d in all_td if d <= today_str][-1] if all_td else today_str
+            most_recent_td = [d for d in all_td if d <= ref_date][-1] if all_td else ref_date
         except Exception:
-            most_recent_td = today_str
+            most_recent_td = ref_date
 
         # 所有 stocks 符号
         all_symbols = {r[0] for r in conn.execute("SELECT symbol FROM stocks WHERE market!=\"BJ\"").fetchall()}
@@ -1568,6 +1804,9 @@ class DataStore:
         stale, stale_recent, full = [], [], []
         for sym, min_d, max_d in rows:
             have_data.add(sym)
+            # 只处理 stocks 表内的股票; ETF/退市股等在 daily 有历史残留但不应拉取
+            if sym not in all_symbols:
+                continue
             if max_d < cutoff:
                 stale.append(sym)
                 continue
@@ -1586,12 +1825,16 @@ class DataStore:
 
 
     def update_daily(self, symbols: list = None,
-                     start: str = None) -> int:
+                     start: str = None,
+                     target_date: str = None) -> int:
         """增量更新日线 — 精准缺口分析 + 多源回退。
+
+        target_date: 指定时只拉该日缺口 (替代全量 staleness 检查).
+                     用于补历史单日数据, 避免已有该日数据的股票重入拉取链.
 
         流程:
           1. 分析哪些股票缺少数据（不浪费时间拉已有数据）
-          2. tushare(批量50股,qfq) → tickflow(批量) → zzshare → pytdx(TCP) → tencent → akshare
+          2. tushare(批量50股,qfq) → zzshare → pytdx(通达信TCP) → baostock(证券宝) → tencent → akshare → tickflow → longbridge
           3. OHLCV 完成后，Baostock 补充换手率
 
         symbols: None 表示自动分析缺口并只拉缺失/不足的股票
@@ -1604,7 +1847,7 @@ class DataStore:
 
         # 1. 精准分析数据缺口
         if symbols is None:
-            gaps = self._analyze_daily_gaps(conn)
+            gaps = self._analyze_daily_gaps(conn, target_date)
             target = gaps["missing"] + gaps["stale"] + gaps.get("stale_recent", [])
             logger.info(f"daily gaps: {gaps['total']} total, "
                        f"{len(gaps['missing'])} missing, "
@@ -1616,10 +1859,11 @@ class DataStore:
                 return 0
             symbols = sorted(target, key=lambda s: s[:2])  # SH first (tushare benefit)
 
-            # 当天快速路由: 只有 stale_recent(无 missing/stale) 时,
-            # 覆写 start 为今天 → _fetch_tickflow_daily 走 API key quotes,
-            # 跳过免费版(免费版日K不含当天, 来源: 2026-07-21 全链路逻辑分析)
-            if (gaps.get("stale_recent") and not gaps["missing"] and not gaps["stale"]):
+            # 当天快速路由: target_date 未指定 + 只有 stale_recent(无 missing/stale),
+            # 覆写 start 为今天 → 跳过免费版(免费版日K不含当天, 来源: 2026-07-21 全链路逻辑分析).
+            # target_date 指定时不走此路由: start=today 会拉错日期 (target_date≠today).
+            if (target_date is None and gaps.get("stale_recent")
+                    and not gaps["missing"] and not gaps["stale"]):
                 start = datetime.today().strftime("%Y-%m-%d")
         else:
             logger.info(f"daily update: {len(symbols)} specified stocks")
@@ -1661,21 +1905,29 @@ class DataStore:
             # 各源复权口径: tushare=adj_factor 转 qfq (B-08), tickflow=adj_factor 转 qfq (B-08, test-v304),
             # zzshare/pytdx=前复权, tencent/akshare=em qfq 前复权。
 
-            # ── 全量拉取源选择 (多源回退, 按实测速度+批量能力排序) ──
-            # 优先级: tushare(批量50股, turnover✅, qfq✅) > tickflow(批量, 无turnover) > zzshare(逐只, 无turnover)
-            #         > pytdx(TCP, 无turnover) > tencent(em K线,封禁中) > akshare(换手率✅,封禁中)
+            # ── 全量拉取源选择 (多源回退, 按优先级排序) ──
+            # 各源简介:
+            #   - tushare:     批量50股, qfq✅, turnover✅. 首家优选.
+            #   - zzshare:     逐只拉取, 前复权, turnover=0.
+            #   - pytdx:       通达信 (财富趋势 688318) — TCP 直连, 无需API key, 30年+稳定.
+            #   - baostock:    证券宝 — 免费开源, qfq 前复权, turnover✅. 逐只 0.3s, 兜底可靠.
+            #   - tencent:     EM K线, qfq 前复权, IP 当前封禁. 等解封后自动恢复.
+            #   - akshare:     逐只拉取, EM qfq 前复权, turnover✅. IP 封禁中 → 置后减少白等.
+            #   - tickflow:    批量拉取, adj_factor 转 qfq, 无 turnover. 免费版无批量权限.
+            #   - longbridge:  批量拉取, 无 turnover. 需凭证.
+            # akshare 排在 zzshare/pytdx/tencent 之后: IP 封禁期内减少无效重试 (4次×3s=12s/批).
             # 设计决策: 速度优先于 turnover 完整性 — tushare 首位的 99%+ 成功率保证了 turnover 覆盖率。
-            # 若 tushare 某批失败, 回退源(无 turnover)接盘 → backfill_turnover_quotes 后续补 turnover。
-            # eastmoney 系(tencent/akshare)当前IP不可用, 置末尾但不移除 — 等IP解封后自动恢复
+            # 若 tushare 某批失败, 回退源(无 turnover)接盘 → backfill_turnover 后续补 turnover。
             # TLS 指纹对抗: tencent/akshare 使用 curl_cffi 模拟 Chrome 131
             # 来源: 2026-07-20 scripts/test_all_sources_rate.py 全源实测; 2026-07-21 全链路逻辑分析
             all_sources = [
-                ("tickflow", lambda: self._fetch_tickflow_daily(chunk, batch_start)),
-                ("longbridge", lambda: self._fetch_longbridge_daily(chunk, batch_start)),
-                ("akshare", lambda: self._fetch_akshare_daily(chunk, batch_start)),
                 ("zzshare", lambda: self._fetch_zzshare_daily(chunk, batch_start)),
                 ("pytdx", lambda: self._fetch_pytdx_daily(chunk, batch_start)),
+                ("baostock", lambda: self._fetch_baostock_daily(chunk, batch_start)),
                 ("tencent", lambda: self._fetch_tencent_daily(chunk, batch_start)),
+                ("akshare", lambda: self._fetch_akshare_daily(chunk, batch_start)),
+                ("tickflow", lambda: self._fetch_tickflow_daily(chunk, batch_start)),
+                ("longbridge", lambda: self._fetch_longbridge_daily(chunk, batch_start)),
             ]
             if self.token:
                 all_sources.insert(0, ("tushare", lambda: self._fetch_batch_tushare(chunk, batch_start)))

@@ -25,7 +25,7 @@ def _run(today: str):
     try:
         from quant.data.store import DataStore
         store = DataStore()
-        n = store.update_daily()
+        n = store.update_daily(target_date=today)
         store.close()
 
         elapsed = _time.time() - t0

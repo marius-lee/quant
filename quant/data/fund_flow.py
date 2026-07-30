@@ -1,12 +1,13 @@
 """个股资金流向数据同步 — 东方财富直连 (绕过 akshare).
 
-aksare 的 stock_individual_fund_flow 触发 RemoteDisconnected,
-urllib.request 直连 HTTP 200 → 改用直连方式。
+东方财富 CDN 封 python-requests TLS 指纹 (JA3 检测).
+用 curl_cffi 模拟 Chrome 131 TLS 指纹绕过, 同 _fetch_tencent_daily.
+来源: 2026-07-30 — requests + curl 子进程均被断连, curl_cffi 可解.
 """
 
 import json, os, sqlite3, time
 from quant.config.constants import _require_cfg
-import requests
+import curl_cffi.requests as _req
 from quant.utils.logger import get_logger
 
 logger = get_logger("data.fund_flow")
@@ -43,26 +44,13 @@ _CURL_MODE = None  # None=未探测, True=curl, False=requests
 
 
 def _http_get_json(url: str, headers: dict):
-    """GET JSON, requests 优先, 被封自动降级 curl 子进程。"""
-    global _CURL_MODE
-    if _CURL_MODE is not True:
-        try:
-            resp = requests.get(url, headers=headers, timeout=30)
-            resp.raise_for_status()
-            _CURL_MODE = False
-            return resp.json()
-        except Exception:
-            _CURL_MODE = True
-            logger.info("fund_flow: requests blocked, fallback to curl subprocess")
-    import subprocess
-    args = ["curl", "-sS", "-m", "30"]
-    for k, v in headers.items():
-        args += ["-H", f"{k}: {v}"]
-    args.append(url)
-    out = subprocess.run(args, capture_output=True, text=True, timeout=40)
-    if out.returncode != 0 or not out.stdout.strip():
-        raise ConnectionError(f"curl failed rc={out.returncode}: {out.stderr[:200]}")
-    return json.loads(out.stdout)
+    """GET JSON, curl_cffi 模拟 Chrome 131 TLS 指纹绕过东财 CDN JA3 检测."""
+    resp = _req.get(
+        url, headers=headers, timeout=30,
+        impersonate="chrome131",
+    )
+    resp.raise_for_status()
+    return resp.json()
 
 
 def _ensure_table(conn):

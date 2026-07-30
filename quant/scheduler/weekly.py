@@ -26,6 +26,7 @@ def _run(today: str):
 
     # ── 因子策展: 检查内置库有无新因子, 自动 IC 评估 + 注册 (test-v265) ──
     try:
+        _tk_start("factor_curation", today, grace_seconds=3600)
         from quant.factor.factor_curator import FactorCurator
         curator = FactorCurator()
         curated = curator.curate(n_symbols=500, n_dates=120, auto_register=True)
@@ -34,8 +35,11 @@ def _run(today: str):
         if curated.get('results'):
             for r in curated['results'][:3]:
                 _log.info(f"  {r['name']}: IC={r['mean_ic']:.4f} → {r['verdict']} ({r['source'][:30]})")
+        _tk_finish("factor_curation", today, "ok",
+                   summary={"evaluated": curated['n_evaluated'], "registered": curated['n_registered']})
     except Exception as e:
         _log.warning(f"[{today}] factor curation failed (non-fatal): {e}")
+        _tk_finish("factor_curation", today, "failed", error=str(e))
 
     stats = force_refresh_cache()
     n_factors = len(stats.get("factors", []))

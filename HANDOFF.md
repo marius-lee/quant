@@ -6,6 +6,26 @@
 
 ## 当前状态 (test-v284, 2026-07-30)
 
+
+### test-v285: probation 门槛提升 (ICIR 0.15→0.20, IC 0.01→0.015)
+
+- **背景**: ADR-041 (2026-07-28) 将 monitoring(纯观察池,不参与信号) → probation(参与信号,衰减权重),
+  但 Phase 2 的 monitoring 门槛未同步调整, 导致 IC=0.01 的噪声因子 (roe_ratio) 混入信号.
+- **根因分析**:
+  1. 原始 monitoring 门槛 (IC=0.01, ICIR=0.15) 设计意图是"不对实盘开放但保留观察", 低门槛合理.
+  2. ADR-041 改变语义: monitoring→probation + using=active+probation (参与信号).
+  3. 语义变了, 门槛没跟 → 噪声因子混进信号, 依赖归因每日检测踢出 (T+1 延迟).
+  4. roe_ratio 案例: IC=0.0109≥0.01 → monitoring → ADR-041 migration → probation →
+     attribution 归档 (走了完整的"混入→检测→踢出"流程, 但第一天信号已被污染).
+- **修复**:
+  - monitoring_min_icir: 0.15→0.20 (Grinold & Kahn IR<0.25=弱, 观察池向下取 0.20)
+  - monitoring_min_abs_ic: 0.01→0.015 (Qlib 标准 IC<0.02 无经济意义)
+  - diagnostics_min_icir: 0.15→0.20 (与 monitoring 对齐, 原设计即要同步)
+- **影响**: IC≈0.01/ICIR≈0.12 的因子将直接在 Phase 2 fail→archived, 不再进 probation.
+  已归档因子 (roe_ratio 等 44 个) 不受影响 (archived 不回退).
+- **变更文件**: quant/config/config.yaml
+
+
 ### test-v284: attribution 独立三档归因
 
 资金分档 (独立于 optimizer, 纯归因维度):

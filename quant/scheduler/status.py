@@ -55,8 +55,8 @@ def register_all():
     register("attribution",  "factor_cache完成后", label="盘后归因",
              desc="Brinson 归因 + IC 衰减 + OOS 验证 + 因子归因")
     register("factor_curation", "周六 06:00", label="因子策展",
-             desc="先执行: 检查内置库+用户提交→编译→评估→注册; 完成后执行因子评估")
-    register("weekly_eval",  "周六 06:00",   label="因子评估",
+             desc="检查内置库+用户提交, 编译→IC评估→注册新因子")
+    register("weekly_eval",  "factor_curation完成后", label="因子评估",
              desc="评估管线五阶段：回测诊断因子 → 正式认证 → 状态变更")
     register("lgb_train",    "周一/周四 factor_cache完成后", label="模型训练",
              desc="LightGBM 模型重训 (仅周一/周四)")

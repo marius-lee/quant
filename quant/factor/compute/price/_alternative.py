@@ -256,7 +256,7 @@ def compute_abn_turnover(data, date, window=20):
     from sklearn.linear_model import LinearRegression
     import numpy as np
     y = turn_series.loc[common].values
-    log_mv = np.log([mv_map[s] for s in common])
+    log_mv = np.log(np.asarray([mv_map[s] for s in common], dtype=np.float64))
     # 行业哑变量 (只保留有 ≥3 只股票的行业)
     industries = [ind_map.get(s, '') for s in common]
     ind_counts = pd.Series(industries).value_counts()

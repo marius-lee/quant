@@ -527,11 +527,11 @@ async function loadScheduler() {
     if (data && data.tasks) {
       renderTable('table-scheduler', data.tasks, [
         { key: 'task', label: '任务' },
-        { key: 'desc', label: '说明' },
         { key: 'schedule', label: '调度' },
         { key: 'status_label', label: '状态' },
         { key: 'last_run', label: '上次运行' },
         { key: 'error_msg', label: '错误信息' },
+        { key: 'desc', label: '说明' },
       ]);
       document.getElementById('meta-scheduler').textContent = (data.tasks?.length || 0) + ' 任务';
     }

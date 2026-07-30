@@ -4,6 +4,11 @@ P2: probation→active 自动升回 (连续N天IC恢复)
 P3: 轻量级在线 OOS IC 验证 (expanding-window)
 P4: IC 滚动窗口 5→20 天 (config.yaml)
 P5: Brinson 基准从等权改为市值加权
+
+归因三档模式 (test-v283, 对齐 optimizer 资金分档):
+  精简模式 (Nano,  <¥30K):  因子健康检测 + 信号衰减, 跳过 Brinson/DSR/换手率/拥挤度
+  标准模式 (Micro, ¥30K-100K): 全量归因, 放宽阈值 (换手率 200%, DSR ≥10d)
+  严格模式 (Small, ≥¥100K):   全量归因, 业界标准阈值
 """
 import time as _time, uuid as _uuid
 from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
@@ -17,6 +22,28 @@ from quant.factor.registry import _db_connect
 _log = get_logger(__name__)
 
 
+def _aum_tier() -> str:
+    """读取当前资金量, 返回归因模式: 'nano' | 'micro' | 'small'.
+    来源: 对齐 optimizer 资金分档 (ADR-032, test-v283 统一)."""
+    from quant.config.constants import _require_cfg
+    from quant.execution.engine import ExecutionEngine
+    try:
+        capital = ExecutionEngine().get_capital(strategy="quant")
+    except Exception:
+        capital = _require_cfg("backtest.default_capital")
+    nano_cap = _require_cfg("optimizer.nano_cap")
+    micro_cap = _require_cfg("optimizer.micro_cap")
+    if capital < nano_cap:
+        return "nano"
+    elif capital < micro_cap:
+        return "micro"
+    return "small"
+
+
+def _tier_label(tier: str) -> str:
+    return {"nano": "精简模式 (Nano)", "micro": "标准模式 (Micro)", "small": "严格模式 (Small)"}[tier]
+
+
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
@@ -27,12 +54,16 @@ def _run(today: str):
     _log.info(f"[{today}] 15:30 — attribution")
     t0 = _time.time()
 
-    from quant.monitor.attribution import brinson_attribution
+    tier = _aum_tier()
+    _log.info(f"[{today}] attribution tier: {_tier_label(tier)}")
+
     from quant.execution.engine import ExecutionEngine
     engine = ExecutionEngine()
     positions = engine.get_positions(strategy="quant")
 
-    if positions:
+    # ── 精简模式跳过: Brinson 需要 ≥5 行业 + ≥20 只票才有统计意义 (Barra) ──
+    if tier != "nano" and positions:
+        from quant.monitor.attribution import brinson_attribution
         # ── P5: Brinson 归因 — 市值加权基准 ──
         import pandas as pd
         from quant.data.store import market_conn
@@ -362,34 +393,34 @@ def _run(today: str):
             f"no alert"
         )
     # ═══════════════════════════════════════════════════════
-    # G3: DSR / MinTRL 计算
+    # G3: DSR / MinTRL 计算 (标准+严格模式; 精简模式数据不足跳过)
     # ═══════════════════════════════════════════════════════
-    from quant.evaluation.deflated_sharpe import compute_dsr_for_strategy
-    trades = engine.get_trades(strategy="quant", limit=1000)
-    if trades:
-        # 按日期聚合 daily PnL（同一天多笔交易只算一个日收益）
-        pnl_by_date = {}
-        for t in trades:
-            d = t.get("date", "")
-            pnl = t.get("pnl", 0) or 0
-            if d and pnl != 0:
-                pnl_by_date[d] = pnl_by_date.get(d, 0.0) + float(pnl)
-        daily_returns = list(pnl_by_date.values())
-        if len(daily_returns) >= 20:
-            from quant.data.repos import FactorRepo
-            n_active = len(FactorRepo().get_factors_by_status(('active',), []))
-            dsr_result = compute_dsr_for_strategy(daily_returns, n_factors=max(n_active, 1),
-                                                   skewness=-0.5, kurtosis=8.0)
-            _log.info(
-                f"[{today}] G3 DSR: SR(ann)={dsr_result['annualized_sr']:.3f}, "
-                f"DSR={dsr_result['dsr']:.3f}, MinTRL={dsr_result['min_trl_years']:.1f}y, "
-                f"significant={dsr_result['is_significant']}, n_obs={dsr_result['n_obs']}"
-            )
-            _m.gauge("scheduler.attribution.dsr", dsr_result["dsr"])
+    if tier != "nano":
+        from quant.evaluation.deflated_sharpe import compute_dsr_for_strategy
+        trades = engine.get_trades(strategy="quant", limit=1000)
+        if trades:
+            pnl_by_date = {}
+            for t in trades:
+                d = t.get("date", "")
+                pnl = t.get("pnl", 0) or 0
+                if d and pnl != 0:
+                    pnl_by_date[d] = pnl_by_date.get(d, 0.0) + float(pnl)
+            daily_returns = list(pnl_by_date.values())
+            if len(daily_returns) >= 20:
+                from quant.data.repos import FactorRepo
+                n_active = len(FactorRepo().get_factors_by_status(('active',), []))
+                dsr_result = compute_dsr_for_strategy(daily_returns, n_factors=max(n_active, 1),
+                                                       skewness=-0.5, kurtosis=8.0)
+                _log.info(
+                    f"[{today}] G3 DSR: SR(ann)={dsr_result['annualized_sr']:.3f}, "
+                    f"DSR={dsr_result['dsr']:.3f}, MinTRL={dsr_result['min_trl_years']:.1f}y, "
+                    f"significant={dsr_result['is_significant']}, n_obs={dsr_result['n_obs']}"
+                )
+                _m.gauge("scheduler.attribution.dsr", dsr_result["dsr"])
+            else:
+                _log.info(f"[{today}] G3 DSR: {len(daily_returns)} trading days, need >=20, skip")
         else:
-            _log.info(f"[{today}] G3 DSR: {len(daily_returns)} trading days, need >=20, skip")
-    else:
-        _log.info(f"[{today}] G3 DSR: no trades yet, skip")
+            _log.info(f"[{today}] G3 DSR: no trades yet, skip")
     # ═══════════════════════════════════════════════════════
     # G4: 因子 PnL 归因
     # ═══════════════════════════════════════════════════════
@@ -426,7 +457,17 @@ def _run(today: str):
                 f"PnL={daily_pnl:+.2f} ({pnl_bps:+.1f}bps), "
                 f"efficiency={efficiency:+.2f} bps/1% turnover"
             )
-            if turnover_pct > 0.50:
+            # 换手率告警按资金分档 (test-v283):
+            #   nano (精简): 不限换手 (小额组合一笔就翻倍, 告警无意义)
+            #   micro (标准): 200% 阈值 (中等资金, 放宽)
+            #   small (严格): 50% 阈值 (机构标准)
+            _TURNOVER_LIMITS = {
+                "nano": _require_cfg("attribution.turnover_limit_nano"),
+                "micro": _require_cfg("attribution.turnover_limit_micro"),
+                "small": _require_cfg("attribution.turnover_limit_small"),
+            }
+            limit = _TURNOVER_LIMITS.get(tier, 0.50)
+            if turnover_pct > limit:
                 _log.warning(
                     f"[{today}] R3 high turnover: {turnover_pct*100:.1f}% — "
                     f"consider increasing rebalance interval or trade size threshold"
@@ -458,7 +499,16 @@ def _run(today: str):
                     f"[{today}] R4 signal decay: avg execution slip {avg_slip*100:+.2f}% "
                     f"across {len(slippages)} buys (signal→execution price)"
                 )
-                if abs(avg_slip) > 0.01:
+                # 滑点告警按资金分档 (test-v283):
+                #   nano (精简): 5% 阈值 (小额组合隔夜跳空常见)
+                #   micro (标准): 2% 阈值
+                #   small (严格): 1% 阈值 (机构标准, Kissell IS)
+                _SLIPPAGE_LIMITS = {
+                    "nano": _require_cfg("attribution.slippage_limit_nano"),
+                    "micro": _require_cfg("attribution.slippage_limit_micro"),
+                    "small": _require_cfg("attribution.slippage_limit_small"),
+                }
+                if abs(avg_slip) > _SLIPPAGE_LIMITS.get(tier, 0.01):
                     _log.warning(
                         f"[{today}] R4 signal slippage > 1%: {avg_slip*100:+.2f}% — "
                         f"check execution timing or quote quality"

@@ -5,10 +5,10 @@ P3: 轻量级在线 OOS IC 验证 (expanding-window)
 P4: IC 滚动窗口 5→20 天 (config.yaml)
 P5: Brinson 基准从等权改为市值加权
 
-归因三档模式 (test-v283, 对齐 optimizer 资金分档):
-  精简模式 (Nano,  <¥30K):  因子健康检测 + 信号衰减, 跳过 Brinson/DSR/换手率/拥挤度
-  标准模式 (Micro, ¥30K-100K): 全量归因, 放宽阈值 (换手率 200%, DSR ≥10d)
-  严格模式 (Small, ≥¥100K):   全量归因, 业界标准阈值
+归因三档模式 (test-v284, 独立于 optimizer 资金分档):
+  精简模式 (Nano,  <¥50K):    因子健康检测 + 信号衰减, 跳过 Brinson/DSR/换手率/拥挤度
+  标准模式 (Micro, ¥50K-500K): 全量归因, 放宽阈值 (换手率 200%, 滑点 2%)
+  严格模式 (Small, >¥500K):    全量归因, 业界标准阈值 (换手率 50%, 滑点 1%)
 """
 import time as _time, uuid as _uuid
 from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
@@ -24,18 +24,19 @@ _log = get_logger(__name__)
 
 def _aum_tier() -> str:
     """读取当前资金量, 返回归因模式: 'nano' | 'micro' | 'small'.
-    来源: 对齐 optimizer 资金分档 (ADR-032, test-v283 统一)."""
+    来源: test-v284 独立分档, 不和 optimizer 资金层混用.
+      nano (精简): AUM < ¥50,000   — 因子健康 + 信号衰减
+      micro (标准): ¥50K-500K      — 全量归因, 放宽阈值
+      small (严格): > ¥500K        — 业界标准阈值"""
     from quant.config.constants import _require_cfg
     from quant.execution.engine import ExecutionEngine
     try:
         capital = ExecutionEngine().get_capital(strategy="quant")
     except Exception:
         capital = _require_cfg("backtest.default_capital")
-    nano_cap = _require_cfg("optimizer.nano_cap")
-    micro_cap = _require_cfg("optimizer.micro_cap")
-    if capital < nano_cap:
+    if capital < _require_cfg("attribution.tier_nano_cap"):
         return "nano"
-    elif capital < micro_cap:
+    elif capital < _require_cfg("attribution.tier_micro_cap"):
         return "micro"
     return "small"
 

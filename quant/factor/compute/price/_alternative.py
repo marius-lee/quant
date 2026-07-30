@@ -492,7 +492,7 @@ def compute_ideal_amplitude(data: "pd.DataFrame", date: str, window: int = 20) -
 
     result = pd.Series(0.0, index=symbols_all)
     vals = -(high_q - low_q)
-    ok = (cnt >= window) & np.isfinite(vals)
+    ok = (cnt >= window) & np.isfinite(pd.to_numeric(vals, errors='coerce'))
     result.loc[result.index[ok]] = vals[ok]
     return _cs_zscore(result).rename("ideal_amplitude")
 

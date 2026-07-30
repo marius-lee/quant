@@ -88,7 +88,7 @@ def size_neutralize(
         return scores
 
     y = scores.loc[common].values
-    X = np.log(market_caps.loc[common].values)
+    X = np.log(np.asarray(market_caps.loc[common].values, dtype=np.float64))
 
     # OLS: y = α + β × log(mcap) + ε
     X_with_const = np.column_stack([np.ones(len(X)), X])

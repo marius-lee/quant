@@ -60,7 +60,7 @@ def compute_ctr(data: "pd.DataFrame", date: str, window: int = 20) -> "pd.Series
         # 换手率变化: turnover_t / turnover_{t-1} - 1
         # inf 剔除: turnover 零填充段 → 非零的 0→x 跳变产生 inf, 单只 inf
         # 会污染截面 zscore (std=NaN → 全 universe NaN, test-v305 实证)
-        to_chg = to_sym.pct_change().replace([np.inf, -np.inf], np.nan).values
+        to_chg = to_sym.pct_change().replace([np.inf, -np.inf], np.nan).astype(np.float64).values
 
         up_mask = overnight > 0
         down_mask = overnight < 0
@@ -77,6 +77,7 @@ def compute_ctr(data: "pd.DataFrame", date: str, window: int = 20) -> "pd.Series
         ctr_values[sym] = up_chg.mean() - down_chg.mean()
 
     result = pd.Series(ctr_values)
+    result = pd.to_numeric(result, errors='coerce')
     result = result[np.isfinite(result)]  # 兜底丢 inf/nan
     if result.empty:
         return pd.Series(np.nan, index=symbols, name="ctr_20d")

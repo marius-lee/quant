@@ -218,10 +218,10 @@ factor:
     min_abs_ic: 0.02
     min_half_life: 20
     min_icir: 0.25
-    monitoring_min_icir: 0.15
-    monitoring_min_abs_ic: 0.01
+    monitoring_min_icir: 0.20            # 来源: test-v285, probation参与信号后从0.15→0.20 (Grinold & Kahn IR≥0.25=弱, 观察池向下取0.20)
+    monitoring_min_abs_ic: 0.015         # 来源: test-v285, probation参与信号后从0.01→0.015 (IC=0.01无经济意义, Qlib标准≥0.02)
     max_retries: 3
-    diagnostics_min_icir: 0.15
+    diagnostics_min_icir: 0.20            # 来源: test-v285, 与 monitoring_min_icir 对齐 (原本 0.15)
     diagnostics_pnl_threshold: 0.1
     diagnostics_review_threshold: -0.5
     n_days: 252

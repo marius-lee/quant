@@ -54,8 +54,8 @@ def register_all():
              desc="增量更新 factor_cache，用当日行情计算回测因子值")
     register("attribution",  "factor_cache完成后", label="盘后归因",
              desc="Brinson 归因 + IC 衰减 + OOS 验证 + 因子归因")
-    register("factor_curation", "周六 06:00 (因子评估内)", label="因子策展",
-             desc="检查内置因子库+用户提交, 编译→IC评估→注册新因子")
+    register("factor_curation", "周六 06:00", label="因子策展",
+             desc="[weekly_eval 子步骤] 检查内置因子库+用户提交, 编译→IC评估→注册新因子")
     register("weekly_eval",  "周六 06:00",   label="因子评估",
              desc="评估管线五阶段：回测诊断因子 → 正式认证 → 状态变更")
     register("lgb_train",    "周一/周四 factor_cache完成后", label="模型训练",

@@ -61,6 +61,14 @@ attribution:
   corr_redundant_threshold: 0.7
   oos_warning_decay: 0.5
   oos_recovery_threshold: 1.5
+  tier_nano_cap: 50000        # 来源: test-v284, 精简模式 AUM 上限
+  tier_micro_cap: 500000      # 来源: test-v284, 标准模式 AUM 上限
+  turnover_limit_nano: 999.0  # 来源: test-v284, Nano层不限换手
+  turnover_limit_micro: 2.0   # 来源: test-v284, Micro层200%阈值
+  turnover_limit_small: 0.5   # 来源: test-v284, Small层50%阈值
+  slippage_limit_nano: 0.05   # 来源: test-v284, Nano层5%滑点
+  slippage_limit_micro: 0.02  # 来源: test-v284, Micro层2%滑点
+  slippage_limit_small: 0.01  # 来源: test-v284, Small层1%滑点
 oos_verify:
   train_window_days: 170
   test_window_days: 20

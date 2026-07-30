@@ -1,7 +1,5 @@
-"""日频任务编排器 — 单线程串行执行 signals → execute → monitor → attribution.
-
-方案C: 消除 5 个独立 daemon 线程之间的竞态条件。
-所有日频任务按时间顺序串行执行，确保后序任务读取前序任务的产出。
+"""日频任务编排器 — 单线程串行执行 signals → execute → monitor → reconcile.
+晚间链由 cron 19:00 触发, 不经过 orchestrator (test-v287: 内存优化, 避免加载重库).
 
 monitor 是连续循环 (09:35-11:30,13:00-14:55, 午休跳过)，由编排器作为子线程启动和停止。
 
@@ -63,8 +61,8 @@ def _run():
     _cleanup_zombie_tasks()
 
     _log.info("orchestrator started — daily sequence: 08:30 signals → 09:30 execute → "
-              "09:35-11:30,13:00-14:55 monitor → 15:05 reconcile → "
-              "19:00 daily_data → factor_cache → attribution → lgb_train(Mon/Thu)")
+              "09:35-11:30,13:00-14:55 monitor → 15:05 reconcile "
+              "(晚间链由 cron 19:00 触发)")
 
     POLL = _require_cfg("quant.scheduler.poll_interval")
     today = None
@@ -169,69 +167,18 @@ def _run():
                 from quant.scheduler.reconcile import _run as _recon_run
                 _run_task("reconcile", _recon_run, today)
 
-        # ═══════════════════════════════════════════
-        # 5. 19:00+ — 每日数据拉取
-        # ═══════════════════════════════════════════
-        if hhmm >= time(19, 0):
-            s = status.get("daily_data")
-            if s not in ("ok", "failed") and _retry_ok("daily_data"):
-                from quant.scheduler.daily_data import _run as _daily_data_run
-                _run_task("daily_data", _daily_data_run, today)
-
-        # ═══════════════════════════════════════════
-        # 6. daily_data ok 后 — 增量因子物化
-        # test-v302: 原固定 21:00 + "尝试过"门 → daily_data 超 2h 时因子物化
-        # 跑在数据未就绪上; 改 ok 门 (cron 晚间链同样语义, 经 task_runs 去重)
-        # ═══════════════════════════════════════════
-        if status.get("daily_data") == "ok":
-            s = status.get("factor_cache")
-            if s not in ("ok", "failed") and _retry_ok("factor_cache"):
-                from quant.scheduler.factor_cache import _run as _factor_cache_run
-                _run_task("factor_cache", _factor_cache_run, today)
-
-        # ═══════════════════════════════════════════
-        # 7. factor_cache ok 后 — 盘后归因
-        # test-v302: 原固定 20:00 排在因子物化之前 → G1/G4 需当日因子缓存,
-        # 每个交易日必崩 (断点 3/4 排程根因); 改 ok 门 + 顺序对调
-        # ═══════════════════════════════════════════
-        if status.get("factor_cache") == "ok":
-            s = status.get("attribution")
-            if s not in ("ok", "failed") and _retry_ok("attribution"):
-                from quant.scheduler.attribution import _run as _attr_run
-                _run_task("attribution", _attr_run, today)
-
-        # ═══════════════════════════════════════════
-        # 8. factor_cache ok 后 — LGB 模型重训 (ADR-037)
-        # 仅周一/周四执行 (因子不变时重训无增量价值)
-        # ═══════════════════════════════════════════
-        if status.get("factor_cache") == "ok":
-            s = status.get("lgb_train")
-            wd = datetime.now().weekday()
-            if s not in ("ok", "failed", "skipped") and _retry_ok("lgb_train"):
-                if wd in (0, 3):  # 周一 + 周四
-                    from quant.scheduler.lgb_train import _run as _lgb_run
-                    _run_task("lgb_train", _lgb_run, today)
-
         # ── 主动超时检测 ──
         _check_timeouts(today)
 
         _time.sleep(POLL)
 
 
-# ── 超时阈值 (秒) — B-23 fix: 原全 None, 超时检测形同虚设。
-# 依据 task_runs 生产实况标定 (daily_data 曾合法运行 6251s 被杀 → 给 2h;
-# factor_cache 曾在 2743s 被误杀 → 给 90min)。
+# ── 超时阈值 (秒) — test-v287: 晚间任务移出, 只保留白天任务.
 _TIMEOUTS = {
     "signals": 1800,
     "execute": 1800,
-    "monitor": None,      # 由下方特殊分支处理 (14:55 后 30min 宽限)
+    "monitor": None,
     "reconcile": 600,
-    "daily_data": 7200,
-    "attribution": 3600,
-    "weekly_eval": 7200,
-    "factor_cache": 5400,
-    "evening_chain": 14400,  # test-v302: 2h daily_data + 1.5h factor_cache + 1h attribution
-    "lgb_train": 1800,       # ADR-037: LGB 模型重训, 数据量适中 30min 够
 }
 
 # B-23 fix: 同一任务当日最多重试次数 (aborted 后 orchestrator 会重新触发,

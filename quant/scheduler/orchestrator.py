@@ -1,12 +1,13 @@
 """日频任务编排器 — 单线程串行执行 signals → execute → monitor → reconcile.
-晚间链由 cron 19:00 触发, 不经过 orchestrator (test-v287: 内存优化, 避免加载重库).
+晚间链 (daily_data→factor_cache→attribution→lgb_train) 由 orchestrator
+在 19:00 通过 subprocess 触发, 非阻塞轮询, 失败自动重试 (test-v288).
 
 monitor 是连续循环 (09:35-11:30,13:00-14:55, 午休跳过)，由编排器作为子线程启动和停止。
 
 状态: task_runs (market.db) 为单一调度真相源。每 30s 轮询一次，
 已完成任务不重跑，失败任务不自动重试（需人工排查 bug 后手动触发）。
 """
-import os, time as _time, threading as _thr, sqlite3
+import os, time as _time, threading as _thr, sqlite3, subprocess
 from datetime import datetime, time
 from quant.config.constants import _require_cfg
 from quant.monitor.metrics import metrics as _m
@@ -69,6 +70,11 @@ def _run():
     _monitor_thread = None
     _monitor_stop = _thr.Event()
 
+    # ── 晚间链 subprocess 状态 (test-v288) ──
+    _evening_proc = None     # subprocess.Popen handle
+    _evening_retries = 0     # 失败重试计数
+    _evening_done = False    # 今天已完成/放弃
+
     def _monitor_daemon(current_day):
         try:
             from quant.scheduler.monitor import _run_continuous
@@ -95,7 +101,7 @@ def _run():
         current_day = now.strftime("%Y-%m-%d")
         hhmm = time(now.hour, now.minute)
 
-        # ── 新的一天: 清理 monitor 线程 ──
+        # ── 新的一天: 清理 monitor 线程 + 重置晚间状态 ──
         if current_day != today:
             if _monitor_thread and _monitor_thread.is_alive():
                 _monitor_stop.set()
@@ -103,6 +109,9 @@ def _run():
             _monitor_stop.clear()
             _monitor_thread = None
             today = current_day
+            _evening_proc = None
+            _evening_retries = 0
+            _evening_done = False
             _log.info(f"[{today}] new day, orchestrator ready")
 
         # ── 非交易日 ──
@@ -166,6 +175,43 @@ def _run():
             if time(15, 5) <= hhmm < time(15, 30):
                 from quant.scheduler.reconcile import _run as _recon_run
                 _run_task("reconcile", _recon_run, today)
+
+        # ═══════════════════════════════════════════
+        # 5. 19:00+ — 晚间链 subprocess (test-v288)
+        # 非阻塞 Popen, 每 30s poll, 失败重试, 不 import sklearn/scipy
+        # ═══════════════════════════════════════════
+        if hhmm >= time(19, 0) and not _evening_done:
+            if _evening_proc is None:
+                s = status.get("evening_chain")
+                if s == "ok":
+                    _log.info(f"[{today}] evening_chain already ok, skip")
+                    _evening_done = True
+                else:
+                    _log.info(f"[{today}] 19:00 — spawning evening chain subprocess "
+                              f"(retry={_evening_retries}/{_MAX_TASK_RETRIES})")
+                    _evening_proc = subprocess.Popen(
+                        [".venv/bin/python3", "-c",
+                         "from quant.utils.excepthook import setup; setup();"
+                         "from quant.scheduler.evening import _run;"
+                         f"_run('{today}')"],
+                        cwd=os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                        env={**os.environ, "PYTHONPATH": "."},
+                    )
+            else:
+                ret = _evening_proc.poll()
+                if ret is not None:
+                    _evening_proc = None
+                    if ret == 0:
+                        _log.info(f"[{today}] evening chain subprocess exited OK")
+                        _evening_done = True
+                    else:
+                        _evening_retries += 1
+                        if _evening_retries < _MAX_TASK_RETRIES:
+                            _log.warning(f"[{today}] evening chain failed (rc={ret}), "
+                                         f"retry {_evening_retries}/{_MAX_TASK_RETRIES}")
+                        else:
+                            _log.error(f"[{today}] evening chain exhausted retries, giving up")
+                            _evening_done = True
 
         # ── 主动超时检测 ──
         _check_timeouts(today)

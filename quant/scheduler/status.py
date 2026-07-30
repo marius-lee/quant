@@ -71,6 +71,9 @@ def _next_scheduled_time(schedule: str) -> str:
     for wd_name, wd_num in _WEEKDAY_MAP.items():
         if schedule.startswith(wd_name):
             time_part = schedule[len(wd_name):].strip()
+            # 去掉括号注释: "06:00 (因子评估内)" → "06:00"
+            if "(" in time_part:
+                time_part = time_part.split("(")[0].strip()
             hh, mm = (int(x) for x in time_part.split(":"))
             now = datetime.now()
             target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
@@ -81,7 +84,9 @@ def _next_scheduled_time(schedule: str) -> str:
     # 简单 HH:MM 格式
     parts = schedule.split("-")
     time_str = parts[-1].strip() if "-" in schedule else schedule.strip()
-    # lgb_train 类型: "周一/周四 factor_cache完成后"
+    # strip 括号注释 + 依赖检查
+    if "(" in time_str:
+        time_str = time_str.split("(")[0].strip()
     if "完成后" in time_str:
         return ""
     hh, mm = (int(x) for x in time_str.split(":"))

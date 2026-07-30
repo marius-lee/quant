@@ -225,6 +225,7 @@ _TIMEOUTS = {
     "execute": 1800,
     "monitor": None,
     "reconcile": 600,
+    "evening_chain": 14400,  # test-v288: evening.py 引用, subprocess 超时
 }
 
 # B-23 fix: 同一任务当日最多重试次数 (aborted 后 orchestrator 会重新触发,

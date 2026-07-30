@@ -16,6 +16,7 @@ G1 (oos_verify 需当日缓存) 与 G4 (factor PnL 需当日缓存) 每个交易
 import importlib
 import time as _time
 import uuid as _uuid
+from datetime import datetime
 
 from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish, query_date as _tk_query
 from quant.utils.logger import get_logger, set_trace_id
@@ -27,6 +28,7 @@ _CHAIN = [
     ("daily_data", "quant.scheduler.daily_data"),
     ("factor_cache", "quant.scheduler.factor_cache"),
     ("attribution", "quant.scheduler.attribution"),
+    ("lgb_train", "quant.scheduler.lgb_train"),      # 仅周一/周四, _run 内判断
 ]
 
 
@@ -56,7 +58,13 @@ def _run(today: str):
 
     try:
         for name, module_path in _CHAIN:
-            # 人工提前跑过且成功 → 跳过 (与 orchestrator 的 ok 门语义一致)
+            # lgb_train: 仅周一/周四执行
+            if name == "lgb_train":
+                wd = datetime.now().weekday()
+                if wd not in (0, 3):  # 0=周一, 3=周四
+                    _log.info(f"[{today}] evening chain: {name} skipped (not Mon/Thu, wd={wd})")
+                    continue
+            # 人工提前跑过且成功 → 跳过
             if _stage_status(today, name) == "ok":
                 _log.info(f"[{today}] evening chain: {name} already ok, skip")
                 continue

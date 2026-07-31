@@ -14,7 +14,6 @@ alpha:
       forward_horizon: 5
       cv_folds: 5
       train_chunk_samples: 4_000_000   # 来源: 2026-07-30 OOM 实测, MacBook 16GB, 4M×75×float32≈1.2GB/批安全
-      train_chunk_samples: 4_000_000   # 来源: 2026-07-30 OOM 实测, MacBook 16GB, 4M×75×float32≈1.2GB/批安全
     predict:
       fallback: ic_weighted
     params:

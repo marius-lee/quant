@@ -78,6 +78,7 @@ class InProcessBroker:
                 close_px = close_map.get(sym, p.get("price", 0))
                 positions.append({
                     "symbol": sym, "name": "",
+                    "strategy": "quant",  # test-v307: api_positions 过滤需要的字段
                     "shares": p["shares"], "price": p.get("price", 0),
                     "board_count": p.get("board_count", 0),
                     "buy_time": p.get("buy_time", ""),

@@ -7,7 +7,6 @@ from quant.config.paths import TRADE_DB
 from dataclasses import dataclass, field
 
 
-from quant.config.paths import TRADE_DB
 @dataclass
 class PipelineContext:
     """Pipeline 执行上下文 — 可复用依赖的容器。

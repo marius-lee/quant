@@ -143,10 +143,8 @@ def _run(today: str):
                     dtype=float)
                 try:
                     opt = PortfolioConstructor()
-                    # 重分配用实时价直接算，不走 construct 的 price_buffer
-                    # (construct 的 buffer 是为盘前 pipeline 设计的——用昨收预估，需留安全边际。
-                    #  execute 阶段已有实时报价，buffer 会导致仓位偏保守，偏离业界标准)
-                    new_pf = opt._rank_concentrated(alpha_series, prices_series, cash)
+                    # test-v307: 重分配走正常 construct 路径, price_buffer=0 (已有实时报价)
+                    new_pf = opt.construct(alpha_series, prices_series, cash, price_buffer=0.0)
                     new_lots = new_pf.lots
                     for tp in targets:
                         sym = tp["symbol"]

@@ -192,10 +192,12 @@ class LgbAlphaModel:
             total_samples += mask.sum()
             dates_used.append(ts)
 
-            # 每 50 天 flush 一次, 避免 X_chunks 过大
+            # 每 50 天 flush 一次, 释放中间内存
             if len(X_chunks) >= 50:
+                import gc
                 _log.info("train: flushing %d days → %d samples",
                           len(X_chunks), sum(len(c) for c in X_chunks))
+                gc.collect()
 
         _log.info("train: %d dates, %d samples, skipped=%s",
                   len(X_chunks), total_samples, n_skipped)

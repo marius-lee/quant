@@ -239,6 +239,7 @@ class PortfolioConstructor:
         ic_map: dict = None,
         current_lots: Optional[pd.Series] = None,
         cost_model=None,
+        price_buffer: Optional[float] = None,  # test-v307: None=读config, 0=跳过(实时报价场景)
     ) -> TargetPortfolio:
         """资本自适应组合构建。
 
@@ -259,9 +260,10 @@ class PortfolioConstructor:
 
         # test-v214: 价格缓冲 — pipeline 用昨收价分配, execute 用开盘价执行,
         # 两者存在价差。在成本估算时预留 buffer, 减少 validate_orders 裁剪触发。
-        price_buffer = _require_cfg("execution.price_buffer")
-        if price_buffer > 0:
-            p = p * (1.0 + price_buffer)
+        # test-v307: price_buffer 参数为 None 时读 config, 为 0 时跳过 (实时报价场景)
+        _pb = price_buffer if price_buffer is not None else _require_cfg("execution.price_buffer")
+        if _pb > 0:
+            p = p * (1.0 + _pb)
 
         n_top = min(self.max_positions, len(p))
         avg_price = float(p.loc[a.index[:n_top]].mean())

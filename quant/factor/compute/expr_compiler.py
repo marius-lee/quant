@@ -359,6 +359,9 @@ def compile_factor(expr: str) -> Callable:
         date_idx = data.index.get_loc(date_str)
         result = ast.evaluate(data, date_idx)
         result = pd.to_numeric(result, errors='coerce')
+        # test-v322: MultiIndex columns 导致索引含重复股票代码, 取唯一值对齐 forward return
+        if isinstance(data.columns, pd.MultiIndex):
+            result = result.groupby(level=0).first()
         name = expr.replace(' ', '_').replace('(', '').replace(')', '')[:50]
         result.name = f"expr_{name}"
         return result

@@ -278,6 +278,9 @@ class FactorCurator:
             return {"n_evaluated": 0, "n_registered": 0, "results": []}
 
         data_full = store.get_daily(symbols, start=dates[0], end=dates[-1])
+        # test-v322: get_daily 返回 Timestamp 索引, 字符串切片会空
+        if isinstance(data_full.index, pd.DatetimeIndex):
+            dates = [str(d.date()) for d in data_full.index if str(d.date()) in dates]
         close = data_full["close"]
         fwd = close.shift(-5) / close - 1  # T+5 前向收益
         store.close()
@@ -294,7 +297,9 @@ class FactorCurator:
             ic_vals = []
             for d in dates[:-5]:
                 try:
-                    fv = fn(data_full.loc[:d], d)
+                    # test-v322: d 是字符串, data_full 索引是 Timestamp
+                    _d = pd.Timestamp(d)
+                    fv = fn(data_full.loc[:_d], d)
                     fr = fwd.loc[d].dropna()
                     common = fv.dropna().index.intersection(fr.index)
                     if len(common) < 30:

@@ -184,7 +184,8 @@ class FactorRepo:
 
     def insert_or_update(self, name: str, category: str, status: str,
                          status_reason: str = "", ic_mean: float = None,
-                         ic_ir: float = None, compute_fn: str = None):
+                         ic_ir: float = None, compute_fn: str = None,
+                         source: str = None):
         conn = self._conn()
         try:
             existing = conn.execute(f"SELECT 1 FROM factor_registry WHERE {FR_NAME}=?", (name,)).fetchone()
@@ -203,13 +204,16 @@ class FactorRepo:
                 if ic_ir is not None:
                     parts.append("ic_ir=?")
                     params.append(ic_ir)
+                if source:
+                    parts.append("academic_source=?")
+                    params.append(source)
                 params.append(name)
                 conn.execute(f"UPDATE factor_registry SET {', '.join(parts)} WHERE name=?", params)
             else:
                 conn.execute(
-                    f"INSERT INTO factor_registry ({FR_NAME}, {FR_CATEGORY}, {FR_COMPUTE_FN}, {FR_STATUS}, {FR_STATUS_REASON}, {FR_IC_MEAN}, {FR_IC_IR}, {FR_UPDATED_AT}) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))",
-                    (name, category, compute_fn or name, status, status_reason, ic_mean, ic_ir))
+                    f"INSERT INTO factor_registry ({FR_NAME}, {FR_CATEGORY}, {FR_COMPUTE_FN}, {FR_STATUS}, {FR_STATUS_REASON}, {FR_IC_MEAN}, {FR_IC_IR}, academic_source, {FR_UPDATED_AT}) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))",
+                    (name, category, compute_fn or name, status, status_reason, ic_mean, ic_ir, source))
             conn.commit()
         finally:
             conn.close()

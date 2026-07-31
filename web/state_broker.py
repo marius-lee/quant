@@ -186,6 +186,16 @@ class InProcessBroker:
                 pass
 
             state["positions"] = positions
+            # test-v310: 市场状态实时展示 (非仅信号生成时)
+            try:
+                from quant.regime.detector import get_current_regime, get_regime_sizing
+                rlabel, rprobs = get_current_regime()
+                if rlabel:
+                    state["regime"] = rlabel
+                    state["regime_sizing"] = get_regime_sizing(rlabel)
+                    state["regime_confidence"] = round(rprobs.get(rlabel, 0), 2)
+            except Exception:
+                pass
         except Exception:
             import logging
             logging.getLogger("web.state_broker").warning("_init_state failed", exc_info=True)

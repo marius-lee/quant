@@ -245,4 +245,16 @@ class RiskManager:
                     results.append({"symbol": sym, "action": "sell", "shares": shares,
                                     "price": cur, "reason": "time_stop({}d)".format(days)})
 
+        # test-v313: 持久化峰值和止盈标记 (进程重启后恢复)
+        try:
+            from quant.data.repos.trade_repo import TradeRepo
+            repo = TradeRepo()
+            for p in positions:
+                if p.get("_peak") or p.get("_tp1_hit"):
+                    repo.save_position_meta(p["symbol"], today,
+                        tp1_hit=p.get("_tp1_hit", False),
+                        peak_price=p.get("_peak", 0))
+        except Exception:
+            pass
+
         return results

@@ -304,6 +304,12 @@ _CURATED_FACTORS: list[dict] = [
         "source": "Alpha#55 — 筹码位置-量相关",
         "direction": "negative", "category": "量价",
     },
+    {
+        "name": "open_volume_ratio",
+        "expression": "open_volume_ratio",
+        "source": "中信2023 — 开盘成交量占比, IC_IR≈1.07, A股最强量价因子",
+        "direction": "positive", "category": "日内",
+    },
 ]
 
 

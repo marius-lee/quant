@@ -81,7 +81,7 @@ from quant.factor.compute.missing import (
 )
 
 # test-v324: 日内反转因子
-from quant.factor.compute.intraday import compute_intraday_reversal
+from quant.factor.compute.intraday import compute_intraday_reversal, compute_open_volume_ratio
 
 # test-v326: Alpha 101 因子
 from quant.factor.compute.alpha101 import (
@@ -148,6 +148,7 @@ _PRICE_FN_MAP = {
     "overnight_gap_5d":       (compute_overnight_gap_5d,   5),  # test-v323: T+1隔夜动量
     "vol_price_sync_20d":     (compute_vol_price_sync_20d,20),  # test-v323: 量价同步
     "intraday_reversal":      (compute_intraday_reversal, None), # test-v324: 日内反转
+    "open_volume_ratio":      (compute_open_volume_ratio, None), # test-v327: 开盘成交量占比
     "alpha033_gap":           (compute_alpha033, None), # test-v326: Alpha#33 开盘缺口
     "alpha042_vwap_div":      (compute_alpha042, None), # test-v326: Alpha#42 VWAP偏离
     "alpha041_geo_vwap":      (compute_alpha041, None), # test-v326: Alpha#41 几何VWAP

@@ -35,7 +35,8 @@ def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
     from quant.utils.logger import set_trace_id
     set_trace_id(tid)
-    from quant.utils.logger import offline_mode
+    from quant.utils.logger import offline_mode, cleanup_old_logs
+    cleanup_old_logs(keep_days=14)  # test-v321: 周度评估时清理14天前旧日志
 
     rid = _tk_start("weekly_eval", today, grace_seconds=7200)
     if rid is None:

@@ -167,3 +167,33 @@ class _TraceLoggerAdapter(logging.LoggerAdapter):
         extra['trace_id'] = f"[{tid}] " if tid else ""
         kwargs['extra'] = extra
         return msg, kwargs
+
+
+def cleanup_old_logs(keep_days: int = 7):
+    """删除超过 keep_days 天的轮转日志文件 (test-v321).
+    
+    在 weekly_eval 或 orchestrator 启动时调用.
+    """
+    import glob, time
+    cutoff = time.time() - keep_days * 86400
+    patterns = [
+        os.path.join(_log_dir, "app.log.*"),
+        os.path.join(_log_dir, "backtest.log.*"),
+        os.path.join(_log_dir, "quant.log.*"),
+        os.path.join(_log_dir, "*.log"),
+    ]
+    deleted = 0
+    for pat in patterns:
+        for fpath in glob.glob(pat):
+            # 跳过当前活跃日志
+            if fpath.endswith("app.log") or fpath.endswith("backtest.log") or fpath == _log_file:
+                continue
+            try:
+                if os.path.getmtime(fpath) < cutoff:
+                    os.remove(fpath)
+                    deleted += 1
+            except OSError:
+                pass
+    if deleted:
+        _log = logging.getLogger("quant.utils.logger")
+        _log.info(f"log cleanup: deleted {deleted} files older than {keep_days}d")

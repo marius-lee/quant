@@ -350,5 +350,7 @@ def start():
             os.remove(_pid)
     with open(_pid, 'w') as f:
         f.write(str(os.getpid()))
+    from quant.utils.logger import cleanup_old_logs
+    cleanup_old_logs(keep_days=7)  # test-v321: 启动时清理7天前旧日志
     t = _thr.Thread(target=_run_safe, daemon=True, name="orchestrator")
     t.start()

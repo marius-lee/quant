@@ -212,6 +212,32 @@ _CURATED_FACTORS: list[dict] = [
         "source": "Qlib alpha158 — 短/长期均量比(VEMA), 量比指标",
         "direction": "negative", "category": "量价",
     },
+
+    # ═══════════ 核心缺失因子 (test-v323) ═══════════
+    {
+        "name": "market_beta_60d",
+        "expression": "market_beta_60d",
+        "source": "华泰2021 — A股低Beta溢价, IC_IR≈-0.5, 业界最稳定异象",
+        "direction": "negative", "category": "risk",
+    },
+    {
+        "name": "overnight_gap_5d",
+        "expression": "overnight_gap_5d",
+        "source": "海通2022 — 隔夜动量T+1结构, IC_IR≈0.63, A股特有",
+        "direction": "positive", "category": "隔夜",
+    },
+    {
+        "name": "vol_price_sync_20d",
+        "expression": "vol_price_sync_20d",
+        "source": "中信2023 — 量价同步性, IC_IR≈-1.0, 放量下跌后反转信号",
+        "direction": "negative", "category": "量价",
+    },
+    {
+        "name": "revenue_growth_yoy",
+        "expression": "revenue_growth_yoy",
+        "source": "国泰君安2022 — 营收增长, 替代筹码分布的资金行为",
+        "direction": "positive", "category": "fundamental",
+    },
 ]
 
 
@@ -288,7 +314,16 @@ class FactorCurator:
         results = []
         for cf in candidates:
             try:
-                fn = compile_factor(cf["expression"])
+                expr = cf["expression"]
+                # test-v323: 原生因子 (非表达式, 直接调用Python函数)
+                from quant.factor.compute.price import _PRICE_FN_MAP
+                from quant.factor.compute.fundamental import _FUNDAMENTAL_FN_MAP
+                if expr in _PRICE_FN_MAP:
+                    fn = _PRICE_FN_MAP[expr][0]  # (fn, window)
+                elif expr in _FUNDAMENTAL_FN_MAP:
+                    fn = _FUNDAMENTAL_FN_MAP[expr][1]  # (category, fn)
+                else:
+                    fn = compile_factor(expr)
             except Exception as e:
                 _log.warning(f"curator: compile failed for {cf['name']}: {e}")
                 continue

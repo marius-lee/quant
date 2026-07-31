@@ -74,6 +74,12 @@ from quant.factor.compute.price._alternative import (  # noqa: F401
     compute_ztd,
 )
 
+# test-v323: 核心缺失因子
+from quant.factor.compute.missing import (
+    compute_market_beta_60d, compute_overnight_gap_5d,
+    compute_vol_price_sync_20d, compute_revenue_growth_yoy,
+)
+
 
 _PRICE_FN_MAP = {
     "reversal_5d":           (compute_reversal,            5),
@@ -129,6 +135,9 @@ _PRICE_FN_MAP = {
     "hl_volume_20d":          (compute_hl_volume,         20),  # 国盛2023: IC=-6.6%
     "turnover_accel":         (compute_turnover_accel,     5),  # 华安2024: IC=-10.5% (short/long=5/10)
     "uret_20d":               (compute_uret,              20),  # 东吴2023: IC=-5.4%
+    "market_beta_60d":        (compute_market_beta_60d,   60),  # test-v323: 低Beta溢价
+    "overnight_gap_5d":       (compute_overnight_gap_5d,   5),  # test-v323: T+1隔夜动量
+    "vol_price_sync_20d":     (compute_vol_price_sync_20d,20),  # test-v323: 量价同步
 }
 
 

@@ -1,1 +1,3 @@
 -r requirements/base.txt
+hmmlearn==0.3.3
+hmmlearn

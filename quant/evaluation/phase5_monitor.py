@@ -201,11 +201,16 @@ def sync_factor_status() -> dict:
     retired_ok = 0
     for name in retired_to_update:
         new_retry = retry_map.get(name, 0) + 1
+        # test-v306: probation 因子不能走 EVAL_FAIL (状态机只允许 evaluating→EVAL_FAIL).
+        # 已在实盘的 probation 因子应走 IC_PERSISTENT 归档.
+        current = f_repo.get_factor_by_name(name)
+        current_status = current["status"] if current else "evaluating"
+        event = "EVAL_FAIL" if current_status == "evaluating" else "IC_PERSISTENT"
         try:
-            fsm.transition(name, "EVAL_FAIL", reasons[name], retry_count=new_retry)
+            fsm.transition(name, event, reasons[name], retry_count=new_retry)
             retired_ok += 1
         except Exception as e:
-            _log.warning("sync_factor_status: %s EVAL_FAIL failed: %s", name, e)
+            _log.warning("sync_factor_status: %s %s failed: %s", name, event, e)
     rejected_ok = 0
     for name in rejected_to_update:
         new_retry = retry_map.get(name, 0) + 1

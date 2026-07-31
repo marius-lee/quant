@@ -260,6 +260,50 @@ _CURATED_FACTORS: list[dict] = [
         "source": "Piotroski (2000) + 国泰君安2021 A股验证 — 9项质量打分, IC_IR≈0.3-0.5",
         "direction": "positive", "category": "fundamental",
     },
+
+    # ═══════════ Alpha 101 (test-v326) ═══════════
+    {
+        "name": "alpha033_gap",
+        "expression": "alpha033_gap",
+        "source": "Alpha#33 — 开盘缺口, 高开/低开信号",
+        "direction": "negative", "category": "量价",
+    },
+    {
+        "name": "alpha042_vwap_div",
+        "expression": "alpha042_vwap_div",
+        "source": "Alpha#42 — VWAP收盘偏离",
+        "direction": "negative", "category": "量价",
+    },
+    {
+        "name": "alpha041_geo_vwap",
+        "expression": "alpha041_geo_vwap",
+        "source": "Alpha#41 — 几何中间价-VWAP",
+        "direction": "negative", "category": "量价",
+    },
+    {
+        "name": "alpha012_vol_dir",
+        "expression": "alpha012_vol_dir",
+        "source": "Alpha#12 — 量价方向同步",
+        "direction": "negative", "category": "量价",
+    },
+    {
+        "name": "alpha002_vol_div",
+        "expression": "alpha002_vol_div",
+        "source": "Alpha#2 — 量价背离",
+        "direction": "negative", "category": "量价",
+    },
+    {
+        "name": "alpha035_range_mom",
+        "expression": "alpha035_range_mom",
+        "source": "Alpha#35 — 量+区间+动量复合, 筹码分布近义",
+        "direction": "negative", "category": "量价",
+    },
+    {
+        "name": "alpha055_pos_vol",
+        "expression": "alpha055_pos_vol",
+        "source": "Alpha#55 — 筹码位置-量相关",
+        "direction": "negative", "category": "量价",
+    },
 ]
 
 

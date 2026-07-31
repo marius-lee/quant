@@ -83,6 +83,12 @@ from quant.factor.compute.missing import (
 # test-v324: 日内反转因子
 from quant.factor.compute.intraday import compute_intraday_reversal
 
+# test-v326: Alpha 101 因子
+from quant.factor.compute.alpha101 import (
+    compute_alpha033, compute_alpha042, compute_alpha041,
+    compute_alpha012, compute_alpha002, compute_alpha035, compute_alpha055,
+)
+
 
 _PRICE_FN_MAP = {
     "reversal_5d":           (compute_reversal,            5),
@@ -141,7 +147,14 @@ _PRICE_FN_MAP = {
     "market_beta_60d":        (compute_market_beta_60d,   60),  # test-v323: 低Beta溢价
     "overnight_gap_5d":       (compute_overnight_gap_5d,   5),  # test-v323: T+1隔夜动量
     "vol_price_sync_20d":     (compute_vol_price_sync_20d,20),  # test-v323: 量价同步
-    "intraday_reversal":      (compute_intraday_reversal, None), # test-v324: 日内反转(快照数据)
+    "intraday_reversal":      (compute_intraday_reversal, None), # test-v324: 日内反转
+    "alpha033_gap":           (compute_alpha033, None), # test-v326: Alpha#33 开盘缺口
+    "alpha042_vwap_div":      (compute_alpha042, None), # test-v326: Alpha#42 VWAP偏离
+    "alpha041_geo_vwap":      (compute_alpha041, None), # test-v326: Alpha#41 几何VWAP
+    "alpha012_vol_dir":       (compute_alpha012, None), # test-v326: Alpha#12 量价方向
+    "alpha002_vol_div":       (compute_alpha002, None), # test-v326: Alpha#2 量价背离
+    "alpha035_range_mom":     (compute_alpha035, None), # test-v326: Alpha#35 区间动量
+    "alpha055_pos_vol":       (compute_alpha055, None), # test-v326: Alpha#55 筹码位置
 }
 
 

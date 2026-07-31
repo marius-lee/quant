@@ -532,7 +532,7 @@ async function loadScheduler() {
         { key: 'last_run', label: '上次运行' },
         { key: 'error_msg', label: '错误信息' },
         { key: 'desc', label: '说明' },
-      ]);
+      ], { rank: true });
       document.getElementById('meta-scheduler').textContent = (data.tasks?.length || 0) + ' 任务';
     }
   } catch (e) { console.warn('scheduler error:', e.message); }

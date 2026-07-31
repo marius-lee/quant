@@ -236,9 +236,13 @@ function updateStatusBar(state) {
   const time = document.getElementById('status-time');
   if (time) time.textContent = new Date().toLocaleTimeString('zh-CN');
   const s = state?.status || 'unknown';
+  const regime = state?.regime;
+  const regimeLabels = { bull: '🐂 牛市', sideways: '📊 震荡', bear: '🐻 熊市' };
+  const regimeText = regime ? ` | ${regimeLabels[regime] || regime}` : '';
+  const sizingPct = state?.regime_sizing ? ` (${Math.round(state.regime_sizing * 100)}%仓位)` : '';
   if (txt) {
     const labels = { pre_market: '盘前', trading: '交易中', post_market: '盘后', closed: '休市', unknown: '未知' };
-    txt.textContent = labels[s] || s;
+    txt.textContent = (labels[s] || s) + regimeText + sizingPct;
   }
   if (dot) {
     dot.className = 'dot ' + (s === 'trading' ? 'on' : s === 'pre_market' || s === 'post_market' ? 'warn' : 'off');

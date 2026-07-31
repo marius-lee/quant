@@ -263,6 +263,10 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
             from quant.regime.detector import get_current_regime
             regime_label, regime_probs = get_current_regime()
         if regime_label is not None:
+            from quant.regime.detector import get_regime_sizing
+            _sizing = get_regime_sizing(regime_label)
+            broker.update({"regime": regime_label, "regime_sizing": _sizing,
+                           "regime_confidence": round(regime_probs.get(regime_label, 0), 2) if regime_probs else 0})
             alpha_raw = am.combine_regime(factor_values, ic_map=ic_map,
                                           regime_label=regime_label,
                                           regime_probs=regime_probs or {})

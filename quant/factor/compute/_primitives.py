@@ -243,7 +243,10 @@ def _overnight_gap(prims: dict, date: str, window: int):
 def _turnover_reversal(prims: dict, date: str, short: int, long: int = 20):
     """换手率反转: 需要换手率数据, 用 approx_turnover 近似。"""
     from quant.factor.registry import _cs_zscore
-    to = prims["approx_turnover"]
+    to = prims.get("approx_turnover")
+    if to is None:
+        _log.warning("_turnover_reversal: no approx_turnover in prims, skipping")
+        return None
     s_avg = to.rolling(short, min_periods=max(short // 2, 1)).mean().loc[date]
     l_avg = to.rolling(long, min_periods=max(long // 2, 1)).mean().loc[date]
     ratio = s_avg / l_avg.replace(0, np.nan)

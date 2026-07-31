@@ -165,6 +165,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     import sqlite3
     from quant.config.paths import MARKET_DB
     _mconn = sqlite3.connect(MARKET_DB)
+    _mconn.execute("CREATE TABLE IF NOT EXISTS limit_up_pool (date TEXT, symbol TEXT, seal_ratio REAL, PRIMARY KEY(date, symbol))")
     _prev_dates = _mconn.execute(
         "SELECT date FROM limit_up_pool WHERE date < ? ORDER BY date DESC LIMIT 1",
         (date_str,)

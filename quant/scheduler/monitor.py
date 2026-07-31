@@ -302,6 +302,8 @@ def _execute_sell(today: str, symbol: str, shares: int, price: float,
         if result.success:
             _log.warning(f"[monitor] {reason}: {symbol} {shares}股 @¥{price:.2f} "
                          f"PnL={pnl_pct:+.1f}% (broker)")
+            # test-v307: 真实券商卖出成功后同步写入 sim_trades (账本唯一真相源)
+            _engine_sell(today, symbol, shares, price)
         else:
             _log.error(f"[monitor] broker sell failed: {symbol}: {result.error}")
             # 回退到模拟执行以确保止损不静默失败

@@ -67,7 +67,7 @@ def _run(today: str):
         _log.info(f"[{today}] broker adapter: {_broker.name} connected={_broker.is_connected()}")
 
         engine = ExecutionEngine(broker_adapter=_broker)
-        cost_model = CostModel()
+        cost_model = CostModel.from_config()
         current_positions = engine.get_positions(strategy)
         _log.info(f"[{today}] {len(current_positions)} current positions")
 

@@ -127,8 +127,9 @@ class UniverseRepo:
             params.append(end_date)
 
         rows = query_all(conn, sql, tuple(params))
-        return [r[0] for r in rows]
+        result = [r[0] for r in rows]
         conn.close()
+        return result
 
     def get_stock_markets(self) -> dict[str, str]:
         """Return {symbol: market} mapping."""

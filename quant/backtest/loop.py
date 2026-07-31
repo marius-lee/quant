@@ -410,7 +410,7 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             # Switch combine_mode from sleeve (warmup) to ic_weighted (walk-forward);
             # test-v298: run_backtest(combine_mode=...) 可覆盖 walk-forward 模式 (hyperopt)
             if i >= warmup_days:
-                kwargs["combine_mode"] = combine_mode or None  # None=use config (sleeve)
+                kwargs["combine_mode"] = combine_mode or "ic_weighted"  # test-v307: None 时默认切 ic_weighted
             # Walk-forward IC retrain
             if retrain_freq > 0 and (i - _last_retrain_idx) >= retrain_freq and bt_factor_names:
                 _log.info("backtest: retraining IC at day %d (%s)", i, today)

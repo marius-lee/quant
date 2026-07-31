@@ -190,8 +190,8 @@ def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
                                 tracking_err = (strat - bm).std() * np.sqrt(ann_days)
                                 if tracking_err > 0:
                                     ir = round(float(daily_alpha * ann_days / tracking_err), 3)
-        except (TypeError, ValueError, IndexError):
-            pass
+        except (TypeError, ValueError, IndexError) as _e:
+            _log.debug("backtest diag compute skipped (non-fatal): %s", _e)
 
     return {
         "sharpe": round(sharpe, 3),
@@ -563,8 +563,8 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             try:
                 if hasattr(h, 'flush'):
                     h.flush()
-            except Exception:
-                pass
+            except Exception as _e:
+                _log.warning("backtest: reconcile final skipped (non-fatal): %s", _e)
 
         return {
             "equity_curve": equity_curve,        "diagnosis": diag,

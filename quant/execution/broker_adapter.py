@@ -338,8 +338,8 @@ class VnpyAdapter(BrokerAdapter):
         if self._gateway:
             try:
                 self._gateway.close()
-            except Exception:
-                pass
+            except Exception as _e:
+                _log.debug("vnpy gateway close failed (non-fatal): %s", _e)
         self._connected = False
         self._gateway = None
 
@@ -653,6 +653,6 @@ def reset_adapter():
     if _adapter_instance:
         try:
             _adapter_instance.disconnect()
-        except Exception:
-            pass
+        except Exception as _e:
+            _log.debug("adapter disconnect failed (non-fatal): %s", _e)
     _adapter_instance = None

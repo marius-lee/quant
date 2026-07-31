@@ -375,8 +375,8 @@ def validate_consistency() -> dict:
     try:
         from quant.utils.logger import set_trace_id as _sti
         set_trace_id = _sti
-    except Exception:
-        pass
+    except Exception as _e:
+        _log.debug("set_trace_id import failed (non-fatal): %s", _e)
 
     _log.info("Phase 8: backtest-vs-live consistency validation starting...")
     t0 = time.time()

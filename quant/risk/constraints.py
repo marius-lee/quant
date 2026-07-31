@@ -134,9 +134,10 @@ def filter_sealed_limit_up(candidates, prev_date: str, seal_ratio_threshold: flo
             a = float(amt or 0)
             if lc > 0 and a > 0 and (lc / a) > seal_ratio_threshold:
                 sealed_syms.add(sym)
-        except (ValueError, TypeError):
-            pass
+        except (ValueError, TypeError) as _e:
+            _log_seal.debug("seal ratio check skipped: %s", _e)
     from quant.utils.logger import get_logger
+    _log_seal = get_logger("risk.constraints.sealed")
     logger = get_logger("risk.constraints")
     removed = [s for s in sealed_syms if s in candidates.index]
     if removed:

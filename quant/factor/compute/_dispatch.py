@@ -169,8 +169,8 @@ def compute_all_factors(data: pd.DataFrame, date: str,
                                     days = max(0, (pd.Timestamp(date) - pd.Timestamp(latest[sym])).days)
                                     if days > 30:  # 30天内不衰减 (刚发布)
                                         _decayed_series[sym] *= np.exp(np.float64(-_decay_lambda * days))
-                                except (ValueError, TypeError):
-                                    pass
+                                except (ValueError, TypeError) as _e:
+                                    _plog.debug("factor dispatch compute failed for %s: %s", cn, _e)
                         break  # 用一个表即可 (income 覆盖最广)
                 if _decayed_series.notna().sum() > 0:
                     results[name] = _decayed_series

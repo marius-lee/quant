@@ -74,8 +74,8 @@ class FieldRef(ASTNode):
             # Single-level columns
             if col in data.columns:
                 return data[col].iloc[date_idx]
-        except (KeyError, IndexError):
-            pass
+        except (KeyError, IndexError) as _e:
+            _log.debug("expr_compiler lookup failed: %s", _e)
         idx = data.columns.get_level_values(1) if isinstance(data.columns, pd.MultiIndex) else data.columns
         return pd.Series(np.nan, index=idx, dtype=float)
 
@@ -288,8 +288,8 @@ class Parser:
             val = float(t)
             self.consume()
             return Constant(val)
-        except ValueError:
-            pass
+        except ValueError as _e:
+            _log.debug("expr_compiler parse failed: %s", _e)
 
         # Function call: fn_name ( arg )
         if t in _UNARY_FNS:

@@ -1363,8 +1363,8 @@ class DataStore:
         finally:
             try:
                 ctx.close() if hasattr(ctx, 'close') else None
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug("db context close failed (non-fatal): %s", _e)
 
         logger.info(f"[longbridge] {len(rows)} rows for {len(symbols)} symbols")
         return rows

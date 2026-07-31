@@ -11,6 +11,8 @@ One API call per date fetches all stocks' valuation.
 import os, sys, time, sqlite3, logging
 from quant.config.constants import _require_cfg
 from quant.utils.date import to_compact
+from quant.utils.logger import get_logger
+_log = get_logger("data.jq_valuation")
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -168,8 +170,8 @@ def sync_date(date_str, conn):
         df = get_fundamentals(q, date=date_str)
         try:
             logout()
-        except Exception:
-            pass
+        except Exception as _e:
+            _log.debug("jq logout failed (non-fatal): %s", _e)
     except Exception as e:
         logger.warning(f"JQData failed for {date_str} ({type(e).__name__}: {e}), trying tushare...")
     if df is None or df.empty:

@@ -5,6 +5,9 @@
 
 from datetime import datetime, timedelta
 from quant.config.constants import _require_cfg
+from quant.utils.logger import get_logger as _get_logger
+
+_log = _get_logger(__name__)
 
 
 def check_alerts(state: dict, metrics_snap: dict) -> list[dict]:
@@ -39,8 +42,8 @@ def check_alerts(state: dict, metrics_snap: dict) -> list[dict]:
                 "level": "warning",
                 "msg": f"最大回撤 {dd_pct:.1f}% (peak-to-trough, 60日窗口)"
             })
-    except Exception:
-        pass  # daily_equity 表不存在时跳过
+    except Exception as _e:
+        _log.warning("Rule 1 (max_drawdown): daily_equity query failed — %s", _e)
 
     # ── Rule 2: 数据同步滞后 (最近日线 > 2 天前) ──
     # 直接查 daily 表 MAX(date), 而非依赖从未写入的 last_daily_sync (2026-07-21 audit M7)
@@ -60,8 +63,8 @@ def check_alerts(state: dict, metrics_snap: dict) -> list[dict]:
                     "msg": f"最近日线: {last_date} (超过2天未更新)"
                 })
         ds.close()
-    except Exception:
-        pass  # daily 表不可用时跳过
+    except Exception as _e:
+        _log.warning("Rule 2 (data_staleness): daily query failed — %s", _e)
 
     # ── Rule 3: 连续 pipeline 失败 ──
     err_count = int(metrics_snap.get("counters", {}).get("pipeline.errors", 0))

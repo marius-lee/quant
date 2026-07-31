@@ -254,7 +254,7 @@ class RiskManager:
                     repo.save_position_meta(p["symbol"], today,
                         tp1_hit=p.get("_tp1_hit", False),
                         peak_price=p.get("_peak", 0))
-        except Exception:
-            pass
+        except Exception as _e:
+            _log.debug("position_meta save failed (non-fatal): %s", _e)
 
         return results

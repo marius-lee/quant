@@ -388,8 +388,8 @@ def _set_monitor_stage(stage: str):
             (stage, today))
         c.commit()
         c.close()
-    except Exception:
-        pass
+    except Exception as _e:
+        _log.warning("reconcile: save task_log failed (non-fatal): %s", _e)
 
 def _loop():
     """启动风控监控 daemon 线程."""

@@ -94,8 +94,8 @@ class FactorStore:
         try:
             mconn = store._connect()
             mconn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        except Exception:
-            pass
+        except Exception as _e:
+            _log.debug("WAL checkpoint failed (non-fatal): %s", _e)
 
         t0 = _time.time()
 
@@ -114,8 +114,8 @@ class FactorStore:
         ).fetchall())
         try:
             mconn.close()
-        except Exception:
-            pass  # monkeypatched shared conn in tests
+        except Exception as _e:
+            _log.debug("mconn close failed (non-fatal): %s", _e)  # monkeypatched shared conn in tests
         symbols_filtered = [s for s in symbols if s in valid_syms]
         _log.info("factor_cache: symbol filter %d → %d (stocks table)",
                   len(symbols), len(symbols_filtered))
@@ -329,8 +329,8 @@ class FactorStore:
         if _store_owned:
             try:
                 store.close()
-            except Exception:
-                pass
+            except Exception as _e:
+                _log.debug("store close failed (non-fatal): %s", _e)
 
         size_mb = sum(os.path.getsize(os.path.join(self._cache_dir, f))
                       for f in os.listdir(self._cache_dir) if f.endswith('.csv.gz')) / 1024 / 1024

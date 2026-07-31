@@ -229,23 +229,6 @@ def _run():
                             _log.error(f"[{today}] evening chain exhausted retries, giving up")
                             _evening_done = True
 
-        # ═══════════════════════════════════════════
-        # 6.5 19:50 — 复权因子同步 (test-v316: 从 cron 迁移到 orchestrator)
-        # ═══════════════════════════════════════════
-        s = status.get("adj_factor")
-        if s not in ("ok", "failed") and _retry_ok("adj_factor"):
-            if hhmm >= time(19, 50):
-                from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
-                _tk_start("adj_factor", today)
-                try:
-                    from quant.data.store import DataStore
-                    result = DataStore().sync_adj_factor(max_batches=1)
-                    summary = result.get("rows", 0) if isinstance(result, dict) else str(result)
-                    _tk_finish("adj_factor", today, "ok", summary)
-                except Exception as _adj_e:
-                    _tk_finish("adj_factor", today, "failed", str(_adj_e))
-                    _log.error(f"[{today}] adj_factor failed: {_adj_e}")
-
         # ── 主动超时检测 ──
         _check_timeouts(today)
 

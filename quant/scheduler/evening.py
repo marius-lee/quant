@@ -26,9 +26,10 @@ _log = get_logger(__name__)
 # 依赖顺序即执行顺序; attribution 必须在 factor_cache 之后 (G1/G4 需当日因子缓存)
 _CHAIN = [
     ("daily_data", "quant.scheduler.daily_data"),
+    ("adj_factor", None),                          # test-v317: 内联执行 (DataStore.sync_adj_factor)
     ("factor_cache", "quant.scheduler.factor_cache"),
     ("attribution", "quant.scheduler.attribution"),
-    ("lgb_train", "quant.scheduler.lgb_train"),      # 仅周一/周四, _run 内判断
+    ("lgb_train", "quant.scheduler.lgb_train"),    # 仅周一/周四
 ]
 
 
@@ -64,6 +65,27 @@ def _run(today: str):
                 if wd not in (0, 3):  # 0=周一, 3=周四
                     _log.info(f"[{today}] evening chain: {name} skipped (not Mon/Thu, wd={wd})")
                     continue
+            # adj_factor: 内联执行 (test-v317: 无需单独模块, 1 批/天不超限流)
+            if name == "adj_factor":
+                if _stage_status(today, name) == "ok":
+                    _log.info(f"[{today}] evening chain: {name} already ok, skip")
+                    continue
+                _log.info(f"[{today}] evening chain: starting {name}")
+                stage_t0 = _time.time()
+                from quant.scheduler.task_log import start as _s, finish as _f
+                _s(name, today)
+                try:
+                    from quant.data.store import DataStore
+                    result = DataStore().sync_adj_factor(max_batches=1)
+                    _f(name, today, "ok", str(result.get("rows", 0)) if isinstance(result, dict) else str(result))
+                except Exception as _adj_e:
+                    _f(name, today, "failed", str(_adj_e))
+                    error_msg = f"{name} failed: {_adj_e}, chain aborted"
+                    _log.error(f"[{today}] evening chain: {error_msg}")
+                    status = "failed"
+                    break
+                _log.info(f"[{today}] evening chain: {name} ok ({_time.time() - stage_t0:.1f}s)")
+                continue
             # 人工提前跑过且成功 → 跳过
             if _stage_status(today, name) == "ok":
                 _log.info(f"[{today}] evening chain: {name} already ok, skip")

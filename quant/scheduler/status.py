@@ -51,7 +51,7 @@ def register_all():
     register("daily_data",   "19:00",       label="数据拉取",
              desc="拉取当日 A 股日线行情，更新 market.db")
     register("adj_factor",   "晚间链 (daily_data后)", label="复权因子同步",
-             desc="tushare+baostock 双源同步复权因子, 每天一次 (cron 触发)")
+             desc="tushare+baostock 双源同步复权因子, 每晚1批(晚间链子进程)")
     register("factor_cache", "daily_data完成后", label="因子物化",
              desc="增量更新 factor_cache，用当日行情计算回测因子值")
     register("attribution",  "factor_cache完成后", label="盘后归因",

@@ -4,7 +4,27 @@
 > 避免重复踩坑、重新讨论已否决方案、遗漏已有设计。
 
 
-## 当前状态 (test-v303, 2026-07-31 09:15)
+## 当前状态 (test-v306, 2026-07-31)
+
+### 最终状态
+
+git: 34 commits (v269→v306), clean working tree
+VERSION: test-v306
+cron: 1条 (adj_factor 每天19:50)
+orchestrator: ~85MB, 16个调度任务
+
+### test-v304→v306
+
+- v304: 调度序号列
+- v305: adj_factor 每天一次 (baostock兜底), 显示优化
+- v306: phase5 probation因子走IC_PERSISTENT, 周度评估正式运行(0active/26probation/45archived)
+
+### 待观察
+- 限价单盘中成交
+- 晚间链 subprocess 无人值守首次运行
+- 周一信号 (周六不交易)
+
+
 
 ### 完整架构
 

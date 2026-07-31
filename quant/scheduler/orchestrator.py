@@ -177,7 +177,23 @@ def _run():
                 _run_task("reconcile", _recon_run, today)
 
         # ═══════════════════════════════════════════
-        # 5. 19:00+ — 晚间链 subprocess (test-v288)
+        # 5. 周六 06:00 — 周度因子评估 subprocess
+        # ═══════════════════════════════════════════
+        if hhmm >= time(6, 0) and hhmm < time(6, 5) and datetime.now().weekday() == 5:
+            s = status.get("weekly_eval")
+            if s not in ("ok", "failed") and _retry_ok("weekly_eval"):
+                _log.info(f"[{today}] 06:00 — spawning weekly eval subprocess")
+                subprocess.Popen(
+                    [".venv/bin/python3", "-c",
+                     "from quant.utils.excepthook import setup; setup();"
+                     "from quant.scheduler.weekly import _run;"
+                     f"_run('{today}')"],
+                    cwd=os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                    env={**os.environ, "PYTHONPATH": "."},
+                )
+
+        # ═══════════════════════════════════════════
+        # 6. 19:00+ — 晚间链 subprocess (test-v288)
         # 非阻塞 Popen, 每 30s poll, 失败重试, 不 import sklearn/scipy
         # ═══════════════════════════════════════════
         if hhmm >= time(19, 0) and not _evening_done:

@@ -4,123 +4,66 @@
 > 避免重复踩坑、重新讨论已否决方案、遗漏已有设计。
 
 
-## 当前状态 (test-v284, 2026-07-30)
+## 当前状态 (test-v299, 2026-07-31)
 
+### test-v297→v299: numpy 2.x ufunc 兼容全量修复
 
-### test-v285: probation 门槛提升 (ICIR 0.15→0.20, IC 0.01→0.015)
+- np.log/exp/isfinite 在 Python float 上崩溃 (numpy 2.x breaking change).
+  修复 6 处: size_neutralize, ctr_20d, _alternative(mv_map), _dispatch(earnings).
+  改法统一: np.asarray(..., dtype=np.float64) 或 pd.to_numeric.
 
-- **背景**: ADR-041 (2026-07-28) 将 monitoring(纯观察池,不参与信号) → probation(参与信号,衰减权重),
-  但 Phase 2 的 monitoring 门槛未同步调整, 导致 IC=0.01 的噪声因子 (roe_ratio) 混入信号.
-- **根因分析**:
-  1. 原始 monitoring 门槛 (IC=0.01, ICIR=0.15) 设计意图是"不对实盘开放但保留观察", 低门槛合理.
-  2. ADR-041 改变语义: monitoring→probation + using=active+probation (参与信号).
-  3. 语义变了, 门槛没跟 → 噪声因子混进信号, 依赖归因每日检测踢出 (T+1 延迟).
-  4. roe_ratio 案例: IC=0.0109≥0.01 → monitoring → ADR-041 migration → probation →
-     attribution 归档 (走了完整的"混入→检测→踢出"流程, 但第一天信号已被污染).
-- **修复**:
-  - monitoring_min_icir: 0.15→0.20 (Grinold & Kahn IR<0.25=弱, 观察池向下取 0.20)
-  - monitoring_min_abs_ic: 0.01→0.015 (Qlib 标准 IC<0.02 无经济意义)
-  - diagnostics_min_icir: 0.15→0.20 (与 monitoring 对齐, 原设计即要同步)
-- **影响**: IC≈0.01/ICIR≈0.12 的因子将直接在 Phase 2 fail→archived, 不再进 probation.
-  已归档因子 (roe_ratio 等 44 个) 不受影响 (archived 不回退).
-- **变更文件**: quant/config/config.yaml
+### test-v296: 因子评估调度改为依赖显示
 
+- weekly_eval schedule: 周六06:00 → factor_curation完成后.
+  与晚间链(daily_data完成后→factor_cache完成后→attribution)统一风格.
 
-### test-v284: attribution 独立三档归因
+### test-v293→v295: 调度界面优化
 
-资金分档 (独立于 optimizer, 纯归因维度):
-  Nano  (精简): AUM < ¥50,000
-  Micro (标准): ¥50,000 ≤ AUM ≤ ¥500,000
-  Small (严格): AUM > ¥500,000
+- 新增说明列(desc), 移到最后一列. 去掉分组+Cron列.
+- 前5列强制 nowrap. 括号注释兼容.
 
-归因模块行为矩阵:
+### test-v288→v291: orchestrator 瘦身 + 晚间链 subprocess
 
-| 模块        | 功能              | Nano (精简)     | Micro (标准)     | Small (严格)     |
-|------------|-------------------|:---------------:|:----------------:|:----------------:|
-| Brinson    | 行业配置/选股归因   | 跳过              | 正常              | 正常              |
-| G1 OOS     | Walk-Forward 验证  | 正常              | 正常              | 正常              |
-| L1-L3      | IC衰减/状态变更     | 正常              | 正常              | 正常              |
-| 因子冗余    | IC-rank 相关性去重  | 正常              | 正常              | 正常              |
-| G2 拥挤度   | pairwise ρ 检测    | 正常              | 正常              | 正常              |
-| G3 DSR     | Deflated Sharpe   | 跳过              | 正常 (>=10d)      | 正常 (>=20d)      |
-| G4 因子PnL | 因子贡献 bps       | 正常              | 正常              | 正常              |
-| R3 换手率   | turnover vs alpha | 不限 (999%阈值)   | 告警 >=200%       | 告警 >=50%        |
-| R4 信号滑点 | signal->execution | 告警 >=5%         | 告警 >=2%         | 告警 >=1%         |
-| IC 同步    | 写 factor_registry| 正常              | 正常              | 正常              |
-| Benchmark  | 净值追踪           | 正常              | 正常              | 正常              |
+- orchestrator 只负责 08:30-15:05 (signals→execute→monitor→reconcile).
+- 晚间链由 orchestrator 在 19:00 通过 subprocess.Popen 触发, 非阻塞轮询.
+- 失败自动重试 (最多2次). cron 移除 evening 条目.
+- orchestrator 从 919MB → 85MB (不 import sklearn/scipy).
+- lgb_train 补回晚间链 (周一/周四执行).
 
-设计依据:
-  - Brinson 需要 >=5 行业 + >=20 只票 (Barra), <50K 组合无统计意义
-  - DSR 需要 >=60 交易日 (De Prado 2018), <50K 组合数据不足
-  - 换手率小额一笔翻倍, 告警无意义 (Axioma 按 AUM 分档)
-  - 信号滑点在小额=隔夜跳空, 非执行问题 (Kissell IS)
-  - 因子健康检测是核心风控, 不分资金规模
+### test-v284→v287: attribution 三档 + config 重建
 
-自动升降级:
-  - AUM 实时读取 ExecutionEngine.get_capital(), 不缓存
-  - 跨过阈值自动切换, 下次 _run 生效
+- Nano(<50K)/Micro(50-500K)/Small(>500K) 三档归因.
+- 换手率/滑点告警按资金分档.
+- config.yaml 恢复 67 行参数来源对照表 (test-v249 误删).
 
-### test-v283→v282: config 来源注释恢复
+### test-v281→v282: PID 进程检测
 
-- test-v249 (07-29) 误删 67 行参数来源对照表.
-  恢复头部注释 + 底部 50 行参数来源表 (Barra/Kissell/Grinold/De Prado).
-- 所有新增参数均带来源注释 (train_chunk_samples, tier caps 等).
+- task_runs 加 pid 列, _tk_start 写入 os.getpid().
+- _cleanup_zombie_tasks: os.kill(pid,0) 检测进程死活.
+- 活进程保留 running, 真死 → aborted → orchestrator 重试.
 
-### test-v281: PID 进程死活检测
+### test-v276→v280: LGB 全链路 float32 + 分块训练
 
-- _cleanup_zombie_tasks: 原全部 running->aborted (不查进程死活).
-  改 os.kill(pid,0) 检测, 进程存活→保留 running, 真死→aborted.
-- task_runs 表加 pid 列, _tk_start 写入 os.getpid().
-- orchestrator 不重试 aborted→恢复为重试 (aborted 现在=真死, 应重试).
+- 因子面板/X_day/y_day 全转 float32. 分块训练(每批4M).
+- 内存 ~25GB → ~4GB. OOM 解决.
 
-### test-v280: 界面调度时间改依赖触发
+### test-v274: factor_cache chunk skip + turnover 单日回填
 
-- status.py register_all: factor_cache/attribution/lgb_train 的 schedule
-  从固定时间改为 "daily_data完成后" / "factor_cache完成后".
+- chunk 跳过: 检查文件存在(不检查因子完整性).
+- backfill_turnover(date=today) 单日模式.
 
-### test-v278: _next_scheduled_time 依赖型兼容
+### test-v269→v272: adj_factor baostock + 数据源链重排 + baostock OHLCV
 
-- 依赖型任务 (schedule 含 "完成后") 返回空串, 不计算 next_run.
-
-### test-v276→v277: LGB 全链路 float32 + 分块训练
-
-- X_day/y_day 构建时 .astype(np.float32), factor_panels 转 float32.
-- train() 分块训练: 每批 <=4M 样本, init_model 串联.
-- 内存峰值 ~25GB -> ~4GB.
-- config 加 train_chunk_samples (来源: 2026-07-30 OOM 实测).
-
-### test-v274: factor_cache 整块跳过 + turnover 单日回填
-
-- factor_cache: chunk 前检查全部日期已缓存→跳过 (force 除外).
-- backfill_turnover: date=today 单日模式, 不再扫全历史缺口.
-
-### test-v272: baostock OHLCV + 数据源链重排
-
-- 新增 _fetch_baostock_daily (qfq 前复权, turnover✅).
-- 源顺序: tushare -> zzshare -> pytdx -> baostock -> tencent -> akshare -> tickflow -> longbridge.
-
-### test-v271: _analyze_daily_gaps 过滤非 stocks 表 symbol
-
-- ETF/退市股在 daily 有历史残留, for 循环加 if sym not in all_symbols: continue.
-
-### test-v270: update_daily 加 target_date 精准补数据
-
-- _analyze_daily_gaps 以 target_date 为 staleness 基准.
-- 补单日数据只拉真正缺口 (507 只 vs 5481).
-
-### test-v269: sync_adj_factor 接入 baostock 兜底
-
-- tushare adj_factor 限流 ~3-4 批/天, 改为 baostock query_adjust_factor 兜底.
-- baostock 25 分钟铺满 4874 只 (88%).
+- sync_adj_factor 双源: tushare(批量) + baostock(兜底).
+- 源链: tushare→zzshare→pytdx→baostock→tencent→akshare→tickflow→longbridge.
+- ETF 过滤 + target_date 精准补数据.
 
 ### 版本号
-web/app.py VERSION = "test-v284"
+web/app.py VERSION = "test-v299"
 
 ### 待完成
-1. 晚间链 (evening chain) 完整跑通 07-30
-2. 全量回测
-3. git push
-
+1. 回测结果 (07-30→07-31 已修 numpy bug, 正在跑)
+2. 验证晚间链 subprocess + factor_cache chunk skip 联合效果
 
 ## 历史归档
 

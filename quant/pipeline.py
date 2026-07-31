@@ -351,9 +351,18 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
          if int(p["shares"]) >= LOT_SIZE},
         dtype=int,
     )
+    # ── test-v309 §8.3: regime 动态仓位管理 ──
+    # 牛/熊/震荡 → 调整可用资金, 熊市少买保留现金.
+    _sizing_capital = total_capital
+    if regime_label and regime_label != "unknown":
+        from quant.regime.detector import get_regime_sizing
+        _multiplier = get_regime_sizing(regime_label)
+        _sizing_capital = total_capital * _multiplier
+        logger.info(f"[5/5] regime sizing: {regime_label} → "
+                    f"capital=¥{_sizing_capital:,.0f} (×{_multiplier})")
     portfolio = constructor.construct(
         filtered["alpha"], filtered["close"],
-        total_capital,
+        _sizing_capital,
         covariance=cov, ic_map=ic_map,
         current_lots=current_lots, cost_model=cost_model,
     )

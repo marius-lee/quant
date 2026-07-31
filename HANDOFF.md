@@ -4,7 +4,26 @@
 > 避免重复踩坑、重新讨论已否决方案、遗漏已有设计。
 
 
-## 当前状态 (test-v306, 2026-07-31)
+## 当前状态 (test-v309, 2026-07-31)
+
+### test-v307→v309: Bug修复 + 动态仓位管理
+
+- v307: 修复8个已确认bug (CostModel/monitor/combine_mode/var/universe/Order/turnover/limit_up/state_broker)
+- v308: 修复6个隐性bug (construct/config/import/flush/VaR/engine)
+- v309: regime动态仓位管理 — §8.3 牛/熊/震荡识别后自动调整可用资金
+
+### Regime Sizing (test-v309)
+- bull: 100%仓位 — 满仓操作
+- sideways: 60%仓位 — 半仓保守
+- bear: 30%仓位 — 保留现金
+- 来源: 恒泰/九坤 regime-adaptive position sizing
+
+### 待观察
+- 限价单盘中成交
+- 晚间链 subprocess 无人值守首次运行
+- 周一信号 (周六不交易)
+
+
 
 ### 最终状态
 

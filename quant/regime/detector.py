@@ -187,3 +187,18 @@ def get_regime_weights(factor_names, ic_map, regime_label, regime_probs):
         weights = {k: v / total * len(weights) for k, v in weights.items()}
 
     return weights
+
+
+def get_regime_sizing(regime_label: str) -> float:
+    """§8.3: regime 动态仓位乘数.
+
+    牛市满仓、震荡半仓、熊市三成仓, 保留现金应对回撤.
+    来源: 恒泰/九坤 regime-adaptive position sizing.
+    """
+    sizing = {
+        "bull": _require_cfg("regime.sizing.bull"),
+        "sideways": _require_cfg("regime.sizing.sideways"),
+        "bear": _require_cfg("regime.sizing.bear"),
+    }
+    return float(sizing.get(regime_label, 1.0))
+

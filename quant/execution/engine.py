@@ -37,6 +37,9 @@ class Order:
     strategy: str = "quant"
     note: str = ""
     board_count: int = 100  # test-v307: default 100 股/手 (主板)
+
+
+class ExecutionEngine:
     """模拟执行引擎: 订单执行 → trades.db, 更新 capital_after。
 
     broker_adapter 注入 (ADR-036):

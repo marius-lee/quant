@@ -369,6 +369,11 @@ universe:
 regime:
   retrain_days: 7
   train_start: '2024-01-01'
+  sizing:
+    bull: 1.0           # 牛市满仓 — 来源: 九坤/明汯 牛市≥100%仓位
+    sideways: 0.6       # 震荡半仓 — 来源: 恒泰 震荡≤60%仓位
+    bear: 0.3           # 熊市三成 — 来源: 恒泰 熊市≤30%仓位, 保留现金抄底
+    min_signal: 0.0     # 低于此阈值的信号不交易 (0=不启用)
 market:
   annual_trading_days: 244
 

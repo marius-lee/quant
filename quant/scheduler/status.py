@@ -105,9 +105,9 @@ def _next_scheduled_time(schedule: str) -> str:
     # strip 括号注释 + 依赖检查
     if "(" in time_str:
         time_str = time_str.split("(")[0].strip()
-    if "完成后" in time_str:
+    if "完成后" in time_str or "晚间链" in time_str or "后)" in time_str:
         return ""
-    if not time_str:  # 无有效时间
+    if not time_str or ":" not in time_str:  # 无有效时间格式
         return ""
     hh, mm = (int(x or 0) for x in time_str.split(":"))
     now = datetime.now()

@@ -150,11 +150,11 @@ def _run():
         # ═══════════════════════════════════════════
         # 2.5 09:30 — 开盘30分钟价格快照 (test-v324: 日内反转因子数据)
         # ═══════════════════════════════════════════
-        s = status.get("snapshot")
-        if s not in ("ok", "failed") and _retry_ok("snapshot"):
+        s = status.get("snapshot_open")
+        if s not in ("ok", "failed") and _retry_ok("snapshot_open"):
             if hhmm >= time(9, 30) and "execute" in status:
-                from quant.scheduler.snapshot import snapshot_all
-                _run_task("snapshot", snapshot_all, today)
+                from quant.scheduler.snapshot import snapshot_open
+                _run_task("snapshot_open", snapshot_open, today)
 
         # ═══════════════════════════════════════════
         # 3. 09:35-11:30,13:00-14:55 — 盘中风控 (daemon 线程)
@@ -175,6 +175,15 @@ def _run():
             _monitor_stop.set()
             _monitor_thread.join(timeout=5)
             _monitor_thread = None
+
+        # ═══════════════════════════════════════════
+        # 3.5 14:55 — 尾盘快照 (test-v328: 尾盘5分钟价格+成交量)
+        # ═══════════════════════════════════════════
+        s = status.get("snapshot_close")
+        if s not in ("ok", "failed") and _retry_ok("snapshot_close"):
+            if hhmm >= time(14, 55):
+                from quant.scheduler.snapshot import snapshot_close
+                _run_task("snapshot_close", snapshot_close, today)
 
         # ═══════════════════════════════════════════
         # 4. 15:05-15:30 — OMS 日终对账 (monitor 收盘后)

@@ -61,7 +61,17 @@ def _fetch_batch(batch: list[str]) -> dict[str, dict]:
     return results
 
 
-def snapshot_all(today: str = None):
+def snapshot_open(today: str = None):
+    """快照开盘30分钟价格+成交量."""
+    return _snapshot(today, mode="open")
+
+
+def snapshot_close(today: str = None):
+    """快照尾盘5分钟价格+成交量."""
+    return _snapshot(today, mode="close")
+
+
+def _snapshot(today: str = None, mode: str = "open"):
     """快照所有A股实时价到 intraday_snapshot 表."""
     if today is None:
         today = datetime.now().strftime("%Y-%m-%d")
@@ -70,7 +80,8 @@ def snapshot_all(today: str = None):
     from quant.data.repos._base import DatabaseManager
 
     symbols = UniverseRepo().get_symbols(exclude_market="BJ")
-    _log.info(f"snapshot: {today} — {len(symbols)} stocks")
+    label = "开盘" if mode == "open" else "尾盘"
+    _log.info(f"snapshot {label}: {today} — {len(symbols)} stocks")
 
     conn = DatabaseManager.market()
     saved = 0
@@ -81,21 +92,21 @@ def snapshot_all(today: str = None):
         prices = _fetch_batch(batch)
         for sym, data in prices.items():
             try:
-                conn.execute(
-                    "INSERT OR REPLACE INTO intraday_snapshot(symbol, date, open_30min, open_30min_vol) "
-                    "VALUES (?, ?, ?, ?)",
-                    (sym, today, data["price"], data["volume"])
-                )
+                if mode == "open":
+                    conn.execute(
+                        "INSERT OR REPLACE INTO intraday_snapshot(symbol, date, open_30min, open_30min_vol) "
+                        "VALUES (?, ?, ?, ?)",
+                        (sym, today, data["price"], data["volume"]))
+                else:
+                    conn.execute(
+                        "UPDATE intraday_snapshot SET close_5min=?, close_5min_vol=? "
+                        "WHERE symbol=? AND date=?",
+                        (data["price"], data["volume"], sym, today))
                 saved += 1
             except Exception:
                 errors += 1
 
     conn.commit()
     conn.close()
-    _log.info(f"snapshot done: {saved} saved, {errors} errors, "
-              f"{(datetime.now() - datetime.strptime(today, '%Y-%m-%d')).seconds if False else ''}s")
+    _log.info(f"snapshot {label} done: {saved} saved, {errors} errors")
     return {"saved": saved, "errors": errors}
-
-
-if __name__ == "__main__":
-    snapshot_all()

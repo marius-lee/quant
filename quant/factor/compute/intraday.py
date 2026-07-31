@@ -111,3 +111,46 @@ def compute_open_volume_ratio(data, date):
         return None
     s = pd.Series(result, dtype=float)
     return _cs_zscore(s, sparse=True).rename("open_volume_ratio")
+
+
+def compute_close_surge(data, date):
+    """尾盘异动 — 尾盘5分钟 vs 全天波动.
+
+    高尾盘异动 → 次日反转概率高 (机构尾盘调仓).
+    """
+    from quant.data.repos._base import DatabaseManager
+
+    if not isinstance(data.columns, pd.MultiIndex):
+        return None
+    close = data["close"]
+    high = data["high"] if "high" in data.columns.get_level_values(0) else None
+    if close is None or close.empty:
+        return None
+
+    conn = DatabaseManager.market()
+    rows = conn.execute(
+        "SELECT symbol, close_5min FROM intraday_snapshot WHERE date=?",
+        (date,)
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        return None
+
+    symbols = close.columns if isinstance(close, pd.DataFrame) else []
+    result = {}
+    for r in rows:
+        sym = r[0]
+        c5 = r[1]
+        if sym in symbols and c5 and c5 > 0:
+            final_close = close[sym].iloc[-1] if sym in close.columns else None
+            day_range = (high[sym].iloc[-1] - data["low"][sym].iloc[-1]) if high is not None and sym in high.columns else None
+            if final_close and day_range and day_range > 0:
+                # 尾盘异动 = 收盘前5分钟变化 / 全天振幅
+                surge = (final_close - c5) / day_range
+                result[sym] = -abs(surge)  # 负相关: 尾盘异动大→次日反转
+
+    if not result:
+        return None
+    s = pd.Series(result, dtype=float)
+    return _cs_zscore(s, sparse=True).rename("close_surge")

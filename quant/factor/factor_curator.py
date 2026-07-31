@@ -246,6 +246,20 @@ _CURATED_FACTORS: list[dict] = [
         "source": "中信2023 — 日内反转(开盘30min), IC_IR≈0.8+, A股T+1最强因子",
         "direction": "negative", "category": "日内",
     },
+
+    # ═══════════ 成长因子 + Piotroski (test-v325) ═══════════
+    {
+        "name": "earnings_growth_yoy",
+        "expression": "earnings_growth_yoy",
+        "source": "国泰君安2022 — 净利润增长, A股成长因子核心, IC_IR≈0.3",
+        "direction": "positive", "category": "fundamental",
+    },
+    {
+        "name": "piotroski_fscore",
+        "expression": "piotroski_fscore",
+        "source": "Piotroski (2000) + 国泰君安2021 A股验证 — 9项质量打分, IC_IR≈0.3-0.5",
+        "direction": "positive", "category": "fundamental",
+    },
 ]
 
 

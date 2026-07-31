@@ -62,6 +62,9 @@ from quant.factor.registry import _cs_zscore, _db_connect, _FIN_FACTORS
 from quant.factor.compute._shared import _market_db_path
 from quant.data.repos._base import DatabaseManager
 from quant.factor.compute.missing import compute_revenue_growth_yoy  # test-v323
+from quant.factor.compute.missing import (
+    compute_earnings_growth_yoy, compute_piotroski_fscore
+)  # test-v325
 
 def compute_high52w_dist(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
     """接近52周高点→高分。dist = 1 - close_latest/high_52w, 取负号。
@@ -1254,4 +1257,6 @@ _FUNDAMENTAL_FN_MAP = {
     "macro_cpi_yoy":        ("macro",          compute_macro_cpi_yoy),
     "macro_rate_10y":       ("macro",          compute_macro_rate_10y),
     "revenue_growth_yoy":   ("fundamental",    compute_revenue_growth_yoy),  # test-v323
+    "earnings_growth_yoy":  ("fundamental",    compute_earnings_growth_yoy), # test-v325
+    "piotroski_fscore":     ("fundamental",    compute_piotroski_fscore),    # test-v325
 }

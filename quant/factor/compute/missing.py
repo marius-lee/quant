@@ -158,3 +158,141 @@ def compute_revenue_growth_yoy(data, date, fundamentals=None):
     s = pd.Series(result, dtype=float)
     s = s.replace([np.inf, -np.inf], np.nan)
     return _cs_zscore(s, sparse=True).rename("revenue_growth_yoy")
+
+
+def compute_earnings_growth_yoy(data, date, fundamentals=None):
+    """净利润同比增长率 — 最近报告期 vs 去年同期."""
+    from quant.data.repos._base import DatabaseManager
+    from collections import defaultdict
+    conn = DatabaseManager.market()
+    rows = conn.execute(
+        "SELECT symbol, stat_date, net_profit "
+        "FROM financial_income WHERE stat_date <= ? "
+        "ORDER BY symbol, stat_date DESC",
+        (date,)
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return None
+    latest, prev = {}, {}
+    for r in rows:
+        sym = r[0]
+        if sym not in latest: latest[sym] = (r[1], r[2])
+        elif sym not in prev and r[1] != latest[sym][0]: prev[sym] = (r[1], r[2])
+    symbols = data["close"].columns if isinstance(data["close"], pd.DataFrame) else []
+    result = {}
+    for sym in symbols:
+        if sym in latest and sym in prev:
+            l_val, p_val = latest[sym][1], prev[sym][1]
+            if l_val and p_val and abs(p_val) > 1:
+                result[sym] = l_val / p_val - 1
+    if not result:
+        return None
+    s = pd.Series(result, dtype=float).replace([np.inf, -np.inf], np.nan)
+    return _cs_zscore(s, sparse=True).rename("earnings_growth_yoy")
+
+
+def compute_piotroski_fscore(data, date, fundamentals=None):
+    """Piotroski F-Score — 9项基本面质量综合打分 (0-9).
+
+    A股 IC_IR≈0.3-0.5, 价值+质量复合, 低分=差, 高分=好.
+    来源: Piotroski (2000), 国泰君安 2021 A股验证.
+    """
+    from quant.data.repos._base import DatabaseManager
+    conn = DatabaseManager.market()
+    # 加载最近一年财务数据
+    fin_rows = conn.execute(
+        "SELECT symbol, stat_date, net_profit, operating_revenue, operating_cost, "
+        "total_operating_revenue, total_profit, operating_profit "
+        "FROM financial_income WHERE stat_date <= ? "
+        "ORDER BY symbol, stat_date DESC",
+        (date,)
+    ).fetchall()
+    bal_rows = conn.execute(
+        "SELECT symbol, stat_date, total_assets, total_liability, total_owner_equities, "
+        "fixed_assets, intangible_assets "
+        "FROM financial_balance WHERE stat_date <= ? "
+        "ORDER BY symbol, stat_date DESC",
+        (date,)
+    ).fetchall()
+    cf_rows = conn.execute(
+        "SELECT symbol, stat_date, net_operate_cash_flow "
+        "FROM financial_cash_flow WHERE stat_date <= ? "
+        "ORDER BY symbol, stat_date DESC",
+        (date,)
+    ).fetchall()
+    conn.close()
+
+    if not fin_rows:
+        return None
+
+    # 按股票分组,取最近两期
+    from collections import defaultdict
+    def _last_two(rows):
+        d = defaultdict(list)
+        for r in rows:
+            if len(d[r[0]]) < 2:
+                d[r[0]].append(r)
+        return d
+
+    fin = _last_two(fin_rows)
+    bal = _last_two(bal_rows)
+    cf = _last_two(cf_rows)
+
+    symbols = data["close"].columns if isinstance(data["close"], pd.DataFrame) else []
+    scores = {}
+    for sym in symbols:
+        if sym not in fin or len(fin[sym]) < 2:
+            continue
+        cur_fin, prev_fin = fin[sym][0], fin[sym][1]
+        cur_bal = bal[sym][0] if sym in bal and bal[sym] else None
+        prev_bal = bal[sym][1] if sym in bal and len(bal[sym]) > 1 else None
+        cur_cf = cf[sym][0] if sym in cf and cf[sym] else None
+
+        score = 0
+        # 1. ROA > 0 (净利润/总资产)
+        if cur_bal and cur_bal[3] and cur_bal[3] > 0 and cur_fin[2]:
+            roa = cur_fin[2] / cur_bal[3]
+            if roa > 0: score += 1
+        # 2. CFO > 0 (经营现金流)
+        if cur_cf and cur_cf[2] and cur_cf[2] > 0:
+            score += 1
+        # 3. ROA 改善
+        if cur_bal and prev_bal and cur_bal[3] and prev_bal[3] and cur_fin[2] and prev_fin[2]:
+            roa_cur = cur_fin[2] / cur_bal[3]
+            roa_prev = prev_fin[2] / prev_bal[3]
+            if roa_cur > roa_prev: score += 1
+        # 4. CFO > ROA
+        if cur_bal and cur_bal[3] and cur_cf and cur_cf[2] and cur_fin[2]:
+            if cur_cf[2] / cur_bal[3] > cur_fin[2] / cur_bal[3]:
+                score += 1
+        # 5. 长期负债率不上升
+        if cur_bal and prev_bal:
+            cur_lev = (cur_bal[4] or 0) / (cur_bal[3] or 1)
+            prev_lev = (prev_bal[4] or 0) / (prev_bal[3] or 1)
+            if cur_lev <= prev_lev: score += 1
+        # 6. 流动比率改善
+        if cur_bal and prev_bal:
+            cur_cr = ((cur_bal[3] or 0) - (cur_bal[5] or 0) - (cur_bal[6] or 0)) / ((cur_bal[4] or 1))
+            prev_cr = ((prev_bal[3] or 0) - (prev_bal[5] or 0) - (prev_bal[6] or 0)) / ((prev_bal[4] or 1))
+            if cur_cr > prev_cr: score += 1
+        # 7. 不增发新股
+        if cur_bal and prev_bal and cur_bal[5] and prev_bal[5]:
+            if cur_bal[5] <= prev_bal[5]: score += 1
+        # 8. 毛利率改善
+        if cur_fin[3] and cur_fin[4] and prev_fin[3] and prev_fin[4]:
+            cur_gm = (cur_fin[3] - cur_fin[4]) / (cur_fin[3] or 1)
+            prev_gm = (prev_fin[3] - prev_fin[4]) / (prev_fin[3] or 1)
+            if cur_gm > prev_gm: score += 1
+        # 9. 资产周转率改善
+        if cur_bal and prev_bal and cur_bal[3] and prev_bal[3] and cur_fin[3]:
+            cur_at = cur_fin[3] / (cur_bal[3] or 1)
+            prev_at = prev_fin[3] / (prev_bal[3] or 1)
+            if cur_at > prev_at: score += 1
+
+        scores[sym] = score
+
+    if not scores:
+        return None
+    s = pd.Series(scores, dtype=float)
+    return _cs_zscore(s, sparse=True).rename("piotroski_fscore")

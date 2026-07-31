@@ -80,6 +80,9 @@ from quant.factor.compute.missing import (
     compute_vol_price_sync_20d, compute_revenue_growth_yoy,
 )
 
+# test-v324: 日内反转因子
+from quant.factor.compute.intraday import compute_intraday_reversal
+
 
 _PRICE_FN_MAP = {
     "reversal_5d":           (compute_reversal,            5),
@@ -138,6 +141,7 @@ _PRICE_FN_MAP = {
     "market_beta_60d":        (compute_market_beta_60d,   60),  # test-v323: 低Beta溢价
     "overnight_gap_5d":       (compute_overnight_gap_5d,   5),  # test-v323: T+1隔夜动量
     "vol_price_sync_20d":     (compute_vol_price_sync_20d,20),  # test-v323: 量价同步
+    "intraday_reversal":      (compute_intraday_reversal, None), # test-v324: 日内反转(快照数据)
 }
 
 

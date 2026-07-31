@@ -238,6 +238,14 @@ _CURATED_FACTORS: list[dict] = [
         "source": "国泰君安2022 — 营收增长, 替代筹码分布的资金行为",
         "direction": "positive", "category": "fundamental",
     },
+
+    # ═══════════ 日内反转 (test-v324) ═══════════
+    {
+        "name": "intraday_reversal",
+        "expression": "intraday_reversal",
+        "source": "中信2023 — 日内反转(开盘30min), IC_IR≈0.8+, A股T+1最强因子",
+        "direction": "negative", "category": "日内",
+    },
 ]
 
 

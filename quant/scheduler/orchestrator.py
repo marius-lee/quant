@@ -148,6 +148,15 @@ def _run():
                     _run_task("execute", _execute_run, today)
 
         # ═══════════════════════════════════════════
+        # 2.5 09:30 — 开盘30分钟价格快照 (test-v324: 日内反转因子数据)
+        # ═══════════════════════════════════════════
+        s = status.get("snapshot")
+        if s not in ("ok", "failed") and _retry_ok("snapshot"):
+            if hhmm >= time(9, 30) and "execute" in status:
+                from quant.scheduler.snapshot import snapshot_all
+                _run_task("snapshot", snapshot_all, today)
+
+        # ═══════════════════════════════════════════
         # 3. 09:35-11:30,13:00-14:55 — 盘中风控 (daemon 线程)
         # ═══════════════════════════════════════════
         in_monitor_window = time(9, 30) <= hhmm <= time(14, 55)

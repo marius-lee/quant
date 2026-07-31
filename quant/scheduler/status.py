@@ -55,9 +55,19 @@ def register_all():
     register("attribution",  "factor_cache完成后", label="盘后归因",
              desc="Brinson 归因 + IC 衰减 + OOS 验证 + 因子归因")
     register("factor_curation", "周六 06:00", label="因子策展",
-             desc="检查内置库+用户提交, 编译→IC评估→注册新因子")
-    register("weekly_eval",  "factor_curation完成后", label="因子评估",
-             desc="评估管线五阶段：回测诊断因子 → 正式认证 → 状态变更")
+             desc="[weekly_eval Step 0] 检查内置库+用户提交, 编译→IC评估→注册新因子")
+    register("eval_phase1", "周六 06:00 (因子策展后)", label="评估-数据准备",
+             desc="[weekly_eval Step 1] 准备回测数据, 数据健康检查")
+    register("eval_phase2", "周六 06:00 (Phase1后)", label="评估-单因子检验",
+             desc="[weekly_eval Step 2] IC/|t|/ICIR/half-life 四维过滤")
+    register("eval_phase3", "周六 06:00 (Phase2后)", label="评估-CPCV检验",
+             desc="[weekly_eval Step 3] Purged CV + PBO 过拟合检测")
+    register("eval_phase4", "周六 06:00 (Phase3后)", label="评估-成本验证",
+             desc="[weekly_eval Step 4] 交易成本扣除后 Sharpe 验证")
+    register("eval_phase5", "周六 06:00 (Phase4后)", label="评估-状态同步",
+             desc="[weekly_eval Step 5] 综合裁决 → factor_registry 状态更新")
+    register("weekly_eval",  "周六 06:00", label="因子评估(总)",
+             desc="全自动五阶段评估: 策展→数据→IC→CPCV→成本→状态同步")
     register("lgb_train",    "周一/周四 factor_cache完成后", label="模型训练",
              desc="LightGBM 模型重训 (仅周一/周四)")
 

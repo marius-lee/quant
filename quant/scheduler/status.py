@@ -87,7 +87,7 @@ def _next_scheduled_time(schedule: str) -> str:
                 time_part = time_part.split("(")[0].strip()
             if not time_part:
                 time_part = "00:00"  # 无时间 → 默认当天 00:00
-            hh, mm = (int(x) for x in time_part.split(":"))
+            hh, mm = (int(x or 0) for x in time_part.split(":"))
             now = datetime.now()
             target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
             days_ahead = (wd_num - now.weekday()) % 7
@@ -97,12 +97,17 @@ def _next_scheduled_time(schedule: str) -> str:
     # 简单 HH:MM 格式
     parts = schedule.split("-")
     time_str = parts[-1].strip() if "-" in schedule else schedule.strip()
+    # 每小时格式: "每小时 :50" → 取分钟部分
+    if "每小时" in time_str:
+        time_str = time_str.replace("每小时", "").strip()
     # strip 括号注释 + 依赖检查
     if "(" in time_str:
         time_str = time_str.split("(")[0].strip()
     if "完成后" in time_str:
         return ""
-    hh, mm = (int(x) for x in time_str.split(":"))
+    if not time_str:  # 无有效时间
+        return ""
+    hh, mm = (int(x or 0) for x in time_str.split(":"))
     now = datetime.now()
     target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
     if target <= now:

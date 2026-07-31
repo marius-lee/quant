@@ -50,7 +50,7 @@ def register_all():
              desc="OMS 对账闭环: 持仓/现金/订单三账核对, break 超阈值告警")
     register("daily_data",   "19:00",       label="数据拉取",
              desc="拉取当日 A 股日线行情，更新 market.db")
-    register("adj_factor",   "每小时 :50",   label="复权因子同步",
+    register("adj_factor",   "00:50,01:50...", label="复权因子同步",
              desc="tushare+baostock 双源同步复权因子, 铺满全市场 (cron 触发)")
     register("factor_cache", "daily_data完成后", label="因子物化",
              desc="增量更新 factor_cache，用当日行情计算回测因子值")
@@ -97,9 +97,11 @@ def _next_scheduled_time(schedule: str) -> str:
     # 简单 HH:MM 格式
     parts = schedule.split("-")
     time_str = parts[-1].strip() if "-" in schedule else schedule.strip()
-    # 每小时格式: "每小时 :50" → 取分钟部分
+    # 每小时格式/逗号分隔: "每小时 :50" 或 "00:50,01:50..." → 取第一个时间
     if "每小时" in time_str:
         time_str = time_str.replace("每小时", "").strip()
+    if "," in time_str:
+        time_str = time_str.split(",")[0].strip()
     # strip 括号注释 + 依赖检查
     if "(" in time_str:
         time_str = time_str.split("(")[0].strip()

@@ -7,16 +7,16 @@ from quant.factor.compute.fundamental import _FUNDAMENTAL_FN_MAP
 
 def _resolve_statuses(status_filter):
     """Convert status_filter string to tuple of statuses.
-    ADR-040: candidate→evaluating, monitoring→probation, retired+rejected→archived
+    ADR-041: 简化状态机 — evaluating/active/probation/archived 四态.
     """
     if status_filter is None:
         return None
     if isinstance(status_filter, (list, tuple)):
         return tuple(status_filter)
     if status_filter == 'using':
-        return ('active', 'probation')
+        return ('active', 'probation')       # 两者都参与信号
     if status_filter == 'backtesting':
-        return ('evaluating', 'probation', 'archived')
+        return ('evaluating', 'probation')   # 待评估 + 观察
     return (status_filter,)
 
 
@@ -24,10 +24,9 @@ def load_active_price_factors(status_filter='using'):
     """从 factor_registry 表加载价格因子 → {name: (cat, window, fn)}.
 
     status_filter:
-        'using' → active + monitoring (实盘信号生成, monitoring 以衰减权重参与;
-                   来源: Grinold & Kahn 1999 Ch.6 — w_k ∝ IC_k)
-        'backtesting' → candidate + monitoring + retired (回测评估池, ADR-026)
-        None → 全部因子 (评估用)
+        'using' → active + probation (两者都参与信号, probation 衰减权重)
+        'backtesting' → evaluating + probation (评估池)
+        None → 全部因子
     """
     statuses = _resolve_statuses(status_filter)
     name_list = list(_PRICE_FN_MAP.keys())
@@ -44,10 +43,9 @@ def load_active_fundamental_factors(status_filter='using'):
     """从 factor_registry 表加载基本面因子.
 
     status_filter:
-        'using' → active + monitoring (实盘信号生成, monitoring 以衰减权重参与;
-                   来源: Grinold & Kahn 1999 Ch.6 — w_k ∝ IC_k)
-        'backtesting' → candidate + monitoring + retired (回测评估池, ADR-026)
-        None → 全部因子 (评估用)
+        'using' → active + probation (两者都参与信号, probation 衰减权重)
+        'backtesting' → evaluating + probation (评估池)
+        None → 全部因子
     """
     statuses = _resolve_statuses(status_filter)
     fn_names = list(_FUNDAMENTAL_FN_MAP.keys())
@@ -80,8 +78,8 @@ def get_factor_names(status_filter=None) -> list:
     """返回因子名列表 (从 factor_registry 表读取).
 
     status_filter:
-        'using' → active + monitoring (实盘, monitoring 以衰减权重参与)
-        'backtesting' → candidate + monitoring + retired (回测池, ADR-026)
+        'using' → active + probation (信号生成)
+        'backtesting' → evaluating + probation (评估池)
         'active' → 仅 active
         None → 全部因子
     """

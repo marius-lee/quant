@@ -454,7 +454,7 @@ def compute_backtest_ic(start_date: str, n_train_days: int = 120,
 
     start_date: 回测开始日期 (如 '2026-01-01')
     n_train_days: 训练期天数, 从 start_date 往前数
-    status_filter: 因子池 ('backtesting' = candidate+monitoring+retired, ADR-026)
+    status_filter: 因子池 ('backtesting' = evaluating+probation)
 
     返回: {factor_name: weight} 归一化 IC 权重, 供 generate_signals(ic_map=...) 使用.
     同时写入 factor_ic_daily(scope='backtest') 持久化.

@@ -4,7 +4,7 @@ Usage:
     from data.repos import FactorRepo, UniverseRepo, TradeRepo, EvaluationRepo
 
     factor_repo = FactorRepo()
-    factors = factor_repo.get_factors_by_status(("active", "monitoring"), name_list)
+    factors = factor_repo.get_factors_by_status(("active", "probation"), name_list)
 """
 
 from quant.data.repos._base import DatabaseManager

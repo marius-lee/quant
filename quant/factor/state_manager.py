@@ -199,30 +199,22 @@ class FactorStateManager:
 
     # ── retry 管理 ──
 
-    def check_and_reject_stale_retired(self) -> int:
-        """扫描所有 retired 因子, retry_count≥max_retries 的自动转 rejected.
+    def check_stale_archived(self) -> int:
+        """扫描 archived 因子, retry_count≥max_retries 的标记为永久淘汰.
 
-        来源: phase5_monitor.py retry_count 管理逻辑 (ADR-026 §4.5).
-        返回: 转为 rejected 的因子数.
+        更新 status_reason 为永久淘汰原因, 不再改变状态.
+        返回: 标记的因子数.
         """
-        retired_factors = self._repo.get_all_by_status(("retired",))
+        factors = self._repo.get_all_by_status(("archived",))
         n = 0
-        for f in retired_factors:
+        for f in factors:
             name = f.get("name", "")
             count = f.get("retry_count", 0) or 0
             if count >= self._max_retries:
-                try:
-                    self.transition(
-                        name, "EVAL_REJECT",
-                        reason=(
-                            f"[EVAL] 累计 {count} 次 retired "
-                            f"(≥{self._max_retries}), 永久淘汰"
-                        ),
-                        retry_count=count,
-                    )
-                    n += 1
-                except (InvalidTransitionError, ValueError) as e:
-                    _log.warning("check_and_reject: %s skipped — %s", name, e)
+                self._repo.update(name, {
+                    "status_reason": f"永久淘汰: 累计 {count} 次 retired (≥{self._max_retries})"
+                })
+                n += 1
         return n
 
     def get_retry_count(self, name: str) -> int:
@@ -232,29 +224,21 @@ class FactorStateManager:
 
     # ── 便捷查询 ──
 
-    def get_pool(self, pool: str) -> list[str]:
-        """返回指定池的因子名列表.
-
-        pool:
-            'using'       → active + monitoring (实盘信号生成)
-            'backtesting' → candidate + monitoring + retired (回测评估池)
-            'all'         → 全部
-        """
-        if pool == "using":
-            statuses = ("active", "monitoring")
-        elif pool == "backtesting":
-            statuses = ("candidate", "monitoring", "retired")
-        elif pool == "all":
-            statuses = tuple(VALID_STATUSES)
-        else:
-            raise ValueError(f"未知池: {pool!r} (允许: using, backtesting, all)")
-        factors = self._repo.get_all_by_status(statuses)
+    def get_signal_factors(self) -> list[str]:
+        """实盘信号生成因子: active + probation (两者都参与信号)."""
+        factors = self._repo.get_all_by_status(("active", "probation"))
         return [f["name"] for f in factors]
 
-    def get_active_count(self) -> int:
-        """active 因子数."""
-        return len(self._repo.get_all_by_status(("active",)))
+    def get_evaluable_factors(self) -> list[str]:
+        """评估池因子: evaluating + probation (新因子+需持续评估的)."""
+        factors = self._repo.get_all_by_status(("evaluating", "probation"))
+        return [f["name"] for f in factors]
 
-    def get_monitoring_count(self) -> int:
-        """monitoring 因子数."""
-        return len(self._repo.get_all_by_status(("monitoring",)))
+    def get_all_factor_names(self) -> list[str]:
+        """全部因子."""
+        factors = self._repo.get_all_by_status(tuple(VALID_STATUSES))
+        return [f["name"] for f in factors]
+
+    def get_probation_count(self) -> int:
+        """probation 因子数."""
+        return len(self._repo.get_all_by_status(("probation",)))

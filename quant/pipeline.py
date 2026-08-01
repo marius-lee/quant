@@ -46,7 +46,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     """Pipeline 阶段一: 盘前信号生成 (Steps 0-5, 不执行交易)。
 
     用 T-1 收盘数据计算因子 → alpha → 风险过滤 → 组合优化 → 输出目标持仓。
-    status_filter: 控制因子计算池 ('using'=active+monitoring, 'backtesting'=backtest池)
+    status_filter: 控制因子计算池 ('using'=active+probation, 'backtesting'=evaluating+probation)
     scope: 控制 IC 权重来源 ('live'=factor_registry, 'backtest'=factor_ic_daily)
     ic_map: 显式传入 IC 权重 (回测用), 传入后跳过 scope 参数
     regime_label/regime_probs: §8.2 regime 条件合成 (test-v299)。

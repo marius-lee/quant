@@ -26,13 +26,8 @@ def compute_market_beta_60d(data, date, benchmark_returns=None):
     window = 60
 
     ret = close.pct_change().dropna(how="all")
-    if len(ret) < window or len(common_dates) < window:
-        # 数据不足 → 用最大可用窗口
-        if len(common_dates) < 10:
-            return None
-        window = len(common_dates)
 
-    # 加载基准收益
+    # 加载基准收益 (必须在 ret 检查之后、common_dates 使用之前)
     if benchmark_returns is None:
         from quant.data.repos._base import DatabaseManager
         conn = DatabaseManager.market()
@@ -45,21 +40,17 @@ def compute_market_beta_60d(data, date, benchmark_returns=None):
     else:
         bm_ret = benchmark_returns
 
-    # 对齐日期计算滚动Beta
     common_dates = ret.index.intersection(bm_ret.index)
     if len(common_dates) < window:
-        return None
+        if len(common_dates) < 10:
+            return None
+        window = len(common_dates)
 
     ret_aligned = ret.loc[common_dates[-window:]]
     bm_aligned = bm_ret.loc[common_dates[-window:]]
 
-    # 滚动 beta = Cov(r_i, r_m) / Var(r_m)
     beta = ret_aligned.cov(bm_aligned) / bm_aligned.var()
-
-    # 截面: 负beta溢价 (低beta股票未来收益更高)
-    result = -beta.fillna(0)
-    # 反转方向: 低beta → 高预期收益
-    return _cs_zscore(result, sparse=True).rename("market_beta_60d")
+    return _cs_zscore(-beta.fillna(0), sparse=True).rename("market_beta_60d")
 
 
 def compute_overnight_gap_5d(data, date):

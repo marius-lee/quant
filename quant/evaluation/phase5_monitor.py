@@ -11,6 +11,7 @@
 """
 
 from quant.config.constants import _require_cfg
+from quant.data.repos.factor_repo import FactorRepo
 
 
 def sync_factor_status() -> dict:
@@ -26,7 +27,9 @@ def sync_factor_status() -> dict:
 
     if not p2:
         _log.warning("sync_factor_status: no Phase 2 data — skipping")
-        return {"rejected": [], "retired": [], "monitoring": [], "active": [], "unchanged": 0}
+        return {"permanent": [], "weak": [], "marginal": [], "strong": [], "unchanged": 0}
+
+    f_repo = FactorRepo()
 
     # ── 探伤断点: 全零 IC 守卫 ──
     p2_ic_vals_raw = p2.get("ic_means", {})
@@ -72,9 +75,9 @@ def sync_factor_status() -> dict:
     min_icir = _require_cfg("factor.evaluation.min_icir")
 
     # Phase 2 输出
-    p2_passed = set(p2.get("passed", []))
-    p2_monitoring = set(p2.get("monitoring", []))
-    p2_failed = set(p2.get("failed", {}).keys()) if isinstance(p2.get("failed"), dict) else set(p2.get("failed", []))
+    p2_strong = set(p2.get("passed", []))
+    p2_marginal = set(p2.get("monitoring", []))
+    p2_weak = set(p2.get("failed", {}).keys()) if isinstance(p2.get("failed"), dict) else set(p2.get("failed", []))
 
     # Phase 3 输出 (三档)
     p3_kept = set(p3.get("kept", [])) if p3 else set()
@@ -90,25 +93,25 @@ def sync_factor_status() -> dict:
 
     # ── 综合裁决 ──
     certified_active = set()
-    monitoring_factors = set()
-    retired_factors = set()
+    marginal_factors = set()
+    weak_factors = set()
     rejected_factors = set()
 
     # 数据不足: Phase 3 因数据太少跳过 OOS 验证的因子 → monitoring
     insufficient_data_factors = set()
     if (p3_note and "insufficient_data" in p3_note) or p4_insufficient:
-        insufficient_data_factors = p2_passed  # 所有 Phase 2 pass 但因数据不足跳过后续的
+        insufficient_data_factors = p2_strong  # 所有 Phase 2 pass 但因数据不足跳过后续的
 
     # 对每个 backtesting 池中的因子逐个裁决
-    all_evaluated = p2_passed | p2_monitoring | p2_failed
+    all_evaluated = p2_strong | p2_marginal | p2_weak
     reasons = {}  # factor_name → reason_str
     for fname in sorted(all_evaluated):
         # 跳过 diagnostics 排除的因子 (保留原状态)
         if fname not in all_evaluated:
             continue
 
-        p2_status = ("pass" if fname in p2_passed
-                     else "marginal" if fname in p2_monitoring
+        p2_status = ("pass" if fname in p2_strong
+                     else "marginal" if fname in p2_marginal
                      else "fail")
         p3_status = ("pass" if fname in p3_kept
                      else "marginal" if fname in p3_marginal
@@ -123,7 +126,7 @@ def sync_factor_status() -> dict:
 
         # 综合裁决表
         if fname in insufficient_data_factors:
-            monitoring_factors.add(fname)
+            marginal_factors.add(fname)
             reasons[fname] = (
                 f"[EVAL] Phase 3: OOS validation skipped — IC history too short for CPCV. "
                 f"IC={p2_ic_vals.get(fname, 0):+.4f}. Awaiting more data for re-evaluation."
@@ -132,17 +135,17 @@ def sync_factor_status() -> dict:
             certified_active.add(fname)
             reasons[fname] = "[EVAL] passed Phase 2+3+4 (full evaluation)"
         elif p2_status == "fail":
-            retired_factors.add(fname)
+            weak_factors.add(fname)
             reasons[fname] = f"[EVAL] Phase 2: IC/ICIR below all thresholds"
         elif p3_status == "fail":
-            retired_factors.add(fname)
+            weak_factors.add(fname)
             reasons[fname] = f"[EVAL] Phase 3: CPCV OOS_ICIR<0 or PBO>threshold"
         elif p4_status == "fail":
-            retired_factors.add(fname)
+            weak_factors.add(fname)
             reasons[fname] = f"[EVAL] Phase 4: net-of-costs Sharpe too low"
         else:
             # any marginal → monitoring
-            monitoring_factors.add(fname)
+            marginal_factors.add(fname)
             ic_val = p2_ic_vals.get(fname, 0.0)
             icir_val = p2_ic_irs.get(fname, 0.0)
             reasons[fname] = (
@@ -154,7 +157,7 @@ def sync_factor_status() -> dict:
     # ── retry_count 管理 ──
     # 对于本轮判定为 retired 的因子, retry_count += 1
     # 达到 max_retries → 升级为 rejected
-    for fname in sorted(retired_factors):
+    for fname in sorted(weak_factors):
         new_retry = retry_map.get(fname, 0) + 1
         retry_map[fname] = new_retry
         if new_retry >= max_retries:
@@ -167,7 +170,7 @@ def sync_factor_status() -> dict:
 
     # 对于本轮判定为 active/monitoring 的因子, retry_count 不递增
     # 但如果之前有 retired → 通过后续评估 → 重置 retry_count = 0
-    for fname in sorted(certified_active | monitoring_factors):
+    for fname in sorted(certified_active | marginal_factors):
         if retry_map.get(fname, 0) > 0:
             retry_map[fname] = 0  # 恢复, 重置计数
             _log.info(f"[EVAL] {fname}: retry_count reset to 0 (recovered)")
@@ -182,64 +185,68 @@ def sync_factor_status() -> dict:
 
     # 不碰 active 因子 (实盘模块 management — attribution.py)
     active_to_update = certified_active - current_active
-    monitoring_to_update = monitoring_factors - current_active
-    retired_to_update = retired_factors - rejected_factors - current_active
-    rejected_to_update = rejected_factors - current_active
+    marginal_to_update = marginal_factors - current_active
+    weak_to_update = weak_factors - rejected_factors - current_active
+    permanent_to_update = rejected_factors - current_active
 
     # ── 通过 StateManager 转换 (零 fallback: 非法转换→ValueError) ──
     active_ok = fsm.batch_transition(
         list(active_to_update), "EVAL_PASS",
         reason="[EVAL] passed Phase 2+3+4 (full evaluation)"
     )
-    monitoring_ok = 0
-    for name in monitoring_to_update:
+    marginal_ok = 0
+    for name in marginal_to_update:
+        # EVAL_MARGINAL 只对 evaluating 状态有效
+        cur = f_repo.get_factor_by_name(name)
+        cs = cur["status"] if cur else "evaluating"
+        if cs != "evaluating":
+            _log.warning("sync_factor_status: %s EVAL_MARGINAL skipped (status=%s, 只允许 evaluating)", name, cs)
+            continue
         try:
             fsm.transition(name, "EVAL_MARGINAL", reasons[name])
-            monitoring_ok += 1
+            marginal_ok += 1
         except Exception as e:
             _log.warning("sync_factor_status: %s EVAL_MARGINAL failed: %s", name, e)
-    retired_ok = 0
-    for name in retired_to_update:
+    weak_ok = 0
+    for name in weak_to_update:
         new_retry = retry_map.get(name, 0) + 1
-        # test-v306: probation 因子不能走 EVAL_FAIL (状态机只允许 evaluating→EVAL_FAIL).
-        # 已在实盘的 probation 因子应走 IC_PERSISTENT 归档.
-        from quant.data.repos.factor_repo import FactorRepo
-        f_repo = FactorRepo()
-        current = f_repo.get_factor_by_name(name)
-        current_status = current["status"] if current else "evaluating"
-        event = "EVAL_FAIL" if current_status == "evaluating" else "IC_PERSISTENT"
+        cur = f_repo.get_factor_by_name(name)
+        cs = cur["status"] if cur else "evaluating"
+        event = "EVAL_FAIL" if cs == "evaluating" else "IC_PERSISTENT"
         try:
             fsm.transition(name, event, reasons[name], retry_count=new_retry)
-            retired_ok += 1
+            weak_ok += 1
         except Exception as e:
             _log.warning("sync_factor_status: %s %s failed: %s", name, event, e)
-    rejected_ok = 0
-    for name in rejected_to_update:
+    permanent_ok = 0
+    for name in permanent_to_update:
         new_retry = retry_map.get(name, 0) + 1
-        try:
-            fsm.transition(name, "EVAL_REJECT", reasons[name], retry_count=new_retry)
-            rejected_ok += 1
-        except Exception as e:
-            _log.warning("sync_factor_status: %s EVAL_REJECT failed: %s", name, e)
+        # EVAL_REJECT 不存在于状态机, 用 status_reason 标记永久淘汰
+        f_repo.update(name, {
+            "status_reason": f"[EVAL] 累计 {new_retry} 次 retired (≥{max_retries}), 永久淘汰",
+            "retry_count": new_retry
+        })
+        _log.critical(f"sync_factor_status: {name} 永久淘汰 (retry={new_retry}≥{max_retries})")
+        permanent_ok += 1
 
     _log.info(f"sync_factor_status: {active_ok}/{len(active_to_update)} active, "
-              f"{monitoring_ok}/{len(monitoring_to_update)} monitoring, "
-              f"{retired_ok}/{len(retired_to_update)} retired, "
-              f"{rejected_ok}/{len(rejected_to_update)} rejected")
-    for name in sorted(rejected_to_update):
+              f"{marginal_ok}/{len(marginal_to_update)} monitoring, "
+              f"{weak_ok}/{len(weak_to_update)} retired, "
+              f"{permanent_ok}/{len(permanent_to_update)} rejected")
+    for name in sorted(permanent_to_update):
         _log.critical(f"  [REJECTED] {name} — {reasons[name]}")
-    for name in sorted(retired_to_update):
+    for name in sorted(weak_to_update):
         _log.info(f"  [RETIRED]  {name} — {reasons[name]}")
-    for name in sorted(monitoring_to_update):
+    for name in sorted(marginal_to_update):
         _log.info(f"  [MONITOR]  {name} — {reasons[name]}")
     for name in sorted(active_to_update):
         _log.info(f"  [ACTIVE]   {name} — {reasons[name]}")
 
     conn.close()
     return {
-        "rejected": sorted(rejected_to_update),
-        "retired": sorted(retired_to_update),
-        "monitoring": sorted(monitoring_to_update),
+        "rejected": sorted(permanent_to_update),
+        "retired": sorted(weak_to_update),
+        "monitoring": sorted(marginal_to_update),
         "active": sorted(active_to_update),
         "unchanged": len(current_active),
     }

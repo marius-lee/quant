@@ -15,7 +15,7 @@ _log = _get_logger("factor.compute")
 
 def _log_returns(close: pd.DataFrame) -> pd.DataFrame:
     """对数收益率, 停牌日返回 NaN (不由 ffill 掩盖)。"""
-    return np.log(close).diff()
+    return np.log(pd.to_numeric(close, errors='coerce')).diff()
 
 
 # ═══════════════════════════════════════════════════════════

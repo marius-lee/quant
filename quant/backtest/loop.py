@@ -545,6 +545,13 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
 
         avg_signals = sum(signal_counts) / max(len(signal_counts), 1)
 
+        # test-v344: 回测失败校验 — errors过多或无信号时不持久化,不报告虚假成功
+        valid_days = len(trading_days) - errors
+        if valid_days == 0 or avg_signals == 0:
+            _log.error(f"BACKTEST FAILED: {errors} errors/{len(trading_days)} days, "
+                       f"avg_signals={avg_signals:.1f} — result NOT persisted")
+            return {"error": "all_days_failed", "errors": errors, "avg_signals": avg_signals, "elapsed": elapsed}
+
         # ADR-037: 回测结果持久化到 backtest_runs 表
         _persist_backtest_result(strategy, start_date, end_date, capital, metrics, diag, elapsed, avg_signals, errors)
         _log.info("=" * 70)

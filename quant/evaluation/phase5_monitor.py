@@ -203,6 +203,8 @@ def sync_factor_status() -> dict:
         new_retry = retry_map.get(name, 0) + 1
         # test-v306: probation 因子不能走 EVAL_FAIL (状态机只允许 evaluating→EVAL_FAIL).
         # 已在实盘的 probation 因子应走 IC_PERSISTENT 归档.
+        from quant.data.repos.factor_repo import FactorRepo
+        f_repo = FactorRepo()
         current = f_repo.get_factor_by_name(name)
         current_status = current["status"] if current else "evaluating"
         event = "EVAL_FAIL" if current_status == "evaluating" else "IC_PERSISTENT"

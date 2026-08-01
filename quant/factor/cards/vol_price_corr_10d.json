@@ -3,8 +3,8 @@
   "display_name": "vol_price_corr_10d",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.0255,
-  "icir_12m": -0.2459,
+  "ic_mean_12m": -0.0256,
+  "icir_12m": -0.2468,
   "last_evaluated": "auto",
   "n_obs": 130
 }

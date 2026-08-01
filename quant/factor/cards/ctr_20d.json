@@ -21,9 +21,9 @@
       "reason": "幻方 Tier S 因子接入 — 东吴证券2024, 待评估"
     }
   ],
-  "ic_mean_12m": 0.0132,
+  "ic_mean_12m": 0.0122,
   "ic_std_12m": null,
-  "icir_12m": 0.1562,
+  "icir_12m": 0.1437,
   "half_life_days": null,
   "decay_trend": "unknown",
   "correlations": {},

@@ -3,8 +3,8 @@
   "display_name": "lhb_intensity_5d",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0051,
-  "icir_12m": 0.085,
+  "ic_mean_12m": 0.0048,
+  "icir_12m": 0.0799,
   "last_evaluated": "auto",
   "n_obs": 130
 }

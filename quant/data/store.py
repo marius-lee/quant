@@ -1491,20 +1491,9 @@ class DataStore:
                 "SELECT symbol FROM stocks WHERE market!='BJ'").fetchall()]
         all_symbols = set(symbols)
 
-        # 查找区间内完全没有数据的股票
-        have_any = {r[0] for r in conn.execute(
-            "SELECT DISTINCT symbol FROM daily WHERE date>=? AND date<=?",
-            (start, end)).fetchall()}
-        missing = sorted(all_symbols - have_any)
-        # 不关闭 conn — update_daily 复用同一线程连接
-
-        if not missing:
-            logger.info(f"backfill_range: {start}→{end} — all {len(all_symbols)} stocks OK")
-            return 0
-
-        logger.info(f"backfill_range: {start}→{end} — "
-                    f"{len(missing)}/{len(all_symbols)} stocks missing, pulling via baostock")
-        return self._backfill_via_baostock(missing, start, end)
+        # 不再检测缺口 — INSERT OR IGNORE 确保幂等, 已有数据不重复写
+        logger.info(f"backfill_range: {start}→{end} — {len(symbols)} stocks")
+        return self._backfill_via_baostock(symbols, start, end)
 
     def _backfill_via_baostock(self, symbols: list, start: str, end: str):
         """baostock 逐只拉取历史 K 线并写入 daily 表 (test-v351)."""

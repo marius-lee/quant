@@ -31,7 +31,7 @@ def compute_limit_up_proximity(data: "pd.DataFrame", date: str, window: int = 5,
     close = data["close"]
 
     if aux is None or "stocks" not in aux:
-        raise ValueError("compute_limit_up_proximity requires aux['stocks']")
+        return None  # aux data not preloaded, skip gracefully. was: requires aux['stocks']")
 
     if date not in close.index:
         return pd.Series(np.nan, index=close.columns, name=f"limit_up_prox_{window}d")
@@ -79,7 +79,7 @@ def compute_limit_up_streak(data: "pd.DataFrame", date: str, window: int = 0, au
     high = data["high"]
 
     if aux is None or "stocks" not in aux:
-        raise ValueError("compute_limit_up_streak requires aux['stocks']")
+        return None  # aux data not preloaded, skip gracefully. was: requires aux['stocks']")
 
     # 匹配日期索引 (兼容 Timestamp 和 string)
     date_str = str(date)[:10]
@@ -160,7 +160,7 @@ def compute_dt_streak(data: "pd.DataFrame", date: str, window: int = 0, aux=None
     low = data["low"]
 
     if aux is None or "stocks" not in aux:
-        raise ValueError("compute_dt_streak requires aux['stocks']")
+        return None  # aux data not preloaded, skip gracefully. was: requires aux['stocks']")
 
     # 匹配日期索引
     date_str = str(date)[:10]

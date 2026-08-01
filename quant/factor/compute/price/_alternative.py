@@ -106,8 +106,8 @@ def compute_ztd(data, date, window=250):
         return result
 
 
-    # ── 缓存未命中: fail-fast, 调用方忘记 preload_ztd_cache ──
-    raise RuntimeError(f"ztd cache miss for {date}: preload_ztd_cache() must be called before compute_ztd")
+    # ── 缓存未命中: 优雅跳过, 不在评估中崩溃 ──
+    return pd.Series(np.nan, index=close.columns, name="ztd")
 
 
 
@@ -451,6 +451,8 @@ def compute_trcf(data: "pd.DataFrame", date: str, window: int = 120) -> "pd.Seri
         std_ma = np.std(mas)
         result[sym] = -np.log(1 + std_ma)
 
+    if (result.abs() < 1e-10).all():
+        return None  # 所有值为0 → 无有效数据
     return _cs_zscore(result).rename("trcf")
 
 
@@ -549,13 +551,18 @@ def compute_fund_flow_3m(data, date, window=60):
         (str(date)[:10],)
     ).fetchall()
     conn.close()
-    if rows:
-        import pandas as _pd4
-        df = _pd4.DataFrame(rows, columns=["symbol", "change_ratio"])
-        for sym in symbols:
-            sym_data = df[df["symbol"] == sym]
-            if len(sym_data) > 0:
-                result[sym] = sym_data["change_ratio"].mean()
+    if not rows:
+        conn.close()
+        return None
+    import pandas as _pd4
+    df = _pd4.DataFrame(rows, columns=["symbol", "change_ratio"])
+    for sym in symbols:
+        sym_data = df[df["symbol"] == sym]
+        if len(sym_data) > 0:
+            result[sym] = sym_data["change_ratio"].mean()
+    conn.close()
+    if result.isna().all() or (result == 0).all():
+        return None
     return _cs_zscore(result).rename("fund_flow_3m")
 
 

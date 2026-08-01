@@ -39,7 +39,7 @@ def precompute_primitives(data: pd.DataFrame) -> dict:
     
     # ── 对数收益 (几乎所有的时序列因子共用) ──
     _log.info("  primitives: log_ret")
-    prims["log_ret"] = np.log(pd.to_numeric(close, errors='coerce')).diff()
+    prims["log_ret"] = np.log(close.astype(float)).diff()
     
     # ── 简单收益 ──
     _log.info("  primitives: pct_ret")

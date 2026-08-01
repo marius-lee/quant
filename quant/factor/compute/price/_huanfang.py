@@ -149,7 +149,7 @@ def compute_turnover_accel(data: pd.DataFrame, date: str,
 
 def compute_vp_divergence(data: pd.DataFrame, date: str,
                           window: int = None) -> pd.Series:
-    """量价背离度: -corr(close, volume, window) 的变化率."""
+    """量价背离度: -corr(close.pct_change(), volume.pct_change(), window) 的变化率."""
     w = window or HF_VP_DIV_WINDOW
     close, volume = data["close"], data["volume"]
     if date not in close.index:

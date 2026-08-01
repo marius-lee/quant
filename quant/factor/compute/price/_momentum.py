@@ -315,11 +315,16 @@ def compute_idiosyncratic_vol(data: "pd.DataFrame", date: str, window: int = _ID
             if bm_var > 0:
                 vols = {}
                 for sym in wr.columns:
-                    ri = wr[sym].dropna().values
+                    ri = wr[sym].dropna()
                     if len(ri) < 10: continue
-                    ri_c = ri - ri.mean()
-                    beta = np.dot(ri_c, bm_c[:len(ri_c)]) / bm_var
-                    resid = ri_c - beta * bm_c[:len(ri_c)]
+                    # test-v338: 按日期对齐 (Bug B: 修复按位置截断的beta估计)
+                    bm_sub = bm[ri.index]
+                    bm_c = bm_sub.values - bm_sub.values.mean()
+                    bm_v = np.dot(bm_c, bm_c)
+                    if bm_v == 0: continue
+                    ri_c = ri.values - ri.values.mean()
+                    beta = np.dot(ri_c, bm_c) / bm_v
+                    resid = ri_c - beta * bm_c
                     vols[sym] = np.std(resid)
                 result = pd.Series(vols) * np.sqrt(_require_cfg("market.annual_trading_days"))
             else:

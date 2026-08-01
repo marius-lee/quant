@@ -1541,7 +1541,7 @@ class DataStore:
                                 f"({(i+1)*100//len(symbols)}%) — {total} rows")
                     _t.sleep(0.5)
             except Exception as e:
-                logger.debug(f"baostock {sym}: {e}")
+                logger.warning(f"baostock {sym}: {type(e).__name__}: {e}")
         conn.commit()
         bs.logout()
         logger.info(f"baostock backfill done: {len(symbols)} stocks, {total} new rows")

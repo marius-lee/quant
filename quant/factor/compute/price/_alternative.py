@@ -387,10 +387,18 @@ def compute_limit_touch_no_seal(data: "pd.DataFrame", date: str, window: int = 0
     mask = pre > 0
     high, close, pre = high[mask], close[mask], pre[mask]
 
-    # 向量化计算
-    limit_price = pre * 1.10
+    # 向量化计算 — 分板块涨停价 (test-v338: 修复科创/北交误判)
+    # 688xxx=科创板20%, 300xxx=创业板20%, 8xx/4xx=北交所30%, 其余=主板10%
+    def _board_limit_pct(sym):
+        if sym.startswith(('8', '4')): return 1.30   # 北交所
+        if sym.startswith('688'): return 1.20         # 科创板
+        if sym.startswith('300'): return 1.20         # 创业板
+        return 1.10                                    # 主板
+    limit_pcts = pd.Series({s: _board_limit_pct(s) for s in pre.index}, dtype=float)
+    limit_price = pre * limit_pcts
     ret = (close - pre) / pre
-    hit = (high >= limit_price * 0.995) & (ret < 0.095)
+    # 触板判定: 达到涨停价99.5%且涨幅<涨停板×0.95 (分板块调整)
+    hit = (high >= limit_price * 0.995) & (ret < limit_pcts * 0.95)
 
     result = pd.Series(0.0, index=list(close_df.columns))
     result[hit.index[hit]] = -1.0

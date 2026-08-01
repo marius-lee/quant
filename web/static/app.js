@@ -234,7 +234,7 @@ function updateStatusBar(state) {
   const dot = document.getElementById('status-dot');
   const txt = document.getElementById('status-text');
   const time = document.getElementById('status-time');
-  if (time) time.textContent = new Date().toLocaleTimeString('zh-CN');
+  if (time) time.textContent = new Date().toLocaleDateString('zh-CN') + ' ' + new Date().toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
   const s = state?.status || 'unknown';
   const regime = state?.regime;
   const regimeLabels = { bull: '🐂 牛市', sideways: '📊 震荡', bear: '🐻 熊市' };

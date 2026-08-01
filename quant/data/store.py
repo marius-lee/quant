@@ -1504,7 +1504,7 @@ class DataStore:
 
         logger.info(f"backfill_range: {start}→{end} — "
                     f"{len(missing)}/{len(all_symbols)} stocks missing, pulling via update_daily")
-        return self.update_daily(symbols=missing, start=start, target_date=end)
+        return self.update_daily(symbols=missing, start=start, target_date=end, _explicit_start=True)
         """回填换手率 — baostock 逐只拉取 K 线, 取 turn 字段 UPDATE daily。
 
         date: 指定时只回填该日; None 时扫描全缺口 (历史存量回填).
@@ -1863,7 +1863,8 @@ class DataStore:
 
     def update_daily(self, symbols: list = None,
                      start: str = None,
-                     target_date: str = None) -> int:
+                     target_date: str = None,
+                     _explicit_start: bool = False) -> int:
         """增量更新日线 — 精准缺口分析 + 多源回退。
 
         target_date: 指定时只拉该日缺口 (替代全量 staleness 检查).
@@ -1917,9 +1918,8 @@ class DataStore:
         # 非传统"新增行数" — 对 stale_recent 全量刷新场景会等于全量行数
         # turnover 列受 CASE WHEN 保护: 新源 turnover=0 时保留旧值 (来源: 2026-07-21)
         for i in range(0, len(symbols), batch_size):
-            chunk = symbols[i:i + batch_size]
-            # test-v348: 显式指定 symbols 时用传入的 start, 不用 DB 的 MAX(date) (历史回填修复)
-            if start != _require_cfg("data.start_date"):
+            # test-v348: 历史回填直接使用 start, 正常增量用 DB MAX(date)
+            if _explicit_start:
                 batch_start = start
             else:
                 batch_maxes = conn.execute(

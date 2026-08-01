@@ -18,6 +18,10 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 from quant.utils.logger import get_logger
+
+# 抑制 scipy 对近乎常数数组的警告 — spearmanr 已返回 NaN, 下游已处理
+import warnings
+warnings.filterwarnings('ignore', message='An input array is constant')
 from quant.config.constants import _require_cfg
 from quant.factor.compute.expr_compiler import compile_factor
 
@@ -411,12 +415,7 @@ class FactorCurator:
                     common = fv.dropna().index.intersection(fr.index)
                     if len(common) < 30:
                         continue
-                    fv_c = fv[common]
-                    fr_c = fr[common]
-                    # 跳过常数数组 (spearmanr 对常数报 ConstantInputWarning, 无统计意义)
-                    if np.std(fv_c) == 0 or np.std(fr_c) == 0:
-                        continue
-                    ic, _ = spearmanr(fv_c, fr_c)
+                    ic, _ = spearmanr(fv[common], fr[common])
                     if not np.isnan(ic):
                         ic_vals.append(ic)
                 except Exception:

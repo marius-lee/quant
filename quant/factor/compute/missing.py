@@ -231,6 +231,10 @@ def compute_piotroski_fscore(data, date, fundamentals=None):
     cf = _last_two(cf_rows)
 
     symbols = data["close"].columns if isinstance(data["close"], pd.DataFrame) else []
+    # 索引映射 (与SQL SELECT列序一致, test-v338验证):
+    # fin[2]=net_profit, [3]=operating_revenue, [4]=operating_cost
+    # bal[2]=total_assets, [3]=total_liability, [4]=total_owner_equities, [5]=fixed_assets, [6]=intangible_assets
+    # cf[2]=net_operate_cash_flow
     scores = {}
     for sym in symbols:
         if sym not in fin or len(fin[sym]) < 2:

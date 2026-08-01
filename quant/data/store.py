@@ -1875,7 +1875,7 @@ class DataStore:
                     and not gaps["missing"] and not gaps["stale"]):
                 start = datetime.today().strftime("%Y-%m-%d")
         else:
-            logger.info(f"daily update: {len(symbols)} specified stocks")
+            logger.info(f"daily update: {len(symbols)} specified stocks, range={start}→{target_date or 'today'}")
 
         # 2. tushare 作为首选源 (self.token 从 __init__ 三阶回退读取)
         # _fetch_batch_tushare 内部自行创建 ts.pro_api(), 此处仅做 gate 判断
@@ -1890,17 +1890,19 @@ class DataStore:
         # turnover 列受 CASE WHEN 保护: 新源 turnover=0 时保留旧值 (来源: 2026-07-21)
         for i in range(0, len(symbols), batch_size):
             chunk = symbols[i:i + batch_size]
-            # 每只股票独立的 start_date
-            batch_maxes = conn.execute(
-                f"SELECT symbol, MAX(date) FROM daily WHERE symbol IN ({','.join('?' for _ in chunk)}) GROUP BY symbol",
-                chunk
-            ).fetchall()
-            batch_start_map = {r[0]: r[1] for r in batch_maxes if r[1]}
-            # 来源: to_compact 归一化为8位数字串, 确保字符串比较正确
-            batch_start = (min(batch_start_map.values())
-                          if batch_start_map else to_compact(start))
-            if to_compact(batch_start) < to_compact(start):
-                batch_start = start  # 保持 YYYY-MM-DD 给后续 API 用
+            # test-v348: 显式指定 symbols 时用传入的 start, 不用 DB 的 MAX(date) (历史回填修复)
+            if start != _require_cfg("data.start_date"):
+                batch_start = start
+            else:
+                batch_maxes = conn.execute(
+                    f"SELECT symbol, MAX(date) FROM daily WHERE symbol IN ({','.join('?' for _ in chunk)}) GROUP BY symbol",
+                    chunk
+                ).fetchall()
+                batch_start_map = {r[0]: r[1] for r in batch_maxes if r[1]}
+                batch_start = (min(batch_start_map.values())
+                              if batch_start_map else to_compact(start))
+                if to_compact(batch_start) < to_compact(start):
+                    batch_start = start
 
             rows = None
             source = "none"

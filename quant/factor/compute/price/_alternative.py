@@ -90,7 +90,7 @@ def compute_ztd(data, date, window=250):
 
     数据源: daily.volume (日线成交量).
     """
-    import sqlite3, pandas as pd
+    import sqlite3, pandas as pd, numpy as np
 
     close = data["close"]
     _syms = close.columns.tolist()

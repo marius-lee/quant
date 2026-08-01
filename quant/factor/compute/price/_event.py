@@ -250,7 +250,7 @@ def compute_lhb_net_buy(data: "pd.DataFrame", date: str, window: int = _LHB_WIND
         start_date = str(all_dates[start])[:10]
 
     if aux is None or "lhb" not in aux:
-        raise ValueError("compute_lhb_net_buy requires preloaded aux['lhb']")
+        return None  # aux not preloaded'lhb']")
 
     lhb = aux["lhb"]
     mask = (lhb["trade_date"] >= start_date) & (lhb["trade_date"] <= date_str)
@@ -305,7 +305,7 @@ def compute_lhb_post_quality(data: "pd.DataFrame", date: str, window: int = 90, 
     end_date = all_dates[end_idx]
 
     if aux is None or "lhb" not in aux:
-        raise ValueError("compute_lhb_post_quality requires preloaded aux['lhb']")
+        return None  # aux not preloaded'lhb']")
 
     lhb = aux["lhb"]
     mask = (lhb["trade_date"] >= start_date) & (lhb["trade_date"] <= end_date) & lhb["post_5d"].notna()
@@ -348,7 +348,7 @@ def compute_margin_balance_chg(data: "pd.DataFrame", date: str, window: int = 5,
     prev_date = str(all_dates[idx - window])[:10]
 
     if aux is None or "margin" not in aux:
-        raise ValueError("compute_margin_balance_chg requires preloaded aux['margin']")
+        return None  # aux not preloaded'margin']")
 
     m = aux["margin"]
     today_rows = m[m["date"] == date_str]
@@ -391,7 +391,7 @@ def compute_margin_buy_ratio_price(data: "pd.DataFrame", date: str, window: int 
     lookback_dates = dates[-window:]
 
     if aux is None or "margin" not in aux:
-        raise ValueError("compute_margin_buy_ratio_price requires preloaded aux['margin']")
+        return None  # aux not preloaded'margin']")
 
     m = aux["margin"]
     w = m[m["date"].isin(lookback_dates) & m["margin_balance"].notna() & (m["margin_balance"] > 0) & m["margin_buy"].notna()]
@@ -424,7 +424,7 @@ def compute_main_flow_ratio(data: "pd.DataFrame", date: str, window: int = 5, au
     lookback_dates = dates[-window:]
 
     if aux is None or "fund_flow" not in aux:
-        raise ValueError("compute_main_flow_ratio requires preloaded aux['fund_flow']")
+        return None  # aux not preloaded'fund_flow']")
 
     ff = aux["fund_flow"]
     w = ff[ff["date"].isin(lookback_dates) & ff["main_net_ratio"].notna()]
@@ -452,7 +452,7 @@ def compute_fund_change(data: "pd.DataFrame", date: str, window: int = 0, aux=No
     date_str = str(date)[:10]
 
     if aux is None or "fund_hold" not in aux:
-        raise ValueError("compute_fund_change requires preloaded aux['fund_hold']")
+        return None  # aux not preloaded'fund_hold']")
 
     fh = aux["fund_hold"]
     if fh.empty or "change_ratio" not in fh.columns:
@@ -481,7 +481,7 @@ def compute_analyst_buy(data: "pd.DataFrame", date: str, window: int = 0, aux=No
     date_str = str(date)[:10]
 
     if aux is None or "analyst" not in aux:
-        raise ValueError("compute_analyst_buy requires preloaded aux['analyst']")
+        return None  # aux not preloaded'analyst']")
 
     a = aux["analyst"]
     if a.empty:

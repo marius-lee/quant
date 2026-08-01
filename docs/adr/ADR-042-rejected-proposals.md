@@ -221,3 +221,28 @@
 ---
 
 *ADR-042 / 2026-07-31 / 基于 ¥5,000 Nano 层约束*
+
+---
+
+## 补充：数据回填根因分析（2026-08-02）
+
+**问题**：`update_daily` 拉取历史日线数据写入 0 行。
+
+**根因链**：
+```
+update_daily(start='2019-01-01')
+  → _fetch_batch_tushare(chunk, '2019-01-01')
+    → tushare pro.daily() 正确返回 2019 数据 ✅
+    → _local_qfq_ratio() 查 adj_factor 表
+    → adj_factor 表 2019 年 0 行数据
+    → covered=空 → return None（丢弃 6000 行 tushare 数据）
+```
+
+**_local_qfq_ratio 设计意图**：tushare 返回未复权原始价，需 adj_factor 转 qfq。无因子覆盖时拒绝写入（防止未复权价格污染 daily 表）。对增量更新（拉最近几天数据）是正确的。但对历史回填（几年前的 adj_factor 不存在）是致命的。
+
+**解决方案**：`DataStore.backfill_range(start, end)` — 独立于 `update_daily` 的历史回填接口。
+- 使用 baostock `adjustflag='2'`（qfq 前复权），自带复权，不依赖 adj_factor
+- 逐只拉取（0.3s/只），免费无注册
+- `INSERT OR IGNORE` 幂等写入
+
+**教训**：任何依赖外部表（adj_factor）的数据写入路径，必须处理外部表数据缺失的情况。不能静默丢弃合法数据。

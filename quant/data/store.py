@@ -873,8 +873,8 @@ class DataStore:
         _latest_map, _factor_map = self._local_qfq_ratio(_conn, symbols)
         _covered = set(_latest_map)
         if not _covered:
-            logger.warning("[tushare] no local adj_factor coverage — run "
-                           "sync_adj_factor first; skip raw write, next source")
+            logger.warning(f"[tushare] no local adj_factor coverage for {len(symbols)} stocks — "
+                           f"discarding {len(df)} rows; run sync_adj_factor to backfill")
             return None
         df["symbol6"] = df["ts_code"].str.split(".").str[0]
         df = df[df["symbol6"].isin(_covered)]

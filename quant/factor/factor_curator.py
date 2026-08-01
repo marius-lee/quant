@@ -411,7 +411,12 @@ class FactorCurator:
                     common = fv.dropna().index.intersection(fr.index)
                     if len(common) < 30:
                         continue
-                    ic, _ = spearmanr(fv[common], fr[common])
+                    fv_c = fv[common]
+                    fr_c = fr[common]
+                    # 跳过常数数组 (spearmanr 对常数报 ConstantInputWarning, 无统计意义)
+                    if np.std(fv_c) == 0 or np.std(fr_c) == 0:
+                        continue
+                    ic, _ = spearmanr(fv_c, fr_c)
                     if not np.isnan(ic):
                         ic_vals.append(ic)
                 except Exception:

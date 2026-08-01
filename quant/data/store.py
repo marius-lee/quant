@@ -1503,8 +1503,51 @@ class DataStore:
             return 0
 
         logger.info(f"backfill_range: {start}→{end} — "
-                    f"{len(missing)}/{len(all_symbols)} stocks missing, pulling via update_daily")
-        return self.update_daily(symbols=missing, start=start, target_date=end, _explicit_start=True)
+                    f"{len(missing)}/{len(all_symbols)} stocks missing, pulling via baostock")
+        return self._backfill_via_baostock(missing, start, end)
+
+    def _backfill_via_baostock(self, symbols: list, start: str, end: str):
+        """baostock 逐只拉取历史 K 线并写入 daily 表 (test-v351)."""
+        import baostock as bs, time as _t
+        bs.login()
+        conn = self._connect()
+        total = 0
+        for i, sym in enumerate(symbols):
+            code = f"sh.{sym}" if sym.startswith(('6','5','9')) else f"sz.{sym}"
+            try:
+                rs = bs.query_history_k_data_plus(
+                    code, 'date,open,high,low,close,volume,turn',
+                    start_date=start, end_date=end, frequency='d', adjustflag='2')
+                if rs.error_code != '0':
+                    continue
+                rows = []
+                while rs.next():
+                    rows.append(rs.get_row_data())
+                if not rows:
+                    continue
+                for r in rows:
+                    if r[1] == '' or float(r[1]) == 0:
+                        continue
+                    conn.execute(
+                        "INSERT OR IGNORE INTO daily(symbol,date,open,high,low,close,volume,turnover) "
+                        "VALUES(?,?,?,?,?,?,?,?)",
+                        (sym, r[0], float(r[1]), float(r[2]), float(r[3]),
+                         float(r[4]), int(float(r[5])) if r[5] else 0,
+                         float(r[6]) / 10000 if r[6] else 0))
+                    total += 1
+                if (i + 1) % 100 == 0:
+                    conn.commit()
+                    logger.info(f"baostock backfill: {i+1}/{len(symbols)} "
+                                f"({(i+1)*100//len(symbols)}%) — {total} rows")
+                    _t.sleep(0.5)
+            except Exception as e:
+                logger.debug(f"baostock {sym}: {e}")
+        conn.commit()
+        bs.logout()
+        logger.info(f"baostock backfill done: {len(symbols)} stocks, {total} new rows")
+        return total
+
+    def backfill_turnover(self, date: str = None):
         """回填换手率 — baostock 逐只拉取 K 线, 取 turn 字段 UPDATE daily。
 
         date: 指定时只回填该日; None 时扫描全缺口 (历史存量回填).

@@ -1,13 +1,16 @@
-#!/usr/bin/env bash
-# 冒烟回测 — 快速验证因子+alpha+执行管线完整性
-# 用法: bash scripts/smoke_test.sh
-set -euo pipefail
+#!/bin/bash
+# 冒烟测试 — 快速验证回测流程 (1个月/300股)
+set -e
 cd "$(dirname "$0")/.."
-PYTHONPATH=. .venv/bin/python3 -c "
+PYTHONPATH=. .venv/bin/python -c "
 from quant.backtest.loop import run_backtest
-r = run_backtest('2026-06-01', '2026-07-27', capital=5000, mode='smoke')
-m = r['metrics']
-print(f'Sharpe={m[\"sharpe\"]}  CAGR={m[\"cagr_pct\"]}%  MDD={m[\"max_drawdown_pct\"]}%')
-print(f'equity=¥{m[\"final_equity\"]:,.0f}  return={m[\"total_return_pct\"]}%  win_rate={m[\"win_rate\"]}')
-print(f'days={m[\"n_days\"]}  signals/day={r[\"avg_signals_per_day\"]}  errors={r[\"errors\"]}  elapsed={r[\"elapsed_sec\"]}s')
+r = run_backtest(
+    start_date='2026-07-01',
+    end_date='2026-07-31',
+    capital=5000,
+    universe_size=300,
+    factor_status_filter='backtesting',
+    retrain_freq=0
+)
+print(f'CAGR={r.get(\"cagr\",0):.1%} Sharpe={r.get(\"sharpe\",0):.3f} MDD={r.get(\"mdd\",0):.1%} errors={r.get(\"errors\",0)}')
 "

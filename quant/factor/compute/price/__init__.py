@@ -99,7 +99,7 @@ _PRICE_FN_MAP = {
     "gap_5d":                (compute_overnight_gap,       5),
     "range_20d":             (compute_intraday_range,     20),
     "momentum_63d":          (compute_momentum,           63),
-    "residual_momentum_126d": (compute_residual_momentum,  126),  # Ch.3.7 Kakushadze & Serur 2018
+    "residual_momentum_126d": (compute_residual_momentum,  126),
     "momentum_126d":         (compute_momentum,          126),
     "momentum_252d":         (compute_momentum,          252),
     "volatility_126d":       (compute_volatility,        _VOLATILITY_WINDOW),

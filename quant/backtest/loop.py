@@ -247,7 +247,6 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             strategy = next_backtest_name()
 
         # ── Mode-based defaults: smoke (22d×10 stocks) vs full (244d×all) ──
-        broker = None  # test-v341: Python 3.14 作用域防御
         if mode == 'smoke':
             if start_date is None or end_date is None:
                 end_date = end_date or datetime.now().strftime('%Y-%m-%d')
@@ -290,6 +289,7 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
 
         store = DataStore()
         broker = SimulatedBroker(store, engine, BACKTEST_DB)
+        _br = broker  # Python 3.14 兼容: 循环内 try 块通过别名访问
         cost_model = CostModel.from_config()
 
         # ── Generate trading day list ──
@@ -425,7 +425,6 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             # B-22 fix: 单日异常计入 errors 并跳过当日 (原 errors 计数器从未递增,
             # 且单日异常会中断整个回测)
             try:
-                _br = broker  # Python 3.14 作用域防御: try 内不可直接访问外部变量
                 if not _is_reb:
                     # 非调仓日 (weekly): 跳过信号生成 (省 ~80% 计算), 只跑硬止损.
                     # 组合不再平衡; 风控每日不断. signal_counts 不计入 (该计数

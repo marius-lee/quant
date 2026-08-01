@@ -1496,7 +1496,7 @@ class DataStore:
             "SELECT DISTINCT symbol FROM daily WHERE date>=? AND date<=?",
             (start, end)).fetchall()}
         missing = sorted(all_symbols - have_any)
-        conn.close()
+        # 不关闭 conn — update_daily 复用同一线程连接
 
         if not missing:
             logger.info(f"backfill_range: {start}→{end} — all {len(all_symbols)} stocks OK")
@@ -1918,6 +1918,7 @@ class DataStore:
         # 非传统"新增行数" — 对 stale_recent 全量刷新场景会等于全量行数
         # turnover 列受 CASE WHEN 保护: 新源 turnover=0 时保留旧值 (来源: 2026-07-21)
         for i in range(0, len(symbols), batch_size):
+            chunk = symbols[i:i + batch_size]
             # test-v348: 历史回填直接使用 start, 正常增量用 DB MAX(date)
             if _explicit_start:
                 batch_start = start

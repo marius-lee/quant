@@ -1479,58 +1479,32 @@ class DataStore:
     def backfill_range(self, start: str, end: str, symbols: list = None):
         """按日期范围精准回补缺失的日线 (test-v349).
 
-        与 update_daily() 不同: 此方法不做 gap 分析, 直接检查每个 symbol 在
-        [start, end] 区间内缺少哪些交易日, 按缺拉取。不碰 forward-fill 逻辑。
+        与 update_daily() 不同: 直接查缺口, 不依赖 gap 分析的 MAX(date) 逻辑.
+        发现缺数据后一次调用 update_daily(symbols=missing, start=..., target_date=...)
+        利用已有的 RateLimiter + 多源回退链完成拉取.
 
         返回: 新写入的行数.
         """
-        import sqlite3
         conn = self._connect()
         if symbols is None:
             symbols = [r[0] for r in conn.execute(
                 "SELECT symbol FROM stocks WHERE market!='BJ'").fetchall()]
         all_symbols = set(symbols)
 
-        # 找出区间内有数据的交易日
-        trading_days = [r[0] for r in conn.execute(
-            "SELECT DISTINCT date FROM daily WHERE date>=? AND date<=? ORDER BY date",
-            (start, end)).fetchall()]
-        if not trading_days:
-            # 区间内无任何数据 — 拉取所有交易日 (用基准估计 ~244天/年)
-            import pandas as pd
-            trading_days = [d.strftime('%Y-%m-%d') for d in
-                pd.bdate_range(start=start, end=end)]
+        # 查找区间内完全没有数据的股票
+        have_any = {r[0] for r in conn.execute(
+            "SELECT DISTINCT symbol FROM daily WHERE date>=? AND date<=?",
+            (start, end)).fetchall()}
+        missing = sorted(all_symbols - have_any)
+        conn.close()
 
-        # 逐日检查缺口
-        missing_per_day = {}
-        for d in trading_days:
-            have = {r[0] for r in conn.execute(
-                "SELECT symbol FROM daily WHERE date=?", (d,)).fetchall()}
-            miss = all_symbols - have
-            if miss:
-                missing_per_day[d] = miss
-
-        total_missing = sum(len(v) for v in missing_per_day.values())
-        logger.info(f"backfill_range: {start}→{end}, "
-                    f"{len(trading_days)} days, {total_missing} stock-dates to pull")
-
-        if total_missing == 0:
-            logger.info("backfill_range: nothing to pull")
-            conn.close()
+        if not missing:
+            logger.info(f"backfill_range: {start}→{end} — all {len(all_symbols)} stocks OK")
             return 0
 
-        # 按日拉取缺的股票
-        total = 0
-        for d, miss_symbols in sorted(missing_per_day.items()):
-            n = self.update_daily(symbols=sorted(miss_symbols),
-                                  start=d, target_date=d)
-            total += n
-            if n > 0:
-                logger.info(f"backfill_range: {d} — {n} new rows")
-
-        conn.close()
-        logger.info(f"backfill_range done: {total} new rows total")
-        return total
+        logger.info(f"backfill_range: {start}→{end} — "
+                    f"{len(missing)}/{len(all_symbols)} stocks missing, pulling via update_daily")
+        return self.update_daily(symbols=missing, start=start, target_date=end)
         """回填换手率 — baostock 逐只拉取 K 线, 取 turn 字段 UPDATE daily。
 
         date: 指定时只回填该日; None 时扫描全缺口 (历史存量回填).

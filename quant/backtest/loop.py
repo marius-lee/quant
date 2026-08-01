@@ -425,14 +425,15 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             # B-22 fix: 单日异常计入 errors 并跳过当日 (原 errors 计数器从未递增,
             # 且单日异常会中断整个回测)
             try:
+                _br = broker  # Python 3.14 作用域防御: try 内不可直接访问外部变量
                 if not _is_reb:
                     # 非调仓日 (weekly): 跳过信号生成 (省 ~80% 计算), 只跑硬止损.
                     # 组合不再平衡; 风控每日不断. signal_counts 不计入 (该计数
                     # 描述"信号生成日", 非调仓日本就不生成信号).
                     signals = {"date": today, "target_positions": []}
-                    exec_result = broker.execute_risk_only(next_day, strategy=strategy)
+                    exec_result = _br.execute_risk_only(next_day, strategy=strategy)
                     if exec_result.get("skipped"):
-                        equity_curve.append({"date": next_day, "equity": broker.get_mtm_capital(strategy, next_day)})
+                        equity_curve.append({"date": next_day, "equity": _br.get_mtm_capital(strategy, next_day)})
                         continue
                 else:
                     # point-in-time regime 注入 (test-v299 §8.2)
@@ -460,20 +461,20 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
 
                     if not targets:
                         # Record equity without trading (B-06: MTM)
-                        wealth = broker.get_mtm_capital(strategy, next_day)
+                        wealth = _br.get_mtm_capital(strategy, next_day)
                         equity_curve.append({"date": next_day, "equity": wealth})
                         continue
 
                     # ── Step 2: Execute at next-day open prices ──
-                    exec_result = broker.execute(targets, next_day, strategy=strategy)
+                    exec_result = _br.execute(targets, next_day, strategy=strategy)
                     if exec_result.get("skipped"):
                         _log.warning(f"backtest {next_day}: no open prices available, skipping")
-                        equity_curve.append({"date": next_day, "equity": broker.get_mtm_capital(strategy, next_day)})
+                        equity_curve.append({"date": next_day, "equity": engine.get_capital(strategy)})
                         continue
             except Exception as _day_err:
                 errors += 1
                 _log.error(f"backtest {today}: day failed ({errors} total): {_day_err}")
-                equity_curve.append({"date": next_day, "equity": broker.get_mtm_capital(strategy, next_day)})
+                equity_curve.append({"date": next_day, "equity": engine.get_capital(strategy)})
                 continue
 
             # ── Step 2.5: Update cooling-off from stop-loss events ──
@@ -484,7 +485,7 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
 
             bt_tracker.phases.append(PhaseResult(name=f"day_{today}", started=_day_t0, finished=time.time(), status="ok", extra={"signals": len(signals.get("target_positions",[])) if signals else 0}))
             # ── Step 3: Record equity ──
-            equity_curve.append({"date": next_day, "equity": exec_result.get("wealth", broker.get_capital(strategy))})
+            equity_curve.append({"date": next_day, "equity": exec_result.get("wealth", engine.get_capital(strategy))})
 
             # Progress log every 60 days
             if (i + 1) % _require_cfg("backtest.progress_log_interval") == 0:

@@ -98,8 +98,6 @@ def compute_reversal(data: pd.DataFrame, date: str, window: int = 5) -> pd.Serie
     idx = log_ret.index.get_loc(date)
     start = max(0, idx - window + 1)
     cum = -log_ret.iloc[start:idx + 1].sum()  # 负累计收益 = 反转 (test-v337: 与momentum_5d正交)
-    # 方向 (P0-4 实证): IC 检验反转效应不成立，改为纯动量 +cum
-    # 高累计收益 → 高分。若日后反转回归则改回 -cum。
     return _cs_zscore(cum).rename(f"reversal_{window}d")
 
 

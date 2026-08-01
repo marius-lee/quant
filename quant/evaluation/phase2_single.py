@@ -169,9 +169,9 @@ def screen_factors(input_json: str = None, output_json: str = None,
             logger.info(f"  ✗ {name:30s} {'; '.join(reasons)}")
 
     result = {
-        "passed": passed,
-        "monitoring": monitoring,
-        "failed": {k: list(v) for k, v in failed.items()},
+        "active": passed,
+        "probation": monitoring,
+        "archived": {k: list(v) for k, v in failed.items()},
         "ic_means": {k: float(v) for k, v in ic_means.items()},
         "ic_irs": {k: float(v) for k, v in ic_irs.items()},
         "decay": {k: [float(x) for x in v] for k, v in decay.items()} if decay else {},

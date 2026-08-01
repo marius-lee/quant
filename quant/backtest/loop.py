@@ -247,6 +247,7 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             strategy = next_backtest_name()
 
         # ── Mode-based defaults: smoke (22d×10 stocks) vs full (244d×all) ──
+        broker = None  # test-v341: Python 3.14 作用域防御
         if mode == 'smoke':
             if start_date is None or end_date is None:
                 end_date = end_date or datetime.now().strftime('%Y-%m-%d')

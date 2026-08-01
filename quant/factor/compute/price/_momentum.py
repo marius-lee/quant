@@ -281,14 +281,9 @@ def compute_turnover_reversal(data: "pd.DataFrame", date: str, short: int = 5,
     s = to.iloc[max(0,idx-short+1):idx+1].mean()
     l = to.iloc[max(0,idx-long+1):idx+1].mean()
     result = -(s / l.replace(0, np.nan) - 1)
-    # 若有效 turnover 不足 50 只股票, 改用量比 fallback
+    # 有效 turnover 不足 50 只 → 放弃计算 (test-v340: 不 fallback, 避免量纲混用)
     if result.dropna().count() < 50:
-        vol = data["volume"]
-        if date in vol.index:
-            vidx = vol.index.get_loc(date)
-            vs = vol.iloc[max(0,vidx-short+1):vidx+1].mean()
-            vl = vol.iloc[max(0,vidx-long+1):vidx+1].mean()
-            result = -(vs / vl.replace(0, np.nan) - 1)
+        return None
     return _cs_zscore(result).rename(f"turnover_rev_{short}d")
 
 

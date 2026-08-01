@@ -54,7 +54,7 @@ def compute_turnover_vol(data: pd.DataFrame, date: str,
 
 def compute_mif(data: pd.DataFrame, date: str,
                 window: int = None) -> pd.Series:
-    """MIF: |overnight_return| × corr(turnover, mean_turnover, window)."""
+    """MIF: |隔夜收益| × |换手率偏离|/σ (标准化偏离替代相关性, test-v340: Fix文档)."""
     w = window or HF_MIF_WINDOW
     close, open_, t = data["close"], data["open"], data["turnover"]
     if date not in close.index:
@@ -67,20 +67,17 @@ def compute_mif(data: pd.DataFrame, date: str,
     overnight_ret = abs((open_ - prev_close) / prev_close.replace(0, np.nan))
     overnight_t = overnight_ret.iloc[idx]
 
-    # Turnover autocorrelation: corr(turnover_t, mean(turnover))
+    # Turnover deviation: (last - mean) / std (替代滚动corr, 等价于单日Z-score)
     t_hist = t.iloc[start:idx + 1]
     t_mean = t_hist.mean()
-    # rolling corr between each day's turnover and the mean across window
     if len(t_hist) < 5:
         return _cs_zscore(pd.Series(0.0, index=t.columns)).rename("mif")
 
-    # Simplified: last-day turnover deviation from mean, normalized by std
     t_last = t_hist.iloc[-1]
     t_std = t_hist.std()
     t_dev = (t_last - t_mean) / t_std.replace(0, np.nan)
 
     mif_raw = overnight_t * abs(t_dev)
-    # 高 MIF = 定价错位 → 预期修正 → 取正号
     return _cs_zscore(mif_raw).rename("mif")
 
 

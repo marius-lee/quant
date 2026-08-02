@@ -15,7 +15,7 @@ from quant.utils.logger import get_logger
 _log = get_logger(__name__)
 
 
-def compute_intraday_reversal(data, date):
+def compute_intraday_reversal(data, date, window=None):
     """日内反转 — 开盘30分钟收益 vs 收盘收益的反转效应.
 
     公式: -(开盘30分钟收益) — 负相关意味着开盘冲高的股票会反转下跌.
@@ -73,7 +73,7 @@ def compute_intraday_reversal(data, date):
     return _cs_zscore(s, sparse=True).rename("intraday_reversal")
 
 
-def compute_open_volume_ratio(data, date):
+def compute_open_volume_ratio(data, date, window=None):
     """开盘成交量占比 — 开盘30分钟成交量 / 全天成交量.
 
     高占比 → 开盘密集成交, 方向性强 (IC_IR≈1.07, A股最强量价因子之一).
@@ -113,7 +113,7 @@ def compute_open_volume_ratio(data, date):
     return _cs_zscore(s, sparse=True).rename("open_volume_ratio")
 
 
-def compute_close_surge(data, date):
+def compute_close_surge(data, date, window=None):
     """尾盘异动 — 尾盘5分钟 vs 全天波动.
 
     高尾盘异动 → 次日反转概率高 (机构尾盘调仓).

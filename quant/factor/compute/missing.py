@@ -15,7 +15,7 @@ from quant.utils.logger import get_logger
 _log = get_logger(__name__)
 
 
-def compute_market_beta_60d(data, date, benchmark_returns=None):
+def compute_market_beta_60d(data, date, window=None, benchmark_returns=None):
     """市场 Beta — 60日滚动 OLS beta vs 沪深300."""
     if isinstance(data.columns, pd.MultiIndex):
         close = data["close"]

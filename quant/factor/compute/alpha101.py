@@ -42,7 +42,7 @@ def _rolling_corr(a, b, window):
 # ═══════════════════════════════════════════════
 # Alpha #33: 开盘缺口 — rank(-(1-open/close))
 # ═══════════════════════════════════════════════
-def compute_alpha033(data, date):
+def compute_alpha033(data, date, window=None):
     """Alpha#33: -1 + open/close. 高开→正, 低开→负."""
     close = data["close"] if isinstance(data.columns, pd.MultiIndex) else data
     opn = data["open"] if "open" in data.columns.get_level_values(0) else None
@@ -55,7 +55,7 @@ def compute_alpha033(data, date):
 # ═══════════════════════════════════════════════
 # Alpha #42: VWAP 收盘偏离 — rank(vwap-close)/rank(vwap+close)
 # ═══════════════════════════════════════════════
-def compute_alpha042(data, date):
+def compute_alpha042(data, date, window=None):
     """Alpha#42: VWAP vs close 偏离度."""
     v = _vwap(data)
     close = data["close"] if isinstance(data.columns, pd.MultiIndex) else data
@@ -72,7 +72,7 @@ def compute_alpha042(data, date):
 # ═══════════════════════════════════════════════
 # Alpha #41: 几何中间价偏离 VWAP — sqrt(high*low) - vwap
 # ═══════════════════════════════════════════════
-def compute_alpha041(data, date):
+def compute_alpha041(data, date, window=None):
     """Alpha#41: 几何均值 vs VWAP."""
     v = _vwap(data)
     high = data["high"] if "high" in data.columns.get_level_values(0) else None
@@ -87,7 +87,7 @@ def compute_alpha041(data, date):
 # ═══════════════════════════════════════════════
 # Alpha #12: 量价方向 — sign(delta(volume)) * -delta(close)
 # ═══════════════════════════════════════════════
-def compute_alpha012(data, date):
+def compute_alpha012(data, date, window=None):
     """Alpha#12: 成交量变化方向 × 价格反向变动."""
     close = data["close"] if isinstance(data.columns, pd.MultiIndex) else data
     volume = data["volume"] if "volume" in data.columns.get_level_values(0) else None
@@ -101,7 +101,7 @@ def compute_alpha012(data, date):
 # ═══════════════════════════════════════════════
 # Alpha #2: 量价背离 — -correlation(rank(delta(log(volume))), rank(return), 6)
 # ═══════════════════════════════════════════════
-def compute_alpha002(data, date):
+def compute_alpha002(data, date, window=None):
     """Alpha#2: 量价背离."""
     close = data["close"] if isinstance(data.columns, pd.MultiIndex) else data
     volume = data["volume"] if "volume" in data.columns.get_level_values(0) else None
@@ -117,7 +117,7 @@ def compute_alpha002(data, date):
 # ═══════════════════════════════════════════════
 # Alpha #35: 量+区间+动量 — ts_rank(vol,32) * (1-ts_rank(range,16)) * (1-ts_rank(ret,32))
 # ═══════════════════════════════════════════════
-def compute_alpha035(data, date):
+def compute_alpha035(data, date, window=None):
     """Alpha#35: 成交量×价格区间×动量 复合."""
     close = data["close"] if isinstance(data.columns, pd.MultiIndex) else data
     high = data["high"] if "high" in data.columns.get_level_values(0) else None
@@ -144,7 +144,7 @@ def compute_alpha035(data, date):
 # ═══════════════════════════════════════════════
 # Alpha #55: 筹码位置-量相关
 # ═══════════════════════════════════════════════
-def compute_alpha055(data, date):
+def compute_alpha055(data, date, window=None):
     """Alpha#55: 价格位置 vs 成交量 相关性."""
     close = data["close"] if isinstance(data.columns, pd.MultiIndex) else data
     high = data["high"] if "high" in data.columns.get_level_values(0) else None

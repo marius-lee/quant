@@ -243,8 +243,7 @@ def compute_abn_turnover(data, date, window=20):
     valid_mask = turnover_df.notna().sum() >= min_records
     avg_turn = avg_turn[valid_mask & (avg_turn > 0)]
 
-    turn_series = np.log(np.asarray(avg_turn, dtype=np.float64))
-    turn_series.name = 'ln_turnover'
+    turn_series = pd.Series(np.log(np.asarray(avg_turn, dtype=np.float64)), index=avg_turn.index, name='ln_turnover')
     if turn_series.empty or turn_series.count() < 30:
         return _cs_zscore(-turn_series).rename("abn_turnover")
 

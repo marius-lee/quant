@@ -139,6 +139,8 @@ def compute_ic(*,
 
     factor_daily = {name: {} for name in factor_names}
     fwd_1d = {}
+    fwd_5d = {}
+    fwd_20d = {}
 
     compute_days = trading_days[lookback // 2:]
 

@@ -272,7 +272,8 @@ def compute_abn_turnover(data, date, window=20):
     raw = pd.Series(resid, index=common)
 
     # 取负: 异常高换手→低分
-    return _cs_zscore(-raw).rename("abn_turnover")
+    result = _cs_zscore(-raw)
+    return pd.Series(result, index=result.index).rename("abn_turnover") if hasattr(result, 'rename') else result
 
 
 def _get_limit_pool(date_str: str, conn=None):

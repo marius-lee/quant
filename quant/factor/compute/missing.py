@@ -53,7 +53,7 @@ def compute_market_beta_60d(data, date, benchmark_returns=None):
     return _cs_zscore(-beta.fillna(0), sparse=True).rename("market_beta_60d")
 
 
-def compute_overnight_gap_5d(data, date):
+def compute_overnight_gap_5d(data, date, window=None):
     """隔夜动量 — 最近5日收盘→次日开盘收益均值."""
     # MultiIndex columns: (field, symbol) — 直接索引
     if isinstance(data.columns, pd.MultiIndex):
@@ -74,7 +74,7 @@ def compute_overnight_gap_5d(data, date):
     return _cs_zscore(gap_5d, sparse=True).rename("overnight_gap_5d")
 
 
-def compute_vol_price_sync_20d(data, date):
+def compute_vol_price_sync_20d(data, date, window=None):
     """量价同步 — 上涨日量价关系 vs 下跌日量价关系."""
     if isinstance(data.columns, pd.MultiIndex):
         close = data["close"]

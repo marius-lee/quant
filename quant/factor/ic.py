@@ -156,12 +156,12 @@ def compute_ic(*,
             # 切片: 只保留 <= ds 的数据（模拟"截至 ds 已知的数据"）
             ds_data = data.loc[:ds]
             if ds_data is None or ds_data.empty:
-                return (ds, {}, None)
+                return (ds, {}, None, None, None)
             close = ds_data["close"]
             if not isinstance(close, pd.DataFrame):
-                return (ds, {}, None)
+                return (ds, {}, None, None, None)
             if len(close) < 2:
-                return (ds, {}, None)
+                return (ds, {}, None, None, None)
             # 前向收益: return(ds→ds+1), 从 full_close 按位置取
             if full_close is not None:
                 try:

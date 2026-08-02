@@ -20,6 +20,7 @@
 
 ### test-v310→v355 变更总览
 
+**v358**: ADR-043 layer2 — 8因子shortcut化, 消除non-shortcut对MultiIndex data的依赖
 **v357**: ADR-043 layer1 — 10因子aux覆盖, 消除per-date DB泄漏
 - A1: alpha035 `rolling.apply` → numpy 向量化 ts_rank, 单因子 4.8s/日 → 0.4s/整块
 - A2: shortcut 因子预计算整块 zscore panel, 物化时直接取行

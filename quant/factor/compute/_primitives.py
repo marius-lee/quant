@@ -216,6 +216,45 @@ def precompute_primitives(data: pd.DataFrame,
             continue
         prims[f"skew_{w}"] = log_ret.rolling(w, min_periods=max(w // 2, 1)).skew()
 
+    # ── ADR-043 layer2: Amihud 非流动性原始值 (amihud/amihud_20d/turnover_adj_amihud 共用) ──
+    if amount is not None and "pct_ret" in prims:
+        _log.info("  primitives: amihud_raw + rolling means")
+        dollar_vol = amount * 1000
+        prims["amihud_raw"] = prims["pct_ret"].abs() / dollar_vol.replace(0, np.nan)
+        for w in sorted(all_windows | {20, 250}):
+            if w <= 1:
+                continue
+            prims[f"amihud_ma_{w}"] = (prims["amihud_raw"]
+                .rolling(w, min_periods=max(w // 2, 1)).mean() * 1e6)
+
+    # ── ADR-043 layer2: 日内/隔夜收益 (day_night 共用) ──
+    if opn is not None:
+        _log.info("  primitives: intra_ret + night_jump")
+        prims["intra_ret"] = np.log(close / opn)
+        prims["night_jump_raw"] = np.log(opn / close.shift(1)).abs()
+        # 预计算滚动和 (day_night 硬编码窗口 10/20)
+        prims["intra_rev_20"] = prims["intra_ret"].rolling(20, min_periods=10).sum()
+        prims["night_jump_10"] = prims["night_jump_raw"].rolling(10, min_periods=5).sum()
+
+    # ── ADR-043 layer2: 理想振幅原始值 (ideal_amplitude 共用) ──
+    if high is not None and low is not None:
+        prims["ideal_amp_raw"] = (high - low) / low.replace(0, np.nan)
+
+    # ── ADR-043 layer2: 隔夜缺口 5d 均值 (overnight_gap_5d 共用) ──
+    if "overnight_gap" in prims:
+        prims["overnight_gap_ma_5"] = prims["overnight_gap"].rolling(
+            5, min_periods=3).mean()
+
+    # ── ADR-043 layer2: 量价同步原始值 (vol_price_sync_20d 共用) ──
+    if volume is not None:
+        close_ret = close.pct_change()
+        up_mask = close_ret > 0
+        down_mask = close_ret < 0
+        up_sync = (close_ret * volume).where(up_mask, 0)
+        down_sync = (close_ret.abs() * volume).where(down_mask, 0)
+        prims["vol_price_sync_raw"] = (up_sync.rolling(20, min_periods=10).mean()
+            / down_sync.rolling(20, min_periods=10).mean().replace(0, np.nan) - 1)
+
     # ── RSI ──
     pct = prims["pct_ret"]
     for w in sorted(all_windows):
@@ -596,6 +635,127 @@ FACTOR_SHORTCUT = {
     # Alpha101 #35 向量化 shortcut (ADR-??? 待编号)
     "compute_alpha035": _alpha035,
 }
+
+
+# ═══════════════════════════════════════════════════════════
+# ADR-043 layer2: 8 新 shortcut (amihud/day_night/ideal_amp/gap_5d/vol_price_sync/hl_volume)
+# ═══════════════════════════════════════════════════════════
+
+def _amihud(prims: dict, date: str, window: int):
+    """Amihud 非流动性 = amihud_ma_{w}.loc[date] → zscore."""
+    from quant.factor.registry import _cs_zscore
+    key = f"amihud_ma_{window}"
+    if key not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name=f"amihud_{window}d")
+    s = prims[key].loc[date].dropna()
+    return _cs_zscore(s).rename(f"amihud_{window}d")
+
+def _amihud_20d(prims: dict, date: str, window: int = 20):
+    """短期 Amihud = amihud_ma_20.loc[date] → zscore."""
+    from quant.factor.registry import _cs_zscore
+    key = "amihud_ma_20"
+    if key not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="amihud_20d")
+    s = prims[key].loc[date].dropna()
+    return _cs_zscore(s).rename("amihud_20d")
+
+def _turnover_adj_amihud(prims: dict, date: str, window: int = 20):
+    """换手率调整 Amihud = amihud_ma_20 / sqrt(turnover_ma_20) → zscore."""
+    from quant.factor.registry import _cs_zscore
+    import numpy as np
+    am_key = "amihud_ma_20"
+    to_key = f"turnover_ma_{window}"
+    if am_key not in prims or to_key not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="turnover_adj_amihud_20d")
+    am = prims[am_key].loc[date]
+    avg_to = prims[to_key].loc[date]
+    adj = am / np.sqrt(avg_to.replace(0, np.nan).astype(float))
+    return _cs_zscore(adj).rename("turnover_adj_amihud_20d")
+
+def _day_night(prims: dict, date: str, window: int = None):
+    """昼夜合成 = 0.6×intra_rev_20 + 0.4×night_jump_10 → 取负 zscore."""
+    from quant.factor.registry import _cs_zscore
+    if "intra_rev_20" not in prims or "night_jump_10" not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="day_night")
+    intra = prims["intra_rev_20"].loc[date]
+    night = prims["night_jump_10"].loc[date]
+    raw = 0.6 * intra + 0.4 * night
+    return _cs_zscore(-raw).rename("day_night")
+
+def _ideal_amplitude(prims: dict, date: str, window: int = 20):
+    """理想振幅 = -(top 25% amp - bottom 25% amp), numpy 向量化."""
+    from quant.factor.registry import _cs_zscore
+    import numpy as np
+    if "ideal_amp_raw" not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="ideal_amplitude")
+    raw = prims["ideal_amp_raw"]
+    recent = raw.loc[:date].tail(window)
+    if recent.shape[0] < 3:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="ideal_amplitude")
+    arr = recent.to_numpy(dtype=float)
+    k = max(int(window * 0.25), 1)
+    if k > arr.shape[0]:
+        k = arr.shape[0] - 1
+    valid = ~np.isnan(arr)
+    cnt = valid.sum(axis=0)
+    a = np.where(valid, arr, -np.inf)
+    top = np.partition(a, arr.shape[0] - k, axis=0)[-k:]
+    top_mean = np.where(top > -np.inf, top, 0).sum(axis=0) / np.maximum(
+        (top > -np.inf).sum(axis=0), 1)
+    b = np.where(valid, arr, np.inf)
+    bot = np.partition(b, k - 1, axis=0)[:k]
+    bot_mean = np.where(bot < np.inf, bot, 0).sum(axis=0) / np.maximum(
+        (bot < np.inf).sum(axis=0), 1)
+    vals = -(top_mean - bot_mean)
+    ok = (cnt >= window) & np.isfinite(vals)
+    result = pd.Series(np.nan, index=prims["log_ret"].columns)
+    result.iloc[ok] = vals[ok]
+    return _cs_zscore(result).rename("ideal_amplitude")
+
+def _overnight_gap_5d(prims: dict, date: str, window: int = None):
+    """隔夜动量 5d = overnight_gap_ma_5.loc[date] → zscore."""
+    from quant.factor.registry import _cs_zscore
+    if "overnight_gap_ma_5" not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="overnight_gap_5d")
+    s = prims["overnight_gap_ma_5"].loc[date].dropna()
+    return _cs_zscore(s).rename("overnight_gap_5d")
+
+def _vol_price_sync_20d(prims: dict, date: str, window: int = None):
+    """量价同步 20d = vol_price_sync_raw.loc[date] → 取负 zscore."""
+    from quant.factor.registry import _cs_zscore
+    if "vol_price_sync_raw" not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="vol_price_sync_20d")
+    s = prims["vol_price_sync_raw"].loc[date].dropna()
+    return _cs_zscore(-s).rename("vol_price_sync_20d")
+
+def _hl_volume(prims: dict, date: str, window: int = 20):
+    """高低位放量 = (P80 - P20) / mean(turnover), numpy 向量化取负 zscore."""
+    from quant.factor.registry import _cs_zscore
+    import numpy as np
+    if "turnover" not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="hl_volume_20d")
+    to = prims["turnover"]
+    recent = to.loc[:date].tail(window)
+    if recent.shape[0] < 10:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="hl_volume_20d")
+    arr = recent.to_numpy(dtype=float)
+    p80 = np.nanpercentile(arr, 80, axis=0)
+    p20 = np.nanpercentile(arr, 20, axis=0)
+    mean_to = np.nanmean(arr, axis=0)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        vals = np.where(mean_to > 0, (p80 - p20) / mean_to, np.nan)
+    result = pd.Series(vals, index=prims["log_ret"].columns)
+    return _cs_zscore(-result).rename("hl_volume_20d")
+
+
+FACTOR_SHORTCUT["compute_amihud"] = _amihud
+FACTOR_SHORTCUT["compute_amihud_20d"] = _amihud_20d
+FACTOR_SHORTCUT["compute_turnover_adj_amihud"] = _turnover_adj_amihud
+FACTOR_SHORTCUT["compute_day_night"] = _day_night
+FACTOR_SHORTCUT["compute_ideal_amplitude"] = _ideal_amplitude
+FACTOR_SHORTCUT["compute_overnight_gap_5d"] = _overnight_gap_5d
+FACTOR_SHORTCUT["compute_vol_price_sync_20d"] = _vol_price_sync_20d
+FACTOR_SHORTCUT["compute_hl_volume"] = _hl_volume
 
 
 # ═══════════════════════════════════════════════════════════

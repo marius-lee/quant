@@ -171,8 +171,22 @@ def compute_ic(*,
                     fwd = (full_close.loc[ds_next] / full_close.loc[ds]) - 1
                 else:
                     fwd = None  # 最后一天无前向收益
+                # 前向 5d 收益
+                if date_idx >= 0 and date_idx + 5 < len(full_close):
+                    ds_next5 = full_close.index[date_idx + 5]
+                    fwd5 = (full_close.loc[ds_next5] / full_close.loc[ds]) - 1
+                else:
+                    fwd5 = None
+                # 前向 20d 收益
+                if date_idx >= 0 and date_idx + 20 < len(full_close):
+                    ds_next20 = full_close.index[date_idx + 20]
+                    fwd20 = (full_close.loc[ds_next20] / full_close.loc[ds]) - 1
+                else:
+                    fwd20 = None
             else:
                 fwd = None
+                fwd5 = None
+                fwd20 = None
             fundamentals = store.get_fundamentals(symbols, ds)
             # 切片 primitives 到截止 ds, 传给 compute_all_factors 走 FACTOR_SHORTCUT 快捷路径
             ds_prims = {k: v.loc[:ds] for k, v in prims.items() if hasattr(v, 'loc')}
@@ -185,13 +199,13 @@ def compute_ic(*,
                     f"factor_cache miss for {ds} ({len(symbols)} symbols, "
                     f"{len(factor_names)} factors), run materialization first"
                 )
-            return (ds, fv, fwd)
+            return (ds, fv, fwd, fwd5, fwd20)
         except Exception as e:
             _log.warning(f"_compute_one_day failed at {ds}: {type(e).__name__}: {e}")
-            return (ds, {}, None)
+            return (ds, {}, None, None, None)
 
     for ds in compute_days:
-        _, factor_vals, fwd = _compute_one_day(ds)
+        _, factor_vals, fwd, fwd5, fwd20 = _compute_one_day(ds)
         if factor_vals is None:
             continue
         for name, series in factor_vals.items():
@@ -199,6 +213,10 @@ def compute_ic(*,
                 factor_daily[name][ds] = series
         if fwd is not None:
             fwd_1d[ds] = fwd
+        if fwd5 is not None:
+            fwd_5d[ds] = fwd5
+        if fwd20 is not None:
+            fwd_20d[ds] = fwd20
 
     # 转为 Mode B 格式 → 统一 IC 计算
     fv_dict = {}
@@ -208,8 +226,10 @@ def compute_ic(*,
             fv_dict[name] = d
 
     fwd_1d_df = pd.DataFrame(fwd_1d).T if fwd_1d else pd.DataFrame()
+    fwd_5d_df = pd.DataFrame(fwd_5d).T if fwd_5d else pd.DataFrame()
+    fwd_20d_df = pd.DataFrame(fwd_20d).T if fwd_20d else pd.DataFrame()
 
-    result = _compute_ic_from_values(fv_dict, fwd_1d_df, None, None, min_periods)
+    result = _compute_ic_from_values(fv_dict, fwd_1d_df, fwd_5d_df, fwd_20d_df, min_periods)
 
     # 构建 ic_map (back compat: 归一化权重)
     ic_map = {}

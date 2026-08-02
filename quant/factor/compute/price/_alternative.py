@@ -487,6 +487,8 @@ def compute_ideal_amplitude(data: "pd.DataFrame", date: str, window: int = 20) -
     if arr.shape[0] < 3:
         return pd.Series(np.nan, index=symbols_all, name="ideal_amplitude")
     k = max(int(window * 0.25), 1)
+    if k > arr.shape[0]:
+        k = arr.shape[0] - 1
     valid = ~np.isnan(arr)
     cnt = valid.sum(axis=0)
 

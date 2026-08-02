@@ -18,6 +18,7 @@ import pandas as pd
 import numpy as np
 from quant.utils.logger import get_logger
 from quant.factor.compute.price._alternative import preload_ztd_cache
+from quant.factor.compute._preload import preload_aux_data_chunk
 
 _log = get_logger("factor.store")
 
@@ -190,6 +191,9 @@ class FactorStore:
             # ztd 缓存 (按块日期)
             preload_ztd_cache(chunk_dates, symbols)
 
+            # aux 数据块级预加载 (ADR-043): 12 SQL 查询/块, slice 按日期过滤
+            aux_full = preload_aux_data_chunk(symbols, chunk_start_dt, chunk_end_dt)
+
             # fundamentals (按块日期) — 批量加载优化: 一次 SQL 取全天范围, 内存 PIT
             chunk_fundamentals = {}
             if chunk_dates:
@@ -275,6 +279,7 @@ class FactorStore:
                     day_data, date_str,
                     primitives=prims,
                     fundamentals=chunk_fundamentals.get(date_str),
+                    preloaded_aux_chunk=aux_full,
                     factor_names=missing,
                     status_filter=None,
                     factor_fail_fast=False,
@@ -307,7 +312,7 @@ class FactorStore:
                 chunk_dates_done += 1
 
             # 释放该块内存（含 DataStore 查询缓存）
-            del data_full, prims, chunk_fundamentals
+            del data_full, prims, chunk_fundamentals, aux_full
             if hasattr(store, '_query_cache'):
                 store._query_cache.clear()
             _gc.collect()

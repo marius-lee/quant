@@ -2,7 +2,7 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
-## 当前状态 (test-v353, 2026-08-02)
+## 当前状态 (test-v354, 2026-08-02)
 
 ### 关键指标
 - 因子: 84 注册 (0 active, 20 evaluating, 25 probation, 46 archived — 8 个新注册待评估)
@@ -58,6 +58,7 @@
 **v350**: _explicit_start 标志 + conn 共享 + chunk 缺失修复
 **v351**: backfill_range 改用 baostock (免费历史数据, qfq 自带)
 **v352**: 因子冒烟 95/100 通过
+**v354**: ADR-043 因子缓存物化性能 — aux 数据从每日期 12 次 SQL → 每块 12 次 (200x), financial 表加 symbol 过滤, 预计全量物化 3天→3-5小时
 **v353**: abn_turnover numpy 数组→pd.Series — 100/100 通过
 
 ### 新增因子 (v322-v328)

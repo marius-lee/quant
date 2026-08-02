@@ -6,7 +6,7 @@ from typing import Optional
 from quant.config.constants import _require_cfg
 
 from quant.utils.logger import get_logger
-from quant.factor.compute._preload import preload_aux_data
+from quant.factor.compute._preload import preload_aux_data, slice_aux_for_date
 from quant.factor.registry import _FIN_FACTORS
 from quant.factor.compute.price import _PRICE_FN_MAP
 from quant.factor.compute.fundamental import _FUNDAMENTAL_FN_MAP
@@ -21,6 +21,7 @@ def compute_all_factors(data: pd.DataFrame, date: str,
                       status_filter: str = "using",
                       preloaded_financials: pd.DataFrame = None,
                       preloaded_fundamentals: pd.DataFrame = None,
+                      preloaded_aux_chunk: dict = None,
                       factor_fail_fast: bool = True,
                       quiet: bool = False) -> dict:
     """批量计算所有已注册因子 -> {factor_name: Series(index=symbol)}。
@@ -55,12 +56,16 @@ def compute_all_factors(data: pd.DataFrame, date: str,
     import time as _time
     _t0 = _time.time()
 
-    # Preload auxiliary data (margin, analyst, financials) once for all factors
+    # Preload auxiliary data (margin, analyst, financials) once for all factors.
+    # ADR-043: chunk 调用方传入 preloaded_aux_chunk → 用 slice 替代每日期 SQL 查询。
     _syms = list(data.columns.get_level_values(1).unique())
     if not _syms:
         _plog.warning('  no symbols in data, skipping factor computation')
         return {}
-    _aux = preload_aux_data(_syms, date)
+    if preloaded_aux_chunk is not None:
+        _aux = slice_aux_for_date(preloaded_aux_chunk, date)
+    else:
+        _aux = preload_aux_data(_syms, date)
     if _aux and not quiet:
         _plog.info("  aux data preloaded: %d tables", len(_aux))
 

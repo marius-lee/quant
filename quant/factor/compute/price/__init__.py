@@ -90,6 +90,10 @@ from quant.factor.compute.alpha101 import (
     compute_alpha033, compute_alpha042, compute_alpha041,
     compute_alpha012, compute_alpha002, compute_alpha035, compute_alpha055,
 )
+from quant.factor.compute.high_priority import (
+    compute_seasonality_12m_1m, compute_tail_risk,
+    compute_industry_momentum, compute_cf_roa,
+)
 
 
 _PRICE_FN_MAP = {
@@ -159,6 +163,10 @@ _PRICE_FN_MAP = {
     "alpha002_vol_div":       (compute_alpha002, None), # test-v326: Alpha#2 量价背离
     "alpha035_range_mom":     (compute_alpha035, None), # test-v326: Alpha#35 区间动量
     "alpha055_pos_vol":       (compute_alpha055, None), # test-v326: Alpha#55 筹码位置
+    # v358: 高优先级缺失因子
+    "seasonality_12m_1m":     (compute_seasonality_12m_1m, None),
+    "tail_risk":              (compute_tail_risk, 252),
+    "industry_momentum":      (compute_industry_momentum, 63),
 }
 
 

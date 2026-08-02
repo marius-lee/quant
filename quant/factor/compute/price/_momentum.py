@@ -637,7 +637,7 @@ def compute_uret(data: "pd.DataFrame", date: str, window: int = 20) -> "pd.Serie
           幻方"信息分布不均"方法论: 收益离散度大但方向模糊的股票 → 未来收益低.
     """
     close = data["close"]
-    log_ret = np.log(close).diff()
+    log_ret = np.log(close.astype(float)).diff()
 
     if date not in log_ret.index:
         return pd.Series(np.nan, index=close.columns, name="uret_20d")
@@ -696,7 +696,7 @@ def compute_turnover_adj_amihud(data, date: str, window: int = 20):
     ret = p_slice.pct_change().abs()
     amihud_raw = (ret / (a_slice * 1000).replace(0, np.nan)).mean(skipna=True) * 1e6
     avg_to = t_slice.mean(skipna=True).replace(0, np.nan)
-    adj = amihud_raw / np.sqrt(avg_to)
+    adj = amihud_raw / np.sqrt(np.asarray(avg_to, dtype=np.float64))
     effective = min(window, p_slice.shape[0])
     min_valid = max(10, int(effective * 0.5))
     valid_mask = (p_slice.count() >= min_valid)

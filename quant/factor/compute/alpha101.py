@@ -79,7 +79,7 @@ def compute_alpha041(data, date, window=None):
     low = data["low"] if "low" in data.columns.get_level_values(0) else None
     if v is None or high is None or low is None:
         return None
-    geo = np.sqrt(high.iloc[-1] * low.iloc[-1])
+    geo = np.sqrt(np.asarray(high.iloc[-1].values, dtype=np.float64) * np.asarray(low.iloc[-1].values, dtype=np.float64))
     diff = geo - v.iloc[-1]
     return _cs_zscore(diff, sparse=True).rename("alpha041_geo_vwap")
 

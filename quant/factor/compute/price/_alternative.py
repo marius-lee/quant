@@ -146,11 +146,11 @@ def compute_day_night(data, date, night_window=10, intraday_window=20):
     open_ = data["open"]
 
     # 日内反转: 累计对数收益率, 取负 (IC为负)
-    ret_intra = np.log(close / open_)
+    ret_intra = np.log(close.astype(float) / open_.astype(float))
     intra_rev = ret_intra.rolling(intraday_window, min_periods=10).sum()
 
     # 隔夜跳空: 绝对值累计 (无论高开低开, 跳空幅度大→次月反转)
-    ret_night = np.log(open_ / close.shift(1))
+    ret_night = np.log(open_.astype(float) / close.shift(1).astype(float))
     night_jump = ret_night.abs().rolling(night_window, min_periods=5).sum()
 
     raw = 0.6 * intra_rev.iloc[-1] + 0.4 * night_jump.iloc[-1]
@@ -243,7 +243,7 @@ def compute_abn_turnover(data, date, window=20):
     valid_mask = turnover_df.notna().sum() >= min_records
     avg_turn = avg_turn[valid_mask & (avg_turn > 0)]
 
-    turn_series = np.log(avg_turn)
+    turn_series = np.log(np.asarray(avg_turn, dtype=np.float64))
     turn_series.name = 'ln_turnover'
     if turn_series.empty or turn_series.count() < 30:
         return _cs_zscore(-turn_series).rename("abn_turnover")
@@ -484,6 +484,8 @@ def compute_ideal_amplitude(data: "pd.DataFrame", date: str, window: int = 20) -
     ampl = ampl.replace([np.inf, -np.inf], np.nan)
     recent = ampl.tail(window)
     arr = recent.to_numpy(dtype=float)            # (window, n_syms)
+    if arr.shape[0] < 3:
+        return pd.Series(np.nan, index=symbols_all, name="ideal_amplitude")
     k = max(int(window * 0.25), 1)
     valid = ~np.isnan(arr)
     cnt = valid.sum(axis=0)

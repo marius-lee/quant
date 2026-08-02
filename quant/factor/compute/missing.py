@@ -110,32 +110,41 @@ def compute_vol_price_sync_20d(data, date, window=None):
     return _cs_zscore(-sync, sparse=True).rename("vol_price_sync_20d")
 
 
-def compute_revenue_growth_yoy(data, date, fundamentals=None):
-    """营收同比增长率 — 最近报告期 vs 去年同期."""
+def compute_revenue_growth_yoy(data, date, fundamentals=None, aux=None):
+    """营收同比增长率 — 最近报告期 vs 去年同期.
+    ADR-043 layer1: 优先从 aux["financial_income"] 取, 无 aux 时回退 DB.
+    """
     import os
-    from quant.data.repos._base import DatabaseManager
-    conn = DatabaseManager.market()
-    rows = conn.execute(
-        "SELECT symbol, stat_date, operating_revenue "
-        "FROM financial_income WHERE stat_date <= ? "
-        "ORDER BY symbol, stat_date DESC",
-        (date,)
-    ).fetchall()
-    conn.close()
-    if not rows:
-        return None
-
     from collections import defaultdict
-    latest = {}
-    prev = {}
-    for r in rows:
-        sym = r[0]
-        if sym not in latest:
-            latest[sym] = (r[1], r[2])
-        elif sym not in prev and r[1] != latest[sym][0]:
-            prev[sym] = (r[1], r[2])
-
     symbols = data["close"].columns if isinstance(data["close"], pd.DataFrame) else []
+    latest, prev = {}, {}
+
+    if aux is not None and "financial_income" in aux:
+        fi = aux["financial_income"]
+        if not fi.empty and "symbol" in fi.columns and "stat_date" in fi.columns:
+            fi_sorted = fi.sort_values(["symbol", "stat_date"], ascending=[True, False])
+            for _, r in fi_sorted.iterrows():
+                sym = r["symbol"]
+                if sym not in latest:
+                    latest[sym] = (r["stat_date"], r.get("operating_revenue"))
+                elif sym not in prev:
+                    prev[sym] = (r["stat_date"], r.get("operating_revenue"))
+    else:
+        from quant.data.repos._base import DatabaseManager
+        conn = DatabaseManager.market()
+        rows = conn.execute(
+            "SELECT symbol, stat_date, operating_revenue "
+            "FROM financial_income WHERE stat_date <= ? "
+            "ORDER BY symbol, stat_date DESC",
+            (date,)
+        ).fetchall()
+        conn.close()
+        for r in rows:
+            sym = r[0]
+            if sym not in latest:
+                latest[sym] = (r[1], r[2])
+            elif sym not in prev and r[1] != latest[sym][0]:
+                prev[sym] = (r[1], r[2])
     result = {}
     for sym in symbols:
         if sym in latest and sym in prev:
@@ -151,26 +160,38 @@ def compute_revenue_growth_yoy(data, date, fundamentals=None):
     return _cs_zscore(s, sparse=True).rename("revenue_growth_yoy")
 
 
-def compute_earnings_growth_yoy(data, date, fundamentals=None):
-    """净利润同比增长率 — 最近报告期 vs 去年同期."""
-    from quant.data.repos._base import DatabaseManager
+def compute_earnings_growth_yoy(data, date, fundamentals=None, aux=None):
+    """净利润同比增长率 — 最近报告期 vs 去年同期.
+    ADR-043 layer1: 优先从 aux["financial_income"] 取, 无 aux 时回退 DB.
+    """
     from collections import defaultdict
-    conn = DatabaseManager.market()
-    rows = conn.execute(
-        "SELECT symbol, stat_date, net_profit "
-        "FROM financial_income WHERE stat_date <= ? "
-        "ORDER BY symbol, stat_date DESC",
-        (date,)
-    ).fetchall()
-    conn.close()
-    if not rows:
-        return None
-    latest, prev = {}, {}
-    for r in rows:
-        sym = r[0]
-        if sym not in latest: latest[sym] = (r[1], r[2])
-        elif sym not in prev and r[1] != latest[sym][0]: prev[sym] = (r[1], r[2])
     symbols = data["close"].columns if isinstance(data["close"], pd.DataFrame) else []
+    latest, prev = {}, {}
+
+    if aux is not None and "financial_income" in aux:
+        fi = aux["financial_income"]
+        if not fi.empty and "symbol" in fi.columns and "stat_date" in fi.columns:
+            fi_sorted = fi.sort_values(["symbol", "stat_date"], ascending=[True, False])
+            for _, r in fi_sorted.iterrows():
+                sym = r["symbol"]
+                if sym not in latest:
+                    latest[sym] = (r["stat_date"], r.get("net_profit"))
+                elif sym not in prev:
+                    prev[sym] = (r["stat_date"], r.get("net_profit"))
+    else:
+        from quant.data.repos._base import DatabaseManager
+        conn = DatabaseManager.market()
+        rows = conn.execute(
+            "SELECT symbol, stat_date, net_profit "
+            "FROM financial_income WHERE stat_date <= ? "
+            "ORDER BY symbol, stat_date DESC",
+            (date,)
+        ).fetchall()
+        conn.close()
+        for r in rows:
+            sym = r[0]
+            if sym not in latest: latest[sym] = (r[1], r[2])
+            elif sym not in prev and r[1] != latest[sym][0]: prev[sym] = (r[1], r[2])
     result = {}
     for sym in symbols:
         if sym in latest and sym in prev:
@@ -183,48 +204,61 @@ def compute_earnings_growth_yoy(data, date, fundamentals=None):
     return _cs_zscore(s, sparse=True).rename("earnings_growth_yoy")
 
 
-def compute_piotroski_fscore(data, date, fundamentals=None):
+def compute_piotroski_fscore(data, date, fundamentals=None, aux=None):
     """Piotroski F-Score — 9项基本面质量综合打分 (0-9).
 
     A股 IC_IR≈0.3-0.5, 价值+质量复合, 低分=差, 高分=好.
     来源: Piotroski (2000), 国泰君安 2021 A股验证.
+    ADR-043 layer1: 优先从 aux financial 表取, 无 aux 时回退 DB.
     """
-    from quant.data.repos._base import DatabaseManager
-    conn = DatabaseManager.market()
-    # 加载最近一年财务数据
-    fin_rows = conn.execute(
-        "SELECT symbol, stat_date, net_profit, operating_revenue, operating_cost, "
-        "total_operating_revenue, total_profit, operating_profit "
-        "FROM financial_income WHERE stat_date <= ? "
-        "ORDER BY symbol, stat_date DESC",
-        (date,)
-    ).fetchall()
-    bal_rows = conn.execute(
-        "SELECT symbol, stat_date, total_assets, total_liability, total_owner_equities, "
-        "fixed_assets, intangible_assets "
-        "FROM financial_balance WHERE stat_date <= ? "
-        "ORDER BY symbol, stat_date DESC",
-        (date,)
-    ).fetchall()
-    cf_rows = conn.execute(
-        "SELECT symbol, stat_date, net_operate_cash_flow "
-        "FROM financial_cash_flow WHERE stat_date <= ? "
-        "ORDER BY symbol, stat_date DESC",
-        (date,)
-    ).fetchall()
-    conn.close()
-
-    if not fin_rows:
-        return None
-
-    # 按股票分组,取最近两期
     from collections import defaultdict
+    symbols = data["close"].columns if isinstance(data["close"], pd.DataFrame) else []
+
     def _last_two(rows):
         d = defaultdict(list)
         for r in rows:
             if len(d[r[0]]) < 2:
                 d[r[0]].append(r)
         return d
+
+    if aux is not None and all(t in aux for t in ["financial_income", "financial_balance", "financial_cashflow"]):
+        # 从 aux 提取最近两期, aux 已按 stat_date ≤ date 过滤
+        fi = aux["financial_income"]
+        fb = aux["financial_balance"]
+        fc = aux["financial_cashflow"]
+        fin_rows = [(r["symbol"], r["stat_date"], r.get("net_profit"), r.get("operating_revenue"),
+                     r.get("operating_cost"), r.get("total_operating_revenue"), r.get("total_profit"),
+                     r.get("operating_profit"))
+                    for _, r in fi.iterrows()] if not fi.empty else []
+        bal_rows = [(r["symbol"], r["stat_date"], r.get("total_assets"), r.get("total_liability"),
+                     r.get("total_owner_equities"), r.get("fixed_assets"), r.get("intangible_assets"))
+                    for _, r in fb.iterrows()] if not fb.empty else []
+        cf_rows = [(r["symbol"], r["stat_date"], r.get("net_operate_cash_flow"))
+                   for _, r in fc.iterrows()] if not fc.empty else []
+    else:
+        from quant.data.repos._base import DatabaseManager
+        conn = DatabaseManager.market()
+        fin_rows = conn.execute(
+            "SELECT symbol, stat_date, net_profit, operating_revenue, operating_cost, "
+            "total_operating_revenue, total_profit, operating_profit "
+            "FROM financial_income WHERE stat_date <= ? "
+            "ORDER BY symbol, stat_date DESC",
+            (date,)
+        ).fetchall()
+        bal_rows = conn.execute(
+            "SELECT symbol, stat_date, total_assets, total_liability, total_owner_equities, "
+            "fixed_assets, intangible_assets "
+            "FROM financial_balance WHERE stat_date <= ? "
+            "ORDER BY symbol, stat_date DESC",
+            (date,)
+        ).fetchall()
+        cf_rows = conn.execute(
+            "SELECT symbol, stat_date, net_operate_cash_flow "
+            "FROM financial_cash_flow WHERE stat_date <= ? "
+            "ORDER BY symbol, stat_date DESC",
+            (date,)
+        ).fetchall()
+        conn.close()
 
     fin = _last_two(fin_rows)
     bal = _last_two(bal_rows)

@@ -15,14 +15,13 @@ from quant.utils.logger import get_logger
 _log = get_logger(__name__)
 
 
-def compute_intraday_reversal(data, date, window=None):
+def compute_intraday_reversal(data, date, window=None, aux=None):
     """日内反转 — 开盘30分钟收益 vs 收盘收益的反转效应.
 
     公式: -(开盘30分钟收益) — 负相关意味着开盘冲高的股票会反转下跌.
     使用 intraday_snapshot 表获取开盘30分钟价格.
+    ADR-043 layer1: 优先从 aux["intraday_snapshot"] 取, 无 aux 时回退 DB.
     """
-    from quant.data.repos._base import DatabaseManager
-
     if isinstance(data.columns, pd.MultiIndex):
         close = data["close"]
         opn_data = data["open"] if "open" in data.columns.get_level_values(0) else None
@@ -33,13 +32,21 @@ def compute_intraday_reversal(data, date, window=None):
     if close is None or close.empty:
         return None
 
-    # 加载当日快照
-    conn = DatabaseManager.market()
-    rows = conn.execute(
-        "SELECT symbol, open_30min, prev_close FROM intraday_snapshot WHERE date=?",
-        (date,)
-    ).fetchall()
-    conn.close()
+    # 加载当日快照 — ADR-043 layer1: 优先 aux
+    rows = None
+    if aux is not None and "intraday_snapshot" in aux:
+        snap = aux["intraday_snapshot"]
+        if not snap.empty:
+            rows = [(r["symbol"], r.get("open_30min"), r.get("prev_close"))
+                    for _, r in snap.iterrows()]
+    if rows is None:
+        from quant.data.repos._base import DatabaseManager
+        conn = DatabaseManager.market()
+        rows = conn.execute(
+            "SELECT symbol, open_30min, prev_close FROM intraday_snapshot WHERE date=?",
+            (date,)
+        ).fetchall()
+        conn.close()
 
     if not rows:
         _log.debug(f"intraday_reversal: no snapshot data for {date}")
@@ -73,13 +80,12 @@ def compute_intraday_reversal(data, date, window=None):
     return _cs_zscore(s, sparse=True).rename("intraday_reversal")
 
 
-def compute_open_volume_ratio(data, date, window=None):
+def compute_open_volume_ratio(data, date, window=None, aux=None):
     """开盘成交量占比 — 开盘30分钟成交量 / 全天成交量.
 
     高占比 → 开盘密集成交, 方向性强 (IC_IR≈1.07, A股最强量价因子之一).
+    ADR-043 layer1: 优先从 aux["intraday_snapshot"] 取.
     """
-    from quant.data.repos._base import DatabaseManager
-
     if not isinstance(data.columns, pd.MultiIndex):
         return None
     volume = data["volume"] if "volume" in data.columns.get_level_values(0) else None
@@ -87,12 +93,21 @@ def compute_open_volume_ratio(data, date, window=None):
         return None
     total_vol = volume.iloc[-1]  # 全天成交量
 
-    conn = DatabaseManager.market()
-    rows = conn.execute(
-        "SELECT symbol, open_30min_vol FROM intraday_snapshot WHERE date=?",
-        (date,)
-    ).fetchall()
-    conn.close()
+    # 加载快照 — ADR-043 layer1: 优先 aux
+    rows = None
+    if aux is not None and "intraday_snapshot" in aux:
+        snap = aux["intraday_snapshot"]
+        if not snap.empty:
+            rows = [(r["symbol"], r.get("open_30min_vol"))
+                    for _, r in snap.iterrows()]
+    if rows is None:
+        from quant.data.repos._base import DatabaseManager
+        conn = DatabaseManager.market()
+        rows = conn.execute(
+            "SELECT symbol, open_30min_vol FROM intraday_snapshot WHERE date=?",
+            (date,)
+        ).fetchall()
+        conn.close()
 
     if not rows:
         return None
@@ -113,13 +128,12 @@ def compute_open_volume_ratio(data, date, window=None):
     return _cs_zscore(s, sparse=True).rename("open_volume_ratio")
 
 
-def compute_close_surge(data, date, window=None):
+def compute_close_surge(data, date, window=None, aux=None):
     """尾盘异动 — 尾盘5分钟 vs 全天波动.
 
     高尾盘异动 → 次日反转概率高 (机构尾盘调仓).
+    ADR-043 layer1: 优先从 aux["intraday_snapshot"] 取.
     """
-    from quant.data.repos._base import DatabaseManager
-
     if not isinstance(data.columns, pd.MultiIndex):
         return None
     close = data["close"]
@@ -127,12 +141,21 @@ def compute_close_surge(data, date, window=None):
     if close is None or close.empty:
         return None
 
-    conn = DatabaseManager.market()
-    rows = conn.execute(
-        "SELECT symbol, close_5min FROM intraday_snapshot WHERE date=?",
-        (date,)
-    ).fetchall()
-    conn.close()
+    # 加载快照 — ADR-043 layer1: 优先 aux
+    rows = None
+    if aux is not None and "intraday_snapshot" in aux:
+        snap = aux["intraday_snapshot"]
+        if not snap.empty:
+            rows = [(r["symbol"], r.get("close_5min"))
+                    for _, r in snap.iterrows()]
+    if rows is None:
+        from quant.data.repos._base import DatabaseManager
+        conn = DatabaseManager.market()
+        rows = conn.execute(
+            "SELECT symbol, close_5min FROM intraday_snapshot WHERE date=?",
+            (date,)
+        ).fetchall()
+        conn.close()
 
     if not rows:
         return None

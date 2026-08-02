@@ -28,6 +28,52 @@ _CACHE_DIR = os.path.join(_PROJ_ROOT, "quant", "data", "factor_cache")
 _LOG_FILE = os.path.join(_CACHE_DIR, "materialization_log.jsonl")
 
 
+# ── ProcessPoolExecutor worker 函数 (B1) ──
+# 必须模块级可 pickle。
+
+def _worker_init(chunk_dates: list[str], symbols: list[str]):
+    """子进程初始化: 预加载 ztd 缓存。"""
+    try:
+        preload_ztd_cache(chunk_dates, symbols)
+    except Exception as e:
+        _log.warning("factor_cache worker init ztd failed: %s", e)
+
+
+def _worker_compute_date(date_str: str, data_full: pd.DataFrame,
+                         prims: dict, fundamentals: "pd.DataFrame | None",
+                         aux_full: dict, factor_names: list[str]) -> list[str]:
+    """子进程执行的单日计算。"""
+    from quant.factor.compute._dispatch import compute_all_factors
+    try:
+        ts = pd.Timestamp(date_str)
+        if ts not in data_full.index:
+            return []
+        day_data = data_full.loc[:ts]
+        if day_data.empty:
+            return []
+    except Exception:
+        return []
+
+    fv = compute_all_factors(
+        day_data, date_str,
+        primitives=prims,
+        fundamentals=fundamentals,
+        preloaded_aux_chunk=aux_full,
+        factor_names=factor_names,
+        status_filter=None,
+        factor_fail_fast=False,
+        quiet=True,
+    )
+
+    lines = []
+    for fname, series in fv.items():
+        if not isinstance(series, pd.Series) or series.dropna().empty:
+            continue
+        for sym, val in series.dropna().items():
+            lines.append(f"{sym},{fname},{val:.6f}")
+    return lines
+
+
 class FactorStore:
     """因子值物化存储 — gzip CSV 后端。
 
@@ -50,6 +96,9 @@ class FactorStore:
 
     def _path(self, date_str: str) -> str:
         return os.path.join(self._cache_dir, f"{date_str}.csv.gz")
+
+    def _manifest_path(self, date_str: str) -> str:
+        return os.path.join(self._cache_dir, f"{date_str}.manifest.json")
 
     def close(self):
         pass  # no persistent connections
@@ -177,8 +226,8 @@ class FactorStore:
             _log.info("factor_cache: chunk %d/%d — loaded %d days × %d symbols",
                       ci + 1, n_chunks, len(data_full), len(symbols))
 
-            # 分块预计算原语
-            prims = precompute_primitives(data_full)
+            # 分块预计算原语 (A4: 按需原语, 只算 factor_names 需要的窗口)
+            prims = precompute_primitives(data_full, factor_names=factor_names)
 
             # 基准收益
             try:
@@ -194,122 +243,43 @@ class FactorStore:
             # aux 数据块级预加载 (ADR-043): 12 SQL 查询/块, slice 按日期过滤
             aux_full = preload_aux_data_chunk(symbols, chunk_start_dt, chunk_end_dt)
 
-            # fundamentals (按块日期) — 批量加载优化: 一次 SQL 取全天范围, 内存 PIT
-            chunk_fundamentals = {}
-            if chunk_dates:
-                # 一次取全部 daily_valuation (含 pe_ttm/pb/market_cap)
-                val_start = chunk_dates[0]
-                val_end = chunk_dates[-1]
-                mconn2 = store._connect()
-                val_df = pd.read_sql_query(
-                    "SELECT symbol, date, pe_ttm, pb, ps_ttm, pcf_ttm, market_cap FROM daily_valuation "
-                    "WHERE date >= ? AND date <= ? ORDER BY date",
-                    mconn2, params=(val_start, val_end)
-                )
-                # 一次取 stocks 表
-                ph_stocks = ",".join("?" * len(symbols))
-                stocks_df = pd.read_sql_query(
-                    f"SELECT symbol, pe, pe_ttm, pb, total_mv, roe, industry, high_52w, eps, bvps "
-                    f"FROM stocks WHERE symbol IN ({ph_stocks})",
-                    mconn2, params=symbols
-                ).set_index("symbol")
-                # 一次取 daily close (用于 PIT + high_52w)
-                daily_df = pd.read_sql_query(
-                    f"SELECT symbol, date, close FROM daily "
-                    f"WHERE symbol IN ({ph_stocks}) AND date >= ? AND date <= ? ORDER BY date",
-                    mconn2, params=symbols + [val_start, val_end]
-                )
-                # 内存 PIT: 每日期取 ≤date 的最新估值
-                if not val_df.empty:
-                    val_df["date"] = pd.to_datetime(val_df["date"])
-                    val_piv = val_df.pivot(index="date", columns="symbol", values=["pe_ttm", "pb", "market_cap"])
-                    val_piv = val_piv.ffill()
-                if not daily_df.empty:
-                    daily_df["date"] = pd.to_datetime(daily_df["date"])
-                    close_piv = daily_df.pivot(index="date", columns="symbol", values="close").ffill()
-                for date_str in chunk_dates:
-                    ts = pd.Timestamp(date_str)
-                    result = stocks_df.copy()
-                    # PIT valuation
-                    if not val_df.empty and ts in val_piv.index:
-                        row = val_piv.loc[ts]
-                        for col in ["pe_ttm", "pb", "market_cap"]:
-                            if col in result.columns:
-                                result[col] = row[col] if col in row else None
-                    # PIT close + high_52w
-                    if not daily_df.empty and ts in close_piv.index:
-                        result["close_latest"] = close_piv.loc[ts]
-                        # 52-week high: max close in last ~244 trading days
-                        early = ts - pd.Timedelta(days=_require_cfg("data.lookback_days"))
-                        mask = (close_piv.index <= ts) & (close_piv.index >= early)
-                        if mask.any():
-                            result["high_52w"] = close_piv.loc[mask].max()
-                    # derive ROE from PB/PE
-                    null_roe = result["roe"].isna() | (result["roe"] <= 0)
-                    if null_roe.any():
-                        derived = result["pb"] / result["pe"].replace(0, None)
-                        derived = derived.where((derived > 0) & (derived < 100))
-                        result.loc[null_roe, "roe"] = derived.loc[null_roe]
-                    # filter extreme PE/PB
-                    result.loc[result["pe"] <= 0, "pe"] = None
-                    result.loc[result["pe"] > 1000, "pe"] = None
-                    result.loc[result["pb"] <= 0, "pb"] = None
-                    chunk_fundamentals[date_str] = result
+            # fundamentals (B2: 向量化 PIT panel, 替代逐日循环)
+            chunk_fundamentals = self._build_fundamentals_panel(
+                store, symbols, chunk_dates
+            )
 
-            # 逐日计算
+            # 逐日计算 (A3 收集 + B1 可选多进程)
             chunk_rows = 0
             chunk_dates_done = 0
-            for date_str in chunk_dates:
-                existing = self._get_existing_factors(date_str)
-                missing = [f for f in factor_names if f not in existing]
-                if not missing:
-                    continue
+            chunk_new_rows: dict[str, list[str]] = {d: [] for d in chunk_dates}
 
-                try:
-                    ts = pd.Timestamp(date_str)
-                    if ts not in data_full.index:
-                        continue
-                    day_data = data_full.loc[:ts]
-                    if day_data.empty:
-                        continue
-                except Exception:
-                    continue
-
-                fv = compute_all_factors(
-                    day_data, date_str,
-                    primitives=prims,
-                    fundamentals=chunk_fundamentals.get(date_str),
-                    preloaded_aux_chunk=aux_full,
-                    factor_names=missing,
-                    status_filter=None,
-                    factor_fail_fast=False,
-                    quiet=True,
+            # 判断是否需要多进程: 日期多且 factor_names 含非 shortcut 因子时启用
+            use_mp = len(chunk_dates) >= 10 and any(
+                self._factor_needs_worker(name) for name in factor_names
+            )
+            if use_mp:
+                chunk_dates_done, chunk_new_rows = self._compute_chunk_parallel(
+                    chunk_dates, data_full, prims, chunk_fundamentals,
+                    aux_full, factor_names
                 )
-
-                # 写入 gzip CSV
-                lines = []
-                for fname, series in fv.items():
-                    if not isinstance(series, pd.Series) or series.dropna().empty:
+            else:
+                for date_str in chunk_dates:
+                    existing = self._get_existing_factors(date_str)
+                    missing = [f for f in factor_names if f not in existing]
+                    if not missing:
                         continue
-                    for sym, val in series.dropna().items():
-                        lines.append(f"{sym},{fname},{val:.6f}")
 
-                if lines:
-                    path = self._path(date_str)
-                    if os.path.exists(path) and existing:
-                        existing_lines = self._read_raw_lines(date_str)
-                        existing_set = set(existing_lines)
-                        for line in lines:
-                            if line not in existing_set:
-                                existing_lines.append(line)
-                        lines = existing_lines
+                    lines = self._compute_date(
+                        date_str, data_full, prims,
+                        chunk_fundamentals.get(date_str),
+                        aux_full, missing
+                    )
+                    if lines:
+                        chunk_new_rows[date_str].extend(lines)
+                        chunk_dates_done += 1
 
-                    raw = "\n".join(lines).encode()
-                    compressed = gzip.compress(raw, compresslevel=6)
-                    with open(path, 'wb') as f:
-                        f.write(compressed)
-                    chunk_rows += len(lines)
-                chunk_dates_done += 1
+            # chunk 级批量写 gzip CSV
+            chunk_rows = self._write_chunk_rows(chunk_new_rows)
 
             # 释放该块内存（含 DataStore 查询缓存）
             del data_full, prims, chunk_fundamentals, aux_full
@@ -382,10 +352,229 @@ class FactorStore:
         with gzip.open(path, 'rt', encoding='utf-8') as f:
             return [line.strip() for line in f if line.strip()]
 
+    def _write_chunk_rows(self, chunk_rows: dict[str, list[str]]) -> int:
+        """批量写一个 chunk 的 CSV 缓存 (A3 + C2 manifest)。
+
+        对已有文件只做一次 读→合并→压缩→写; 新文件直接压缩写。
+        写完后更新 manifest, 记录该日期已物化的因子集合。
+        返回实际写入的总行数。
+        """
+        total = 0
+        for date_str, lines in chunk_rows.items():
+            if not lines:
+                continue
+            path = self._path(date_str)
+            existing = self._get_existing_factors(date_str)
+            if os.path.exists(path) and existing:
+                existing_lines = self._read_raw_lines(date_str)
+                existing_set = set(existing_lines)
+                for line in lines:
+                    if line not in existing_set:
+                        existing_lines.append(line)
+                lines = existing_lines
+
+            raw = "\n".join(lines).encode()
+            compressed = gzip.compress(raw, compresslevel=6)
+            with open(path, 'wb') as f:
+                f.write(compressed)
+
+            # C2: 更新 manifest, 从行中解析因子名
+            factors = set(line.split(",", 2)[1] for line in lines
+                          if len(line.split(",", 2)) >= 2)
+            self._write_manifest(date_str, factors, len(lines))
+            total += len(lines)
+        return total
+
+    def _build_fundamentals_panel(self, store, symbols: list[str],
+                                  chunk_dates: list[str]) -> dict[str, pd.DataFrame]:
+        """构建基本面 PIT panel, 返回 {date_str: DataFrame(symbol×field)}。
+
+        B2 向量化实现: pivot + ffill 一次生成整块 panel,
+        避免原逐日循环中的重复 pivot/loc。
+        """
+        if not chunk_dates:
+            return {}
+
+        val_start = chunk_dates[0]
+        val_end = chunk_dates[-1]
+        mconn = store._connect()
+        ph_stocks = ",".join("?" * len(symbols))
+
+        val_df = pd.read_sql_query(
+            "SELECT symbol, date, pe_ttm, pb, ps_ttm, pcf_ttm, market_cap FROM daily_valuation "
+            "WHERE date >= ? AND date <= ? ORDER BY date",
+            mconn, params=(val_start, val_end)
+        )
+        stocks_df = pd.read_sql_query(
+            f"SELECT symbol, pe, pe_ttm, pb, total_mv, roe, industry, high_52w, eps, bvps "
+            f"FROM stocks WHERE symbol IN ({ph_stocks})",
+            mconn, params=symbols
+        ).set_index("symbol")
+        daily_df = pd.read_sql_query(
+            f"SELECT symbol, date, close FROM daily "
+            f"WHERE symbol IN ({ph_stocks}) AND date >= ? AND date <= ? ORDER BY date",
+            mconn, params=symbols + [val_start, val_end]
+        )
+
+        # PIT 估值 panel
+        if not val_df.empty:
+            val_df["date"] = pd.to_datetime(val_df["date"])
+            val_piv = val_df.pivot(index="date", columns="symbol",
+                                   values=["pe_ttm", "pb", "market_cap"]).ffill()
+        else:
+            val_piv = None
+
+        # PIT close panel + 52周高
+        if not daily_df.empty:
+            daily_df["date"] = pd.to_datetime(daily_df["date"])
+            close_piv = daily_df.pivot(index="date", columns="symbol",
+                                       values="close").ffill()
+            high_52w = close_piv.rolling(244, min_periods=60).max()
+        else:
+            close_piv = None
+            high_52w = None
+
+        result = {}
+        for date_str in chunk_dates:
+            ts = pd.Timestamp(date_str)
+            df = stocks_df.copy()
+
+            # PIT 估值列覆盖
+            if val_piv is not None and ts in val_piv.index:
+                row = val_piv.loc[ts]
+                for col in ["pe_ttm", "pb", "market_cap"]:
+                    if col in df.columns and col in row.index.get_level_values(0):
+                        df[col] = row[col].reindex(df.index)
+
+            # PIT close + high_52w
+            if close_piv is not None and ts in close_piv.index:
+                df["close_latest"] = close_piv.loc[ts].reindex(df.index)
+            if high_52w is not None and ts in high_52w.index:
+                df["high_52w"] = high_52w.loc[ts].reindex(df.index)
+
+            # derive ROE from PB/PE
+            null_roe = df["roe"].isna() | (df["roe"] <= 0)
+            if null_roe.any():
+                derived = df["pb"] / df["pe"].replace(0, None)
+                derived = derived.where((derived > 0) & (derived < 100))
+                df.loc[null_roe, "roe"] = derived.loc[null_roe]
+
+            # filter extreme PE/PB
+            df.loc[df["pe"] <= 0, "pe"] = None
+            df.loc[df["pe"] > 1000, "pe"] = None
+            df.loc[df["pb"] <= 0, "pb"] = None
+
+            result[date_str] = df
+
+        return result
+
+    def _factor_needs_worker(self, name: str) -> bool:
+        """判断因子是否走多进程 worker (非纯 shortcut 因子)。"""
+        from quant.factor.compute.price import _PRICE_FN_MAP
+        from quant.factor.compute._primitives import FACTOR_SHORTCUT
+        entry = _PRICE_FN_MAP.get(name)
+        if not entry:
+            return True
+        fn, _ = entry
+        return fn.__name__ not in FACTOR_SHORTCUT
+
+    def _compute_date(self, date_str: str, data_full: pd.DataFrame,
+                      prims: dict, fundamentals: pd.DataFrame | None,
+                      aux_full: dict, factor_names: list[str]) -> list[str]:
+        """计算单日期因子, 返回 CSV 行列表。"""
+        from quant.factor.compute._dispatch import compute_all_factors
+        try:
+            ts = pd.Timestamp(date_str)
+            if ts not in data_full.index:
+                return []
+            day_data = data_full.loc[:ts]
+            if day_data.empty:
+                return []
+        except Exception:
+            return []
+
+        fv = compute_all_factors(
+            day_data, date_str,
+            primitives=prims,
+            fundamentals=fundamentals,
+            preloaded_aux_chunk=aux_full,
+            factor_names=factor_names,
+            status_filter=None,
+            factor_fail_fast=False,
+            quiet=True,
+        )
+
+        lines = []
+        for fname, series in fv.items():
+            if not isinstance(series, pd.Series) or series.dropna().empty:
+                continue
+            for sym, val in series.dropna().items():
+                lines.append(f"{sym},{fname},{val:.6f}")
+        return lines
+
+    def _compute_chunk_parallel(self, chunk_dates: list[str], data_full: pd.DataFrame,
+                                prims: dict, chunk_fundamentals: dict,
+                                aux_full: dict, factor_names: list[str]) -> tuple:
+        """用 ProcessPoolExecutor 并行计算 chunk 内各日期因子。
+
+        max_workers=4 受 skill.md 模板 8 硬约束 (单人单机 M1 Max 实测最优)。
+        """
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        from quant.factor.compute.price._alternative import preload_ztd_cache
+
+        # 只把有缺失因子的日期交给 worker
+        tasks = []
+        for date_str in chunk_dates:
+            existing = self._get_existing_factors(date_str)
+            missing = [f for f in factor_names if f not in existing]
+            if missing:
+                tasks.append((date_str, missing))
+
+        chunk_new_rows: dict[str, list[str]] = {d: [] for d in chunk_dates}
+        done = 0
+        if not tasks:
+            return done, chunk_new_rows
+
+        # worker 全局只读数据, 通过 initializer 预加载 ztd 缓存
+        symbols = list(data_full.columns.get_level_values(1).unique())
+        init_args = (chunk_dates, symbols)
+
+        with ProcessPoolExecutor(max_workers=4,
+                                 initializer=_worker_init,
+                                 initargs=init_args) as exe:
+            futures = {
+                exe.submit(_worker_compute_date,
+                           date_str, data_full, prims,
+                           chunk_fundamentals.get(date_str),
+                           aux_full, missing): date_str
+                for date_str, missing in tasks
+            }
+            for fut in as_completed(futures):
+                date_str = futures[fut]
+                try:
+                    chunk_new_rows[date_str] = fut.result()
+                    done += 1
+                except Exception as e:
+                    _log.error("factor_cache: worker failed for %s: %s", date_str, e)
+
+        return done, chunk_new_rows
+
     # ── 查询 ──
 
     def _get_existing_factors(self, date_str: str) -> set:
-        """返回该日期已物化的因子名集合。"""
+        """返回该日期已物化的因子名集合。
+
+        C2: 优先读 manifest, 不存在时回退扫描 gzip CSV (兼容旧缓存)。
+        """
+        mpath = self._manifest_path(date_str)
+        if os.path.exists(mpath):
+            try:
+                with open(mpath, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                return set(data.get("factors", []))
+            except Exception as e:
+                _log.warning("factor_cache: manifest read failed for %s: %s", date_str, e)
+
         path = self._path(date_str)
         if not os.path.exists(path):
             return set()
@@ -401,6 +590,19 @@ class FactorStore:
                 if len(factors) > 200:  # optimization: early exit
                     break
         return factors
+
+    def _write_manifest(self, date_str: str, factors: set[str], n_rows: int):
+        """写入日期级因子清单 (C2)。"""
+        try:
+            record = {
+                "factors": sorted(factors),
+                "n_rows": n_rows,
+                "updated_at": pd.Timestamp.now().isoformat(),
+            }
+            with open(self._manifest_path(date_str), 'w', encoding='utf-8') as f:
+                json.dump(record, f)
+        except Exception as e:
+            _log.warning("factor_cache: manifest write failed for %s: %s", date_str, e)
 
     def _scan_file_factors(self, filename: str) -> set:
         path = os.path.join(self._cache_dir, filename)

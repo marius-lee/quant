@@ -2,24 +2,41 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
-## 当前状态 (test-v354, 2026-08-02)
+## 当前状态 (test-v356, 2026-08-02)
 
 ### 关键指标
 - 因子: 84 注册 (0 active, 20 evaluating, 25 probation, 46 archived — 8 个新注册待评估)
 - 数据: 2019-2026 日线, 5208 只 (2019: 3551 只)
 - adj_factor: 4924/5208 覆盖 (94.5%), 2020-01-02 起
-- 因子缓存: 物化中 (9 chunks, 2019-06-03→latest)
+- 因子缓存: 物化性能优化 A/B/C2 落地; C1(parquet 列存) 保留设计, 待评估后实施
 - 回测: 冒烟通过 (CAGR=-23.5%, 0 errors, avg 2.2 信号/天), 全量待跑
 - scheduler: orchestrator (16 tasks, ~85MB) + cron (清空)
-- 测试: validate_factors.py 100/100 通过
+- 测试: validate_factors.py 100/100 通过; pytest factor 相关 47/47 通过
 
 ### 晚间链流程
 ```
 19:00 daily_data → adj_factor → factor_cache → attribution → lgb_train(Mon/Thu)
 ```
 
-### test-v310→v353 变更总览
+### test-v310→v355 变更总览
 
+**v357**: ADR-043 layer1 — 10因子aux覆盖, 消除per-date DB泄漏
+- A1: alpha035 `rolling.apply` → numpy 向量化 ts_rank, 单因子 4.8s/日 → 0.4s/整块
+- A2: shortcut 因子预计算整块 zscore panel, 物化时直接取行
+- A3: CSV 由逐日 gzip 解压-压缩改为 chunk 级批量合并写
+- A4: precompute_primitives 按需计算窗口, 非全量 183 张表
+- B1: chunk 内逐日计算支持 ProcessPoolExecutor(max_workers=4)
+- B2: 基本面 PIT 由逐日循环改为向量化 panel (pivot + rolling)
+- C2: 新增日期级 manifest.json, is_materialized 读清单而非扫描文件
+- 新增脚本 `scripts/benchmark_factor_cache.py`: 用临时缓存目录跑 chunk 1 基准, 不污染生产缓存, 输出全量 9 chunks 估算
+- 新增脚本 `scripts/run_factor_cache_chunk1.py`: 清空生产缓存并正式跑 chunk 1 (2019-06-03 -> 2020-03-26), 输出全量估算
+- C1: **parquet 列存 — 经分析后决定不实施**
+  - 基准 (22 factor × 5208 symbol / 日): gzip CSV 784 KB, parquet snappy 1266 KB (+61%), parquet f32+brotli 759 KB (-3%)
+  - 写速度 parquet 快 9x, 但物化瓶颈仍是 compute (小时级), 写仅占分钟级
+  - 读场景: pipeline 用 `factor_names=None` 全读, 条件读 pushdown 用不上
+  - 迁移成本高 (1.8GB 现存缓存 + 双格式兼容), gzip CSV 零依赖、易调试
+  - 结论: 当前 ROI 低, 保留为候选; 未来因子 >300 或 pipeline 改为部分因子读取时再评估
+**v355**: (已并入 v356 统一归档)
 **v310-v312**: 界面显示市场状态 + hmmlearn 依赖修复
 **v313**: ATR 峰值持久化 position_meta
 **v314**: 消除全部 except:pass (30+ 处)

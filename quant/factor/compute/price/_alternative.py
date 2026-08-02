@@ -158,7 +158,7 @@ def compute_day_night(data, date, night_window=10, intraday_window=20):
     return _cs_zscore(-raw).rename("day_night")
 
 
-def compute_str(data, date, window=20):
+def compute_str(data, date, window=20, aux=None):
     """STR 量稳换手率: 过去 window 日换手率的标准差, 取负, 市值中性化.
     
     东吴证券(2021): 《量稳换手率选股因子——量小、量缩，都不如量稳？》.
@@ -168,6 +168,7 @@ def compute_str(data, date, window=20):
 
     Args:
         window: 标准差回看窗口 (默认20日, 匹配月频调仓; 10-60日均稳健)
+        aux: 预加载辅助数据 dict, 含 stocks(total_mv) 用于市值中性化
     """
     import numpy as np
     close = data["close"]
@@ -184,16 +185,23 @@ def compute_str(data, date, window=20):
     if raw.empty or raw.count() < 30:
         return _cs_zscore(-raw).rename("str")
 
-    # 市值中性化 (从 stocks 表取 total_mv)
-    conn2 = DatabaseManager.market()
-    _syms2 = raw.index.tolist()
-    _ph2 = ",".join(["?"] * len(_syms2))
-    rows = conn2.execute(
-        f"SELECT symbol, total_mv FROM stocks WHERE symbol IN ({_ph2}) AND total_mv IS NOT NULL",
-        _syms2
-    ).fetchall()
-    conn2.close()
-    mv_map = {r[0]: r[1] for r in rows}
+    # 市值中性化 — ADR-043 layer1: 优先从 aux["stocks"] 取, 无 aux 时回退 DB
+    if aux is not None and "stocks" in aux and not aux["stocks"].empty:
+        stocks_df = aux["stocks"]
+        if "total_mv" in stocks_df.columns:
+            mv_map = stocks_df["total_mv"].dropna().to_dict()
+        else:
+            mv_map = {}
+    else:
+        conn2 = DatabaseManager.market()
+        _syms2 = raw.index.tolist()
+        _ph2 = ",".join(["?"] * len(_syms2))
+        rows = conn2.execute(
+            f"SELECT symbol, total_mv FROM stocks WHERE symbol IN ({_ph2}) AND total_mv IS NOT NULL",
+            _syms2
+        ).fetchall()
+        conn2.close()
+        mv_map = {r[0]: r[1] for r in rows}
     log_mv = pd.Series({s: np.log(np.float64(mv_map[s])) for s in raw.index if s in mv_map})
     common = raw.index.intersection(log_mv.index)
     if len(common) >= 30:
@@ -207,7 +215,7 @@ def compute_str(data, date, window=20):
     return _cs_zscore(-raw).rename("str")
 
 
-def compute_abn_turnover(data, date, window=20):
+def compute_abn_turnover(data, date, window=20, aux=None):
     """ABN_TURN 异常换手率残差: 对 ln(Turnover) 做市值+行业回归取残差, 取负.
     
     Chordia, Huh & Subrahmanyam (2007, JFE); 东方证券朱剑涛(2015)首次引入A股.
@@ -217,6 +225,7 @@ def compute_abn_turnover(data, date, window=20):
 
     Args:
         window: 换手率均值窗口 (默认20日)
+        aux: 预加载辅助数据 dict, 含 stocks(total_mv, industry)
     """
     import numpy as np
     close = data["close"]
@@ -225,18 +234,34 @@ def compute_abn_turnover(data, date, window=20):
     if turnover_df.empty:
         return pd.Series(np.nan, index=close.columns, name="abn_turnover")
 
-    # 取市值 + 行业
+    # 取市值 + 行业 — ADR-043 layer1: 优先从 aux["stocks"] 取
     syms = close.columns.tolist()
-    conn = DatabaseManager.market()
-    _ph = ",".join(["?"] * len(syms))
-    meta_rows = conn.execute(f"""
-        SELECT symbol, total_mv, industry FROM stocks
-        WHERE symbol IN ({_ph})
-    """, syms).fetchall()
-    conn.close()
-
-    mv_map = {r[0]: r[1] for r in meta_rows if r[1]}
-    ind_map = {r[0]: r[2] for r in meta_rows if r[2]}
+    if aux is not None and "stocks" in aux and not aux["stocks"].empty:
+        stocks_df = aux["stocks"]
+        mv_map = {}
+        ind_map = {}
+        if "total_mv" in stocks_df.columns:
+            for sym in syms:
+                if sym in stocks_df.index:
+                    mv = stocks_df.loc[sym, "total_mv"]
+                    if pd.notna(mv):
+                        mv_map[sym] = mv
+        if "industry" in stocks_df.columns:
+            for sym in syms:
+                if sym in stocks_df.index:
+                    ind = stocks_df.loc[sym, "industry"]
+                    if pd.notna(ind) and ind != "":
+                        ind_map[sym] = ind
+    else:
+        conn = DatabaseManager.market()
+        _ph = ",".join(["?"] * len(syms))
+        meta_rows = conn.execute(f"""
+            SELECT symbol, total_mv, industry FROM stocks
+            WHERE symbol IN ({_ph})
+        """, syms).fetchall()
+        conn.close()
+        mv_map = {r[0]: r[1] for r in meta_rows if r[1]}
+        ind_map = {r[0]: r[2] for r in meta_rows if r[2]}
 
     min_records = max(window // 2, 10)
     avg_turn = turnover_df.rolling(window, min_periods=min_records).mean().iloc[-1]
@@ -522,15 +547,40 @@ def compute_ideal_amplitude(data: "pd.DataFrame", date: str, window: int = 20) -
 # ═══════════════════════════════════════════════════════════
 
 
-def compute_short_interest(data, date, window=20):
+def compute_short_interest(data, date, window=20, aux=None):
     """融券余额占比: short_balance / margin_total — 高融券比 = 市场看空。
 
     数据源: margin_detail 表 (data/margin.py).
     IC预估: 0.02-0.03, 负向因子 (高融券→低分).
+    ADR-043 layer1: 优先从 aux["margin"] 取, 无 aux 时回退 DB.
     """
     import sqlite3, os as _os3
     symbols = list(data["close"].columns)
     result = pd.Series(np.nan, index=symbols)
+
+    if aux is not None and "margin" in aux:
+        margin = aux["margin"]
+        if not margin.empty and "margin_total" in margin.columns and "short_balance" in margin.columns:
+            # 取 ≤date 的最新日期行
+            if "date" in margin.columns:
+                margin_dates = pd.to_datetime(margin["date"])
+                ts = pd.Timestamp(str(date)[:10])
+                latest_mask = margin_dates <= ts
+                if latest_mask.any():
+                    latest_date = margin_dates[latest_mask].max()
+                    latest_rows = margin[margin_dates == latest_date]
+                else:
+                    latest_rows = pd.DataFrame(columns=margin.columns)
+            else:
+                latest_rows = margin
+            for _, row in latest_rows.iterrows():
+                sym = row.get("symbol")
+                sb = row.get("short_balance")
+                mt = row.get("margin_total")
+                if sym in symbols and pd.notna(mt) and mt > 0:
+                    result[sym] = float(sb) / float(mt) if pd.notna(sb) else 0.0
+            return _cs_zscore(-result).rename("short_interest")
+
     conn = DatabaseManager.market()
     rows = conn.execute(
         "SELECT symbol, short_balance, margin_total FROM margin_detail "
@@ -546,15 +596,30 @@ def compute_short_interest(data, date, window=20):
     return _cs_zscore(-result).rename("short_interest")
 
 
-def compute_fund_flow_3m(data, date, window=60):
+def compute_fund_flow_3m(data, date, window=60, aux=None):
     """基金持仓季度变动: 最近3个月基金持仓变化率。
 
     数据源: fund_hold 表 (data/fund_hold.py).
     IC预估: 0.02-0.03, 正向因子 (基金加仓→高分).
+    ADR-043 layer1: 优先从 aux["fund_hold"] 做 60d 均值, 无 aux 时回退 DB.
     """
     import sqlite3, os as _os4
     symbols = list(data["close"].columns)
     result = pd.Series(0.0, index=symbols)
+
+    if aux is not None and "fund_hold" in aux:
+        fh = aux["fund_hold"]
+        if not fh.empty and "change_ratio" in fh.columns and "symbol" in fh.columns:
+            fh_clean = fh[fh["change_ratio"].notna()]
+            if not fh_clean.empty:
+                avg = fh_clean.groupby("symbol")["change_ratio"].mean()
+                for sym in symbols:
+                    if sym in avg.index:
+                        result[sym] = avg[sym]
+            if result.isna().all() or (result == 0).all():
+                return None
+            return _cs_zscore(result).rename("fund_flow_3m")
+
     conn = DatabaseManager.market()
     rows = conn.execute(
         "SELECT symbol, change_ratio FROM fund_hold "
@@ -564,7 +629,6 @@ def compute_fund_flow_3m(data, date, window=60):
     ).fetchall()
     conn.close()
     if not rows:
-        conn.close()
         return None
     import pandas as _pd4
     df = _pd4.DataFrame(rows, columns=["symbol", "change_ratio"])
@@ -572,7 +636,6 @@ def compute_fund_flow_3m(data, date, window=60):
         sym_data = df[df["symbol"] == sym]
         if len(sym_data) > 0:
             result[sym] = sym_data["change_ratio"].mean()
-    conn.close()
     if result.isna().all() or (result == 0).all():
         return None
     return _cs_zscore(result).rename("fund_flow_3m")

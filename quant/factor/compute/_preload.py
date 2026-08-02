@@ -63,16 +63,20 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
 
 
     # stocks: symbol → market, name for board limit detection (ST, STAR, ChiNext)
+    # ADR-043 layer1: +total_mv+industry for abn_turnover/str market-cap neutralization
     try:
         df = pd.read_sql_query(
-            "SELECT symbol, market, name FROM stocks WHERE symbol IN (" + ph + ")",
+            "SELECT symbol, market, name, total_mv, industry FROM stocks WHERE symbol IN (" + ph + ")",
             conn, params=symbols
         )
-        result["stocks"] = df.set_index("symbol") if not df.empty else pd.DataFrame(columns=["symbol", "market", "name"]).set_index("symbol")
+        result["stocks"] = df.set_index("symbol") if not df.empty else pd.DataFrame(
+            columns=["symbol", "market", "name", "total_mv", "industry"]).set_index("symbol")
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        result["stocks"] = pd.DataFrame(columns=["symbol", "market", "name"]).set_index("symbol")
+        result["stocks"] = pd.DataFrame(
+            columns=["symbol", "market", "name", "total_mv", "industry"]).set_index("symbol")
 
     # margin_detail: 60-day window for all margin-based factors
+    # ADR-043 layer1: +margin_total for compute_short_interest
     try:
         margin_max_date = pd.read_sql_query(
             "SELECT MAX(date) FROM margin_detail WHERE date <= ?", conn, params=(date,)
@@ -80,15 +84,22 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
         if margin_max_date:
             margin_start = (pd.Timestamp(margin_max_date) - pd.Timedelta(days=65)).strftime("%Y-%m-%d")
             df = pd.read_sql_query(
-                "SELECT symbol, date, margin_buy, margin_balance, short_balance, short_total "
+                "SELECT symbol, date, margin_buy, margin_balance, short_balance, short_total, "
+                "CAST(margin_balance + short_balance AS REAL) AS margin_total "
                 "FROM margin_detail WHERE date >= ? AND date <= ?",
                 conn, params=(margin_start, margin_max_date)
             )
-            result["margin"] = df if not df.empty else pd.DataFrame(columns=["symbol", "date", "margin_buy", "margin_balance", "short_balance", "short_total"])
+            result["margin"] = df if not df.empty else pd.DataFrame(
+                columns=["symbol", "date", "margin_buy", "margin_balance",
+                         "short_balance", "short_total", "margin_total"])
         else:
-            result["margin"] = pd.DataFrame(columns=["symbol", "date", "margin_buy", "margin_balance", "short_balance", "short_total"])
+            result["margin"] = pd.DataFrame(
+                columns=["symbol", "date", "margin_buy", "margin_balance",
+                         "short_balance", "short_total", "margin_total"])
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        result["margin"] = pd.DataFrame(columns=["symbol", "date", "margin_buy", "margin_balance", "short_balance", "short_total"])
+        result["margin"] = pd.DataFrame(
+            columns=["symbol", "date", "margin_buy", "margin_balance",
+                     "short_balance", "short_total", "margin_total"])
 
     # analyst_forecast: latest sync_date per symbol (all rating columns)
     try:
@@ -204,33 +215,34 @@ def preload_aux_data_chunk(symbols: list, date_from: str, date_to: str,
     result = {}
     ph = ",".join("?" * len(symbols))
 
-    # stocks: 单日快照，全量返回
+    # stocks: 单日快照，全量返回 (ADR-043 layer1: +total_mv+industry)
     try:
         df = pd.read_sql_query(
-            "SELECT symbol, market, name FROM stocks WHERE symbol IN (" + ph + ")",
+            "SELECT symbol, market, name, total_mv, industry FROM stocks WHERE symbol IN (" + ph + ")",
             conn, params=symbols
         )
         result["stocks"] = df.set_index("symbol") if not df.empty else pd.DataFrame(
-            columns=["symbol", "market", "name"]).set_index("symbol")
+            columns=["symbol", "market", "name", "total_mv", "industry"]).set_index("symbol")
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
         result["stocks"] = pd.DataFrame(
-            columns=["symbol", "market", "name"]).set_index("symbol")
+            columns=["symbol", "market", "name", "total_mv", "industry"]).set_index("symbol")
 
-    # margin_detail: chunk 范围 + 65d 前置窗口
+    # margin_detail: chunk 范围 + 65d 前置窗口 (ADR-043 layer1: +margin_total)
     margin_start = (pd.Timestamp(date_from) - pd.Timedelta(days=65)).strftime("%Y-%m-%d")
     try:
         df = pd.read_sql_query(
-            "SELECT symbol, date, margin_buy, margin_balance, short_balance, short_total "
+            "SELECT symbol, date, margin_buy, margin_balance, short_balance, short_total, "
+            "CAST(margin_balance + short_balance AS REAL) AS margin_total "
             "FROM margin_detail WHERE date >= ? AND date <= ? ORDER BY date",
             conn, params=(margin_start, date_to)
         )
         result["margin"] = df if not df.empty else pd.DataFrame(
             columns=["symbol", "date", "margin_buy", "margin_balance",
-                     "short_balance", "short_total"])
+                     "short_balance", "short_total", "margin_total"])
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
         result["margin"] = pd.DataFrame(
             columns=["symbol", "date", "margin_buy", "margin_balance",
-                     "short_balance", "short_total"])
+                     "short_balance", "short_total", "margin_total"])
 
     # analyst_forecast: 用 chunk_end 取最新快照
     try:
@@ -249,19 +261,19 @@ def preload_aux_data_chunk(symbols: list, date_from: str, date_to: str,
             columns=["symbol", "buy_count", "overweight_count", "neutral_count",
                      "underweight_count", "report_count"]).set_index("symbol")
 
-    # fund_hold: 用 chunk_end 取最新快照
+    # fund_hold: 60d 历史窗口 (ADR-043 layer1: 替代单日快照, 支持 fund_flow_3m 均值)
+    fh_start = (pd.Timestamp(date_from) - pd.Timedelta(days=65)).strftime("%Y-%m-%d")
     try:
         df = pd.read_sql_query(
-            "SELECT symbol, fund_count, change_ratio FROM fund_hold "
-            "WHERE report_date = (SELECT MAX(report_date) FROM fund_hold "
-            "WHERE report_date <= ?)",
-            conn, params=(date_to,)
+            "SELECT symbol, report_date, fund_count, change_ratio FROM fund_hold "
+            "WHERE report_date >= ? AND report_date <= ? ORDER BY report_date",
+            conn, params=(fh_start, date_to)
         )
-        result["fund_hold"] = df.set_index("symbol") if not df.empty else pd.DataFrame(
-            columns=["symbol", "fund_count", "change_ratio"]).set_index("symbol")
+        result["fund_hold"] = df if not df.empty else pd.DataFrame(
+            columns=["symbol", "report_date", "fund_count", "change_ratio"])
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
         result["fund_hold"] = pd.DataFrame(
-            columns=["symbol", "fund_count", "change_ratio"]).set_index("symbol")
+            columns=["symbol", "report_date", "fund_count", "change_ratio"])
 
     # financial tables: chunk 范围 + symbol 过滤 (ADR-043: 补 symbol 过滤, 消除全表扫描)
     for tbl in ["financial_income", "financial_balance", "financial_cashflow"]:
@@ -323,6 +335,21 @@ def preload_aux_data_chunk(symbols: list, date_from: str, date_to: str,
             columns=["symbol", "date", "main_net_inflow", "super_large_net_inflow",
                      "main_net_ratio"]).set_index("symbol")
 
+    # intraday_snapshot: chunk 日期范围 (ADR-043 layer1: 替代 3 个 intraday 因子 per-date 查询)
+    try:
+        df = pd.read_sql_query(
+            "SELECT symbol, date, open_30min, prev_close, open_30min_vol, close_5min "
+            "FROM intraday_snapshot WHERE date >= ? AND date <= ? ORDER BY date",
+            conn, params=(date_from, date_to)
+        )
+        result["intraday_snapshot"] = df if not df.empty else pd.DataFrame(
+            columns=["symbol", "date", "open_30min", "prev_close",
+                     "open_30min_vol", "close_5min"])
+    except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
+        result["intraday_snapshot"] = pd.DataFrame(
+            columns=["symbol", "date", "open_30min", "prev_close",
+                     "open_30min_vol", "close_5min"])
+
     if _own_conn:
         conn.close()
 
@@ -350,7 +377,8 @@ def slice_aux_for_date(aux_full: dict, date: str) -> dict:
     ts = pd.Timestamp(date)
 
     # 单日快照表：直接复用引用（无日期维度）
-    for key in ["stocks", "analyst", "fund_hold", "pledge"]:
+    # fund_hold 已改为历史窗口, 不走快照路径
+    for key in ["stocks", "analyst", "pledge"]:
         if key in aux_full:
             result[key] = aux_full[key]
 
@@ -401,5 +429,22 @@ def slice_aux_for_date(aux_full: dict, date: str) -> dict:
             result[tbl] = tbl_df.loc[pd.to_datetime(tbl_df["stat_date"]) <= ts]
         else:
             result[tbl] = tbl_df
+
+    # fund_hold: report_date 60d 窗口 (ADR-043 layer1: 改为历史窗口)
+    fh = aux_full.get("fund_hold", pd.DataFrame())
+    if not fh.empty and "report_date" in fh.columns:
+        fh_dates = pd.to_datetime(fh["report_date"])
+        fh_start = ts - pd.Timedelta(days=65)
+        in_window = (fh_dates >= fh_start) & (fh_dates <= ts)
+        result["fund_hold"] = fh.loc[in_window]
+    else:
+        result["fund_hold"] = fh
+
+    # intraday_snapshot: 精确日期匹配 (ADR-043 layer1)
+    snap = aux_full.get("intraday_snapshot", pd.DataFrame())
+    if not snap.empty and "date" in snap.columns:
+        result["intraday_snapshot"] = snap.loc[pd.to_datetime(snap["date"]) == ts]
+    else:
+        result["intraday_snapshot"] = snap
 
     return result

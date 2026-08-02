@@ -17,15 +17,67 @@ _log = get_logger("factor.primitives")
 
 
 
-def precompute_primitives(data: pd.DataFrame) -> dict:
+def _required_windows(factor_names: list[str] | None) -> set[int]:
+    """根据因子名列表推导需要的滚动窗口。
+
+    factor_names=None 时返回默认全集 (向后兼容)。
+    """
+    if factor_names is None:
+        return {5, 10, 20, 60, 63, 120, 126, 250, 252}
+    from quant.factor.compute.price import _PRICE_FN_MAP
+    from quant.factor.compute.fundamental import _FUNDAMENTAL_FN_MAP
+    windows = set()
+    for name in factor_names:
+        entry = _PRICE_FN_MAP.get(name)
+        if entry:
+            _, win = entry
+            if isinstance(win, int) and win > 1:
+                windows.add(win)
+        # 基本面因子无窗口
+        if name in _FUNDAMENTAL_FN_MAP:
+            pass
+    # 保守保底: 若列表为空或无法解析, 保留常见窗口
+    if not windows:
+        windows = {5, 10, 20, 60, 63, 120, 126, 250, 252}
+    return windows
+
+
+def _ts_rank_vectorized(df: pd.DataFrame, window: int) -> pd.DataFrame:
+    """滚动窗口内最后元素的百分位排名 (向量化实现)。
+
+    替代 pandas rolling.apply(lambda...), 速度提升 50-100x。
+    语义: out[t] = (窗口内 <= x[t] 的元素数) / window。
+    与 ts_rank 标准定义等价 (允许 ties 用 ≤ 计数)。
+
+    Args:
+        df: 行=日期, 列=symbol 的 DataFrame
+        window: 滚动窗口长度
+
+    Returns:
+        同形状 DataFrame, 每行是 x[t] 在 [t-window+1, t] 窗口内的排名分位
+    """
+    arr = df.apply(pd.to_numeric, errors='coerce').values.astype(float)
+    T, N = arr.shape
+    out = np.full_like(arr, np.nan)
+    for t in range(window - 1, T):
+        win = arr[t - window + 1:t + 1]  # (window, N)
+        last = win[-1]
+        out[t] = np.nansum(win <= last, axis=0) / window
+    return pd.DataFrame(out, index=df.index, columns=df.columns)
+
+
+def precompute_primitives(data: pd.DataFrame,
+                          factor_names: list[str] | None = None) -> dict:
     """预计算所有价格因子共享的滚动统计量。
 
     Args:
         data: MultiIndex DataFrame (field, symbol), 含 close/open/high/low/volume/amount
+        factor_names: 本次需要物化的因子名列表。None 时按原行为计算全部窗口。
 
     Returns:
         {primitive_name: DataFrame(date × symbol)}
         键如: "log_ret", "cum_log_5", "vol_20", "roll_max_250", "turnover"
+              以及预计算好的 shortcut zscore panel: "zscore:{factor_name}"
     """
     t0 = pd.Timestamp.now()
     close = data["close"].astype(float)
@@ -36,11 +88,11 @@ def precompute_primitives(data: pd.DataFrame) -> dict:
     opn = data["open"].astype(float) if "open" in data.columns.levels[0] else None
 
     prims = {}
-    
+
     # ── 对数收益 (几乎所有的时序列因子共用) ──
     _log.info("  primitives: log_ret")
     prims["log_ret"] = np.log(close.astype(float)).diff()
-    
+
     # ── 简单收益 ──
     _log.info("  primitives: pct_ret")
     prims["pct_ret"] = close.pct_change()
@@ -59,19 +111,17 @@ def precompute_primitives(data: pd.DataFrame) -> dict:
 
     if amount is not None:
         prims["raw_amount"] = amount
+    if high is not None:
+        prims["high"] = high
+    if low is not None:
+        prims["low"] = low
 
     # ── 滚动统计量 (基于 log_ret) ──
     log_ret = prims["log_ret"]
-    # 从 _PRICE_FN_MAP 提取所有用到的窗口大小
-    from quant.factor.compute.price import _PRICE_FN_MAP
-    all_windows = set()
-    for _, win in _PRICE_FN_MAP.values():
-        if isinstance(win, int) and win > 1:
-            all_windows.add(win)
-        elif isinstance(win, int) and win <= 1:
-            pass  # 0/1窗口无意义
-    # 补充常见窗口
-    all_windows |= {5, 10, 20, 60, 63, 120, 126, 250, 252}
+    # 从 factor_names 推导所需窗口 (A4: 按需原语)
+    all_windows = _required_windows(factor_names)
+    _log.info("  primitives: required windows %s (from %d factors)",
+              sorted(all_windows), len(factor_names) if factor_names else 0)
 
     for w in sorted(all_windows):
         if w <= 1:
@@ -176,9 +226,90 @@ def precompute_primitives(data: pd.DataFrame) -> dict:
         rs = gain / loss.replace(0, np.nan)
         prims[f"rsi_{w}"] = 100 - (100 / (1 + rs))
 
+    # ── shortcut 因子整块 zscore panel 预计算 (A2) ──
+    # 物化场景下逐日调 _cs_zscore 开销大; 这里一次算完整块, shortcut 直接取行.
+    _precompute_shortcut_zscore_panels(prims, factor_names)
+
     elapsed = (pd.Timestamp.now() - t0).total_seconds()
     _log.info(f"  primitives done: {len(prims)} tables in {elapsed:.1f}s")
     return prims
+
+
+def _precompute_shortcut_zscore_panels(prims: dict,
+                                       factor_names: list[str] | None) -> None:
+    """对常见 shortcut 因子预计算整块 zscore panel。
+
+    结果存入 prims[f"zscore:{factor_name}"], shortcut 函数优先命中。
+    仅覆盖一元变换类因子; 复杂因子保持原 per-date 路径。
+    """
+    from quant.factor.registry import _cs_zscore_frame
+    from quant.factor.compute.price import _PRICE_FN_MAP
+    from quant.config.constants import _VOL_RATIO_LONG
+
+    if factor_names is None:
+        factor_names = list(_PRICE_FN_MAP.keys())
+
+    for name in factor_names:
+        entry = _PRICE_FN_MAP.get(name)
+        if not entry:
+            continue
+        fn, win = entry
+        fn_name = fn.__name__
+        zkey = f"zscore:{name}"
+        if zkey in prims:
+            continue
+
+        raw = None
+        try:
+            if fn_name == "compute_momentum" and f"cum_log_{win}" in prims:
+                raw = prims[f"cum_log_{win}"]
+            elif fn_name == "compute_volatility" and f"vol_{win}" in prims:
+                raw = -prims[f"vol_{win}"]
+            elif fn_name == "compute_max_return" and f"max_pct_{win}" in prims:
+                raw = -prims[f"max_pct_{win}"]
+            elif fn_name == "compute_skewness" and f"skew_{win}" in prims:
+                raw = -prims[f"skew_{win}"]
+            elif fn_name == "compute_rsi_reversal" and f"rsi_{win}" in prims:
+                raw = -prims[f"rsi_{win}"]
+            elif fn_name == "compute_reversal" and f"mean_log_{win}" in prims:
+                raw = -prims[f"mean_log_{win}"]
+            elif fn_name == "compute_residual_momentum" and "benchmark_ret" in prims:
+                resid = prims["log_ret"].sub(prims["benchmark_ret"], axis=0)
+                raw = resid.rolling(win, min_periods=max(win // 2, 1)).sum()
+            elif fn_name == "compute_idiosyncratic_vol" and "benchmark_ret" in prims:
+                resid = prims["log_ret"].sub(prims["benchmark_ret"], axis=0)
+                raw = -resid.rolling(win, min_periods=max(win // 2, 1)).std() * np.sqrt(
+                    _require_cfg("market.annual_trading_days"))
+            elif fn_name == "compute_volume_ratio" and f"vol_ma_{win}" in prims and f"vol_ma_{_VOL_RATIO_LONG}" in prims:
+                raw = prims[f"vol_ma_{win}"] / prims[f"vol_ma_{_VOL_RATIO_LONG}"].replace(0, np.nan)
+            elif fn_name == "compute_overnight_gap" and "overnight_gap" in prims:
+                raw = prims["overnight_gap"].rolling(win, min_periods=max(win // 2, 1)).mean()
+            elif fn_name == "compute_money_flow" and f"money_flow_{win}" in prims:
+                raw = prims[f"money_flow_{win}"]
+            elif fn_name == "compute_volume_price_corr" and f"vol_price_corr_{win}" in prims:
+                raw = prims[f"vol_price_corr_{win}"]
+            elif fn_name == "compute_alpha035" and win is None:
+                raw = _alpha035_raw_panel(prims)
+
+            if raw is not None:
+                prims[zkey] = _cs_zscore_frame(raw)
+        except Exception as e:
+            _log.warning("  shortcut panel %s failed: %s", name, e)
+
+
+def _alpha035_raw_panel(prims: dict) -> pd.DataFrame | None:
+    """alpha035_range_mom 的原始 composite panel (未 zscore)。"""
+    if "raw_volume" not in prims or "log_ret" not in prims:
+        return None
+    volume = prims["raw_volume"]
+    if "high" not in prims or "low" not in prims:
+        return None
+    rng = prims["high"] - prims["low"]
+    ret = prims["pct_ret"]
+    vr = _ts_rank_vectorized(volume, 32)
+    rr = _ts_rank_vectorized(rng, 16)
+    mr = _ts_rank_vectorized(ret, 32)
+    return vr * (1 - rr) * (1 - mr)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -187,56 +318,84 @@ def precompute_primitives(data: pd.DataFrame) -> dict:
 
 def _momentum(prims: dict, date: str, window: int):
     """动量 = cum_log_N.loc[date] → zscore"""
+    name = f"momentum_{window}d"
+    zkey = f"zscore:{name}"
+    if zkey in prims:
+        return prims[zkey].loc[date].rename(name)
     from quant.factor.registry import _cs_zscore
     key = f"cum_log_{window}"
     s = prims[key].loc[date].dropna()
-    return _cs_zscore(s).rename(f"momentum_{window}d")
+    return _cs_zscore(s).rename(name)
 
 def _volatility(prims: dict, date: str, window: int):
     """波动率 = -vol_N.loc[date] (低波异象) → zscore"""
+    name = f"volatility_{window}d"
+    zkey = f"zscore:{name}"
+    if zkey in prims:
+        return prims[zkey].loc[date].rename(name)
     from quant.factor.registry import _cs_zscore
     key = f"vol_{window}"
     s = prims[key].loc[date].dropna()
-    return _cs_zscore(-s).rename(f"volatility_{window}d")
+    return _cs_zscore(-s).rename(name)
 
 def _max_return(prims: dict, date: str, window: int):
     """最大收益 = -max_pct_N.loc[date] → zscore"""
+    name = f"max_ret_{window}d"
+    zkey = f"zscore:{name}"
+    if zkey in prims:
+        return prims[zkey].loc[date].rename(name)
     from quant.factor.registry import _cs_zscore
     key = f"max_pct_{window}"
     s = prims[key].loc[date].dropna()
-    return _cs_zscore(-s).rename(f"max_ret_{window}d")
+    return _cs_zscore(-s).rename(name)
 
 def _skewness(prims: dict, date: str, window: int):
     """偏度 = -skew_N.loc[date] (负偏度异象) → zscore"""
+    name = f"skewness_{window}d"
+    zkey = f"zscore:{name}"
+    if zkey in prims:
+        return prims[zkey].loc[date].rename(name)
     from quant.factor.registry import _cs_zscore
     key = f"skew_{window}"
     s = prims[key].loc[date].dropna()
-    return _cs_zscore(-s).rename(f"skewness_{window}d")
+    return _cs_zscore(-s).rename(name)
 
 def _rsi_reversal(prims: dict, date: str, window: int):
     """RSI 反转 = -rsi_N.loc[date] → zscore"""
+    name = f"rsi_rev_{window}d"
+    zkey = f"zscore:{name}"
+    if zkey in prims:
+        return prims[zkey].loc[date].rename(name)
     from quant.factor.registry import _cs_zscore
     key = f"rsi_{window}"
     s = prims[key].loc[date].dropna()
-    return _cs_zscore(-s).rename(f"rsi_rev_{window}d")
+    return _cs_zscore(-s).rename(name)
 
 def _volume_ratio(prims: dict, date: str, window: int):
     """量比 = vol_ma_N / vol_ma_L"""
+    name = f"vol_ratio_{window}d"
+    zkey = f"zscore:{name}"
+    if zkey in prims:
+        return prims[zkey].loc[date].rename(name)
     from quant.factor.registry import _cs_zscore
-    from quant.config.constants import _require_cfg,  _VOL_RATIO_LONG
+    from quant.config.constants import _VOL_RATIO_LONG
     s_key = f"vol_ma_{window}"
     l_key = f"vol_ma_{_VOL_RATIO_LONG}"
     short_avg = prims[s_key].loc[date]
     long_avg = prims[l_key].loc[date]
     ratio = short_avg / long_avg.replace(0, np.nan)
-    return _cs_zscore(ratio).rename(f"vol_ratio_{window}d")
+    return _cs_zscore(ratio).rename(name)
 
 def _overnight_gap(prims: dict, date: str, window: int):
     """隔夜缺口: 从预计算 gap 取 rolling mean"""
+    name = f"gap_{window}d"
+    zkey = f"zscore:{name}"
+    if zkey in prims:
+        return prims[zkey].loc[date].rename(name)
     from quant.factor.registry import _cs_zscore
     gap_ma = prims["overnight_gap"].rolling(window, min_periods=max(window // 2, 1)).mean()
     s = gap_ma.loc[date].dropna()
-    return _cs_zscore(s).rename(f"gap_{window}d")
+    return _cs_zscore(s).rename(name)
 
 # _intraday_range removed from FACTOR_SHORTCUT — 走 fn(data) 路径
 
@@ -254,10 +413,14 @@ def _turnover_reversal(prims: dict, date: str, short: int, long: int = 20):
 
 def _money_flow(prims: dict, date: str, window: int):
     """资金流 = money_flow_N.loc[date] (Chaikin CMF) → zscore"""
+    name = f"money_flow_{window}d"
+    zkey = f"zscore:{name}"
+    if zkey in prims:
+        return prims[zkey].loc[date].rename(name)
     from quant.factor.registry import _cs_zscore
     key = f"money_flow_{window}"
     s = prims[key].loc[date].dropna()
-    return _cs_zscore(s).rename(f"money_flow_{window}d")
+    return _cs_zscore(s).rename(name)
 
 def _ma_alignment(prims: dict, date: str, window: int):
     """均线排列 = sum(MA_short/MA_long - 1) → zscore"""
@@ -275,10 +438,14 @@ def _ma_alignment(prims: dict, date: str, window: int):
 
 def _volume_price_corr(prims: dict, date: str, window: int):
     """量价相关 = vol_price_corr_N.loc[date] (Pearson) → zscore"""
+    name = f"vol_price_corr_{window}d"
+    zkey = f"zscore:{name}"
+    if zkey in prims:
+        return prims[zkey].loc[date].rename(name)
     from quant.factor.registry import _cs_zscore
     key = f"vol_price_corr_{window}"
     s = prims[key].loc[date].dropna()
-    return _cs_zscore(s).rename(f"vol_price_corr_{window}d")
+    return _cs_zscore(s).rename(name)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -290,35 +457,47 @@ def _reversal(prims: dict, date: str, window: int):
     """短周期反转 = -pct_ret_ma_N.loc[date] → zscore.
     算法: 短期收益率均值的负值 (反转效应: 近期涨→未来跌).
     来源: Jegadeesh (1990) — 短期反转效应; Lehmann (1990)."""
+    name = f"reversal_{window}d"
+    zkey = f"zscore:{name}"
+    if zkey in prims:
+        return prims[zkey].loc[date].rename(name)
     from quant.factor.registry import _cs_zscore
     key = f"mean_log_{window}"
     s = prims[key].loc[date].dropna()
-    return _cs_zscore(-s).rename(f"reversal_{window}d")
+    return _cs_zscore(-s).rename(name)
 
 def _residual_momentum(prims: dict, date: str, window: int):
     """残差动量 = 总收益 - 基准收益 (beta≈1近似) → cum → zscore.
     算法: cumsum(log_ret - benchmark_ret) 最后 window 日求和, 截面 zscore.
     来源: Blitz, Huij & Martens (2011) — 残差动量; AQR (2014) — 纯 Alpha 剥离."""
+    name = f"residual_momentum_{window}d"
+    zkey = f"zscore:{name}"
+    if zkey in prims:
+        return prims[zkey].loc[date].rename(name)
     from quant.factor.registry import _cs_zscore
     import numpy as np
     if "benchmark_ret" not in prims:
-        return pd.Series(np.nan, index=prims["log_ret"].columns, name=f"residual_momentum_{window}d")
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name=name)
     residual_ret = prims["log_ret"].sub(prims["benchmark_ret"], axis=0)
     cum_resid = residual_ret.rolling(window, min_periods=max(window // 2, 1)).sum()
     s = cum_resid.loc[date].dropna()
-    return _cs_zscore(s).rename(f"residual_momentum_{window}d")
+    return _cs_zscore(s).rename(name)
 
 def _idio_vol(prims: dict, date: str, window: int):
     """特质波动率 = std(log_ret - benchmark_ret) 滚动 window 日 → 取负 zscore.
     来源: Ang et al. (2006, JF) — 特质波动率异象: 高特质波动→低收益."""
+    name = f"idio_vol_{window}d"
+    zkey = f"zscore:{name}"
+    if zkey in prims:
+        return prims[zkey].loc[date].rename(name)
     from quant.factor.registry import _cs_zscore
     import numpy as np
     if "benchmark_ret" not in prims:
-        return pd.Series(np.nan, index=prims["log_ret"].columns, name=f"idio_vol_{window}d")
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name=name)
     residual_ret = prims["log_ret"].sub(prims["benchmark_ret"], axis=0)
     vol = residual_ret.rolling(window, min_periods=max(window // 2, 1)).std() * np.sqrt(_require_cfg("market.annual_trading_days"))
     s = vol.loc[date].dropna()
-    return _cs_zscore(-s).rename(f"idio_vol_{window}d")
+    return _cs_zscore(-s).rename(name)
 
 def _turnover_anomaly(prims: dict, date: str, short: int = 5, long: int = 60):
     """换手率异常 = turnover 短期均值 / 长期均值 - 1 → 取负 zscore.
@@ -370,6 +549,17 @@ def _abn_turnover(prims: dict, date: str, window: int = 20):
     dev = abs(current / avg.replace(0, np.nan) - 1).fillna(0)
     return _cs_zscore(-dev).rename("abn_turnover")
 
+
+def _alpha035(prims: dict, date: str, window: int = None):
+    """Alpha#35 向量化 shortcut: 直接取预计算 zscore panel。"""
+    zkey = "zscore:alpha035_range_mom"
+    if zkey in prims:
+        return prims[zkey].loc[date].rename("alpha035_range_mom")
+    # 未命中预计算面板时返回 NaN (正常不应发生)
+    return pd.Series(np.nan, index=prims.get("log_ret", pd.DataFrame()).columns,
+                     name="alpha035_range_mom")
+
+
 FACTOR_SHORTCUT = {
     # compute_momentum — 直接取 cum_log_N
     "compute_momentum":            _momentum,
@@ -403,7 +593,10 @@ FACTOR_SHORTCUT = {
     "compute_trcf":                 _trcf,
     "compute_str":                  _str,
     # "compute_abn_turnover": removed — conflicts with full OLS in _alternative.py (2026-07-21 audit M2)
+    # Alpha101 #35 向量化 shortcut (ADR-??? 待编号)
+    "compute_alpha035": _alpha035,
 }
+
 
 # ═══════════════════════════════════════════════════════════
 # 幻方 Tier S 新因子 shortcut (2026-07-20)

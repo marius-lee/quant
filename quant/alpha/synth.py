@@ -56,7 +56,12 @@ def ic_weighted(
     if not names:
         return equal_weight(factor_values)
 
-    raw_weights = np.array([ic_scores[n] for n in names])
+    # v394: ic_scores 值可为 float 或 dict{ic_mean,ic_ir,weight}, 统一提取float
+    def _extract_weight(v):
+        if isinstance(v, dict):
+            return float(v.get("weight", v.get("ic_mean", 0)))
+        return float(v)
+    raw_weights = np.array([_extract_weight(ic_scores[n]) for n in names])
     total = np.abs(raw_weights).sum()
     if total == 0:
         return equal_weight(factor_values)

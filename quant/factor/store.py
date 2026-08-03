@@ -316,10 +316,13 @@ class FactorStore:
             # ── Step 4: 逐日因子计算 ──
             chunk_new_rows: dict[str, list[str]] = {d: [] for d in chunk_dates}
 
-            use_mp = len(chunk_dates) >= 10 and any(
+            # v371: M1 8GB 实测 fork+COW → OOM killer (parent ~10GB, 每 worker +5GB dirty pages)
+            # Python 3.14 + macOS fork 不稳定, 串行路径经 v367 向量化优化后每日期 ~0.5-2s,
+            # 200 日期/chunk ≈ 100-400s, 可接受。MP 代码保留, 内存充足时设 True 恢复。
+            _use_mp = False
+            if _use_mp and len(chunk_dates) >= 10 and any(
                 self._factor_needs_worker(name) for name in factor_names
-            )
-            if use_mp:
+            ):
                 chunk_dates_done, chunk_new_rows = self._compute_chunk_parallel(
                     chunk_dates, data_full, prims, chunk_fundamentals,
                     aux_full, factor_names

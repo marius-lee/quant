@@ -258,13 +258,9 @@ class PortfolioConstructor:
         a = alpha.loc[common].sort_values(ascending=False)
         p = prices.loc[common]
 
-        # test-v214: 价格缓冲 — pipeline 用昨收价分配, execute 用开盘价执行,
-        # 两者存在价差。在成本估算时预留 buffer, 减少 validate_orders 裁剪触发。
-        # test-v307: price_buffer 参数为 None 时读 config, 为 0 时跳过 (实时报价场景)
-        _pb = price_buffer if price_buffer is not None else _require_cfg("execution.price_buffer")
-        if _pb > 0:
-            p = p * (1.0 + _pb)
-
+        # v380: 价格缓冲不再虚增价格 — tier 判定和手数计算用真实价格。
+        # 缓冲仅在成本带 (tc_band) 中用于成本估算, 不污染仓位计算。
+        # 来源: QuantConnect/Backtrader 标准 — 价格缓冲只用于滑点/成本估算。
         n_top = min(self.max_positions, len(p))
         avg_price = float(p.loc[a.index[:n_top]].mean())
         tier = self._tier(capital, avg_price)
@@ -277,19 +273,9 @@ class PortfolioConstructor:
             try:
                 result = self._rank_concentrated(a, p, capital)
             except ValueError:
-                # price_buffer 可能导致 Nano 层 0 仓位 (ADR-026 audit):
-                # buffer 使有效 lot_cost > capital, 但实际执行价无 buffer。
-                # 回退: 用原始价格重试, 同时降 buffer 防止高估成本。
-                if price_buffer is not None and price_buffer > 0:
-                    p_raw = prices.loc[common]
-                    logger.warning(
-                        "[portfolio] nano tier: buffer=%.1f%% caused 0 lots, "
-                        "retrying with raw prices (capital=¥%s)",
-                        price_buffer * 100, f"{capital:,.0f}"
-                    )
-                    result = self._rank_concentrated(a, p_raw, capital)
-                else:
-                    raise
+                # v380: 价格缓冲已移除, 0 仓位只能来自真实价格过高 → 保留现金
+                logger.warning("[portfolio] nano tier: capital too small for any lot, holding cash")
+                return TargetPortfolio(pd.Series(dtype=int), capital, "equal_weight", 0.0)
         elif tier == "micro":
             result = self._score_weighted_rounding(a, p, capital)
             if result.lots.sum() == 0:

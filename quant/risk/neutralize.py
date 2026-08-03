@@ -186,33 +186,76 @@ def neutralize(
 ) -> pd.Series:
     """统一的 alpha 中性化入口 (行业 + 市值 + 风格).
 
-    顺序: 行业中性化 → 市值中性化 → 风格中性化
-
-    Args:
-        scores: index=symbol, alpha 得分
-        industries: 行业分类 (可选)
-        market_caps: 总市值 (可选)
-        style_exposures: {"value": Series, "momentum": Series, ...} (可选, BARRA 风格)
+    v380: 当 industries 和 market_caps 同时提供时, 使用联合回归
+    (行业哑变量 + log(mcap) → OLS 残差), 对齐 Barra USE4 标准。
+    仅一项时退化为单独中性化。
 
     Returns: 中性化后的得分
 
     来源:
-      ② BARRA USE4 — 多因子风险中性化标准流程
-      ② Grinold & Kahn (2000) Ch.4 — 先行业后风格的回归顺序
+      ② BARRA USE4 — 多因子风险中性化标准流程 (联合回归)
+      ② Grinold & Kahn (2000) Ch.4
     """
     result = scores.copy()
-    ind_flag = "Y" if industries is not None else "N"
-    sz_flag = "Y" if market_caps is not None else "N"
-    st_flag = "Y" if style_exposures else "N"
-    logger.info(f"[neutralize] industry={ind_flag} size={sz_flag} style={st_flag}")
 
-    if industries is not None:
+    if industries is not None and market_caps is not None:
+        # 联合回归: alpha ~ industries + log(mcap) → 残差
+        result = _joint_neutralize(result, industries, market_caps)
+        logger.info("[neutralize] joint (industry+size)")
+    elif industries is not None:
         result = industry_neutralize(result, industries)
-
-    if market_caps is not None:
+        if market_caps is not None:
+            result = size_neutralize(result, market_caps)
+        logger.info("[neutralize] sequential industry→size")
+    elif market_caps is not None:
         result = size_neutralize(result, market_caps)
+        logger.info("[neutralize] size only")
+    else:
+        logger.info("[neutralize] no neutralization")
 
     if style_exposures:
         result = style_neutralize(result, style_exposures)
 
     return result
+
+
+def _joint_neutralize(
+    scores: pd.Series,
+    industries: pd.Series,
+    market_caps: pd.Series,
+) -> pd.Series:
+    """联合中性化: 行业哑变量 + log(市值) → OLS 残差。
+
+    Barra USE4 标准: 所有风险因子同时回归, 避免顺序中性化引入偏差。
+    行业哑变量用 get_dummies, 剔除 <3 只股票的行业 (过拟合保护)。
+
+    来源: Barra USE4 (MSCI, 2011); Grinold & Kahn (2000) Ch.4 Eq.4.7-4.9.
+    """
+    common = scores.dropna().index
+    common = common.intersection(market_caps.dropna().index)
+    common = common.intersection(industries.dropna().index)
+    if len(common) < _MIN_COMMON:
+        return scores
+
+    y = scores.loc[common].values.astype(np.float64)
+    log_mcap = np.log(np.asarray(market_caps.loc[common].values, dtype=np.float64))
+
+    # 行业哑变量 (剔除小行业)
+    ind_series = industries.loc[common]
+    ind_counts = ind_series.value_counts()
+    valid_inds = ind_counts[ind_counts >= 3].index
+    ind_series = ind_series.where(ind_series.isin(valid_inds), "other")
+
+    ind_dummies = pd.get_dummies(ind_series, drop_first=True).astype(np.float64)
+    X = np.column_stack([log_mcap, ind_dummies.values])
+
+    # OLS: y = β₀ + β₁·log(mcap) + Σβᵢ·industryᵢ + ε
+    try:
+        beta = np.linalg.lstsq(X, y, rcond=None)[0]
+        residuals = y - X @ beta
+    except np.linalg.LinAlgError:
+        return scores
+
+    result = pd.Series(residuals, index=common)
+    result = (result - result.mean()) / result.std(ddof=1)
+    return result.reindex(scores.index)

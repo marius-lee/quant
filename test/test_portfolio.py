@@ -28,12 +28,13 @@ class TestPortfolioConstructorGreedy:
         assert pf.invested == 20 * 100
 
     def test_capital_too_small_for_any_stock(self):
-        """资本 100, 股价 50 → 1手需5000 > 100 → raise ValueError."""
+        """资本 100, 股价 50 → 1手需5000 > 100 → 空持仓, 保留现金 (v380: 不抛异常)."""
         pc = PortfolioConstructor({"max_positions": 20, "max_single_position": 0.05})
         alpha = pd.Series([1.0, 0.5], index=["000001", "000002"])
         prices = pd.Series([50.0, 60.0], index=["000001", "000002"])
-        with pytest.raises(ValueError, match="rank_concentrated produced 0 lots"):
-            pc.construct(alpha, prices, 100, price_buffer=0)
+        pf = pc.construct(alpha, prices, 100)
+        assert pf.positions == 0
+        assert pf.cash_reserve == 100
 
     def test_multiple_stocks_one_cycle(self):
         """资本够买 2 只低价股各 1 手."""
@@ -84,23 +85,14 @@ class TestPortfolioConstructorGreedy:
 
     def test_rank_concentrated_alpha_ordering(self):
         """Nano 层: 严格按 alpha 降序分配, 高 alpha 先买.
-
-        price_buffer (test-v214, config execution.price_buffer) 会被 construct()
-        应用到有效价格上: p_eff = p × (1 + buffer). 因此 lot_cost = p_eff × 100.
-        test-v214 设计依据: 流水线用昨收价分配, 执行用开盘价, 缓冲防止 over-allocation.
-        来源: ADR-026 audit — price_buffer 在 Nano 层可导致 lot 数比未缓冲时少 1.
-        """
-        from quant.config.constants import _require_cfg
-        buffer = _require_cfg("execution.price_buffer")
+        v380: price_buffer 不再虚增价格, lot_cost = 价格 × 100 直接计算."""
         pc = PortfolioConstructor({"max_positions": 5, "max_single_position": 0.20})
         alpha = pd.Series([0.1, 0.9, 0.3], index=["X", "Y", "Z"])
         prices = pd.Series([10.0, 10.0, 10.0], index=["X", "Y", "Z"])
-        # alpha 排序: Y(0.9), Z(0.3), X(0.1)
         pf = pc.construct(alpha, prices, 3000)
         assert pf.method == "rank_concentrated"
-        # 有效 lot_cost = 10 × (1+buffer) × 100; 3000 // lot_cost 手
-        expected_lots = int(3000 // (10.0 * (1 + buffer) * 100))
-        assert pf.lots["Y"] == expected_lots
+        # lot_cost = 10 × 100 = 1000; 3000 // 1000 = 3 手, 最高 alpha Y 全拿
+        assert pf.lots["Y"] == 3
         assert pf.lots.get("Z", 0) == 0
         assert pf.lots.get("X", 0) == 0
 
@@ -273,7 +265,8 @@ class TestCostAwareBand:
                                   cost_model=self._cm(), ic_map={"f1": 0.05})
         assert pf.tc_suppressed == 1
         assert dict(pf.lots) == {"S0": 1}      # 保留原持仓, 不换 S1
-        assert pf.cash_reserve == pytest.approx(5000 - 45 * 1.05 * 100, abs=1)
+        # v380: price_buffer 不再虚增价格, lot_cost = 45 × 100 = 4500
+        assert pf.cash_reserve == pytest.approx(5000 - 45 * 100, abs=1)
 
     def test_swap_executed_when_alpha_gap_large(self):
         """大幅 alpha 提升: 预期收益 > 成本, 成本带不拦截."""

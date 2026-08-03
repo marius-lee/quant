@@ -2274,13 +2274,21 @@ class DataStore:
     def get_stock_names(self, symbols: list) -> dict:
         if not symbols:
             return {}
+        # v391: 回测 1700 次调相同数据, 缓存避免重复 DB 查询
+        _key = frozenset(symbols)
+        if not hasattr(self, '_stock_names_cache'):
+            self._stock_names_cache = {}
+        if _key in self._stock_names_cache:
+            return self._stock_names_cache[_key]
         placeholders = ",".join("?" for _ in symbols)
         conn = self._connect()
         rows = conn.execute(
             f"SELECT symbol, name FROM stocks WHERE symbol IN ({placeholders})",
             symbols
         ).fetchall()
-        return {r[0]: r[1] for r in rows}
+        result = {r[0]: r[1] for r in rows}
+        self._stock_names_cache[_key] = result
+        return result
 
 
     def get_financials(self, symbols: list, date: str = None) -> "pd.DataFrame":

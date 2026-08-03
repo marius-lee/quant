@@ -268,7 +268,7 @@ class PortfolioConstructor:
 
         if tier == "nano":
             try:
-                result = self._rank_concentrated(a, p, capital)
+                result = self._rank_concentrated(a, p, capital, log_returns=log_returns)
             except ValueError:
                 # v380: 价格缓冲已移除, 0 仓位只能来自真实价格过高 → 保留现金
                 logger.warning("[portfolio] nano tier: capital too small for any lot, holding cash")
@@ -482,29 +482,15 @@ class PortfolioConstructor:
 
     def _rank_concentrated(
         self, alpha: pd.Series, prices: pd.Series, capital: float,
+        log_returns: Optional[pd.DataFrame] = None,
     ) -> TargetPortfolio:
         """排名集中: 按 alpha 降序逐只满仓买入, 直至资金不足买下一手。
-
-        算法:
-          for sym in alpha_rank_order:
-              买入 max_lots = int(cash // (price × LOT_SIZE))
-              扣减 cash
-              if 剩余资金 < 最便宜候选 × LOT_SIZE: break
-
-        适用: Nano 层 (capital < nano_cap).
-        设计依据:
-          - Grinold & Kahn (2000) 基本面法则: N=1-2 时需最大化 IC, 降低佣金侵蚀
-          - Kirby & Ostdiek (2012): 换手成本 > 分散化收益时, 应集中持仓
-          - capital-segmentation-analysis-2026-07-15 C3: 单笔<¥10K 交易成本占比>100% alpha,
-            集中持仓减少交易笔数是唯一解
-          - 与 _equal_weight_greedy 的区别: 本方法按排名依次满仓 (alpha优先),
-            而非轮转均分 (分散化优先)
+        v393: 2+持仓时用协方差剔除高相关性票 (ρ>0.7则弃低alpha).
         """
         n_candidates = min(self.max_positions, len(alpha))
         if n_candidates == 0:
             return TargetPortfolio(pd.Series(dtype=int), capital, "rank_concentrated", 0.0)
 
-        # 最便宜候选的一手成本 — 提前终止条件
         cheapest_lot = prices.loc[alpha.index[:n_candidates]].min() * LOT_SIZE
 
         lots = pd.Series(0, index=alpha.index, dtype=int)
@@ -514,22 +500,44 @@ class PortfolioConstructor:
         for sym in symbol_order:
             cost_per_lot = prices[sym] * LOT_SIZE
             if cash < cost_per_lot:
-                continue  # 买不起这只, 试下一只
+                continue
             max_lots = int(cash // cost_per_lot)
             lots[sym] = max_lots
             cash -= max_lots * cost_per_lot
             if cash < cheapest_lot:
-                break  # 剩余资金不够买任何候选
+                break
 
-        total_value = (lots * prices * LOT_SIZE).sum()
-        if lots.sum() == 0:
+        # v393: 2+持仓→算协方差→剔除高相关低alpha票
+        selected = lots[lots > 0]
+        if len(selected) >= 2 and log_returns is not None:
+            from quant.risk.covariance import covariance_matrix
+            _syms = list(selected.index)
+            _common = [s for s in _syms if s in log_returns.columns]
+            if len(_common) >= 2:
+                cov_sub = covariance_matrix(log_returns[_common], method="ledoit_wolf")
+                corr = cov_sub.copy()
+                std = np.sqrt(np.diag(cov_sub.values))
+                corr.values[:] = cov_sub.values / np.outer(std, std)
+                # 剔除高相关低alpha票 (ρ > 0.7, 来源: WorldQuant 冗余阈值)
+                dropped = set()
+                for i, s1 in enumerate(_common):
+                    for s2 in _common[i+1:]:
+                        if abs(corr.loc[s1, s2]) > 0.7:
+                            loser = s1 if alpha.get(s1, 0) < alpha.get(s2, 0) else s2
+                            dropped.add(loser)
+                if dropped:
+                    lots = lots.drop(list(dropped), errors='ignore')
+                    logger.info("[rank_concentrated] dropped %d correlated: %s", len(dropped), sorted(dropped))
+
+        selected = lots[lots > 0]
+        total_value = (selected * prices * LOT_SIZE).sum()
+        if selected.sum() == 0:
             raise ValueError(
                 f"rank_concentrated produced 0 lots: "
                 f"n_candidates={n_candidates} capital={capital:,.0f} "
-                f"cheapest_lot={cheapest_lot:,.0f} "
-                f"top3_prices={prices.loc[alpha.index[:min(3,n_candidates)]].tolist()}"
+                f"cheapest_lot={cheapest_lot:,.0f}"
             )
-        return TargetPortfolio(lots[lots > 0], round(cash, 2), "rank_concentrated", total_value)
+        return TargetPortfolio(selected, round(capital - total_value, 2), "rank_concentrated", total_value)
 
     def _equal_weight_greedy(
         self, alpha: pd.Series, prices: pd.Series, capital: float,

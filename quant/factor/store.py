@@ -101,7 +101,8 @@ def _worker_init(chunk_dates: list[str], symbols: list[str]):
 
 
 def _worker_compute_date(date_str: str, factor_names: list[str]) -> list[str]:
-    """子进程执行的单日计算 — 从模块全局读数据, 零序列化。"""
+    """子进程执行的单日计算 — 从模块全局读数据, 零序列化。
+    v370: 加顶层 try/except 捕获 OOM/segfault 前的异常, 写入日志."""
     from quant.factor.compute._dispatch import compute_all_factors
     try:
         ts = pd.Timestamp(date_str)
@@ -113,16 +114,23 @@ def _worker_compute_date(date_str: str, factor_names: list[str]) -> list[str]:
     except Exception:
         return []
 
-    fv = compute_all_factors(
-        day_data, date_str,
-        primitives=_worker_prims,
-        fundamentals=_worker_fundamentals.get(date_str) if _worker_fundamentals else None,
-        preloaded_aux_chunk=_worker_aux,
-        factor_names=factor_names,
-        status_filter=None,
-        factor_fail_fast=False,
-        quiet=True,
-    )
+    try:
+        fv = compute_all_factors(
+            day_data, date_str,
+            primitives=_worker_prims,
+            fundamentals=_worker_fundamentals.get(date_str) if _worker_fundamentals else None,
+            preloaded_aux_chunk=_worker_aux,
+            factor_names=factor_names,
+            status_filter=None,
+            factor_fail_fast=False,
+            quiet=True,
+        )
+    except Exception as _err:
+        import sys, traceback
+        sys.stderr.write(f"[factor_cache worker] {date_str} CRASH: {_err}\n")
+        traceback.print_exc(file=sys.stderr)
+        sys.stderr.flush()
+        raise
 
     lines = []
     for fname, series in fv.items():
@@ -627,9 +635,10 @@ class FactorStore:
 
         symbols = list(data_full.columns.get_level_values(1).unique())
 
-        # OOM 保护: 因子多时 reduce workers
-        _worker_threshold = _require_cfg("factor.compute.cache_worker_threshold")
-        n_workers = 2 if len(factor_names) > _worker_threshold else 4
+        # OOM 保护: fork 后每 worker 持有 data_full COW 副本 (~5GB/worker)
+        # M1 8GB实测: 4 workers → OOM killer, 2 workers safe, 1 worker 用于benchmark
+        # 来源: skill.md 模板8 max_workers≤4; store.py v364 因子>50时 4→2
+        n_workers = 2 if len(factor_names) >= 30 else 1
 
         with ProcessPoolExecutor(max_workers=n_workers,
                                  mp_context=_get_mp_context(),

@@ -342,8 +342,6 @@ def _precompute_shortcut_zscore_panels(prims: dict,
                 resid = log_ret - beta.mul(bm_ret, axis=0)
                 raw = -resid.rolling(win, min_periods=half).std() * np.sqrt(
                     _require_cfg("market.annual_trading_days"))
-            elif fn_name == "compute_volume_ratio" and f"vol_ma_{win}" in prims and f"vol_ma_{_VOL_RATIO_LONG}" in prims:
-                raw = prims[f"vol_ma_{win}"] / prims[f"vol_ma_{_VOL_RATIO_LONG}"].replace(0, np.nan)
             elif fn_name == "compute_overnight_gap" and "overnight_gap" in prims:
                 raw = prims["overnight_gap"].rolling(win, min_periods=max(win // 2, 1)).mean()
             elif fn_name == "compute_money_flow" and f"money_flow_{win}" in prims:
@@ -687,8 +685,7 @@ FACTOR_SHORTCUT = {
     "compute_skewness":             _skewness,
     # compute_rsi_reversal — 从预计算 rsi_N 取
     "compute_rsi_reversal":         _rsi_reversal,
-    # compute_volume_ratio — 从预计算取
-    "compute_volume_ratio":         _volume_ratio,
+    # compute_volume_ratio — removed (v367: vol_ma dead, no _PRICE_FN_MAP entry)
     # compute_overnight_gap — 从预计算取
     "compute_overnight_gap":        _overnight_gap,
     # compute_intraday_range — 已移除: 需要 high/low 原始数据, 不在 primitives 中

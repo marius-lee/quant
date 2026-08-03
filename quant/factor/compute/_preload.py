@@ -33,8 +33,7 @@ _AUX_TABLES = [
     "financial_balance",
     "financial_cashflow",
     "lhb_detail",
-    "fund_flow",
-    "pledge",
+    # v376: fund_flow/pledge removed — no factor reads them from aux
 ]
 
 
@@ -136,17 +135,6 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
         except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
             result[tbl] = pd.DataFrame(columns=["symbol", "stat_date"])
 
-    # pledge: latest date
-    try:
-        df = pd.read_sql_query(
-            f"SELECT symbol, pledge_ratio FROM pledge "
-            f"WHERE date = (SELECT MAX(date) FROM pledge WHERE date <= ?)",
-            conn, params=(date,)
-        )
-        result["pledge"] = df.set_index("symbol") if not df.empty else pd.DataFrame(columns=["symbol", "pledge_ratio"]).set_index("symbol")
-    except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        result["pledge"] = pd.DataFrame(columns=["symbol", "pledge_ratio"]).set_index("symbol")
-
     # lhb_detail: 90-day window with all columns for lhb factors
     try:
         df = pd.read_sql_query(
@@ -158,24 +146,6 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
         result["lhb"] = df if not df.empty else pd.DataFrame(columns=["symbol", "trade_date", "net_buy", "buy_amt", "sell_amt", "change_pct", "close", "circ_mv", "post_5d"])
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
         result["lhb"] = pd.DataFrame(columns=["symbol", "trade_date", "net_buy", "buy_amt", "sell_amt", "change_pct", "close", "circ_mv", "post_5d"])
-
-    # fund_flow: 60-day window with main_net_ratio for compute_main_flow_ratio
-    try:
-        ff_max = pd.read_sql_query(
-            "SELECT MAX(date) FROM fund_flow WHERE date <= ?", conn, params=(date,)
-        ).iloc[0, 0]
-        if ff_max:
-            ff_start = (pd.Timestamp(ff_max) - pd.Timedelta(days=65)).strftime("%Y-%m-%d")
-            df = pd.read_sql_query(
-                "SELECT symbol, date, main_net_inflow, super_large_net_inflow, main_net_ratio FROM fund_flow "
-                "WHERE date >= ? AND date <= ?",
-                conn, params=(ff_start, ff_max)
-            )
-            result["fund_flow"] = df.set_index("symbol") if not df.empty else pd.DataFrame(columns=["symbol", "date", "main_net_inflow", "super_large_net_inflow", "main_net_ratio"]).set_index("symbol")
-        else:
-            result["fund_flow"] = pd.DataFrame(columns=["symbol", "date", "main_net_inflow", "super_large_net_inflow", "main_net_ratio"]).set_index("symbol")
-    except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        result["fund_flow"] = pd.DataFrame(columns=["symbol", "date", "main_net_inflow", "super_large_net_inflow", "main_net_ratio"]).set_index("symbol")
 
     if _own_conn:
         conn.close()
@@ -288,19 +258,6 @@ def preload_aux_data_chunk(symbols: list, date_from: str, date_to: str,
         except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
             result[tbl] = pd.DataFrame(columns=["symbol", "stat_date"])
 
-    # pledge: 用 chunk_end 取最新快照
-    try:
-        df = pd.read_sql_query(
-            "SELECT symbol, pledge_ratio FROM pledge "
-            "WHERE date = (SELECT MAX(date) FROM pledge WHERE date <= ?)",
-            conn, params=(date_to,)
-        )
-        result["pledge"] = df.set_index("symbol") if not df.empty else pd.DataFrame(
-            columns=["symbol", "pledge_ratio"]).set_index("symbol")
-    except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        result["pledge"] = pd.DataFrame(
-            columns=["symbol", "pledge_ratio"]).set_index("symbol")
-
     # lhb_detail: chunk 范围 + 90d 前置窗口
     lhb_start = (pd.Timestamp(date_from) - pd.Timedelta(days=90)).strftime("%Y-%m-%d")
     try:
@@ -317,23 +274,6 @@ def preload_aux_data_chunk(symbols: list, date_from: str, date_to: str,
         result["lhb"] = pd.DataFrame(
             columns=["symbol", "trade_date", "net_buy", "buy_amt", "sell_amt",
                      "change_pct", "close", "circ_mv", "post_5d"])
-
-    # fund_flow: chunk 范围 + 65d 前置窗口
-    ff_start = (pd.Timestamp(date_from) - pd.Timedelta(days=65)).strftime("%Y-%m-%d")
-    try:
-        df = pd.read_sql_query(
-            "SELECT symbol, date, main_net_inflow, super_large_net_inflow, "
-            "main_net_ratio FROM fund_flow "
-            "WHERE date >= ? AND date <= ? ORDER BY date",
-            conn, params=(ff_start, date_to)
-        )
-        result["fund_flow"] = df.set_index("symbol") if not df.empty else pd.DataFrame(
-            columns=["symbol", "date", "main_net_inflow", "super_large_net_inflow",
-                     "main_net_ratio"]).set_index("symbol")
-    except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
-        result["fund_flow"] = pd.DataFrame(
-            columns=["symbol", "date", "main_net_inflow", "super_large_net_inflow",
-                     "main_net_ratio"]).set_index("symbol")
 
     # intraday_snapshot: chunk 日期范围 (ADR-043 layer1: 替代 3 个 intraday 因子 per-date 查询)
     try:
@@ -390,8 +330,7 @@ def slice_aux_for_date(aux_full: dict, date: str) -> dict:
     ts = pd.Timestamp(date)
 
     # 单日快照表：直接复用引用（无日期维度）
-    # fund_hold 已改为历史窗口, 不走快照路径
-    for key in ["stocks", "analyst", "pledge"]:
+    for key in ["stocks", "analyst"]:
         if key in aux_full:
             result[key] = aux_full[key]
 
@@ -419,21 +358,6 @@ def slice_aux_for_date(aux_full: dict, date: str) -> dict:
         result["lhb"] = lhb.loc[in_window]
     else:
         result["lhb"] = lhb
-
-    # fund_flow: 取 ≤date 的最新日期，往前 65d 窗口
-    ff = aux_full.get("fund_flow", pd.DataFrame())
-    if not ff.empty and "date" in ff.columns:
-        ff_dates = pd.to_datetime(ff["date"])
-        valid = ff_dates <= ts
-        if valid.any():
-            ff_max = ff_dates[valid].max()
-            ff_start = ff_max - pd.Timedelta(days=65)
-            in_window = (ff_dates >= ff_start) & (ff_dates <= ff_max)
-            result["fund_flow"] = ff.loc[in_window]
-        else:
-            result["fund_flow"] = pd.DataFrame(columns=ff.columns)
-    else:
-        result["fund_flow"] = ff
 
     # financial tables: stat_date ≤ date
     for tbl in ["financial_income", "financial_balance", "financial_cashflow"]:

@@ -460,11 +460,7 @@ def slice_aux_for_date(aux_full: dict, date: str) -> dict:
     else:
         result["intraday_snapshot"] = snap
 
-    # news: chunk → 单日期过滤 (v366: 消除 per-date SQL)
-    news = aux_full.get("news", pd.DataFrame())
-    if not news.empty and "date" in news.columns:
-        result["news"] = news.loc[pd.to_datetime(news["date"]) == ts]
-    else:
-        result["news"] = news
+    # news: 不切片 — 新闻因子需要多日窗口 (1d/5d/20d), 因子内部自行过滤
+    result["news"] = aux_full.get("news", pd.DataFrame())
 
     return result

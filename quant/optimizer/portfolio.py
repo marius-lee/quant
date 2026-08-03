@@ -239,17 +239,14 @@ class PortfolioConstructor:
         ic_map: dict = None,
         current_lots: Optional[pd.Series] = None,
         cost_model=None,
-        price_buffer: Optional[float] = None,  # test-v307: None=读config, 0=跳过(实时报价场景)
+        price_buffer: Optional[float] = None,
+        log_returns: Optional[pd.DataFrame] = None,  # v393: 懒计算协方差用
     ) -> TargetPortfolio:
         """资本自适应组合构建。
 
-        根据 capital 与当前均价自动选择策略层级。
-        进入均值-方差分支时实时校准 risk_aversion。
-
-        current_lots: 当前持仓 (index=symbol, values=手数)。与 cost_model
-          一起传入时启用 §8.3 成本带 — 理想目标与当前持仓的差量中,
-          预期 alpha 收益 < λ × 实际换仓成本的换股被拦截 (保留原持仓)。
-          None 或空 → 不启用, 行为与之前完全一致。
+        covariance: Small 层 Markowitz 用 (外部预计算或 None)。
+        log_returns: 若 covariance=None 且需要协方差, 从 log_returns 懒计算。
+          来源: pipeline.py 的 close_df 对数收益面板 (仅 Small 层触发, Nano/Micro 跳过)。
         """
         common = alpha.dropna().index.intersection(prices.dropna().index)
         if len(common) == 0:
@@ -285,9 +282,12 @@ class PortfolioConstructor:
                 )
                 result = self._equal_weight_greedy(a, p, capital)
         else:  # small
+            # v393: 协方差懒计算 — 仅 Small 层触发, Nano/Micro 永不至此
+            if covariance is None and log_returns is not None:
+                from quant.risk.covariance import covariance_matrix
+                covariance = covariance_matrix(log_returns, method="ledoit_wolf")
             result = None
-            # 风险优化器分发 (test-v299 §8.2): optimizer.method 选择 HRP 或 risk parity,
-            # 均只依赖协方差; 失败/0 仓位 → 下方 Kelly/mean-variance 链兜底.
+            # 风险优化器分发 (test-v299 §8.2)
             if covariance is not None:
                 if self.method == "hrp":
                     rp = self._hrp_lot(a, p, capital, covariance)
@@ -296,7 +296,6 @@ class PortfolioConstructor:
                 if rp.lots.sum() > 0:
                     result = rp
             if result is None:
-                # Kelly if IC available, otherwise mean-variance
                 if ic_map is not None:
                     result = self._kelly_greedy(a, p, capital, ic_map)
                 elif covariance is None:

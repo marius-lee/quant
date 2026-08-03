@@ -332,8 +332,9 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         industries = None
     alpha_neut = neutralize(alpha, industries=industries, market_caps=mcap_real)
 
+    # v393: 协方差懒计算 — 仅传 log_ret, Small 层在 construct() 内按需算
     log_ret = np.log(close_df).diff().dropna(how="all")
-    cov = covariance_matrix(log_ret, method="ledoit_wolf")
+    cov = None  # construct() 按需懒计算
 
     # Step 4 candidates: alpha_neut already within investable universe (pre-filtered in Step 2.3)
     # Risk pre-filters (liquidity/price/ST) are already applied — no re-filtering here.
@@ -392,6 +393,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         _sizing_capital,
         covariance=cov, ic_map=ic_map,
         current_lots=current_lots, cost_model=cost_model,
+        log_returns=log_ret,
     )
     if portfolio.tc_suppressed:
         logger.info(f"[5/5] tc_band: {portfolio.tc_suppressed} swap(s) suppressed "

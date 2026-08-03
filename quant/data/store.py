@@ -1634,7 +1634,7 @@ class DataStore:
             logger.info(f"turnover backfill {d}: {len(syms)} stocks via baostock")
             updated_today = 0
             for i, sym in enumerate(syms):
-                code = _bs_code(sym)
+                code = _ts_code(sym)
                 # ── baostock 查询, 3次重试 ──
                 tv = 0.0
                 for _retry in range(3):

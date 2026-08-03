@@ -328,16 +328,19 @@ class FactorStore:
                     aux_full, factor_names
                 )
             else:
+                from quant.factor.compute._preload import slice_aux_for_date
                 chunk_dates_done = 0
                 for date_str in chunk_dates:
                     existing = self._get_existing_factors(date_str)
                     missing = [f for f in factor_names if f not in existing]
                     if not missing:
                         continue
+                    # v377: 预切 aux 一次, compute_all_factors 直接复用 (省 slice_aux_for_date 内部O(N)过滤)
+                    _aux_sliced = slice_aux_for_date(aux_full, date_str)
                     lines = self._compute_date(
                         date_str, data_full, prims,
                         chunk_fundamentals.get(date_str),
-                        aux_full, missing
+                        _aux_sliced, missing
                     )
                     if lines:
                         chunk_new_rows[date_str].extend(lines)

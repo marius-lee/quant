@@ -71,7 +71,10 @@ def compute_all_factors(data: pd.DataFrame, date: str,
     if not _syms:
         _plog.warning('  no symbols in data, skipping factor computation')
         return {}
-    if preloaded_aux_chunk is not None:
+    if isinstance(preloaded_aux_chunk, dict) and "stocks" in preloaded_aux_chunk:
+        # v377: 调用方传入预切好的 per-date aux dict, 跳过 slice_aux_for_date
+        _aux = preloaded_aux_chunk
+    elif preloaded_aux_chunk is not None:
         _aux = slice_aux_for_date(preloaded_aux_chunk, date)
     else:
         _aux = preload_aux_data(_syms, date)

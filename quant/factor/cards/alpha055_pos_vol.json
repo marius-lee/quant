@@ -1,0 +1,10 @@
+{
+  "name": "alpha055_pos_vol",
+  "display_name": "alpha055_pos_vol",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.0235,
+  "icir_12m": 0.3106,
+  "last_evaluated": "auto",
+  "n_obs": 130
+}

@@ -1,0 +1,10 @@
+{
+  "name": "alpha041_geo_vwap",
+  "display_name": "alpha041_geo_vwap",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.0164,
+  "icir_12m": 0.0712,
+  "last_evaluated": "auto",
+  "n_obs": 130
+}

@@ -256,6 +256,9 @@ def _run():
                         _log.info(f"[{today}] evening chain subprocess exited OK")
                         _evening_done = True
                     else:
+                        # v382: 子进程崩溃 → 清理其残留的 running 子任务行
+                        # (信号杀死进程时 Python finally 不执行, task_runs 留 running 僵尸)
+                        _cleanup_evening_children(today)
                         _evening_retries += 1
                         if _evening_retries < _MAX_TASK_RETRIES:
                             _log.warning(f"[{today}] evening chain failed (rc={ret}), "
@@ -268,6 +271,28 @@ def _run():
         _check_timeouts(today)
 
         _time.sleep(POLL)
+
+
+def _cleanup_evening_children(today: str):
+    """晚间链子进程崩溃时, 将其残留的 running 子任务标为 failed.
+    v382: 信号杀死进程 → Python finally 不执行 → task_runs 留 running 僵尸 → 后续调度永久阻塞."""
+    try:
+        conn = sqlite3.connect(MARKET_DB)
+        conn.execute("PRAGMA journal_mode=WAL")
+        children = ["daily_data", "factor_cache", "attribution", "lgb_train", "adj_factor"]
+        ph = ",".join("?" * len(children))
+        n = conn.execute(
+            f"UPDATE task_runs SET status='failed', finished_at=datetime('now','localtime'), "
+            f"error='晚间链子进程崩溃(信号终止)' "
+            f"WHERE date=? AND status='running' AND task_name IN ({ph})",
+            [today] + children
+        ).rowcount
+        conn.commit()
+        conn.close()
+        if n:
+            _log.warning(f"[{today}] cleaned {n} stuck child tasks after evening chain crash")
+    except Exception as _e:
+        _log.debug("cleanup_evening_children failed (non-fatal): %s", _e)
 
 
 # ── 超时阈值 (秒) — test-v287: 晚间任务移出, 只保留白天任务.

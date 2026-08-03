@@ -2,7 +2,7 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
-## 当前状态 (test-v369, 2026-08-03)
+## 当前状态 (test-v370, 2026-08-03)
 
 ### 关键指标
 - 因子: 84 注册 (0 active, 20 evaluating, 25 probation, 46 archived — 8 个新注册待评估)
@@ -21,13 +21,16 @@
 
 ### test-v310→v366 变更总览
 
-**v369**: 盘中风控 monitor 异常终止修复
+**v370**: 启动时自动清理僵尸行 — restart 后不再需要手工清 DB
 
 | 问题 | 修复 | 文件 |
 |------|------|------|
-| _check_timeouts 14:55 误杀 monitor (limit=1800s, 实际运行19200s) | limit 1800→21600, 与 grace_seconds 对齐 | `orchestrator.py` |
-| monitor 线程不响应 _monitor_stop → 被孤立后仍写 task_runs | stop_event 传入内循环, sleep 期间检查 | `monitor.py` |
-| _tk_finish 在 status 已非 running 时抛 RuntimeError | 防御: 查最新行 status, 非 running 时 warn 跳过 | `task_log.py` |
+| restart 后旧进程残留行 (aborted/failed/running/lunch) 阻塞新进程 | _cleanup_zombie_tasks 重写: dead-PID 非ok行直接DELETE, 不标aborted | `orchestrator.py` |
+| lunch 状态掩藏僵尸 (Bug B) | cleanup 覆盖所有非ok状态, 不再只查 running | `orchestrator.py` |
+| _set_monitor_stage 覆写所有行 (Bug C) | 按 pid 精确更新当前实例的行 | `monitor.py` |
+| aborted 消耗重试预算 (Bug D) | _get_monitor_failures 只计 failed; + cleanup直接DELETE死进程行 | `orchestrator.py` |
+
+**v369**: 盘中风控 monitor 超时误杀修复 (limit 1800→21600 + stop_event + _tk_finish防御)
 
 **v368**: 因子缓存物化分步计时埋点 (load/prim/aux/compute/write)
 

@@ -379,20 +379,22 @@ def _run_continuous(today: str, stop_event=None):
         raise
 
 def _set_monitor_stage(stage: str):
-    """更新 monitor task_runs 状态 (running → lunch → running)."""
-    import sqlite3
+    """更新当前 monitor 实例的 task_runs 状态 (running → lunch → running).
+    v369: 按 pid 精确更新, 不覆写同日期其他 monitor 实例的行 (Bug C)."""
+    import sqlite3, os
     from quant.config.paths import MARKET_DB
     from datetime import date
     today = date.today().strftime("%Y-%m-%d")
     try:
         c = sqlite3.connect(MARKET_DB)
         c.execute(
-            "UPDATE task_runs SET status=? WHERE date=? AND task_name='monitor' AND status IN ('running','lunch')",
-            (stage, today))
+            "UPDATE task_runs SET status=? WHERE date=? AND task_name='monitor' "
+            "AND pid=? AND status IN ('running','lunch')",
+            (stage, today, os.getpid()))
         c.commit()
         c.close()
     except Exception as _e:
-        _log.warning("reconcile: save task_log failed (non-fatal): %s", _e)
+        _log.warning("monitor: _set_monitor_stage failed (non-fatal): %s", _e)
 
 def _loop():
     """启动风控监控 daemon 线程."""

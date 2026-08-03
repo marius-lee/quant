@@ -52,12 +52,13 @@ def _get_today_aborted(today: str) -> dict:
 
 
 def _get_monitor_failures(today: str) -> int:
-    """统计今日 monitor 累计失败+aborted 次数 (用于崩溃风暴保护)."""
+    """统计今日 monitor 累计 failed 次数 (用于崩溃风暴保护).
+    v369: aborted (zombie cleanup 产生) 不计入重试预算, 仅 real crash (failed) 计入 (Bug D)."""
     conn = sqlite3.connect(MARKET_DB)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
     count = conn.execute(
-        "SELECT COUNT(*) FROM task_runs WHERE date=? AND task_name='monitor' AND status IN ('failed','aborted')",
+        "SELECT COUNT(*) FROM task_runs WHERE date=? AND task_name='monitor' AND status='failed'",
         (today,)
     ).fetchone()[0]
     conn.close()
@@ -283,36 +284,47 @@ _TIMEOUTS = {
 _MAX_TASK_RETRIES = 2
 
 def _cleanup_zombie_tasks():
-    """启动时清理今天残留的 running 行 — 仅当 OS 进程已死才标 aborted (test-v281: PID 检测)."""
+    """启动时清理今天旧进程残留的非 ok 行 (restart.sh kill 旧 orchestrator → 新启动).
+
+    v369 重写: 不再把 dead-PID 行标为 aborted (aborted 仍消耗重试预算, 阻塞新进程),
+    而是直接 DELETE。保留 ok 行 (已完成的工作), 保留 live-PID 行 (当前进程自己的任务)。
+    这样 restart 后新 orchestrator 从干净状态开始, 重试计数器自然归零。
+    """
     try:
         import os as _os
+        my_pid = _os.getpid()
         today = datetime.now().strftime("%Y-%m-%d")
         conn = sqlite3.connect(MARKET_DB)
         conn.execute("PRAGMA journal_mode=WAL")
+        # 取今天所有非 ok 行
         rows = conn.execute(
-            "SELECT id, pid FROM task_runs WHERE date=? AND status='running'", (today,)
+            "SELECT id, task_name, status, pid FROM task_runs "
+            "WHERE date=? AND status!='ok'",
+            (today,)
         ).fetchall()
-        cleaned = 0
-        for rid, pid in rows:
+        deleted = 0
+        for rid, task_name, status, pid in rows:
             if pid is None:
-                # 旧记录无 pid → 保守: 不处理, 等超时兜底
+                # 无 pid → 旧记录, 保守删除 (无法验证是否存活)
+                conn.execute("DELETE FROM task_runs WHERE id=?", (rid,))
+                deleted += 1
                 continue
-            # 检查 OS 进程是否存活
+            if pid == my_pid:
+                # 当前进程自己的行 → 保留 (可能是在 restart 前瞬间创建的)
+                continue
             try:
-                _os.kill(pid, 0)  # 信号0: 只检查不杀
+                _os.kill(pid, 0)
             except (OSError, ProcessLookupError):
-                # 进程不存在 → 真僵尸, 标 aborted
-                conn.execute(
-                    "UPDATE task_runs SET status='aborted', finished_at=datetime('now','localtime'), "
-                    "error='进程已死 (PID ' || ? || ' 不存在)' WHERE id=?", (pid, rid))
-                cleaned += 1
-            # else: 进程存活 → 保留 running, 不处理
+                # 进程已死 → 直接删除, 不标 aborted
+                conn.execute("DELETE FROM task_runs WHERE id=?", (rid,))
+                deleted += 1
+            # else: 进程存活 → 保留 (异常情况: 两个 orchestrator 同时跑? 保留让 start() dedup 处理)
         conn.commit()
         conn.close()
-        if cleaned:
-            _log.info(f"orchestrator startup: cleaned {cleaned} dead-pid zombie rows for {today}")
+        if deleted:
+            _log.info("orchestrator startup: cleaned %d stale rows for %s (fresh start)", deleted, today)
     except Exception as _e:
-        _log.warning(f"startup zombie check failed (non-fatal): {_e}")
+        _log.warning("startup zombie cleanup failed (non-fatal): %s", _e)
 
 def _check_timeouts(today: str):
     """扫描 task_runs 中 status='running' 的行, 超时则标为 aborted."""

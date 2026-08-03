@@ -2,6 +2,7 @@
 
 覆盖: 顺序执行 / 失败中断 / 已 ok 跳过 / 重复触发去重。
 """
+import logging
 import pytest
 
 from quant.scheduler import evening
@@ -37,8 +38,9 @@ def chain(monkeypatch):
 
 class TestEveningChain:
     @pytest.fixture(autouse=True)
-    def _skip_lgb_train(self, monkeypatch):
-        """Mock 慢速外部调用: lgb_train 移除, adj_factor/quality 替换为 no-op。"""
+    def _setup(self, monkeypatch):
+        """v378: silence evening logger (测试错误路径不打ERROR到生产日志) + mock慢速外部调用."""
+        logging.getLogger("quant.scheduler.evening").setLevel(logging.CRITICAL + 1)
         chain_no_lgb = [(n, m) for n, m in evening._CHAIN if n != "lgb_train"]
         monkeypatch.setattr(evening, "_CHAIN", chain_no_lgb)
         monkeypatch.setattr("quant.data.quality.check_daily_quality",

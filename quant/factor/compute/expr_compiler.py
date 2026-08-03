@@ -70,14 +70,18 @@ class FieldRef(ASTNode):
         try:
             # MultiIndex columns: (field, symbol)
             if isinstance(data.columns, pd.MultiIndex) and col in data.columns.get_level_values(0):
-                return data[col].iloc[date_idx]
+                result = data[col].iloc[date_idx]
+                # Deduplicate index (MultiIndex 可能导致重复 symbol)
+                if isinstance(result, pd.Series) and not result.index.is_unique:
+                    result = result.groupby(level=0).first()
+                return result
             # Single-level columns
             if col in data.columns:
                 return data[col].iloc[date_idx]
         except (KeyError, IndexError) as _e:
             _log.debug("expr_compiler lookup failed: %s", _e)
         idx = data.columns.get_level_values(1) if isinstance(data.columns, pd.MultiIndex) else data.columns
-        return pd.Series(np.nan, index=idx, dtype=float)
+        return pd.Series(np.nan, index=idx.unique() if hasattr(idx, 'unique') else idx, dtype=float)
 
     def __repr__(self):
         return f"Field({self.field})"
@@ -148,13 +152,21 @@ class TimeseriesOp(ASTNode):
 
     def evaluate(self, data, date_idx):
         # 需要全历史数据 — evaluate over full date range
-        start = max(0, date_idx - self.window + 1)
+        # delay/delta 需额外回看 1 天 (window=1 → 需 date_idx-1→date_idx, 共2天)
+        if self.op in ('delay', 'delta'):
+            start = max(0, date_idx - self.window)
+        else:
+            start = max(0, date_idx - self.window + 1)
         end = date_idx + 1
 
         # 逐日计算 arg，再滚动聚合
         daily_vals = []
         for i in range(start, end):
-            daily_vals.append(self.arg.evaluate(data, i))
+            val = self.arg.evaluate(data, i)
+            # 去重索引 (MultiIndex 可能产生重复 symbol)
+            if isinstance(val, pd.Series) and not val.index.is_unique:
+                val = val.groupby(level=0).first()
+            daily_vals.append(val)
         panel = pd.DataFrame(daily_vals).astype(float)
 
         w = min(self.window, end - start)
@@ -170,11 +182,17 @@ class TimeseriesOp(ASTNode):
             return panel.iloc[-w:].sum()
         if self.op == 'delay':
             d = min(self.window, len(panel) - 1)
-            return panel.iloc[-d - 1] if len(panel) > d else pd.Series(np.nan, index=panel.columns)
+            result = panel.iloc[-d - 1] if len(panel) > d else pd.Series(np.nan, index=panel.columns)
+            if isinstance(result, pd.Series) and not result.index.is_unique:
+                result = result.groupby(level=0).first()
+            return result
         if self.op == 'delta':
             if len(panel) > self.window:
-                return panel.iloc[-1] - panel.iloc[-self.window - 1]
-            return pd.Series(np.nan, index=panel.columns)
+                result = panel.iloc[-1] - panel.iloc[-self.window - 1]
+                if isinstance(result, pd.Series) and not result.index.is_unique:
+                    result = result.groupby(level=0).first()
+                return result
+            return pd.Series(np.nan, index=panel.columns.unique() if hasattr(panel.columns, 'unique') else panel.columns)
         return pd.Series(np.nan, index=panel.columns, dtype=float)
 
     def __repr__(self):
@@ -189,8 +207,14 @@ class CrossSectionOp(ASTNode):
 
     def evaluate(self, data, date_idx):
         x = self.arg.evaluate(data, date_idx)
+        # 去重索引 (MultiIndex 可能产生重复 symbol)
+        if isinstance(x, pd.Series) and not x.index.is_unique:
+            x = x.groupby(level=0).first()
         x = pd.to_numeric(x, errors='coerce').dropna()
         idx = data.columns.get_level_values(1) if isinstance(data.columns, pd.MultiIndex) else data.columns
+        # 去重输出索引
+        if hasattr(idx, 'unique'):
+            idx = idx.unique()
         if len(x) == 0:
             return pd.Series(np.nan, index=idx, dtype=float)
         if self.op == 'rank':

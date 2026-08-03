@@ -258,6 +258,24 @@ def precompute_primitives(data: pd.DataFrame,
         rs = gain / loss.replace(0, np.nan)
         prims[f"rsi_{w}"] = 100 - (100 / (1 + rs))
 
+    # ── v374: 4 新因子原始面板 (shortcut-ize range/seasonality/tail_risk/market_beta) ──
+    # range_20d: -(high-low)/close 的 20d 均值
+    if high is not None and low is not None:
+        prims["range_raw"] = (high - low) / close
+        prims["range_ma_20"] = prims["range_raw"].rolling(20, min_periods=10).mean()
+
+    # seasonality_12m_1m: 12月前同月收益 (跳过最近1月)
+    # close[t-21] / close[t-252] - 1, 来源: Heston & Sadka (2008)
+    prims["seasonality_raw"] = close.shift(21) / close.shift(252) - 1
+
+    # tail_risk: 0.6×(-skew_252) + 0.4×(ret<5%分位比率)
+    # skew 已在上方 for 循环中计算, 直接引用 skew_252
+    if "skew_252" in prims:
+        pct_ret_252 = prims["pct_ret"].rolling(252, min_periods=60)
+        var_5pct = pct_ret_252.quantile(0.05)
+        tail_hits = (prims["pct_ret"] < var_5pct).rolling(252, min_periods=60).sum() / 252
+        prims["tail_risk_raw"] = 0.6 * (-prims["skew_252"]) + 0.4 * tail_hits
+
     # ── shortcut 因子整块 zscore panel 预计算 (A2) ──
     # 物化场景下逐日调 _cs_zscore 开销大; 这里一次算完整块, shortcut 直接取行.
     _precompute_shortcut_zscore_panels(prims, factor_names)
@@ -345,6 +363,25 @@ def _precompute_shortcut_zscore_panels(prims: dict,
                 s_key, l_key, std_key = f"turnover_ma_{win}", f"turnover_ma_{long_w}", f"turnover_std_{long_w}"
                 if s_key in prims and l_key in prims and std_key in prims:
                     raw = (prims[s_key] - prims[l_key]) / prims[std_key].replace(0, np.nan)
+            # ── v374: 4 新 shortcut 面板 ──
+            elif fn_name == "compute_intraday_range" and "range_ma_20" in prims:
+                raw = -prims["range_ma_20"]
+            elif fn_name == "compute_seasonality_12m_1m" and "seasonality_raw" in prims:
+                raw = prims["seasonality_raw"]
+            elif fn_name == "compute_tail_risk" and "tail_risk_raw" in prims:
+                raw = prims["tail_risk_raw"]
+            elif fn_name == "compute_market_beta_60d" and "benchmark_ret" in prims:
+                # 向量化 beta: cov(r_i, r_bm) / var(r_bm) rolling 60d, 取负(低beta溢价)
+                log_ret = prims["log_ret"]
+                bm_ret = prims["benchmark_ret"]
+                win = 60
+                half = 30
+                rho = log_ret.rolling(win, min_periods=half).corr(bm_ret)
+                sig_i = log_ret.rolling(win, min_periods=half).std()
+                sig_bm = bm_ret.rolling(win, min_periods=half).std()
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    beta = rho.multiply(sig_i).div(sig_bm, axis=0)
+                raw = -beta  # 低beta溢价: 低beta→高分
 
             if raw is not None:
                 prims[zkey] = _cs_zscore_frame(raw)
@@ -844,3 +881,44 @@ def _uret(prims: dict, date: str, window: int = 20):
 
 FACTOR_SHORTCUT["compute_turnover_accel"] = _turnover_accel
 FACTOR_SHORTCUT["compute_uret"] = _uret
+
+# ── v374: 4 新 shortcut (range_20d / seasonality_12m_1m / tail_risk / market_beta_60d) ──
+
+def _intraday_range(prims: dict, date: str, window: int):
+    """日内振幅 = -range_ma_20.loc[date] → zscore."""
+    zkey = "zscore:range_20d"
+    if zkey in prims:
+        return prims[zkey].loc[date].rename("range_20d")
+    from quant.factor.registry import _cs_zscore
+    s = prims["range_ma_20"].loc[date].dropna()
+    return _cs_zscore(-s).rename("range_20d")
+
+def _seasonality(prims: dict, date: str, window: int = None):
+    """季节效应 = seasonality_raw.loc[date] → zscore. 来源: Heston & Sadka (2008)."""
+    zkey = "zscore:seasonality_12m_1m"
+    if zkey in prims:
+        return prims[zkey].loc[date].rename("seasonality_12m_1m")
+    from quant.factor.registry import _cs_zscore
+    s = prims["seasonality_raw"].loc[date].dropna()
+    return _cs_zscore(s).rename("seasonality_12m_1m")
+
+def _tail_risk_shortcut(prims: dict, date: str, window: int = None):
+    """尾部风险 = tail_risk_raw.loc[date] → zscore. 来源: Kelly & Jiang (2014)."""
+    zkey = "zscore:tail_risk"
+    if zkey in prims:
+        return prims[zkey].loc[date].rename("tail_risk")
+    from quant.factor.registry import _cs_zscore
+    s = prims["tail_risk_raw"].loc[date].dropna()
+    return _cs_zscore(s).rename("tail_risk")
+
+def _market_beta(prims: dict, date: str, window: int = None):
+    """市场Beta = -beta_60d.loc[date] → zscore. 低beta溢价, 来源: Frazzini & Pedersen (2014)."""
+    zkey = "zscore:market_beta_60d"
+    if zkey in prims:
+        return prims[zkey].loc[date].rename("market_beta_60d")
+    return pd.Series(np.nan, index=prims["log_ret"].columns, name="market_beta_60d")
+
+FACTOR_SHORTCUT["compute_intraday_range"] = _intraday_range
+FACTOR_SHORTCUT["compute_seasonality_12m_1m"] = _seasonality
+FACTOR_SHORTCUT["compute_tail_risk"] = _tail_risk_shortcut
+FACTOR_SHORTCUT["compute_market_beta_60d"] = _market_beta

@@ -29,9 +29,9 @@ def compute_ctr(data: "pd.DataFrame", date: str, window: int = 20) -> "pd.Series
     来源: 东吴证券金工 (2024), IC=-7.6%, IR=2.63.
           v366: DataFrame 全向量化替代 per-symbol Python 循环 (~100x 加速).
     """
-    opn = data["open"]
-    close = data["close"]
-    to = data["turnover"]
+    opn = data["open"].astype(float)
+    close = data["close"].astype(float)
+    to = data["turnover"].astype(float)
 
     if date not in to.index:
         return pd.Series(np.nan, index=to.columns, name="ctr_20d")

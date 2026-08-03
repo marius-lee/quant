@@ -16,8 +16,8 @@ _log = get_logger(__name__)
 def _vwap(data):
     """日均价 = amount / volume."""
     if "amount" in data and "volume" in data:
-        amt = data["amount"]
-        vol = data["volume"]
+        amt = data["amount"].astype(float)
+        vol = data["volume"].astype(float)
         return amt / vol.replace(0, np.nan)
     return None
 
@@ -25,7 +25,7 @@ def _vwap(data):
 def _adv(data, window):
     """window 日均成交额."""
     if "amount" in data:
-        return data["amount"].rolling(window, min_periods=max(window // 2, 1)).mean()
+        return data["amount"].astype(float).rolling(window, min_periods=max(window // 2, 1)).mean()
     return None
 
 
@@ -44,8 +44,8 @@ def _rolling_corr(a, b, window):
 # ═══════════════════════════════════════════════
 def compute_alpha033(data, date, window=None):
     """Alpha#33: -1 + open/close. 高开→正, 低开→负."""
-    close = data["close"] if isinstance(data.columns, pd.MultiIndex) else data
-    opn = data["open"] if "open" in data.columns.get_level_values(0) else None
+    close = data["close"].astype(float) if isinstance(data.columns, pd.MultiIndex) else data.astype(float)
+    opn = data["open"].astype(float) if "open" in data.columns.get_level_values(0) else None
     if close is None or opn is None or close.empty:
         return None
     gap = opn.iloc[-1] / close.iloc[-1] - 1
@@ -58,7 +58,7 @@ def compute_alpha033(data, date, window=None):
 def compute_alpha042(data, date, window=None):
     """Alpha#42: VWAP vs close 偏离度."""
     v = _vwap(data)
-    close = data["close"] if isinstance(data.columns, pd.MultiIndex) else data
+    close = data["close"].astype(float) if isinstance(data.columns, pd.MultiIndex) else data.astype(float)
     if v is None or close is None or close.empty:
         return None
     v_last = v.iloc[-1]
@@ -75,8 +75,8 @@ def compute_alpha042(data, date, window=None):
 def compute_alpha041(data, date, window=None):
     """Alpha#41: 几何均值 vs VWAP."""
     v = _vwap(data)
-    high = data["high"] if "high" in data.columns.get_level_values(0) else None
-    low = data["low"] if "low" in data.columns.get_level_values(0) else None
+    high = data["high"].astype(float) if "high" in data.columns.get_level_values(0) else None
+    low = data["low"].astype(float) if "low" in data.columns.get_level_values(0) else None
     if v is None or high is None or low is None:
         return None
     geo = np.sqrt(np.asarray(high.iloc[-1].values, dtype=np.float64) * np.asarray(low.iloc[-1].values, dtype=np.float64))
@@ -89,8 +89,8 @@ def compute_alpha041(data, date, window=None):
 # ═══════════════════════════════════════════════
 def compute_alpha012(data, date, window=None):
     """Alpha#12: 成交量变化方向 × 价格反向变动."""
-    close = data["close"] if isinstance(data.columns, pd.MultiIndex) else data
-    volume = data["volume"] if "volume" in data.columns.get_level_values(0) else None
+    close = data["close"].astype(float) if isinstance(data.columns, pd.MultiIndex) else data.astype(float)
+    volume = data["volume"].astype(float) if "volume" in data.columns.get_level_values(0) else None
     if close is None or volume is None or close.empty:
         return None
     dv = np.sign(volume.iloc[-1] - volume.iloc[-2])
@@ -103,8 +103,8 @@ def compute_alpha012(data, date, window=None):
 # ═══════════════════════════════════════════════
 def compute_alpha002(data, date, window=None):
     """Alpha#2: 量价背离. v372: 仅取 tail 行做 rolling corr (O(T×N)→O(W×N))."""
-    close = data["close"] if isinstance(data.columns, pd.MultiIndex) else data
-    volume = data["volume"] if "volume" in data.columns.get_level_values(0) else None
+    close = data["close"].astype(float) if isinstance(data.columns, pd.MultiIndex) else data.astype(float)
+    volume = data["volume"].astype(float) if "volume" in data.columns.get_level_values(0) else None
     if close is None or volume is None or close.empty or len(close) < 10:
         return None
     window = 6
@@ -124,10 +124,10 @@ def compute_alpha002(data, date, window=None):
 # ═══════════════════════════════════════════════
 def compute_alpha035(data, date, window=None):
     """Alpha#35: 成交量×价格区间×动量 复合."""
-    close = data["close"] if isinstance(data.columns, pd.MultiIndex) else data
-    high = data["high"] if "high" in data.columns.get_level_values(0) else None
-    low = data["low"] if "low" in data.columns.get_level_values(0) else None
-    volume = data["volume"] if "volume" in data.columns.get_level_values(0) else None
+    close = data["close"].astype(float) if isinstance(data.columns, pd.MultiIndex) else data.astype(float)
+    high = data["high"].astype(float) if "high" in data.columns.get_level_values(0) else None
+    low = data["low"].astype(float) if "low" in data.columns.get_level_values(0) else None
+    volume = data["volume"].astype(float) if "volume" in data.columns.get_level_values(0) else None
     if close is None or volume is None or high is None or low is None or len(close) < 35:
         return None
 
@@ -151,10 +151,10 @@ def compute_alpha035(data, date, window=None):
 # ═══════════════════════════════════════════════
 def compute_alpha055(data, date, window=None):
     """Alpha#55: 价格位置 vs 成交量 相关性. v372: rolling max/min/rank 全历史, corr 仅 tail."""
-    close = data["close"] if isinstance(data.columns, pd.MultiIndex) else data
-    high = data["high"] if "high" in data.columns.get_level_values(0) else None
-    low = data["low"] if "low" in data.columns.get_level_values(0) else None
-    volume = data["volume"] if "volume" in data.columns.get_level_values(0) else None
+    close = data["close"].astype(float) if isinstance(data.columns, pd.MultiIndex) else data.astype(float)
+    high = data["high"].astype(float) if "high" in data.columns.get_level_values(0) else None
+    low = data["low"].astype(float) if "low" in data.columns.get_level_values(0) else None
+    volume = data["volume"].astype(float) if "volume" in data.columns.get_level_values(0) else None
     if close is None or volume is None or high is None or low is None or len(close) < 15:
         return None
 

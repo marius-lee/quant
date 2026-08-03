@@ -6,7 +6,7 @@ import os as _os
 from typing import Optional
 
 from quant.config.constants import (
-    _get_board_limit, _get_limit_detection_pct,
+    _get_board_limit, _require_cfg,
     _LHB_WINDOW,
 )
 from quant.factor.registry import _cs_zscore
@@ -61,27 +61,37 @@ def compute_limit_up_proximity(data: "pd.DataFrame", date: str, window: int = 5,
 # 首板次日连板概率 30-40%, IC≈0.06-0.10 (A股独有)
 # ═══════════════════════════════════════════════════════════
 
+def _vectorized_limit_pcts(symbols, aux, margin_pct):
+    """向量化板块涨跌停检测阈值 (百分比), 替代 per-symbol _get_limit_detection_pct.
+    来源: config.yaml factor.board_limits + factor.limit_detection_margin.
+    main=10%, main_st=5%, chinext=20%, star=20%, beijing=30%."""
+    limits = pd.Series(10.0 - margin_pct * 100, index=symbols)  # 主板默认
+    stocks = aux.get("stocks", pd.DataFrame())
+    if not stocks.empty and "name" in stocks.columns:
+        st_mask = stocks["name"].str.contains("ST", na=False)
+        st_syms = st_mask[st_mask].index.intersection(symbols)
+        limits.loc[st_syms] = 5.0 - margin_pct * 100
+    star_mask = pd.Series([s.startswith("688") for s in symbols], index=symbols)
+    limits.loc[star_mask] = 20.0 - margin_pct * 100
+    chinext_mask = pd.Series([s.startswith("300") for s in symbols], index=symbols)
+    limits.loc[chinext_mask] = 20.0 - margin_pct * 100
+    bj_mask = pd.Series([s.startswith(("8", "4")) for s in symbols], index=symbols)
+    limits.loc[bj_mask] = 30.0 - margin_pct * 100
+    return limits
+
+
 def compute_limit_up_streak(data: "pd.DataFrame", date: str, window: int = 0, aux=None) -> "pd.Series":
     """涨停连板因子: 从 data OHLCV 自算涨停 + 连板数(不依赖 limit_up_pool)。
 
-    算法:
-      - 涨停检测阈值: 板块涨跌停幅度 - 容差 (config.yaml factor.limit_detection_margin),
-        从 aux["stocks"] 获取板块/ST 状态, config.yaml 读取幅度值
-      - 涨停 = 日收益 >= 检测阈值 且 close == high
-      - 连板数 = 从今日往前连续涨停的天数
-      - 倒U型评分: 1连板→1, 2→3, 3→6, 4→10, 5→8, 6+→递减
-
+    v366: pandas 全向量化替代 per-symbol Python 循环 + 内层 for。
     来源: A股涨跌停制度独有异象. 涨停板有显著动量溢出.
-    修改: 2026-07-03 — 从 limit_up_pool 改为 data OHLCV 自算.
-    修改: 2026-07-17 — 涨跌停阈值从 config.yaml 读取, aux["stocks"] 提供板块/ST 识别.
     """
     close = data["close"]
     high = data["high"]
 
     if aux is None or "stocks" not in aux:
-        return None  # aux data not preloaded, skip gracefully. was: requires aux['stocks']")
+        return None
 
-    # 匹配日期索引 (兼容 Timestamp 和 string)
     date_str = str(date)[:10]
     matched = [d for d in close.index if str(d)[:10] == date_str]
     if not matched:
@@ -89,80 +99,44 @@ def compute_limit_up_streak(data: "pd.DataFrame", date: str, window: int = 0, au
 
     idx = close.index.get_loc(matched[0])
     symbols = list(close.columns)
-
-    # 往前看 5 个交易日判断连板 (最多 5 连板, 超过递减)
     lookback = 5
     start = max(0, idx - lookback)
     cw = close.iloc[start:idx + 1]
     hw = high.iloc[start:idx + 1]
+    ret = cw.pct_change() * 100.0
 
-    ret = cw.pct_change()  # row 0 = NaN (无前一日 close)
+    margin = _require_cfg("factor.limit_detection_margin")
+    limits = _vectorized_limit_pcts(symbols, aux, margin)
 
-    # 涨停检测阈值: 各板块涨跌停幅度 - 容差, 从 aux["stocks"] + config.yaml
-    limit_map = {sym: _get_limit_detection_pct(sym, aux) for sym in symbols}
+    # 向量化: 涨停 = 日收益 >= 检测阈值 且 close == high 且 high > 0
+    is_limit_up = (ret >= limits) & (cw == hw) & (hw > 0)
 
-    # 今日是否涨停
-    today_ret = ret.iloc[-1] * 100
-    today_close = cw.iloc[-1]
-    today_high = hw.iloc[-1]
+    # 从末尾往前数连续涨停天数 (向量化)
+    reversed_lu = is_limit_up.iloc[::-1]
+    streaks = ((~reversed_lu).cumsum() == 0).sum()  # Series (N,), 每列连续 True 数量
 
-    scores = {}
-    for sym in symbols:
-        lim = limit_map[sym]
-        r = today_ret.get(sym)
-        c = today_close.get(sym)
-        h = today_high.get(sym)
-        if pd.isna(r) or pd.isna(c) or pd.isna(h):
-            continue
-        if not (r >= lim and c == h and h > 0):
-            continue  # 今日未涨停 → 无信号
+    # 倒U型评分: 1→1, 2→3, 3→6, 4→10, 5→8, 6+→递减
+    import numpy as np
+    s = streaks.values.astype(float)
+    scores_arr = np.where(s <= 4, s * (s + 1) / 2, np.maximum(0, 10 - (s - 4) * 2))
+    # 今日未涨停 → 0 分
+    scores_arr[~is_limit_up.iloc[-1].values] = 0.0
 
-        # 往前数连板
-        streak = 1
-        for j in range(len(cw) - 2, -1, -1):
-            rj = ret.iloc[j].get(sym)
-            cj = cw.iloc[j].get(sym)
-            hj = hw.iloc[j].get(sym)
-            if pd.isna(rj) or pd.isna(cj) or pd.isna(hj):
-                break
-            if (rj * 100 >= lim) and (cj == hj and hj > 0):
-                streak += 1
-            else:
-                break
-
-        # 倒U型评分: 连板越多越强, 但 >=5 连板风险加大
-        if streak <= 4:
-            scores[sym] = streak * (streak + 1) / 2  # 1→1, 2→3, 3→6, 4→10
-        else:
-            scores[sym] = max(0, 10 - (streak - 4) * 2)  # 5→8, 6→6, 7→4, ...
-
-    result = pd.Series(scores, dtype=float)
-    result = result.reindex(symbols).fillna(0.0)
+    result = pd.Series(scores_arr, index=symbols).fillna(0.0)
     return _cs_zscore(result).rename("zt_streak")
 
 
 def compute_dt_streak(data: "pd.DataFrame", date: str, window: int = 0, aux=None) -> "pd.Series":
-    """跌停连板因子: zt_streak 的镜像 — 从 data OHLCV 自算跌停 + 连板数。
-
-    算法:
-      - 跌停检测阈值: 负的板块涨跌停幅度 + 容差 (config.yaml factor.limit_detection_margin),
-        从 aux["stocks"] 获取板块/ST 状态, config.yaml 读取幅度值
-      - 跌停 = 日收益 <= 检测阈值 且 close == low
-      - 连板数 = 从今日往前连续跌停的天数
-      - 负向评分(镜像倒U): 1连板→-1, 2→-3, 3→-6, 4→-10, 5→-8, 6+→递减
-      - 跌停后大概率继续下跌(A股实证~70%), 连板越多负信号越强
-
+    """跌停连板因子: zt_streak 的镜像。
+    v366: pandas 全向量化替代 per-symbol Python 循环。
     来源: A股涨跌停制度独有异象. 跌停板有显著的负向动量溢出.
-    添加: 2026-07-03 — zt_streak 镜像, Phase 7 P1.
-    修改: 2026-07-17 — 涨跌停阈值从 config.yaml 读取, aux["stocks"] 提供板块/ST 识别.
     """
     close = data["close"]
     low = data["low"]
 
     if aux is None or "stocks" not in aux:
-        return None  # aux data not preloaded, skip gracefully. was: requires aux['stocks']")
+        return None
 
-    # 匹配日期索引
     date_str = str(date)[:10]
     matched = [d for d in close.index if str(d)[:10] == date_str]
     if not matched:
@@ -170,54 +144,28 @@ def compute_dt_streak(data: "pd.DataFrame", date: str, window: int = 0, aux=None
 
     idx = close.index.get_loc(matched[0])
     symbols = list(close.columns)
-
-    # 往前看 5 个交易日判断连板
     lookback = 5
     start = max(0, idx - lookback)
     cw = close.iloc[start:idx + 1]
     lw = low.iloc[start:idx + 1]
+    ret = cw.pct_change() * 100.0
 
-    ret = cw.pct_change()
+    margin = _require_cfg("factor.limit_detection_margin")
+    limits = _vectorized_limit_pcts(symbols, aux, margin)  # 正阈值, 取负用于跌停
 
-    # 跌停检测阈值: 负的(板块涨跌停幅度 - 容差), 从 aux["stocks"] + config.yaml
-    limit_map = {sym: -_get_limit_detection_pct(sym, aux) for sym in symbols}
+    # 跌停 = 日收益 <= -检测阈值 且 close == low 且 low > 0
+    is_limit_down = (ret <= -limits) & (cw == lw) & (lw > 0)
 
-    today_ret = ret.iloc[-1] * 100
-    today_close = cw.iloc[-1]
-    today_low = lw.iloc[-1]
+    # 连续跌停天数
+    reversed_ld = is_limit_down.iloc[::-1]
+    streaks = ((~reversed_ld).cumsum() == 0).sum()
 
-    scores = {}
-    for sym in symbols:
-        lim = limit_map[sym]
-        r = today_ret.get(sym)
-        c = today_close.get(sym)
-        lo = today_low.get(sym)
-        if pd.isna(r) or pd.isna(c) or pd.isna(lo):
-            continue
-        if not (r <= lim and c == lo and lo > 0):
-            continue  # 今日未跌停 → 无信号
+    import numpy as np
+    s = streaks.values.astype(float)
+    scores_arr = np.where(s <= 4, -s * (s + 1) / 2, -np.maximum(0, 10 - (s - 4) * 2))
+    scores_arr[~is_limit_down.iloc[-1].values] = 0.0
 
-        # 往前数连板
-        streak = 1
-        for j in range(len(cw) - 2, -1, -1):
-            rj = ret.iloc[j].get(sym)
-            cj = cw.iloc[j].get(sym)
-            lj = lw.iloc[j].get(sym)
-            if pd.isna(rj) or pd.isna(cj) or pd.isna(lj):
-                break
-            if (rj * 100 <= lim) and (cj == lj and lj > 0):
-                streak += 1
-            else:
-                break
-
-        # 负向评分(镜像倒U): 连板越多负得越强
-        if streak <= 4:
-            scores[sym] = -streak * (streak + 1) / 2  # 1→-1, 2→-3, 3→-6, 4→-10
-        else:
-            scores[sym] = -(max(0, 10 - (streak - 4) * 2))  # 5→-8, 6→-6, 7→-4, ...
-
-    result = pd.Series(scores, dtype=float)
-    result = result.reindex(symbols).fillna(0.0)
+    result = pd.Series(scores_arr, index=symbols).fillna(0.0)
     return _cs_zscore(result).rename("dt_streak")
 
 

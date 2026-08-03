@@ -2,7 +2,7 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
-## 当前状态 (test-v366, 2026-08-03)
+## 当前状态 (test-v369, 2026-08-03)
 
 ### 关键指标
 - 因子: 84 注册 (0 active, 20 evaluating, 25 probation, 46 archived — 8 个新注册待评估)
@@ -21,18 +21,32 @@
 
 ### test-v310→v366 变更总览
 
-**v366**: P0 因子正确性修复 — shortcut 公式与原始函数对齐
+**v369**: 盘中风控 monitor 异常终止修复
 
-| 编号 | 项目 | 文件 | 状态 |
-|------|------|------|------|
-| P0#1 | Piotroski F-Score: 6/9组件魔术索引错误 (total_liability当total_assets) → namedtuple | `missing.py` | ✅ |
-| P0#2 | turnover_anomaly shortcut: (MA5-MA60)/std60 替代 (ratio-1) | `_primitives.py` | ✅ |
-| P0#3 | idio_vol shortcut: 向量化OLS β回归替代硬编码β=1 | `_primitives.py` | ✅ |
-| P0#4 | compute_cf_roa: iloc[0]→iloc[-1] 取最新季度 | `high_priority.py` | ✅ |
-| P0#5 | revenue/earnings_growth_yoy: 真YoY替代QoQ | `missing.py` | ✅ |
-| P0#6 | _build_fundamentals_panel: ROE推导改用pe_ttm | `store.py` | ✅ |
-| P1#7 | reversal shortcut: cum_log替代mean_log | `_primitives.py` | ✅ |
-| P1#9 | 删除str shortcut (市值中性化省略, 与原始不等价) | `_primitives.py` | ✅ |
+| 问题 | 修复 | 文件 |
+|------|------|------|
+| _check_timeouts 14:55 误杀 monitor (limit=1800s, 实际运行19200s) | limit 1800→21600, 与 grace_seconds 对齐 | `orchestrator.py` |
+| monitor 线程不响应 _monitor_stop → 被孤立后仍写 task_runs | stop_event 传入内循环, sleep 期间检查 | `monitor.py` |
+| _tk_finish 在 status 已非 running 时抛 RuntimeError | 防御: 查最新行 status, 非 running 时 warn 跳过 | `task_log.py` |
+
+**v368**: 因子缓存物化分步计时埋点 (load/prim/aux/compute/write)
+
+**v367**: 因子缓存物化性能优化 Round 1+2 — 预计全量 4-8h → 1.5-3.5h
+
+| 编号 | 项目 | 文件 | 预计节省/chunk |
+|------|------|------|---------------|
+| R1.1 | ztd ×5 冗余: worker_init 删 preload_ztd_cache (fork 已继承) | `store.py` | 60-180s |
+| R1.2 | 杀死 primitives: 删除 roll_high/low/min_pct/vol_ma/amt_ma (5族×~10窗=~50 rolling) | `_primitives.py` | 15-20s |
+| R1.3 | market_beta 复用 prims benchmark_ret (消除 per-date SQL) | `_dispatch.py` | ~5s |
+| R1.4 | fundamentals panel 复用 data_full close (消除 daily SQL+pivot+ffill) | `store.py` | 5-10s |
+| R1.5 | mean_log 去重: 仅保留 w=20 (uret), cum_log 已覆盖动量/反转 | `_primitives.py` | ~5s |
+| R1.x | close.pct_change() 去重: 3→1 (复用 pct_ret) | `_primitives.py` | ~3s |
+| R2.1 | ctr_20d 全向量化: per-symbol for loop → DataFrame numpy 广播 (~100x) | `_turnover.py` | 400-600s |
+| R2.2 | zt_streak/dt_streak 全向量化: per-symbol 双层循环 → pandas 布尔矩阵 | `_event.py` | 200-400s |
+| R2.3 | _turnover_reversal 用 turnover_ma 原语替代每日期 to.rolling | `_primitives.py` | ~60s |
+| R1.x | news 因子 aux 预加载基础设施 (news_daily_count → aux) | `_preload.py` | 后续激活 |
+
+**v366**: P0 因子正确性修复 (Piotroski F-Score/turnover_anomaly/idio_vol/cf_roa/YoY/pe_ttm)
 
 **v365**: (skip — VERSION bump only)
 

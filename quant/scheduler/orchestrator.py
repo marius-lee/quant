@@ -92,7 +92,7 @@ def _run():
         try:
             from quant.scheduler.monitor import _run_continuous
             _log.info(f"[{current_day}] monitor daemon started (09:35-11:30,13:00-14:55)")
-            _run_continuous(current_day)
+            _run_continuous(current_day, stop_event=_monitor_stop)
             _log.info(f"[{current_day}] monitor daemon stopped")
         except Exception as _e:
             _log.exception(f"[{current_day}] monitor daemon crashed: {_e}")
@@ -337,7 +337,8 @@ def _check_timeouts(today: str):
             limit = _TIMEOUTS.get(task_name)
             if task_name == "monitor":
                 if now.hour >= 14 and now.minute >= 55:
-                    limit = 1800
+                    # v368: 与 _tk_start grace_seconds=21600 对齐 (全天交易窗口 ~5h20m)
+                    limit = 21600
                 else:
                     continue
             if limit is None:

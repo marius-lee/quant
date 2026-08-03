@@ -350,6 +350,19 @@ def preload_aux_data_chunk(symbols: list, date_from: str, date_to: str,
             columns=["symbol", "date", "open_30min", "prev_close",
                      "open_30min_vol", "close_5min"])
 
+    # news_daily_count: chunk 日期范围 (v366: 消除 3 个新闻因子 per-date SQL)
+    try:
+        df = pd.read_sql_query(
+            "SELECT symbol, date, avg_sentiment, news_count "
+            "FROM news_daily_count WHERE date >= ? AND date <= ? ORDER BY date",
+            conn, params=(date_from, date_to)
+        )
+        result["news"] = df if not df.empty else pd.DataFrame(
+            columns=["symbol", "date", "avg_sentiment", "news_count"])
+    except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
+        result["news"] = pd.DataFrame(
+            columns=["symbol", "date", "avg_sentiment", "news_count"])
+
     if _own_conn:
         conn.close()
 
@@ -446,5 +459,12 @@ def slice_aux_for_date(aux_full: dict, date: str) -> dict:
         result["intraday_snapshot"] = snap.loc[pd.to_datetime(snap["date"]) == ts]
     else:
         result["intraday_snapshot"] = snap
+
+    # news: chunk → 单日期过滤 (v366: 消除 per-date SQL)
+    news = aux_full.get("news", pd.DataFrame())
+    if not news.empty and "date" in news.columns:
+        result["news"] = news.loc[pd.to_datetime(news["date"]) == ts]
+    else:
+        result["news"] = news
 
     return result

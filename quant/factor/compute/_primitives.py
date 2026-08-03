@@ -141,36 +141,17 @@ def precompute_primitives(data: pd.DataFrame,
         prims[f"cum_log_{w}"] = log_ret.rolling(w, min_periods=max(w//2, 1)).sum()
         # 滚动波动率
         prims[f"vol_{w}"] = log_ret.rolling(w, min_periods=max(w//2, 1)).std() * np.sqrt(_require_cfg("market.annual_trading_days"))
-        # 滚动均值收益
-        prims[f"mean_log_{w}"] = log_ret.rolling(w, min_periods=max(w//2, 1)).mean()
-    
-    # ── 滚动统计量 (基于 close) ──
-    for w in sorted(all_windows):
-        if w <= 1:
-            continue
-        prims[f"roll_high_{w}"] = close.rolling(w, min_periods=max(w//2, 1)).max()
-        prims[f"roll_low_{w}"] = close.rolling(w, min_periods=max(w//2, 1)).min()
-    
-    # ── 滚动统计量 (基于 pct_ret) ──
+        # 滚动均值收益 — 仅 uret_20d 用 w=20 (v366: cum_log 已覆盖动量/反转, mean_log 线性相关)
+        if w == 20:
+            prims[f"mean_log_{w}"] = log_ret.rolling(w, min_periods=max(w//2, 1)).mean()
+
+    # ── 滚动统计量 (基于 pct_ret) — 仅 max_pct 被 _max_return shortcut 消费 ──
     pct_ret = prims["pct_ret"]
     for w in sorted(all_windows):
         if w <= 1:
             continue
         prims[f"max_pct_{w}"] = pct_ret.rolling(w, min_periods=max(w//2, 1)).max()
-        prims[f"min_pct_{w}"] = pct_ret.rolling(w, min_periods=max(w//2, 1)).min()
-
-    # ── 滚动成交量均值 ──
-    if volume is not None:
-        for w in sorted(all_windows):
-            if w <= 1:
-                continue
-            prims[f"vol_ma_{w}"] = volume.rolling(w, min_periods=max(w//2, 1)).mean()
-
-    if amount is not None:
-        for w in sorted(all_windows):
-            if w <= 1:
-                continue
-            prims[f"amt_ma_{w}"] = amount.rolling(w, min_periods=max(w//2, 1)).mean()
+    # roll_high/roll_low/min_pct/vol_ma/amt_ma — v366 killed: 5 统计族所有窗口无消费者验证
 
 
 
@@ -211,8 +192,9 @@ def precompute_primitives(data: pd.DataFrame,
         prims[f"ma_{w}"] = close.rolling(w, min_periods=max(w // 2, 1)).mean()
 
     # ── 量价相关性 (Pearson) ──
+    # v366: 复用 pct_ret 避免 close.pct_change() 重复计算
     if volume is not None:
-        close_ret = close.pct_change()
+        close_ret = prims["pct_ret"]
         vol_chg = volume.pct_change()
         for w in sorted(all_windows):
             if w <= 1:
@@ -256,8 +238,9 @@ def precompute_primitives(data: pd.DataFrame,
             5, min_periods=3).mean()
 
     # ── ADR-043 layer2: 量价同步原始值 (vol_price_sync_20d 共用) ──
+    # v366: 复用 pct_ret 避免 close.pct_change() 重复计算
     if volume is not None:
-        close_ret = close.pct_change()
+        close_ret = prims["pct_ret"]
         up_mask = close_ret > 0
         down_mask = close_ret < 0
         up_sync = (close_ret * volume).where(up_mask, 0)
@@ -472,14 +455,20 @@ def _overnight_gap(prims: dict, date: str, window: int):
 # _intraday_range removed from FACTOR_SHORTCUT — 走 fn(data) 路径
 
 def _turnover_reversal(prims: dict, date: str, short: int, long: int = 20):
-    """换手率反转: 需要换手率数据, 用 approx_turnover 近似。"""
+    """换手率反转: 用预计算 turnover_ma 替代每日期 to.rolling(mean)。
+    v366: 消除 O(T×N) 每日期滚动, 直接用 prims 中的 turnover_ma_5/20."""
     from quant.factor.registry import _cs_zscore
-    to = prims.get("approx_turnover")
-    if to is None:
-        _log.warning("_turnover_reversal: no approx_turnover in prims, skipping")
-        return None
-    s_avg = to.rolling(short, min_periods=max(short // 2, 1)).mean().loc[date]
-    l_avg = to.rolling(long, min_periods=max(long // 2, 1)).mean().loc[date]
+    s_key = f"turnover_ma_{short}"
+    l_key = f"turnover_ma_{long}"
+    if s_key not in prims or l_key not in prims:
+        to = prims.get("turnover")
+        if to is None:
+            return None
+        s_avg = to.rolling(short, min_periods=max(short // 2, 1)).mean().loc[date]
+        l_avg = to.rolling(long, min_periods=max(long // 2, 1)).mean().loc[date]
+    else:
+        s_avg = prims[s_key].loc[date]
+        l_avg = prims[l_key].loc[date]
     ratio = s_avg / l_avg.replace(0, np.nan)
     return _cs_zscore(-(ratio - 1)).rename(f"turnover_rev_{short}d")
 

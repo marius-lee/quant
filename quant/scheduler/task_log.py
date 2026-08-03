@@ -135,16 +135,26 @@ def finish(task_name: str, date: str, status: str,
         summary_json = json.dumps(summary, ensure_ascii=False) if summary else None
         # 先查找 running 行
         row = conn.execute(
-            "SELECT id FROM task_runs"
-            " WHERE task_name = ? AND date = ? AND status = 'running'"
+            "SELECT id, status FROM task_runs"
+            " WHERE task_name = ? AND date = ?"
             " ORDER BY id DESC LIMIT 1",
             (task_name, date)
         ).fetchone()
         if row is None:
             raise RuntimeError(
-                f"task_log.finish({task_name}, {date}): no running row found "
-                f"— task may not have been started, or was already finished by another caller"
+                f"task_log.finish({task_name}, {date}): no row found"
             )
+        rid, cur_status = row
+        if cur_status != 'running':
+            # v368: 防御 — 已被 _check_timeouts 标为 aborted 时不抛异常
+            import logging
+            _finish_log = logging.getLogger("task_log")
+            _finish_log.warning(
+                f"task_log.finish({task_name}, {date}): status already '{cur_status}' "
+                f"(expected 'running'), skip update — likely auto-aborted by timeout checker"
+            )
+            conn.close()
+            return
         conn.execute(
             """UPDATE task_runs
                SET finished_at = ?, status = ?, error = ?, summary = ?

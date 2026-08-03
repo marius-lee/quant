@@ -92,15 +92,12 @@ _worker_fundamentals: "dict | None" = None
 
 
 def _worker_init(chunk_dates: list[str], symbols: list[str]):
-    """子进程初始化: 预加载 ztd 缓存。
+    """子进程初始化: fork 已继承父进程的 _ztd_cache, 无需重算。
 
     注意: data_full/prims/aux/fundamentals 通过模块全局变量共享 (fork 继承),
     不在 initargs 中传递以避免序列化开销。
     """
-    try:
-        preload_ztd_cache(chunk_dates, symbols)
-    except Exception as e:
-        _log.warning("factor_cache worker init ztd failed: %s", e)
+    pass  # fork 继承所有模块级缓存 (_ztd_cache/_DV_CACHE 等), 零初始化开销
 
 
 def _worker_compute_date(date_str: str, factor_names: list[str]) -> list[str]:
@@ -282,16 +279,18 @@ class FactorStore:
 
             t_chunk = _time.time()
 
-            # 分块加载: 只加载该块数据 + 回顾窗
+            # ── Step 1: 数据加载 ──
             data_start = (pd.Timestamp(chunk_start_dt) - pd.Timedelta(days=eff_days)).strftime("%Y-%m-%d")
             data_full = store.get_daily(symbols, start=data_start, end=chunk_end_dt)
-            _log.info("factor_cache: chunk %d/%d — loaded %d days × %d symbols",
-                      ci + 1, n_chunks, len(data_full), len(symbols))
+            t1 = _time.time()
+            _log.info("factor_cache: chunk %d/%d — loaded %d days × %d symbols (%.1fs)",
+                      ci + 1, n_chunks, len(data_full), len(symbols), t1 - t_chunk)
 
-            # 分块预计算原语 (A4: 按需原语, 只算 factor_names 需要的窗口)
+            # ── Step 2: 原语预计算 ──
             prims = precompute_primitives(data_full, factor_names=factor_names)
+            t2 = _time.time()
 
-            # 基准收益
+            # ── Step 3: 基准+缓存+aux+fundamentals ──
             try:
                 bm_ret = store.get_benchmark("000300", start=data_start)
                 if not bm_ret.empty:
@@ -299,23 +298,16 @@ class FactorStore:
             except Exception as _e:
                 _log.warning("factor_cache: benchmark_ret not available (%s)", _e)
 
-            # ztd 缓存 (按块日期)
             preload_ztd_cache(chunk_dates, symbols)
-
-            # aux 数据块级预加载 (ADR-043): 12 SQL 查询/块, slice 按日期过滤
             aux_full = preload_aux_data_chunk(symbols, chunk_start_dt, chunk_end_dt)
-
-            # fundamentals (B2: 向量化 PIT panel, 替代逐日循环)
             chunk_fundamentals = self._build_fundamentals_panel(
-                store, symbols, chunk_dates
+                store, symbols, chunk_dates, data_full=data_full
             )
+            t3 = _time.time()
 
-            # 逐日计算 (A3 收集 + B1 可选多进程)
-            chunk_rows = 0
-            chunk_dates_done = 0
+            # ── Step 4: 逐日因子计算 ──
             chunk_new_rows: dict[str, list[str]] = {d: [] for d in chunk_dates}
 
-            # 判断是否需要多进程: 日期多且 factor_names 含非 shortcut 因子时启用
             use_mp = len(chunk_dates) >= 10 and any(
                 self._factor_needs_worker(name) for name in factor_names
             )
@@ -325,12 +317,12 @@ class FactorStore:
                     aux_full, factor_names
                 )
             else:
+                chunk_dates_done = 0
                 for date_str in chunk_dates:
                     existing = self._get_existing_factors(date_str)
                     missing = [f for f in factor_names if f not in existing]
                     if not missing:
                         continue
-
                     lines = self._compute_date(
                         date_str, data_full, prims,
                         chunk_fundamentals.get(date_str),
@@ -339,24 +331,29 @@ class FactorStore:
                     if lines:
                         chunk_new_rows[date_str].extend(lines)
                         chunk_dates_done += 1
+            t4 = _time.time()
 
-            # chunk 级批量写 gzip CSV
+            # ── Step 5: CSV 写入 ──
             chunk_rows = self._write_chunk_rows(chunk_new_rows)
+            t5 = _time.time()
 
-            # P3b: 断点续传 — 每块完成后写 checkpoint
+            # P3b: 断点续传
             self._write_checkpoint(chunk_end_dt, ci + 1, n_chunks)
 
-            # 释放该块内存（含 DataStore 查询缓存）
+            # 释放内存
             del data_full, prims, chunk_fundamentals, aux_full
             if hasattr(store, '_query_cache'):
                 store._query_cache.clear()
             _gc.collect()
 
-            t_chunk_elapsed = _time.time() - t_chunk
             total_rows += chunk_rows
             n_dates_computed += chunk_dates_done
-            _log.info("factor_cache: chunk %d/%d done — %d rows in %.1fs",
-                      ci + 1, n_chunks, chunk_rows, t_chunk_elapsed)
+            _log.info(
+                "factor_cache: chunk %d/%d done — %d rows | "
+                "load=%.0fs prim=%.0fs aux=%.0fs compute=%.0fs write=%.0fs total=%.0fs",
+                ci + 1, n_chunks, chunk_rows,
+                t1 - t_chunk, t2 - t1, t3 - t2, t4 - t3, t5 - t4, t5 - t_chunk,
+            )
 
         elapsed = _time.time() - t0
         _log.info("factor_cache: materialized %d dates × %d factors × %d symbols → %d rows in %.1fs",
@@ -454,11 +451,15 @@ class FactorStore:
         return total
 
     def _build_fundamentals_panel(self, store, symbols: list[str],
-                                  chunk_dates: list[str]) -> dict[str, pd.DataFrame]:
+                                  chunk_dates: list[str],
+                                  data_full: pd.DataFrame = None) -> dict[str, pd.DataFrame]:
         """构建基本面 PIT panel, 返回 {date_str: DataFrame(symbol×field)}。
 
         B2 向量化实现: pivot + ffill 一次生成整块 panel,
         避免原逐日循环中的重复 pivot/loc。
+
+        data_full: 若传入 (MultiIndex field×symbol), 复用其 close 面板,
+        跳过 daily 表的独立 SQL 查询 (v366 性能优化)。
         """
         if not chunk_dates:
             return {}
@@ -492,8 +493,11 @@ class FactorStore:
         else:
             val_piv = None
 
-        # PIT close panel + 52周高
-        if not daily_df.empty:
+        # PIT close panel + 52周高 (v366: 优先复用 data_full["close"], 跳过一次 SQL+pivot+ffill)
+        if data_full is not None and "close" in data_full.columns.levels[0]:
+            close_piv = data_full["close"]
+            high_52w = close_piv.rolling(244, min_periods=60).max()
+        elif not daily_df.empty:
             daily_df["date"] = pd.to_datetime(daily_df["date"])
             close_piv = daily_df.pivot(index="date", columns="symbol",
                                        values="close").ffill()

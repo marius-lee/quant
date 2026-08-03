@@ -100,6 +100,8 @@ def compute_all_factors(data: pd.DataFrame, date: str,
         kwargs = {}
         if 'idio_vol' in name and benchmark_ret is not None:
             kwargs['benchmark_ret'] = benchmark_ret
+        if 'market_beta' in name and benchmark_ret is not None:
+            kwargs['benchmark_returns'] = benchmark_ret  # v366: 复用 prims benchmark_ret, 消除 per-date DB 查询
         _sig = _cached_sig(fn)
         if 'aux' in _sig.parameters:
             kwargs['aux'] = _aux

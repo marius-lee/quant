@@ -29,8 +29,9 @@ CHECK_INTERVAL_SEC = 30
 QUOTE_THROTTLE_SEC = 5  # 行情 API 限频
 
 
-def _run_continuous_inner(today: str):
-    """盘中持续风控循环 — 09:35-11:30, 13:00-14:55 每 30s 检查一次 (午休跳过)."""
+def _run_continuous_inner(today: str, stop_event=None):
+    """盘中持续风控循环 — 09:35-11:30, 13:00-14:55 每 30s 检查一次 (午休跳过).
+    v368: 响应 stop_event 避免被 orchestrator 孤立后仍写 task_runs. """
     from quant.scheduler.status import register
     from web.state_broker import broker
     from quant.execution.calendar import is_market_open
@@ -38,28 +39,33 @@ def _run_continuous_inner(today: str):
     register("monitor", "09:35-11:30,13:00-14:55", has_multiprocess=False)
 
     _log.info(f"[{today}] monitor started — interval={CHECK_INTERVAL_SEC}s")
-    quotes = {}  # 初始化, 由行情拉取块更新
+    quotes = {}
 
-    triggered_stop = set()   # 当日已触发: {"600036:profit", "000001:loss"}
+    triggered_stop = set()
     last_quote_ts = 0.0
 
+    def _should_stop():
+        return stop_event is not None and stop_event.is_set()
+
     while True:
+        if _should_stop():
+            _log.info(f"[{today}] monitor stopped — orchestrator signal")
+            break
+
         now = datetime.now()
         hhmm = time(now.hour, now.minute)
 
-        # 午休 11:30-13:00 — 市场休市, sleep 到 13:00 (来源: 2026-07-22 审查)
+        # 午休 11:30-13:00 — 市场休市
         if time(11, 30) <= hhmm < time(13, 0):
             _set_monitor_stage("lunch")
             _time.sleep(_require_cfg("quant.scheduler.poll_interval"))
             continue
 
         if hhmm >= time(14, 55):
-            pass  # 收市 (status 从 task_runs DB 读取)
             _log.info(f"[{today}] monitor stopped — market closing")
             break
 
         if hhmm < time(9, 35) or not is_market_open():
-            pass  # 未开盘 (status 从 task_runs DB 读取)
             _time.sleep(_require_cfg("quant.scheduler.poll_interval"))
             continue
 
@@ -358,16 +364,14 @@ def _outer_loop():
 
 
 
-def _run_continuous(today: str):
-    # grace=21600s (6h) 覆盖全天交易窗口 (test-v301: 原默认 120s → cron+daemon
-    # 双调度全天互相误 abort); rid=None 时直接返回, 否则 _tk_finish 必抛
-    # "no running row found" (原代码忽略返回值, 双触发必崩)
+def _run_continuous(today: str, stop_event=None):
+    """盘中风控入口。v368: 接收 orchestrator 的 stop_event, 传给内循环."""
     rid = _tk_start("monitor", today, grace_seconds=21600)
     if rid is None:
         _log.info(f"[{today}] monitor already running, skip duplicate trigger")
         return
     try:
-        _run_continuous_inner(today)
+        _run_continuous_inner(today, stop_event=stop_event)
         _tk_finish("monitor", today, "ok")
     except Exception as e:
         _log.exception(f"[{today}] monitor crashed: {e}")

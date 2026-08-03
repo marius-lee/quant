@@ -27,7 +27,7 @@ def compute_ctr(data: "pd.DataFrame", date: str, window: int = 20) -> "pd.Series
         5. 截面 zscore 后取负号 (高CTR→散户追涨→未来收益低)
 
     来源: 东吴证券金工 (2024), IC=-7.6%, IR=2.63.
-          CTR 度量隔夜方向不对称的换手行为: 上涨日放量 vs 下跌日放量的结构差异.
+          v366: DataFrame 全向量化替代 per-symbol Python 循环 (~100x 加速).
     """
     opn = data["open"]
     close = data["close"]
@@ -41,47 +41,34 @@ def compute_ctr(data: "pd.DataFrame", date: str, window: int = 20) -> "pd.Series
     if idx - start < 5:
         return pd.Series(np.nan, index=to.columns, name="ctr_20d")
 
-    symbols = to.columns
-    ctr_values = {}
     prev_close = close.shift(1)
 
-    for sym in symbols:
-        try:
-            o_sym = opn[sym].iloc[start:idx + 1]
-            pc_sym = prev_close[sym].iloc[start:idx + 1]
-            to_sym = to[sym].iloc[start:idx + 1]
-        except (KeyError, IndexError):
-            continue
+    # 全 DataFrame 向量化 (替代 per-symbol for loop)
+    o_slice = opn.iloc[start:idx + 1]
+    pc_slice = prev_close.iloc[start:idx + 1]
+    to_slice = to.iloc[start:idx + 1]
 
-        # 隔夜收益: open / prev_close - 1
-        valid = pc_sym.notna() & o_sym.notna() & (pc_sym != 0)
-        overnight = np.where(valid, o_sym.values / pc_sym.values - 1, np.nan)
+    # 隔夜收益: open / prev_close - 1
+    overnight = o_slice / pc_slice.replace(0, np.nan) - 1
 
-        # 换手率变化: turnover_t / turnover_{t-1} - 1
-        # inf 剔除: turnover 零填充段 → 非零的 0→x 跳变产生 inf, 单只 inf
-        # 会污染截面 zscore (std=NaN → 全 universe NaN, test-v305 实证)
-        to_chg = to_sym.pct_change().replace([np.inf, -np.inf], np.nan).astype(np.float64).values
+    # 换手率变化: pct_change, 剔除 inf
+    to_chg = to_slice.pct_change().replace([np.inf, -np.inf], np.nan)
 
-        up_mask = overnight > 0
-        down_mask = overnight < 0
+    # 分组: up (隔夜正收益) vs down (隔夜负收益), 每列至少2个有效观测
+    up_finite = (overnight > 0) & np.isfinite(to_chg)
+    down_finite = (overnight < 0) & np.isfinite(to_chg)
+    up_count = up_finite.sum()
+    down_count = down_finite.sum()
+    valid_mask = (up_count >= 2) & (down_count >= 2)
 
-        up_chg = to_chg[up_mask]
-        down_chg = to_chg[down_mask]
-        up_chg = up_chg[np.isfinite(up_chg)]
-        down_chg = down_chg[np.isfinite(down_chg)]
+    up_mean = to_chg.where(up_finite).mean()   # mean skips NaN
+    down_mean = to_chg.where(down_finite).mean()
 
-        # 至少各 2 个有效观测 (finite)
-        if len(up_chg) < 2 or len(down_chg) < 2:
-            continue
-
-        ctr_values[sym] = up_chg.mean() - down_chg.mean()
-
-    result = pd.Series(ctr_values)
-    result = pd.to_numeric(result, errors='coerce')
-    result = result[np.isfinite(result)]  # 兜底丢 inf/nan
+    result = pd.Series(np.nan, index=to.columns)
+    result.loc[valid_mask] = (up_mean[valid_mask] - down_mean[valid_mask]).values
+    result = result[np.isfinite(result)]
     if result.empty:
-        return pd.Series(np.nan, index=symbols, name="ctr_20d")
-    # 高CTR = 上涨日换手异常放大 → 散户追涨 → 未来跑输 → 取负号
+        return pd.Series(np.nan, index=to.columns, name="ctr_20d")
     return _cs_zscore(-result).rename("ctr_20d")
 
 

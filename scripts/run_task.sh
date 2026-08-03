@@ -66,7 +66,7 @@ _run('$DATE')
         PYTHONPATH=. .venv/bin/python3 -c "
 from quant.utils.excepthook import setup; setup()
 from quant.scheduler.factor_cache import _run
-_run('$DATE')
+_run('$DATE', '$DATE')
 "
         ;;
     evening)

@@ -6,13 +6,16 @@ from quant.utils.logger import get_logger, set_trace_id
 _log = get_logger(__name__)
 
 
-def _run(end_date: str):
-    """增量物化因子缓存: 从 config factor_cache_start 到 end_date。
+def _run(start_date: str, end_date: str):
+    """物化因子缓存: 从 start_date 到 end_date (含两端)。
 
     Args:
-        end_date: 物化终点 (YYYY-MM-DD)。scheduler 调用时传今天; 手动回溯时传更早日期。
-                  缓存起点由 config backtest.factor_cache_start 控制。
-                  已物化日期自动跳过, 仅计算缺失部分。
+        start_date: 物化起点 (YYYY-MM-DD)
+        end_date:   物化终点 (YYYY-MM-DD)
+
+    用法:
+        _run('2019-01-01', '2026-08-03')  # 手动全量/回填
+        _run(today, today)                 # 每日增量
     """
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
@@ -20,7 +23,7 @@ def _run(end_date: str):
     if rid is None:
         _log.info(f"[{end_date}] factor_cache already running, skip duplicate trigger")
         return
-    _log.info(f"[{end_date}] factor_cache: materializing from config start to {end_date}")
+    _log.info(f"[{end_date}] factor_cache: {start_date} → {end_date}")
     t0 = _time.time()
     status = "failed"
     error_msg = None
@@ -33,14 +36,12 @@ def _run(end_date: str):
         from quant.data.store import DataStore
 
         store = DataStore()
-        from quant.config.constants import _require_cfg as _ecfg
-        _cache_start = _ecfg("backtest.factor_cache_start")
         _latest = store._connect().execute(
             'SELECT MAX(date) FROM daily').fetchone()[0]
-        _cache_end = max(end_date, _latest) if _latest else end_date
+        actual_end = max(end_date, _latest) if _latest else end_date
         dates = [r[0] for r in store._connect().execute(
             'SELECT DISTINCT date FROM daily WHERE date >= ? AND date <= ? ORDER BY date',
-            (_cache_start, _cache_end)).fetchall()]
+            (start_date, actual_end)).fetchall()]
         symbols = UniverseRepo().get_symbols(exclude_market='BJ')
         factors = sorted(set(get_factor_names(status_filter='backtesting'))
                          | set(get_factor_names(status_filter='using')))

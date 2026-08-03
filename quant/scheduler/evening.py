@@ -104,7 +104,12 @@ def _run(today: str):
             stage = _load_stage(module_path)
             stage_t0 = _time.time()
             try:
-                stage._run(today)
+                if name == "factor_cache":
+                    from quant.config.constants import _require_cfg
+                    _fc_start = _require_cfg("backtest.factor_cache_start")
+                    stage._run(_fc_start, today)
+                else:
+                    stage._run(today)
             except Exception as e:
                 _log.error(f"[{today}] evening chain: {name} raised: {e}")
             st = _stage_status(today, name)

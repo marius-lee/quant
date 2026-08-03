@@ -25,7 +25,7 @@ def chain(monkeypatch):
 
             class _Stage:
                 @staticmethod
-                def _run(today):
+                def _run(*args):  # v385: factor_cache 传 (start, end), 其余传 (today,)
                     calls.append(("run", name))
                     if raise_map and name in raise_map:
                         state["statuses"][name] = "failed"

@@ -518,9 +518,29 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
         ic_map_pre = _current_ic_map  # reuse walk-forward IC (was: compute_pre_backtest_ic)
         diag = diagnose(ic_map_pre, tracker, metrics)
 
-        # ── 应用诊断结果: 仅调整 IC 权重 (不写 factor_registry, 不写 evaluation_runs) ──
-        # 回测诊断仅内部使用; 独立诊断模块 (run_diagnostics.py) 负责写入 evaluation_runs
-        # 因子状态变更由 evaluation pipeline Phase 5b (sync_factor_status) 统一处理
+        # ── 回写诊断数据到 evaluation_runs (供 Phase 2 预筛) ──
+        # v85 原注释说 run_diagnostics.py 负责, 但该脚本未创建 → 诊断13天未更新
+        # v361 恢复: backtest 直接写 evaluation_runs, 同时保留独立脚本兼容性
+        passed = [name for name, info in diag.get("factor_report", {}).items()
+                  if info.get("recommendation") in ("keep", "boost")]
+        try:
+            from quant.evaluation.run_store import save_phase
+            save_phase("diagnostics", {
+                "n_factors": len(diag.get("factor_report", {})),
+                "passed": passed,
+                "factor_report": {
+                    n: {"recommendation": v["recommendation"], "ic_ir": v["ic_ir"]}
+                    for n, v in diag.get("factor_report", {}).items()
+                },
+                "summary": diag.get("summary", ""),
+                "backtest_cagr": metrics.get("cagr_pct", 0),
+                "backtest_sharpe": metrics.get("sharpe", 0),
+            })
+            _log.info("diagnostics saved to evaluation_runs: %d passed", len(passed))
+        except Exception as _de:
+            _log.warning(f"diagnostics save to evaluation_runs failed (non-fatal): {_de}")
+
+        # ── 应用诊断结果: 仅调整 IC 权重 ──
         _adj_ic_map = apply_diagnosis(_current_ic_map, diag)
         # B-22 fix: 调整后的 IC map 此前算出即丢弃 — 随 diagnosis 返回供调用方使用
         diag["adjusted_ic_map"] = _adj_ic_map

@@ -13,6 +13,46 @@ from quant.utils.logger import get_logger
 
 _log = get_logger("alpha.model")
 
+# P3a: 冗余因子相关性阈值 (WorldQuant 标准: 0.7)
+_REDUNDANCY_CORR_THRESHOLD = None  # 懒加载, 由 _require_cfg 读取
+
+def _get_redundancy_threshold() -> float:
+    global _REDUNDANCY_CORR_THRESHOLD
+    if _REDUNDANCY_CORR_THRESHOLD is None:
+        _REDUNDANCY_CORR_THRESHOLD = _require_cfg("factor.compute.redundancy_corr_threshold")
+    return _REDUNDANCY_CORR_THRESHOLD
+
+
+def _adjust_for_redundancy(factor_values: dict, ic_map: dict) -> dict:
+    """P3a: 检测共线因子对, 低 IC 方降权。"""
+    if len(factor_values) < 2:
+        return ic_map
+    try:
+        names = list(factor_values.keys())
+        common_names = [n for n in names if n in ic_map]
+        if len(common_names) < 2:
+            return ic_map
+        df = pd.DataFrame({n: factor_values[n] for n in common_names}).dropna()
+        if df.shape[0] < 30 or df.shape[1] < 2:
+            return ic_map
+        corr = df.corr()
+        adjusted = dict(ic_map)
+        for i, n1 in enumerate(common_names):
+            for j, n2 in enumerate(common_names):
+                if j <= i:
+                    continue
+                if abs(corr.loc[n1, n2]) < _get_redundancy_threshold():
+                    continue
+                ic1, ic2 = abs(ic_map.get(n1, 0)), abs(ic_map.get(n2, 0))
+                loser = n1 if ic1 < ic2 else n2
+                if loser in adjusted:
+                    adjusted[loser] = adjusted[loser] * 0.5
+                    _log.info(f"redundancy: {n1}<->{n2} corr={corr.loc[n1,n2]:.2f} dampen {loser}")
+        return adjusted
+    except Exception as e:
+        _log.debug(f"redundancy skipped (non-fatal): {e}")
+        return ic_map
+
 
 class AlphaModel:
     """因子合成 + 软截断排名.
@@ -38,8 +78,9 @@ class AlphaModel:
     def combine(self, factor_values, ic_map=None):
         """将多个因子合成为单一 alpha score.
 
-        factor_values: {name: Series(index=symbol)} — 同日期截面的因子值
-        ic_map: {name: weight} — IC 权重 (仅 ic_weighted 模式使用)
+        factor_values: {name: Series(index=symbol)}
+        ic_map: {name: weight} -- IC 权重 (仅 ic_weighted 模式使用)
+        P3a: 自动检测冗余因子 (相关系数 > 0.7 的因子对, 低 IC 方降权).
 
         返回: Series(index=symbol), 合成得分
         """
@@ -81,31 +122,40 @@ class AlphaModel:
             _log.info("sleeve: %d factors -> %d stocks (filtered=%s)", len(factor_values), alpha_raw.notna().sum(), bool(ic_map))
             return alpha_raw
 
-        # ── ML model modes (lgb) ──
-        # ADR-035 Phase 2: LightGBM 非线性 alpha 预测。
-        # 用已训练的 LightGBM 模型将因子截面值映射为预期收益。
+        # ── ML model modes (lgb / xgb) ──
+        # ADR-035 Phase 2: LightGBM / XGBoost 非线性 alpha 预测。
+        # 用已训练的 ML 模型将因子截面值映射为预期收益。
         # 未训练/未安装时自动回退到 ic_weighted。
-        if self.combine_mode == "lgb":
+        if self.combine_mode in ("lgb", "xgb"):
             try:
-                from quant.alpha.qlib_model import get_lgb_model
-                lgb_model = get_lgb_model(auto_load=True)
-                if lgb_model.is_trained:
-                    alpha_raw = lgb_model.predict(factor_values)
+                if self.combine_mode == "lgb":
+                    from quant.alpha.qlib_model import get_lgb_model
+                    ml_model = get_lgb_model(auto_load=True)
+                    ml_name = "lgb"
+                else:
+                    from quant.alpha.xgb_model import get_xgb_model
+                    ml_model = get_xgb_model(auto_load=True)
+                    ml_name = "xgb"
+
+                if ml_model.is_trained:
+                    alpha_raw = ml_model.predict(factor_values)
                     _log.info(
-                        "lgb: %d features → %d stocks (IC=%.4f)",
-                        len(lgb_model.feature_names),
+                        "%s: %d features → %d stocks (IC=%.4f)",
+                        ml_name,
+                        len(ml_model.feature_names),
                         alpha_raw.notna().sum(),
-                        lgb_model.metadata.ic_mean if lgb_model.metadata else 0,
+                        ml_model.metadata.ic_mean if ml_model.metadata else 0,
                     )
                     return alpha_raw
                 else:
-                    _log.info("lgb: model not trained, falling back to ic_weighted")
+                    _log.info("%s: model not trained, falling back to ic_weighted", ml_name)
                     return ic_weighted(factor_values, ic_map) if ic_map else equal_weight(factor_values)
             except ImportError:
-                _log.info("lgb: lightgbm not installed, falling back to ic_weighted")
+                _log.info("%s: package not installed, falling back to ic_weighted", self.combine_mode)
                 return ic_weighted(factor_values, ic_map) if ic_map else equal_weight(factor_values)
-            except Exception as _lgb_err:
-                _log.warning("lgb: predict failed (%s), falling back to ic_weighted", _lgb_err)
+            except Exception as _ml_err:
+                _log.warning("%s: predict failed (%s), falling back to ic_weighted",
+                             self.combine_mode, _ml_err)
                 return ic_weighted(factor_values, ic_map) if ic_map else equal_weight(factor_values)
 
         # composite mode

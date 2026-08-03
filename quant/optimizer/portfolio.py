@@ -280,7 +280,7 @@ class PortfolioConstructor:
                 # price_buffer 可能导致 Nano 层 0 仓位 (ADR-026 audit):
                 # buffer 使有效 lot_cost > capital, 但实际执行价无 buffer。
                 # 回退: 用原始价格重试, 同时降 buffer 防止高估成本。
-                if price_buffer > 0:
+                if price_buffer is not None and price_buffer > 0:
                     p_raw = prices.loc[common]
                     logger.warning(
                         "[portfolio] nano tier: buffer=%.1f%% caused 0 lots, "

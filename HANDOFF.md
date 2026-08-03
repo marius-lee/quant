@@ -2,24 +2,93 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
-## 当前状态 (test-v356, 2026-08-02)
+## 当前状态 (test-v366, 2026-08-03)
 
 ### 关键指标
 - 因子: 84 注册 (0 active, 20 evaluating, 25 probation, 46 archived — 8 个新注册待评估)
 - 数据: 2019-2026 日线, 5208 只 (2019: 3551 只)
 - adj_factor: 4924/5208 覆盖 (94.5%), 2020-01-02 起
 - 因子缓存: 物化性能优化 A/B/C2 落地; C1(parquet 列存) 保留设计, 待评估后实施
+- Alpha 模型: 新增 XGBoost 后端 (combine_mode='xgb'), 与 LightGBM 平行
 - 回测: 冒烟通过 (CAGR=-23.5%, 0 errors, avg 2.2 信号/天), 全量待跑
 - scheduler: orchestrator (16 tasks, ~85MB) + cron (清空)
-- 测试: validate_factors.py 100/100 通过; pytest factor 相关 47/47 通过
+- 测试: validate_factors.py 100/100 通过; pytest factor 相关 47/47 通过; pytest alpha/model 19/19 通过
 
 ### 晚间链流程
 ```
 19:00 daily_data → adj_factor → factor_cache → attribution → lgb_train(Mon/Thu)
 ```
 
-### test-v310→v355 变更总览
+### test-v310→v366 变更总览
 
+**v366**: P0 因子正确性修复 — shortcut 公式与原始函数对齐
+
+| 编号 | 项目 | 文件 | 状态 |
+|------|------|------|------|
+| P0#1 | Piotroski F-Score: 6/9组件魔术索引错误 (total_liability当total_assets) → namedtuple | `missing.py` | ✅ |
+| P0#2 | turnover_anomaly shortcut: (MA5-MA60)/std60 替代 (ratio-1) | `_primitives.py` | ✅ |
+| P0#3 | idio_vol shortcut: 向量化OLS β回归替代硬编码β=1 | `_primitives.py` | ✅ |
+| P0#4 | compute_cf_roa: iloc[0]→iloc[-1] 取最新季度 | `high_priority.py` | ✅ |
+| P0#5 | revenue/earnings_growth_yoy: 真YoY替代QoQ | `missing.py` | ✅ |
+| P0#6 | _build_fundamentals_panel: ROE推导改用pe_ttm | `store.py` | ✅ |
+| P1#7 | reversal shortcut: cum_log替代mean_log | `_primitives.py` | ✅ |
+| P1#9 | 删除str shortcut (市值中性化省略, 与原始不等价) | `_primitives.py` | ✅ |
+
+**v365**: (skip — VERSION bump only)
+
+**v364**: 3 个存量问题修复
+
+| 问题 | 修复 | 文件 |
+|------|------|------|
+| multiprocessing freeze_support (Python 3.14) | ProcessPoolExecutor 显式 `mp_context='fork'` | `store.py` |
+| seasonality_12m_1m/tail_risk 多余 `aux` 参数 | 移除未使用的 `aux=None` | `high_priority.py` |
+| worker OOM (factor_cache 多进程崩溃) | 因子>50 时 `max_workers` 4→2 + OOM 保护 | `store.py` |
+
+**v363**: 全架构审计 8 项修复 (P0-P3)
+
+| 编号 | 项目 | 文件 | 状态 |
+|------|------|------|------|
+| P0 | 因子注册签名校验 | `_registry.py` | ✅ |
+| P1a | task_runs 装饰器 | `task_log.py` + `snapshot.py` | ✅ |
+| P1b | 物化 source_hash 变更检测 | `store.py` | ✅ |
+| P2a | 数据质量门禁 | `data/quality.py` + `evening.py` | ✅ |
+| P2b | 成本模型接入模拟成交 | `execution_model.py` | ✅ |
+| P3a | 因子协方差/冗余检测 | `alpha/model.py` | ✅ |
+| P3b | 物化断点续传 | `store.py` | ✅ |
+| P3c | 因子 golden 测试集 | `factor/golden_test.py` | ✅ |
+
+**v362**: 4 个基本面因子物化静默失败修复
+- 根因: `revenue_growth_yoy`, `earnings_growth_yoy`, `piotroski_fscore`, `cf_roa`
+  函数体 `data["close"].columns` 只兼容 MultiIndex, 但 _FUNDAMENTAL_FN_MAP 调度
+  传入简单 DataFrame (symbol index, 无 "close" 列) → KeyError → 静默吞错
+- 修复 (保留 _FUNDAMENTAL_FN_MAP 归属):
+  - 4 函数 `symbols` 提取改为 `isinstance(data.columns, pd.MultiIndex)` 双分支:
+    MultiIndex → `data["close"].columns.tolist()`, 简单 DF → `data.index.tolist()`
+  - 与同文件 `compute_market_beta_60d`/`compute_overnight_gap_5d` 一致模式
+  - 保留 `window=None` 参数 (price dispatch 兼容, 不使用时无副作用)
+- 附带: `_str` shortcut 文档标注市值中性化省略
+
+**v361**: orchestrator monitor 崩溃后不重启修复
+- `quant/scheduler/orchestrator.py`:
+  - `monitor_done` 从 `("ok", "failed")` 改为仅 `"ok"` — monitor 是持续 daemon，"failed" 应重启而非放弃
+  - 新增 `_get_monitor_failures()` 统计当日累计 failed+aborted 次数, 达 `_MAX_TASK_RETRIES` 上限后放弃
+  - 根因: v313 引入局部 import 导致首次崩溃 → task_runs 写 "failed" → 原逻辑视 "failed" 为完成 → 全天不再重启
+
+**v360**: Bug 修复 — monitor TradeRepo 作用域冲突 + snapshot 死循环
+- `quant/scheduler/monitor.py` L253: 删除冗余局部 `from quant.data.repos.trade_repo import TradeRepo`
+  - Python 编译时发现函数内局部 import 赋值 → 全函数 TradeRepo 视为局部变量
+  - L104 `TradeRepo().get_flag("circuit_breaker")` 时尚未赋值 → UnboundLocalError
+  - 顶层已有 `from quant.data.repos import TradeRepo`, 局部导入冗余
+- `quant/scheduler/snapshot.py`: `snapshot_open`/`snapshot_close` 添加 `_tk_start/_tk_finish` 写入 task_runs
+  - 修复: 未写 DB 导致 orchestrator 每 30s 无限重复触发 (日志确认重复 50+ 次)
+  - 新增 `_snapshot_with_log` 包装函数, 含模板 9 日志埋点 (entry/exit/exception + elapsed)
+
+**v359**: XGBoost Alpha 模型后端
+- 新增 `quant/alpha/xgb_model.py`: `XgbAlphaModel` (train/predict/save/load/feature_importance)
+- `AlphaModel.combine()` 支持 `combine_mode='xgb'`, 未训练/未安装时自动回退 `ic_weighted`
+- `quant/config/config.yaml` 新增 `alpha.xgb` 参数块 (reg_lambda=1.0, max_depth=5, subsample=0.8 等量化专用超参)
+- 复用 `build_forward_returns` 与因子缓存加载逻辑, API 与 `LgbAlphaModel` 一致
+- 测试: pytest alpha/model 19 通过; 模块导入/配置解析正常
 **v358**: ADR-043 layer2 — 8因子shortcut化, 消除non-shortcut对MultiIndex data的依赖
 **v357**: ADR-043 layer1 — 10因子aux覆盖, 消除per-date DB泄漏
 - A1: alpha035 `rolling.apply` → numpy 向量化 ts_rank, 单因子 4.8s/日 → 0.4s/整块

@@ -78,6 +78,7 @@ from quant.factor.compute.price._alternative import (  # noqa: F401
 from quant.factor.compute.missing import (
     compute_market_beta_60d, compute_overnight_gap_5d,
     compute_vol_price_sync_20d, compute_revenue_growth_yoy,
+    compute_earnings_growth_yoy, compute_piotroski_fscore,
 )
 
 # test-v324: 日内反转因子

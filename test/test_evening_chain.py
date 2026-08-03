@@ -36,6 +36,16 @@ def chain(monkeypatch):
 
 
 class TestEveningChain:
+    @pytest.fixture(autouse=True)
+    def _skip_lgb_train(self, monkeypatch):
+        """Mock 慢速外部调用: lgb_train 移除, adj_factor/quality 替换为 no-op。"""
+        chain_no_lgb = [(n, m) for n, m in evening._CHAIN if n != "lgb_train"]
+        monkeypatch.setattr(evening, "_CHAIN", chain_no_lgb)
+        monkeypatch.setattr("quant.data.quality.check_daily_quality",
+                           lambda date: {"date": date, "overall": "ok", "checks": {}})
+        monkeypatch.setattr("quant.data.store.DataStore.sync_adj_factor",
+                           lambda self, max_batches=1: {"rows": 0})
+
     def test_all_ok_runs_in_dependency_order(self, chain, monkeypatch):
         calls, state, fake_loader = chain
         monkeypatch.setattr(evening, "_load_stage", fake_loader({}))
@@ -102,4 +112,8 @@ class TestChainConfig:
     def test_chain_order_is_data_then_cache_then_attribution(self):
         """依赖顺序守卫: attribution 必须在 factor_cache 之后 (防回归)."""
         names = [n for n, _ in evening._CHAIN]
-        assert names == ["daily_data", "factor_cache", "attribution"]
+        # 验证关键依赖顺序 (不要求精确列表, 因 adj_factor/lgb_train 可能增减)
+        assert "daily_data" in names
+        assert "factor_cache" in names
+        assert "attribution" in names
+        assert names.index("daily_data") < names.index("factor_cache") < names.index("attribution")

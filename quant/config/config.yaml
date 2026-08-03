@@ -30,6 +30,25 @@ alpha:
       max_depth: 6
       lambda_l1: 0.1
       lambda_l2: 0.1
+  xgb:
+    train:
+      start_date: '2015-01-01'
+      forward_horizon: 5
+      train_chunk_samples: 4_000_000   # 来源: 复用 lgb 实测值, xgb 内存占用相近
+    predict:
+      fallback: ic_weighted
+    params:
+      objective: reg:squarederror
+      booster: gbtree
+      n_estimators: 200
+      learning_rate: 0.01              # 来源: 量化常用低学习率, 配合早停防过拟合
+      max_depth: 5                     # 来源: 量化树深 3-6, 防噪音学习
+      subsample: 0.8                   # 来源: 行采样 0.7-0.8
+      colsample_bytree: 0.8            # 来源: 列采样 0.7-0.8
+      reg_lambda: 1.0                  # 来源: L2 正则, 量化第一要务 (1-10)
+      reg_alpha: 0.1                   # 来源: L1 正则辅助
+      min_child_weight: 20             # 来源: 等价 lgb min_data_in_leaf
+      early_stopping_rounds: 20        # 来源: 早停, 未提供 eval_set 时内部忽略
   combine_mode: sleeve
   intersection_primary: gap_5d
   intersection_top_fraction: 0.2
@@ -206,6 +225,12 @@ factor:
     earnings_decay_lambda: 0.0077
     zscore_min_count_dense: 30
     zscore_min_count_sparse: 10
+    # v365: 物化性能参数
+    cache_compresslevel: 1               # gzip 压缩级别 (1=快/大, 6=慢/小, M1 Max实测级别1快3x)
+    cache_worker_threshold: 50           # 因子数超此阈值时 max_workers 4→2 (防 OOM)
+    cache_checkpoint_ttl_sec: 86400      # 断点有效期 (24h), 超时视为过期
+    # v363: Alpha 冗余检测
+    redundancy_corr_threshold: 0.7        # 因子对相关系数超此值视为冗余 (WorldQuant 标准)
   debt_ratio:
     max: 2
     min: 0

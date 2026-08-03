@@ -13,9 +13,11 @@
 import os
 import gzip
 import io
+import inspect
 import json
 import pandas as pd
 import numpy as np
+from quant.config.constants import _require_cfg
 from quant.utils.logger import get_logger
 from quant.factor.compute.price._alternative import preload_ztd_cache
 from quant.factor.compute._preload import preload_aux_data_chunk
@@ -28,27 +30,87 @@ _CACHE_DIR = os.path.join(_PROJ_ROOT, "quant", "data", "factor_cache")
 _LOG_FILE = os.path.join(_CACHE_DIR, "materialization_log.jsonl")
 
 
+# ── P1b: 因子源码 hash — 检测函数变更, 触发缓存重算 ──
+
+_SOURCE_HASH_CACHE: dict[str, str] = {}
+
+
+def _compute_factor_source_hash(factor_names: set[str]) -> str:
+    """计算因子函数源码的复合 hash。
+
+    从 _PRICE_FN_MAP / _FUNDAMENTAL_FN_MAP 取函数源码, 做 sha256。
+    结果缓存 (同进程内因子源码不变)。
+    """
+    import hashlib
+    from quant.factor.compute.price import _PRICE_FN_MAP
+    from quant.factor.compute.fundamental import _FUNDAMENTAL_FN_MAP
+
+    cache_key = ",".join(sorted(factor_names))
+    if cache_key in _SOURCE_HASH_CACHE:
+        return _SOURCE_HASH_CACHE[cache_key]
+
+    h = hashlib.sha256()
+    for name in sorted(factor_names):
+        fn = None
+        if name in _PRICE_FN_MAP:
+            fn = _PRICE_FN_MAP[name][0]
+        elif name in _FUNDAMENTAL_FN_MAP:
+            fn = _FUNDAMENTAL_FN_MAP[name][1]
+        if fn is not None:
+            try:
+                src = inspect.getsource(fn)
+                h.update(src.encode())
+            except (OSError, TypeError):
+                h.update(name.encode())
+    result = h.hexdigest()[:16]
+    _SOURCE_HASH_CACHE[cache_key] = result
+    return result
+
+
 # ── ProcessPoolExecutor worker 函数 (B1) ──
 # 必须模块级可 pickle。
 
+import multiprocessing as _mp
+
+
+def _get_mp_context():
+    """获取多进程上下文: macOS Python 3.14+ 默认 spawn, 需显式指定 fork.
+    
+    spawn 模式下子进程重新导入模块 → freeze_support 报错。
+    fork 模式直接复制父进程内存, 兼容现有 preload_ztd_cache 预加载。
+    """
+    try:
+        return _mp.get_context('fork')
+    except ValueError:
+        return _mp.get_context('spawn')  # Windows fallback
+
+# ── worker 共享数据 (方案 A): fork 后子进程继承, 消除 submit 序列化 ──
+_worker_data: "pd.DataFrame | None" = None
+_worker_prims: "dict | None" = None
+_worker_aux: "dict | None" = None
+_worker_fundamentals: "dict | None" = None
+
+
 def _worker_init(chunk_dates: list[str], symbols: list[str]):
-    """子进程初始化: 预加载 ztd 缓存。"""
+    """子进程初始化: 预加载 ztd 缓存。
+
+    注意: data_full/prims/aux/fundamentals 通过模块全局变量共享 (fork 继承),
+    不在 initargs 中传递以避免序列化开销。
+    """
     try:
         preload_ztd_cache(chunk_dates, symbols)
     except Exception as e:
         _log.warning("factor_cache worker init ztd failed: %s", e)
 
 
-def _worker_compute_date(date_str: str, data_full: pd.DataFrame,
-                         prims: dict, fundamentals: "pd.DataFrame | None",
-                         aux_full: dict, factor_names: list[str]) -> list[str]:
-    """子进程执行的单日计算。"""
+def _worker_compute_date(date_str: str, factor_names: list[str]) -> list[str]:
+    """子进程执行的单日计算 — 从模块全局读数据, 零序列化。"""
     from quant.factor.compute._dispatch import compute_all_factors
     try:
         ts = pd.Timestamp(date_str)
-        if ts not in data_full.index:
+        if _worker_data is None or ts not in _worker_data.index:
             return []
-        day_data = data_full.loc[:ts]
+        day_data = _worker_data.loc[:ts]
         if day_data.empty:
             return []
     except Exception:
@@ -56,9 +118,9 @@ def _worker_compute_date(date_str: str, data_full: pd.DataFrame,
 
     fv = compute_all_factors(
         day_data, date_str,
-        primitives=prims,
-        fundamentals=fundamentals,
-        preloaded_aux_chunk=aux_full,
+        primitives=_worker_prims,
+        fundamentals=_worker_fundamentals.get(date_str) if _worker_fundamentals else None,
+        preloaded_aux_chunk=_worker_aux,
         factor_names=factor_names,
         status_filter=None,
         factor_fail_fast=False,
@@ -183,7 +245,7 @@ class FactorStore:
 
         if force:
             for f in os.listdir(self._cache_dir):
-                if f.endswith('.csv.gz'):
+                if f.endswith('.csv.gz') or f.endswith('.manifest.json'):
                     os.remove(os.path.join(self._cache_dir, f))
 
         total_rows = 0
@@ -281,6 +343,9 @@ class FactorStore:
             # chunk 级批量写 gzip CSV
             chunk_rows = self._write_chunk_rows(chunk_new_rows)
 
+            # P3b: 断点续传 — 每块完成后写 checkpoint
+            self._write_checkpoint(chunk_end_dt, ci + 1, n_chunks)
+
             # 释放该块内存（含 DataStore 查询缓存）
             del data_full, prims, chunk_fundamentals, aux_full
             if hasattr(store, '_query_cache'):
@@ -299,6 +364,9 @@ class FactorStore:
 
         self._log_materialization(dates[0], dates[-1], len(factor_names), len(symbols),
                                   n_dates_computed, total_rows, elapsed, force)
+
+        # P3b: 物化完成, 清理断点
+        self._clear_checkpoint()
 
         # 关闭内部创建的 DataStore, 释放 SQLite 连接
         if _store_owned:
@@ -374,7 +442,7 @@ class FactorStore:
                 lines = existing_lines
 
             raw = "\n".join(lines).encode()
-            compressed = gzip.compress(raw, compresslevel=6)
+            compressed = gzip.compress(raw, compresslevel=_require_cfg("factor.compute.cache_compresslevel"))
             with open(path, 'wb') as f:
                 f.write(compressed)
 
@@ -434,28 +502,39 @@ class FactorStore:
             close_piv = None
             high_52w = None
 
+        # 预提取静态列 (逐日不变), 避免 per-date stocks_df.copy()
+        _static_cols = {c: stocks_df[c] for c in stocks_df.columns
+                        if c not in ("pe_ttm", "pb", "market_cap", "close_latest", "high_52w")}
+        _static_index = stocks_df.index
+        # 回退值: val_piv 不可用时用 stocks 静态值
+        _fallback = {c: stocks_df[c] for c in ("pe_ttm", "pb", "market_cap")
+                     if c in stocks_df.columns}
+
         result = {}
         for date_str in chunk_dates:
             ts = pd.Timestamp(date_str)
-            df = stocks_df.copy()
+            _dyn = dict(_fallback)  # 从回退值开始
 
-            # PIT 估值列覆盖
             if val_piv is not None and ts in val_piv.index:
                 row = val_piv.loc[ts]
                 for col in ["pe_ttm", "pb", "market_cap"]:
-                    if col in df.columns and col in row.index.get_level_values(0):
-                        df[col] = row[col].reindex(df.index)
+                    if col in row.index.get_level_values(0):
+                        _dyn[col] = row[col].reindex(_static_index)
 
-            # PIT close + high_52w
             if close_piv is not None and ts in close_piv.index:
-                df["close_latest"] = close_piv.loc[ts].reindex(df.index)
+                _dyn["close_latest"] = close_piv.loc[ts].reindex(_static_index)
             if high_52w is not None and ts in high_52w.index:
-                df["high_52w"] = high_52w.loc[ts].reindex(df.index)
+                _dyn["high_52w"] = high_52w.loc[ts].reindex(_static_index)
 
-            # derive ROE from PB/PE
+            df = pd.DataFrame({**_static_cols, **_dyn}, index=_static_index)
+
+            # derive ROE from PB/PE_TTM (PIT dynamic pe_ttm, not static stocks.pe)
+            # 来源: JQData daily_valuation.pe_ttm (ADR-035 审计确认); pb/pe_ttm = E/B = ROE
+            # pe_ttm 在 _dyn 中由 val_piv 动态注入, pe 来自 stocks 静态表
             null_roe = df["roe"].isna() | (df["roe"] <= 0)
             if null_roe.any():
-                derived = df["pb"] / df["pe"].replace(0, None)
+                pe_col = "pe_ttm" if "pe_ttm" in df.columns else "pe"
+                derived = df["pb"] / df[pe_col].replace(0, None)
                 derived = derived.where((derived > 0) & (derived < 100))
                 df.loc[null_roe, "roe"] = derived.loc[null_roe]
 
@@ -515,7 +594,7 @@ class FactorStore:
     def _compute_chunk_parallel(self, chunk_dates: list[str], data_full: pd.DataFrame,
                                 prims: dict, chunk_fundamentals: dict,
                                 aux_full: dict, factor_names: list[str]) -> tuple:
-        """用 ProcessPoolExecutor 并行计算 chunk 内各日期因子。
+        """用 ProcessPoolExecutor 并行, 数据通过 fork 继承全局变量共享 (零序列化).
 
         max_workers=4 受 skill.md 模板 8 硬约束 (单人单机 M1 Max 实测最优)。
         """
@@ -535,18 +614,25 @@ class FactorStore:
         if not tasks:
             return done, chunk_new_rows
 
-        # worker 全局只读数据, 通过 initializer 预加载 ztd 缓存
-        symbols = list(data_full.columns.get_level_values(1).unique())
-        init_args = (chunk_dates, symbols)
+        # 方案 A: 设全局变量 (fork 后子进程继承, 零序列化)
+        global _worker_data, _worker_prims, _worker_aux, _worker_fundamentals
+        _worker_data = data_full
+        _worker_prims = prims
+        _worker_aux = aux_full
+        _worker_fundamentals = chunk_fundamentals
 
-        with ProcessPoolExecutor(max_workers=4,
+        symbols = list(data_full.columns.get_level_values(1).unique())
+
+        # OOM 保护: 因子多时 reduce workers
+        _worker_threshold = _require_cfg("factor.compute.cache_worker_threshold")
+        n_workers = 2 if len(factor_names) > _worker_threshold else 4
+
+        with ProcessPoolExecutor(max_workers=n_workers,
+                                 mp_context=_get_mp_context(),
                                  initializer=_worker_init,
-                                 initargs=init_args) as exe:
+                                 initargs=(chunk_dates, symbols)) as exe:
             futures = {
-                exe.submit(_worker_compute_date,
-                           date_str, data_full, prims,
-                           chunk_fundamentals.get(date_str),
-                           aux_full, missing): date_str
+                exe.submit(_worker_compute_date, date_str, missing): date_str
                 for date_str, missing in tasks
             }
             for fut in as_completed(futures):
@@ -557,6 +643,12 @@ class FactorStore:
                 except Exception as e:
                     _log.error("factor_cache: worker failed for %s: %s", date_str, e)
 
+        # 清理全局引用
+        _worker_data = None
+        _worker_prims = None
+        _worker_aux = None
+        _worker_fundamentals = None
+
         return done, chunk_new_rows
 
     # ── 查询 ──
@@ -565,13 +657,22 @@ class FactorStore:
         """返回该日期已物化的因子名集合。
 
         C2: 优先读 manifest, 不存在时回退扫描 gzip CSV (兼容旧缓存)。
+        P1b: manifest 存在但 source_hash 不匹配 → 视为过期 → 返回空集合。
         """
         mpath = self._manifest_path(date_str)
         if os.path.exists(mpath):
             try:
                 with open(mpath, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                return set(data.get("factors", []))
+                factors = set(data.get("factors", []))
+                # P1b: source_hash 变更检测 — 因子源码改了 → 旧值无效
+                if factors and "source_hash" in data:
+                    current_hash = _compute_factor_source_hash(factors)
+                    if data["source_hash"] != current_hash:
+                        _log.info("factor_cache: %s stale (source_hash changed), recompute %d factors",
+                                  date_str, len(factors))
+                        return set()
+                return factors
             except Exception as e:
                 _log.warning("factor_cache: manifest read failed for %s: %s", date_str, e)
 
@@ -592,11 +693,12 @@ class FactorStore:
         return factors
 
     def _write_manifest(self, date_str: str, factors: set[str], n_rows: int):
-        """写入日期级因子清单 (C2)。"""
+        """写入日期级因子清单, 含 source_hash (P1b 变更检测)."""
         try:
             record = {
                 "factors": sorted(factors),
                 "n_rows": n_rows,
+                "source_hash": _compute_factor_source_hash(factors),
                 "updated_at": pd.Timestamp.now().isoformat(),
             }
             with open(self._manifest_path(date_str), 'w', encoding='utf-8') as f:
@@ -682,3 +784,48 @@ class FactorStore:
                 f.write(json.dumps(record) + "\n")
         except Exception as _e:
             _log.warning("factor_cache: failed to log materialization: %s", _e)
+
+    # ── P3b: 断点续传 ──
+
+    def _checkpoint_path(self) -> str:
+        return os.path.join(self._cache_dir, "_checkpoint.json")
+
+    def _write_checkpoint(self, last_date: str, chunk_done: int, n_chunks: int):
+        """每块完成后写断点: {last_date, chunk_done, n_chunks}。"""
+        try:
+            record = {
+                "last_date": last_date,
+                "chunk_done": chunk_done,
+                "n_chunks": n_chunks,
+                "ts": pd.Timestamp.now().isoformat(),
+            }
+            with open(self._checkpoint_path(), 'w') as f:
+                json.dump(record, f)
+        except Exception as e:
+            _log.debug(f"checkpoint write failed (non-fatal): {e}")
+
+    def _read_checkpoint(self) -> dict | None:
+        """读取上次物化的断点。不存在或超过 24h → None。"""
+        cpath = self._checkpoint_path()
+        if not os.path.exists(cpath):
+            return None
+        try:
+            with open(cpath, 'r') as f:
+                data = json.load(f)
+            # 超过 24h 的断点视为过期
+            ts = pd.Timestamp(data.get("ts", "1970-01-01"))
+            if (pd.Timestamp.now() - ts).total_seconds() > _require_cfg("factor.compute.cache_checkpoint_ttl_sec"):
+                os.remove(cpath)
+                return None
+            return data
+        except Exception:
+            return None
+
+    def _clear_checkpoint(self):
+        """物化完成/放弃后清理断点。"""
+        try:
+            cpath = self._checkpoint_path()
+            if os.path.exists(cpath):
+                os.remove(cpath)
+        except Exception:
+            pass

@@ -234,7 +234,6 @@ def _run_continuous_inner(today: str):
             from quant.execution.stop_loss import RiskManager as _RM
             rm = _RM()
             # test-v313: 加载持久化的峰值/止盈标记 (进程重启后恢复)
-            from quant.data.repos.trade_repo import TradeRepo
             _trepo = TradeRepo()
             for p in positions:
                 meta = _trepo.get_position_meta(p["symbol"], today)

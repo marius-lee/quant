@@ -203,18 +203,46 @@ class ExecutionModel(ABC):
 
 
 class BacktestExecutionModel(ExecutionModel):
-    """回测: 买卖均按给定价格 (开盘价) 立即成交。"""
+    """回测: 买卖均按给定价格 (开盘价) 立即成交。
+    P2b: 接入 Almgren-Chriss 成本模型, 模拟滑点和市场冲击。
+    """
 
     skip_cash_feasibility = False
 
     def __init__(self):
         self.cooloff_store = {}  # 回测热路径: 内存冷却, 零 DB 写
 
+    def _apply_cost(self, orders: list, ctx: ExecutionContext, side: str):
+        """P2b: 对订单应用市场冲击成本。
+
+        买入: fill_price = signal_price * (1 + impact_bps / 10000)
+        卖出: fill_price = signal_price * (1 - impact_bps / 10000)
+        impact_bps 来自 CostModel.estimate_market_impact()。
+        """
+        if ctx.cost_model is None:
+            return
+        try:
+            for o in orders:
+                impact_bps = ctx.cost_model.estimate_market_impact(
+                    o.symbol, o.shares, side
+                )
+                if impact_bps and impact_bps > 0:
+                    if side == "buy":
+                        o.price = round(o.price * (1 + impact_bps / 10000), 2)
+                    else:
+                        o.price = round(o.price * (1 - impact_bps / 10000), 2)
+            _log.debug(f"[{ctx.today}] cost model: {len(orders)} {side} orders, "
+                       f"impact_bps={impact_bps:.1f}")
+        except Exception as e:
+            _log.debug(f"[{ctx.today}] cost model apply failed (non-fatal): {e}")
+
     def execute_sells(self, orders, ctx):
+        self._apply_cost(orders, ctx, "sell")
         if orders:
             ctx.engine.execute(orders, ctx.today, ctx.strategy)
 
     def execute_buys(self, orders, ctx):
+        self._apply_cost(orders, ctx, "buy")
         ctx.engine.execute(orders, ctx.today, ctx.strategy)
         return "filled"
 

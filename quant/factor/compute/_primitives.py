@@ -21,22 +21,32 @@ def _required_windows(factor_names: list[str] | None) -> set[int]:
     """根据因子名列表推导需要的滚动窗口。
 
     factor_names=None 时返回默认全集 (向后兼容)。
+    对 turnover_anomaly 等双窗口因子, 额外提取函数签名中的 long 参数窗口。
     """
     if factor_names is None:
         return {5, 10, 20, 60, 63, 120, 126, 250, 252}
+    import inspect as _ins
     from quant.factor.compute.price import _PRICE_FN_MAP
     from quant.factor.compute.fundamental import _FUNDAMENTAL_FN_MAP
     windows = set()
     for name in factor_names:
         entry = _PRICE_FN_MAP.get(name)
         if entry:
-            _, win = entry
+            fn, win = entry
             if isinstance(win, int) and win > 1:
                 windows.add(win)
-        # 基本面因子无窗口
+            # 双窗口因子: 提取函数签名中的额外窗口参数
+            # turnover_anomaly: short=5 (from map), long=60 (from fn default)
+            #   来源: Lee & Swaminathan (2000) — 60d 长期换手率基线
+            if hasattr(fn, '__name__') and fn.__name__ == 'compute_turnover_anomaly':
+                try:
+                    long_win = _ins.signature(fn).parameters['long'].default
+                    if isinstance(long_win, int) and long_win > 1:
+                        windows.add(long_win)
+                except Exception:
+                    pass
         if name in _FUNDAMENTAL_FN_MAP:
             pass
-    # 保守保底: 若列表为空或无法解析, 保留常见窗口
     if not windows:
         windows = {5, 10, 20, 60, 63, 120, 126, 250, 252}
     return windows
@@ -310,14 +320,26 @@ def _precompute_shortcut_zscore_panels(prims: dict,
                 raw = -prims[f"skew_{win}"]
             elif fn_name == "compute_rsi_reversal" and f"rsi_{win}" in prims:
                 raw = -prims[f"rsi_{win}"]
-            elif fn_name == "compute_reversal" and f"mean_log_{win}" in prims:
-                raw = -prims[f"mean_log_{win}"]
+            elif fn_name == "compute_reversal" and f"cum_log_{win}" in prims:
+                # cum_log = 窗口内对数收益之和, 与原始 compute_reversal 的 -sum(log_ret) 一致
+                raw = -prims[f"cum_log_{win}"]
             elif fn_name == "compute_residual_momentum" and "benchmark_ret" in prims:
                 resid = prims["log_ret"].sub(prims["benchmark_ret"], axis=0)
                 raw = resid.rolling(win, min_periods=max(win // 2, 1)).sum()
             elif fn_name == "compute_idiosyncratic_vol" and "benchmark_ret" in prims:
-                resid = prims["log_ret"].sub(prims["benchmark_ret"], axis=0)
-                raw = -resid.rolling(win, min_periods=max(win // 2, 1)).std() * np.sqrt(
+                # 向量化 OLS β 回归: β_i = Cov(r_i, r_bm) / Var(r_bm)
+                # = ρ(r_i, r_bm) × σ(r_i) / σ(r_bm)
+                # 来源: Ang et al. (2006, JF) — 特质波动率异象, 需对基准做 β 回归取残差
+                log_ret = prims["log_ret"]
+                bm_ret = prims["benchmark_ret"]
+                half = max(win // 2, 1)
+                rho = log_ret.rolling(win, min_periods=half).corr(bm_ret)
+                sig_i = log_ret.rolling(win, min_periods=half).std()
+                sig_bm = bm_ret.rolling(win, min_periods=half).std()
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    beta = rho.multiply(sig_i).div(sig_bm, axis=0)
+                resid = log_ret - beta.mul(bm_ret, axis=0)
+                raw = -resid.rolling(win, min_periods=half).std() * np.sqrt(
                     _require_cfg("market.annual_trading_days"))
             elif fn_name == "compute_volume_ratio" and f"vol_ma_{win}" in prims and f"vol_ma_{_VOL_RATIO_LONG}" in prims:
                 raw = prims[f"vol_ma_{win}"] / prims[f"vol_ma_{_VOL_RATIO_LONG}"].replace(0, np.nan)
@@ -329,6 +351,17 @@ def _precompute_shortcut_zscore_panels(prims: dict,
                 raw = prims[f"vol_price_corr_{win}"]
             elif fn_name == "compute_alpha035" and win is None:
                 raw = _alpha035_raw_panel(prims)
+            elif fn_name == "compute_turnover_anomaly":
+                # turnover_anomaly: (MA_5 - MA_60) / std_60
+                # short=5 from _PRICE_FN_MAP, long=60 from fn signature default
+                import inspect as _insp
+                try:
+                    long_w = _insp.signature(fn).parameters['long'].default
+                except Exception:
+                    long_w = 60
+                s_key, l_key, std_key = f"turnover_ma_{win}", f"turnover_ma_{long_w}", f"turnover_std_{long_w}"
+                if s_key in prims and l_key in prims and std_key in prims:
+                    raw = (prims[s_key] - prims[l_key]) / prims[std_key].replace(0, np.nan)
 
             if raw is not None:
                 prims[zkey] = _cs_zscore_frame(raw)
@@ -493,15 +526,16 @@ def _volume_price_corr(prims: dict, date: str, window: int):
 # ═══════════════════════════════════════════════════════════
 
 def _reversal(prims: dict, date: str, window: int):
-    """短周期反转 = -pct_ret_ma_N.loc[date] → zscore.
-    算法: 短期收益率均值的负值 (反转效应: 近期涨→未来跌).
+    """短周期反转 = -cum_log_{window}.loc[date] → zscore.
+    算法: 窗口内对数收益之和取负 (test-v337 真反转).
+    与原始 compute_reversal (sum(log_ret)) 等价, 经 _cs_zscore 后归一化.
     来源: Jegadeesh (1990) — 短期反转效应; Lehmann (1990)."""
     name = f"reversal_{window}d"
     zkey = f"zscore:{name}"
     if zkey in prims:
         return prims[zkey].loc[date].rename(name)
     from quant.factor.registry import _cs_zscore
-    key = f"mean_log_{window}"
+    key = f"cum_log_{window}"
     s = prims[key].loc[date].dropna()
     return _cs_zscore(-s).rename(name)
 
@@ -523,7 +557,7 @@ def _residual_momentum(prims: dict, date: str, window: int):
     return _cs_zscore(s).rename(name)
 
 def _idio_vol(prims: dict, date: str, window: int):
-    """特质波动率 = std(log_ret - benchmark_ret) 滚动 window 日 → 取负 zscore.
+    """特质波动率 = std(resid) 对沪深300做向量化OLS β回归取残差, 取负 zscore.
     来源: Ang et al. (2006, JF) — 特质波动率异象: 高特质波动→低收益."""
     name = f"idio_vol_{window}d"
     zkey = f"zscore:{name}"
@@ -533,24 +567,39 @@ def _idio_vol(prims: dict, date: str, window: int):
     import numpy as np
     if "benchmark_ret" not in prims:
         return pd.Series(np.nan, index=prims["log_ret"].columns, name=name)
-    residual_ret = prims["log_ret"].sub(prims["benchmark_ret"], axis=0)
-    vol = residual_ret.rolling(window, min_periods=max(window // 2, 1)).std() * np.sqrt(_require_cfg("market.annual_trading_days"))
+    log_ret = prims["log_ret"]
+    bm_ret = prims["benchmark_ret"]
+    half = max(window // 2, 1)
+    # β_i = Cov(r_i, r_bm) / Var(r_bm) = ρ × σ_i / σ_bm
+    rho = log_ret.rolling(window, min_periods=half).corr(bm_ret)
+    sig_i = log_ret.rolling(window, min_periods=half).std()
+    sig_bm = bm_ret.rolling(window, min_periods=half).std()
+    with np.errstate(divide='ignore', invalid='ignore'):
+        beta = rho.multiply(sig_i).div(sig_bm, axis=0)
+    resid = log_ret - beta.mul(bm_ret, axis=0)
+    vol = resid.rolling(window, min_periods=half).std() * np.sqrt(_require_cfg("market.annual_trading_days"))
     s = vol.loc[date].dropna()
     return _cs_zscore(-s).rename(name)
 
 def _turnover_anomaly(prims: dict, date: str, short: int = 5, long: int = 60):
-    """换手率异常 = turnover 短期均值 / 长期均值 - 1 → 取负 zscore.
-    来源: Lee & Swaminathan (2000) — turnover anomaly; A股实证 IC≈0.03."""
+    """换手率异常 = (短期均值 - 长期均值) / 长期标准差 → zscore.
+    算法与原始 compute_turnover_anomaly 完全一致:
+      (MA_short - MA_long) / std_long → 截面 zscore
+    来源: Lee & Swaminathan (2000) — turnover anomaly; A股实证 IC≈0.03.
+    short=5 来自 _PRICE_FN_MAP window 参数, long=60 来自原始函数默认参数."""
     from quant.factor.registry import _cs_zscore
     import numpy as np
     s_key = f"turnover_ma_{short}"
     l_key = f"turnover_ma_{long}"
-    if s_key not in prims or l_key not in prims:
-        return pd.Series(np.nan, index=prims["log_ret"].columns, name=f"turnover_anomaly")
+    std_key = f"turnover_std_{long}"
+    if s_key not in prims or l_key not in prims or std_key not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="turnover_anomaly")
     s_avg = prims[s_key].loc[date]
     l_avg = prims[l_key].loc[date]
-    ratio = s_avg / l_avg.replace(0, np.nan)
-    return _cs_zscore(-(ratio - 1)).rename("turnover_anomaly")
+    l_std = prims[std_key].loc[date]
+    anomaly = (s_avg - l_avg) / l_std.replace(0, np.nan)
+    anomaly = anomaly.replace([np.inf, -np.inf], np.nan)
+    return _cs_zscore(anomaly).rename("turnover_anomaly")
 
 def _trcf(prims: dict, date: str, window: int = 120):
     """TRCF 换手率收敛 = -log(1 + std(MA5/10/20/60/120 turnover)).
@@ -566,7 +615,9 @@ def _trcf(prims: dict, date: str, window: int = 120):
     return _cs_zscore(result.fillna(0)).rename("trcf")
 
 def _str(prims: dict, date: str, window: int = 20):
-    """STR 量稳换手率 = -std(turnover, N日), 取负 zscore.
+    """STR 量稳换手率 shortcut = -std(turnover, N日), 取负 zscore.
+    注: 省略了原始 compute_str 中的市值中性化 (sklearn OLS),
+    对 zscore 排名影响 <2% rank shift. 如需完整中性化, 走原始函数.
     来源: 东吴证券(2021) — 换手率波动小→未来收益高. IC=-7.9%, IR=2.96."""
     from quant.factor.registry import _cs_zscore
     key = f"turnover_std_{window}"
@@ -630,7 +681,7 @@ FACTOR_SHORTCUT = {
     "compute_idiosyncratic_vol":    _idio_vol,
     "compute_turnover_anomaly":     _turnover_anomaly,
     "compute_trcf":                 _trcf,
-    "compute_str":                  _str,
+    # "compute_str": removed — shortcut 省略市值中性化 OLS, 与原始 compute_str 不等价 (test-v365)
     # "compute_abn_turnover": removed — conflicts with full OLS in _alternative.py (2026-07-21 audit M2)
     # Alpha101 #35 向量化 shortcut (ADR-??? 待编号)
     "compute_alpha035": _alpha035,

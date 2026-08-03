@@ -59,6 +59,16 @@ def _run(today: str):
 
     try:
         for name, module_path in _CHAIN:
+            # ── P2a: daily_data 后插入数据质量门禁 ──
+            if name == "adj_factor" and _stage_status(today, "daily_data") == "ok":
+                try:
+                    from quant.data.quality import check_daily_quality
+                    qr = check_daily_quality(today)
+                    _log.info(f"[{today}] data quality gate: {qr['overall']}")
+                    if qr["overall"] == "error":
+                        _log.error(f"[{today}] data quality ERROR — review before factor_cache")
+                except Exception as _qe:
+                    _log.warning(f"[{today}] data quality check failed (non-fatal): {_qe}")
             # lgb_train: 仅周一/周四执行
             if name == "lgb_train":
                 wd = datetime.now().weekday()

@@ -1,8 +1,42 @@
 """Factor registry loaders and helpers — using Repository layer."""
 
+import inspect
 from quant.data.repos import FactorRepo
 from quant.factor.compute.price import _PRICE_FN_MAP
 from quant.factor.compute.fundamental import _FUNDAMENTAL_FN_MAP
+from quant.utils.logger import get_logger
+
+_log = get_logger("factor.registry")
+
+
+def _validate_factor_signatures():
+    """P0 注册时签名校验: 基本面因子不应直接访问 MultiIndex 列 (data["close"]).
+
+    在模块加载时运行, 阻止新因子静默引入调度路径错配 bug.
+    """
+    violations = []
+    for name, (cat, fn) in _FUNDAMENTAL_FN_MAP.items():
+        try:
+            src = inspect.getsource(fn)
+        except OSError:
+            continue
+        # 检测 MultiIndex 访问模式: data["close"], data['close']
+        if 'data["close"]' in src or "data['close']" in src:
+            # 允许通过 isinstance 双格式兼容的 (已修复的4因子)
+            if 'isinstance(data.columns, pd.MultiIndex)' not in src:
+                violations.append(name)
+    if violations:
+        names = ", ".join(violations)
+        _log.error(
+            f"FACTOR SIGNATURE VIOLATION: {len(violations)} fundamental factor(s) "
+            f"access data[\"close\"] without MultiIndex guard: {names}. "
+            f"Add isinstance(data.columns, pd.MultiIndex) check or move to _PRICE_FN_MAP."
+        )
+    return violations
+
+
+# ── 模块加载时自动校验 ──
+_VALIDATION_ERRORS = _validate_factor_signatures()
 
 
 def _resolve_statuses(status_filter):

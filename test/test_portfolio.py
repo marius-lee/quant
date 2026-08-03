@@ -20,8 +20,7 @@ class TestPortfolioConstructorGreedy:
         pc = PortfolioConstructor({"max_positions": 20, "max_single_position": 0.05})
         alpha = pd.Series([1.0], index=["000001"])
         prices = pd.Series([20.0], index=["000001"])
-        # capital 2000 < lot_cost*2 = 4000 → greedy
-        pf = pc.construct(alpha, prices, 2000)
+        pf = pc.construct(alpha, prices, 2000, price_buffer=0)
         # Nano tier (¥2,000 < ¥30,000) → rank_concentrated
         assert pf.method in ("rank_concentrated", "kelly_greedy")
         assert pf.positions == 1
@@ -34,14 +33,14 @@ class TestPortfolioConstructorGreedy:
         alpha = pd.Series([1.0, 0.5], index=["000001", "000002"])
         prices = pd.Series([50.0, 60.0], index=["000001", "000002"])
         with pytest.raises(ValueError, match="rank_concentrated produced 0 lots"):
-            pc.construct(alpha, prices, 100)
+            pc.construct(alpha, prices, 100, price_buffer=0)
 
     def test_multiple_stocks_one_cycle(self):
         """资本够买 2 只低价股各 1 手."""
         pc = PortfolioConstructor({"max_positions": 20, "max_single_position": 0.05})
         alpha = pd.Series([1.0, 0.8, 0.5], index=["A", "B", "C"])
         prices = pd.Series([10.0, 12.0, 100.0], index=["A", "B", "C"])
-        pf = pc.construct(alpha, prices, 2200)
+        pf = pc.construct(alpha, prices, 2200, price_buffer=0)
         assert pf.positions >= 1
         assert pf.lots["A"] == 2  # rank_concentrated: 2200//(10*100)=2 lots
         # B: 剩余200 < 1200 → 买不到

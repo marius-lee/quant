@@ -38,7 +38,7 @@ def compute_asset_growth(data, date, fundamentals=None):
     return None
 
 
-def compute_seasonality_12m_1m(data, date, window=None, aux=None):
+def compute_seasonality_12m_1m(data, date, window=None):
     """季节效应: 12个月前同月收益, 跳过最近1月 (Heston & Sadka 2008).
 
     来源: JFE 2008; A股验证: 招商证券 2019.
@@ -60,7 +60,7 @@ def compute_seasonality_12m_1m(data, date, window=None, aux=None):
     return _cs_zscore(ret).rename("seasonality_12m_1m")
 
 
-def compute_tail_risk(data, date, window=252, aux=None):
+def compute_tail_risk(data, date, window=252):
     """尾部风险: 日收益负偏度 + 极端负收益频率 (Kelly & Jiang 2014).
 
     来源: JFE 2014; 东方证券 2021 A股验证.
@@ -146,12 +146,9 @@ def compute_industry_momentum(data, date, window=63, aux=None):
     return _cs_zscore(result).rename("industry_momentum")
 
 
-def compute_cf_roa(data, date, aux=None):
+def compute_cf_roa(data, date, window=None, aux=None):
     """现金流 ROA = 经营现金流 / 总资产 (Fama-French 2015 盈利能力).
-
-    来源: Fama-French (2015) RMW; Novy-Marx (2013).
-    A股 IC≈2-3%, 正向因子 (高现金流盈利能力→高分).
-    数据: aux['financial_cashflow'] + aux['financial_balance'].
+    data: MultiIndex DataFrame (price path) 或简单 DataFrame (fundamentals path).
     """
     if aux is None:
         return None
@@ -163,7 +160,10 @@ def compute_cf_roa(data, date, aux=None):
     if cf.empty or bs.empty:
         return None
     
-    symbols = data["close"].columns if isinstance(data["close"], pd.DataFrame) else []
+    if isinstance(data.columns, pd.MultiIndex):
+        symbols = data["close"].columns.tolist() if "close" in data.columns.get_level_values(0) else []
+    else:
+        symbols = data.index.tolist()
     result = {}
     for sym in symbols:
         cf_sym = cf[cf["symbol"] == sym] if "symbol" in cf.columns else pd.DataFrame()
@@ -172,8 +172,10 @@ def compute_cf_roa(data, date, aux=None):
             continue
         if "net_operate_cash_flow" not in cf_sym.columns or "total_assets" not in bs_sym.columns:
             continue
-        cfo = cf_sym["net_operate_cash_flow"].iloc[0] if len(cf_sym) > 0 else None
-        ta = bs_sym["total_assets"].iloc[0] if len(bs_sym) > 0 else None
+        # iloc[-1]: 取最新季度数据 (aux query ORDER BY stat_date ASC → 最后行=最新)
+        # 来源: Fama-French (2015) RMW 盈利能力因子; cf_roa = CFO(TTM) / TotalAssets(latest)
+        cfo = cf_sym["net_operate_cash_flow"].iloc[-1] if len(cf_sym) > 0 else None
+        ta = bs_sym["total_assets"].iloc[-1] if len(bs_sym) > 0 else None
         if pd.notna(cfo) and pd.notna(ta) and ta > 0:
             result[sym] = float(cfo) / float(ta)
     

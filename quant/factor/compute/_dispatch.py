@@ -13,6 +13,15 @@ from quant.factor.compute.fundamental import _FUNDAMENTAL_FN_MAP
 from quant.factor.compute._registry import load_active_price_factors, load_active_fundamental_factors
 import inspect
 
+# 方案 C: signature 缓存 — 避免每因子每日期重复解析
+_sig_cache: dict = {}
+
+
+def _cached_sig(fn) -> inspect.Signature:
+    if fn not in _sig_cache:
+        _sig_cache[fn] = inspect.signature(fn)
+    return _sig_cache[fn]
+
 def compute_all_factors(data: pd.DataFrame, date: str,
                       primitives: dict = None,
                       fundamentals: pd.DataFrame = None,
@@ -91,7 +100,7 @@ def compute_all_factors(data: pd.DataFrame, date: str,
         kwargs = {}
         if 'idio_vol' in name and benchmark_ret is not None:
             kwargs['benchmark_ret'] = benchmark_ret
-        _sig = inspect.signature(fn)
+        _sig = _cached_sig(fn)
         if 'aux' in _sig.parameters:
             kwargs['aux'] = _aux
         if not factor_fail_fast:
@@ -109,17 +118,21 @@ def compute_all_factors(data: pd.DataFrame, date: str,
 
     if fundamentals is not None and not fundamentals.empty:
         financials = None
-        if fundamentals is not None and any(n in fund_factors for n in _FIN_FACTORS):
+        if any(n in fund_factors for n in _FIN_FACTORS):
             if preloaded_financials is not None:
                 financials = preloaded_financials.get(date)
-                if financials is None:
-                    if not quiet:
-                        _plog.warning(f"No financials preloaded for {date}, fundamental factors will use DB fallback")
             else:
-                from quant.data.store import DataStore
-                store = DataStore()
-                financials = store.get_financials(fundamentals.index.tolist(), date=date)
-                store.close()
+                # 方案 D: 缓存 financials (季度数据 chunk 内不变, 避免逐日开 DB)
+                if not hasattr(compute_all_factors, '_fin_cache'):
+                    compute_all_factors._fin_cache = {}
+                cache_key = (tuple(sorted(fundamentals.index.tolist())), str(date)[:7])
+                if cache_key not in compute_all_factors._fin_cache:
+                    from quant.data.store import DataStore
+                    store = DataStore()
+                    compute_all_factors._fin_cache[cache_key] = store.get_financials(
+                        fundamentals.index.tolist(), date=date)
+                    store.close()
+                financials = compute_all_factors._fin_cache[cache_key]
         total_ff = len(fund_factors)
         done_ff = 0
         import time as _time2
@@ -130,7 +143,7 @@ def compute_all_factors(data: pd.DataFrame, date: str,
             kwargs = {}
             if name in _FIN_FACTORS and financials is not None:
                 kwargs['financials'] = financials
-            _sig = inspect.signature(fn)
+            _sig = _cached_sig(fn)
             _fn_kwargs = {}
             if 'aux' in _sig.parameters:
                 _fn_kwargs['aux'] = _aux

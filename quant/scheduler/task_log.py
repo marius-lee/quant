@@ -168,3 +168,48 @@ def query_date(date: str) -> list[dict]:
         return [dict(r) for r in rows]
     finally:
         conn.close()
+
+
+# ═══════════════════════════════════════════════════════════
+# P1a: 任务装饰器 — 消除 start/try/finish 样板代码
+# ═══════════════════════════════════════════════════════════
+
+def task(name: str, grace_seconds: int = 120):
+    """调度任务装饰器: 自动管理 task_runs 的 running→ok/failed 生命周期.
+
+    使用:
+        @task("signals", grace_seconds=1800)
+        def _run(today: str):
+            ...  # 业务逻辑, return 可选 dict 作为 summary
+
+    等价于:
+        rid = _tk_start(name, today, grace_seconds=...)
+        if rid is None: return
+        try:
+            result = fn(today)
+            _tk_finish(name, today, "ok", summary=result)
+        except Exception as e:
+            _tk_finish(name, today, "failed", error=str(e))
+            raise
+    """
+    import functools
+    from quant.utils.logger import get_logger as _gl
+
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(today: str):
+            _log = _gl(f"scheduler.{name}")
+            rid = start(name, today, grace_seconds=grace_seconds)
+            if rid is None:
+                _log.info(f"[{today}] {name} already running, skip duplicate trigger")
+                return None
+            try:
+                result = fn(today)
+                summary = result if isinstance(result, dict) else None
+                finish(name, today, "ok", summary=summary)
+                return result
+            except Exception as e:
+                finish(name, today, "failed", error=str(e))
+                raise
+        return wrapper
+    return decorator

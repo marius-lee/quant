@@ -5,10 +5,11 @@
 
 数据源: 腾讯财经实时行情 (qt.gtimg.cn), 批量拉取.
 """
-import urllib.request, re
+import urllib.request, re, time as _time
 from datetime import datetime
 from quant.data.repos._base import DatabaseManager
 from quant.utils.logger import get_logger
+from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish, task
 
 _log = get_logger("snapshot.intraday")
 
@@ -63,12 +64,45 @@ def _fetch_batch(batch: list[str]) -> dict[str, dict]:
 
 def snapshot_open(today: str = None):
     """快照开盘30分钟价格+成交量."""
+    return _snapshot_with_log(today, mode="open", task_name="snapshot_open")
+
+
+@task("snapshot_open", grace_seconds=300)
+def _snapshot_open_task(today: str):
     return _snapshot(today, mode="open")
 
 
 def snapshot_close(today: str = None):
     """快照尾盘5分钟价格+成交量."""
+    return _snapshot_with_log(today, mode="close", task_name="snapshot_close")
+
+
+@task("snapshot_close", grace_seconds=300)
+def _snapshot_close_task(today: str):
     return _snapshot(today, mode="close")
+
+
+def _snapshot_with_log(today: str = None, mode: str = "open", task_name: str = "snapshot"):
+    """快照 + task_runs 状态写入, 防止 orchestrator 重复触发."""
+    if today is None:
+        today = datetime.now().strftime("%Y-%m-%d")
+    t0 = _time.monotonic()
+    _log.info(f"_snapshot_with_log start: task={task_name} date={today} mode={mode}")
+    rid = _tk_start(task_name, today, grace_seconds=300)
+    if rid is None:
+        _log.info(f"[{today}] {task_name} already running, skip duplicate trigger")
+        return
+    try:
+        result = _snapshot(today, mode)
+        elapsed = _time.monotonic() - t0
+        _log.info(f"_snapshot_with_log done: task={task_name} saved={result.get('saved',0)} errors={result.get('errors',0)} elapsed={elapsed:.1f}s")
+        _tk_finish(task_name, today, "ok", summary=result)
+        return result
+    except Exception as e:
+        elapsed = _time.monotonic() - t0
+        _log.exception(f"_snapshot_with_log failed: task={task_name} elapsed={elapsed:.1f}s error={e}")
+        _tk_finish(task_name, today, "failed", error=str(e))
+        raise
 
 
 def _snapshot(today: str = None, mode: str = "open"):

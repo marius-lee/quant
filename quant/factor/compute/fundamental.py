@@ -1257,9 +1257,9 @@ _FUNDAMENTAL_FN_MAP = {
     "macro_m2_yoy":         ("macro",          compute_macro_m2_yoy),
     "macro_cpi_yoy":        ("macro",          compute_macro_cpi_yoy),
     "macro_rate_10y":       ("macro",          compute_macro_rate_10y),
-    "revenue_growth_yoy":   ("fundamental",    compute_revenue_growth_yoy),  # test-v323
-    "earnings_growth_yoy":  ("fundamental",    compute_earnings_growth_yoy), # test-v325
-    "piotroski_fscore":     ("fundamental",    compute_piotroski_fscore),    # test-v325
-    # v358: 现金流盈利能力
+    # v323/v325/v358: 基本面因子 (data 兼容 MultiIndex + 简单 DataFrame)
+    "revenue_growth_yoy":   ("fundamental",    compute_revenue_growth_yoy),
+    "earnings_growth_yoy":  ("fundamental",    compute_earnings_growth_yoy),
+    "piotroski_fscore":     ("fundamental",    compute_piotroski_fscore),
     "cf_roa":              ("fundamental",    compute_cf_roa),
 }

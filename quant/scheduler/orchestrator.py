@@ -51,6 +51,19 @@ def _get_today_aborted(today: str) -> dict:
     return dict(rows)
 
 
+def _get_monitor_failures(today: str) -> int:
+    """统计今日 monitor 累计失败+aborted 次数 (用于崩溃风暴保护)."""
+    conn = sqlite3.connect(MARKET_DB)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
+    count = conn.execute(
+        "SELECT COUNT(*) FROM task_runs WHERE date=? AND task_name='monitor' AND status IN ('failed','aborted')",
+        (today,)
+    ).fetchone()[0]
+    conn.close()
+    return count
+
+
 def _run():
     """编排器主循环 — 单线程，按时间顺序串行执行日频任务。"""
     from quant.scheduler.status import register_all
@@ -161,9 +174,12 @@ def _run():
         # ═══════════════════════════════════════════
         in_monitor_window = time(9, 30) <= hhmm <= time(14, 55)
         monitor_state = status.get("monitor")
-        monitor_done = monitor_state in ("ok", "failed")
+        # monitor 是持续 daemon: 仅 "ok" 表示自然结束, "failed"/"aborted" 应重启
+        monitor_done = monitor_state == "ok"
+        # 防崩溃风暴: 当日累计失败次数 (failed+aborted) 达上限则放弃
+        monitor_exhausted = _get_monitor_failures(today) >= _MAX_TASK_RETRIES
 
-        if in_monitor_window and not monitor_done:
+        if in_monitor_window and not monitor_done and not monitor_exhausted:
             if _monitor_thread is None or not _monitor_thread.is_alive():
                 _monitor_stop.clear()
                 _monitor_thread = _thr.Thread(

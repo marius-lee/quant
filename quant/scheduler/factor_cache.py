@@ -6,16 +6,21 @@ from quant.utils.logger import get_logger, set_trace_id
 _log = get_logger(__name__)
 
 
-def _run(today: str):
+def _run(end_date: str):
+    """增量物化因子缓存: 从 config factor_cache_start 到 end_date。
+
+    Args:
+        end_date: 物化终点 (YYYY-MM-DD)。scheduler 调用时传今天; 手动回溯时传更早日期。
+                  缓存起点由 config backtest.factor_cache_start 控制。
+                  已物化日期自动跳过, 仅计算缺失部分。
+    """
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
-    # grace 对齐 orchestrator._TIMEOUTS["factor_cache"]=5400 (test-v301:
-    # 原默认 120s, 合法运行 2743s → cron+daemon 双触发 145s 即误 abort)
-    rid = _tk_start("factor_cache", today, grace_seconds=5400)
+    rid = _tk_start("factor_cache", end_date, grace_seconds=5400)
     if rid is None:
-        _log.info(f"[{today}] factor_cache already running, skip duplicate trigger")
+        _log.info(f"[{end_date}] factor_cache already running, skip duplicate trigger")
         return
-    _log.info(f"[{today}] 21:00 — incremental factor cache update")
+    _log.info(f"[{end_date}] factor_cache: materializing from config start to {end_date}")
     t0 = _time.time()
     status = "failed"
     error_msg = None
@@ -28,21 +33,15 @@ def _run(today: str):
         from quant.data.store import DataStore
 
         store = DataStore()
-        # 缓存起始日期: min(配置默认, 调用传入日期)
-        # 手动回溯时 today 更早 → 从 today 开始; 日常增量更新用配置默认值
         from quant.config.constants import _require_cfg as _ecfg
-        _cache_start = min(_ecfg("backtest.factor_cache_start"), today)
-        # 结束日期取 daily 表最新日期（不是 today，手动回溯时 today 是过去日期）
+        _cache_start = _ecfg("backtest.factor_cache_start")
         _latest = store._connect().execute(
             'SELECT MAX(date) FROM daily').fetchone()[0]
-        _cache_end = max(today, _latest) if _latest else today
+        _cache_end = max(end_date, _latest) if _latest else end_date
         dates = [r[0] for r in store._connect().execute(
             'SELECT DISTINCT date FROM daily WHERE date >= ? AND date <= ? ORDER BY date',
             (_cache_start, _cache_end)).fetchall()]
         symbols = UniverseRepo().get_symbols(exclude_market='BJ')
-        # B-17 fix: 物化池 = backtesting ∪ using — 原只物化 backtesting 池
-        # (candidate+monitoring+retired, 排除 active), 而实盘信号用 using 池
-        # (active+monitoring) → 因子晋升 active 后因子值缓存缺失, 被静默丢弃
         factors = sorted(set(get_factor_names(status_filter='backtesting'))
                          | set(get_factor_names(status_filter='using')))
         store.close()
@@ -53,47 +52,47 @@ def _run(today: str):
         # 因子自动回池, 由 per-date missing 过滤补算。
         try:
             from quant.data.freshness import unavailable_factors
-            _unavail = unavailable_factors(today)
+            _unavail = unavailable_factors(end_date)
             _drop = set(factors) & _unavail
             if _drop:
                 factors = [f for f in factors if f not in _unavail]
-                _log.warning(f"[{today}] factor_cache: pruned {len(_drop)} factors "
+                _log.warning(f"[{end_date}] factor_cache: pruned {len(_drop)} factors "
                              f"(source table stale): {sorted(_drop)}")
         except Exception as _fe:
-            _log.warning(f"[{today}] factor_cache: freshness prune failed (non-fatal): {_fe}")
+            _log.warning(f"[{end_date}] factor_cache: freshness prune failed (non-fatal): {_fe}")
 
         fs = FactorStore()
         result = fs.materialize(dates, factors, symbols, force=False)
 
         elapsed = _time.time() - t0
         if result.get("skipped"):
-            _log.info(f"[{today}] factor_cache: all dates already materialized, skipped")
+            _log.info(f"[{end_date}] factor_cache: all dates already materialized, skipped")
         else:
-            _log.info(f"[{today}] factor_cache done: {result['n_rows']} new rows ({elapsed:.1f}s)")
+            _log.info(f"[{end_date}] factor_cache done: {result['n_rows']} new rows ({elapsed:.1f}s)")
             # Trim old cache to max_days window
             try:
                 from quant.config.constants import _require_cfg
                 max_days = _require_cfg("backtest.factor_cache_max_days")
                 trimmed = fs.trim_to_max_days(max_days)
-                _log.info(f"[{today}] factor_cache: trimmed {trimmed} old rows ({max_days}d window)")
+                _log.info(f"[{end_date}] factor_cache: trimmed {trimmed} old rows ({max_days}d window)")
             except Exception as e:
-                _log.warning(f"[{today}] factor_cache: trim failed (non-fatal): {e}")
+                _log.warning(f"[{end_date}] factor_cache: trim failed (non-fatal): {e}")
             # Sync ic_mean to factor_registry
             try:
                 from quant.data.repos import FactorRepo
                 f_repo = FactorRepo()
                 f_repo.sync_all_ic_means(f_repo.all_factor_names(), n_days=60)
-                _log.info(f"[{today}] factor_cache: synced ic_mean to factor_registry")
+                _log.info(f"[{end_date}] factor_cache: synced ic_mean to factor_registry")
             except Exception as e:
-                _log.warning(f"[{today}] factor_cache: sync ic_mean failed: {e}")
+                _log.warning(f"[{end_date}] factor_cache: sync ic_mean failed: {e}")
 
         status = "ok"
         summary = {"rows": result.get("n_rows", 0), "elapsed": round(elapsed, 1)}
-        _log.info(f"[SCHEDULER] {today} | TASK=factor_cache | STATUS=OK | "
+        _log.info(f"[SCHEDULER] {end_date} | TASK=factor_cache | STATUS=OK | "
                   f"rows={result.get('n_rows', 0)} | elapsed={elapsed:.1f}s")
     except Exception as e:
         error_msg = str(e)
-        _log.exception(f"[{today}] factor_cache crashed: {e}")
+        _log.exception(f"[{end_date}] factor_cache crashed: {e}")
         raise
     finally:
-        _tk_finish("factor_cache", today, status, error=error_msg, summary=summary)
+        _tk_finish("factor_cache", end_date, status, error=error_msg, summary=summary)

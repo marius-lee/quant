@@ -117,7 +117,7 @@ backtest:
     universe_size: 10
     start: '2026-06-24'
     end: '2026-07-24'
-  factor_cache_start: '2020-01-01'
+  factor_cache_start: '2019-01-01'
 cache: null
 calendar:
   max_lookup_days: 30
@@ -439,7 +439,7 @@ market:
 # attribution.corr_redundant_threshold  0.7            test-v261: 因子相关性冗余阈值
 # backtest.default_start                2020-01-01     test-v262: 6.5年完整周期 (原2023→2020)
 # backtest.factor_cache_max_days        2000           test-v249: 修复裁剪过激 (244→2000)
-# backtest.factor_cache_start           2020-01-01     test-v255: 缓存起始日对齐config
+# backtest.factor_cache_start           2019-01-01     v383: 对齐2019数据回填(v348-351), 原2020(v255)
 # backtest.universe_size                800            中证800指数对标
 # backtest.diagnosis_ic_window          120            Qlib: IC回看60-120天
 # backtest.min_trading_days             10             至少2个自然周

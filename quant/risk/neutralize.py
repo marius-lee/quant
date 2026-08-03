@@ -199,14 +199,11 @@ def neutralize(
     result = scores.copy()
 
     if industries is not None and market_caps is not None:
-        # 联合回归: alpha ~ industries + log(mcap) → 残差
         result = _joint_neutralize(result, industries, market_caps)
         logger.info("[neutralize] joint (industry+size)")
     elif industries is not None:
         result = industry_neutralize(result, industries)
-        if market_caps is not None:
-            result = size_neutralize(result, market_caps)
-        logger.info("[neutralize] sequential industry→size")
+        logger.info("[neutralize] industry only")
     elif market_caps is not None:
         result = size_neutralize(result, market_caps)
         logger.info("[neutralize] size only")
@@ -247,7 +244,8 @@ def _joint_neutralize(
     ind_series = ind_series.where(ind_series.isin(valid_inds), "other")
 
     ind_dummies = pd.get_dummies(ind_series, drop_first=True).astype(np.float64)
-    X = np.column_stack([log_mcap, ind_dummies.values])
+    # v380 fix: 必须含截距项 (np.ones), 否则OLS强迫过原点 → 残差有偏
+    X = np.column_stack([np.ones(len(common)), log_mcap, ind_dummies.values])
 
     # OLS: y = β₀ + β₁·log(mcap) + Σβᵢ·industryᵢ + ε
     try:

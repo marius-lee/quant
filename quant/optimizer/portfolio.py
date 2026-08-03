@@ -346,14 +346,14 @@ class PortfolioConstructor:
         σ_daily 复用 execution.default_daily_vol; IC_eff 优先取运行时 ic_map
         的 |IC| 均值 (回测 walk-forward / 实盘 registry 均为实测值)。
 
-        注: prices 为 price_buffer 缓冲价 (construct 内部口径), 成本与效益
-        同向放大, 判定结论不变号; 略微偏保守 (多拦截边缘换仓)。
+        注: v380 起 prices 为原始价格 (price_buffer 不再虚增), 手数计算更准确。
+        成本带判定仅依赖 alpha 差量和 CostModel, 不受价格缓冲影响。
 
         Args:
             ideal: 各层方法产出的理想目标。
             current_lots: 当前持仓 (index=symbol, values=手数)。
             alpha: 已排序的候选 alpha 序列 (与 prices 同 index)。
-            prices: 候选价格序列 (含 price_buffer)。
+            prices: 候选价格序列 (原始价格, v380 起不含缓冲)。
             cost_model: CostModel 实例, 用于实算换仓费用。
             ic_map: 运行时 IC 权重 (可选, 缺失时 IC 取 config tc_ic_ref)。
 

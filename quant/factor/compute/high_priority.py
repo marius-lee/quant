@@ -115,34 +115,19 @@ def compute_industry_momentum(data, date, window=63, aux=None):
     
     past = close.iloc[start:idx+1]
     ret = past.pct_change().dropna(how='all').mean()
-    
-    industry_ret = {}
-    for sym in ret.index:
-        if sym in stocks_df.index:
-            try:
-                ind_val = stocks_df.loc[sym, "industry"]
-                ind = ind_val if isinstance(ind_val, str) else str(ind_val.iloc[0]) if hasattr(ind_val, 'iloc') else str(ind_val)
-            except Exception:
-                continue
-            if ind and ind != "" and ind != "nan":
-                industry_ret.setdefault(ind, []).append(ret[sym])
-    
-    ind_mom = {}
-    for ind, vals in industry_ret.items():
-        if len(vals) >= 2:
-            ind_mom[ind] = np.nanmean(vals)
-    
-    result = pd.Series(np.nan, index=ret.index)
-    for sym in ret.index:
-        if sym in stocks_df.index:
-            try:
-                ind_val = stocks_df.loc[sym, "industry"]
-                ind = ind_val if isinstance(ind_val, str) else str(ind_val.iloc[0]) if hasattr(ind_val, 'iloc') else str(ind_val)
-            except Exception:
-                continue
-            if ind in ind_mom:
-                result[sym] = ind_mom[ind]
-    
+
+    # v373: groupby 向量化替代双 per-symbol Python 循环
+    ind_series = stocks_df["industry"].reindex(ret.index)
+    ind_series = ind_series[ind_series.notna() & (ind_series != "") & (ind_series != "nan")]
+    if ind_series.empty:
+        return pd.Series(np.nan, index=ret.index, name="industry_momentum")
+
+    ind_mom = ret.groupby(ind_series).mean()
+    # 至少 2 只股票 per 行业
+    valid_inds = ind_series.value_counts()
+    ind_mom = ind_mom[valid_inds >= 2]
+
+    result = ind_series.map(ind_mom)
     return _cs_zscore(result).rename("industry_momentum")
 
 

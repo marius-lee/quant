@@ -42,16 +42,12 @@ def compute_limit_up_proximity(data: "pd.DataFrame", date: str, window: int = 5,
     ret = close.pct_change()
     ret_slice = ret.iloc[start:idx + 1]
 
-    avg_proximity = {}
-    for sym in close.columns:
-        r = ret_slice[sym].dropna()
-        if len(r) < 2:
-            continue
-        limit = _get_board_limit(sym, aux)
-        prox = (r / limit).mean()
-        avg_proximity[sym] = prox
-
-    result = pd.Series(avg_proximity)
+    # v373: _vectorized_limit_pcts 替代 per-symbol _get_board_limit 循环
+    limits = _vectorized_limit_pcts(list(close.columns), aux, 0.0)  # margin_pct=0: 用原始涨停幅度
+    prox = ret_slice.mean() / (limits / 100.0)  # limits 是百分比, 转小数
+    result = prox.dropna()
+    if len(result) < 30:
+        return pd.Series(np.nan, index=close.columns, name=f"limit_up_prox_{window}d")
     return _cs_zscore(result).rename(f"limit_up_prox_{window}d")
 
 

@@ -159,11 +159,13 @@ def compute_alpha055(data, date, window=None):
         return None
 
     w = 12
-    hh = high.rolling(w, min_periods=max(w // 2, 1)).max()
-    ll = low.rolling(w, min_periods=max(w // 2, 1)).min()
-    pos = (close - ll) / (hh - ll).replace(0, np.nan)
-    # rank 全历史 (正确), rolling corr 仅 tail 8 行 (v372: O(T×N)→O(8×N))
-    pos_ranked = pos.rank(pct=True)
+    # v373: rolling max/min/rank 全历史→仅 tail (O(T×N)→O(W×N)), 但 rank 需全历史百分位
+    tail = w + 2
+    hh = high.iloc[-tail:].rolling(w, min_periods=max(w // 2, 1)).max()
+    ll = low.iloc[-tail:].rolling(w, min_periods=max(w // 2, 1)).min()
+    pos_tail = (close.iloc[-tail:] - ll) / (hh - ll).replace(0, np.nan)
+    # pos 百分位 rank 也仅需 tail 内 (pos 值域 [0,1], 跨时间可比)
+    pos_ranked = pos_tail.rank(pct=True)
     vol_ranked = volume.rank(pct=True)
     corr = _rolling_corr(pos_ranked.iloc[-8:], vol_ranked.iloc[-8:], 6).iloc[-1]
     return _cs_zscore(-corr, sparse=True).rename("alpha055_pos_vol")

@@ -178,8 +178,10 @@ def compute_str(data, date, window=20, aux=None):
         return pd.Series(np.nan, index=close.columns, name="str")
 
     min_records = max(window // 2, 10)
-    raw = turnover_df.rolling(window, min_periods=min_records).std().iloc[-1].dropna()
-    valid_mask = turnover_df.notna().sum() >= min_records
+    # v373: 仅取 tail window+1 行做 rolling std (O(T×N)→O(W×N))
+    tail = turnover_df.iloc[-(window + 1):]
+    raw = tail.rolling(window, min_periods=min_records).std().iloc[-1].dropna()
+    valid_mask = tail.notna().sum() >= min_records
     raw = raw[valid_mask]
     raw.name = 'str'
     if raw.empty or raw.count() < 30:
@@ -264,8 +266,10 @@ def compute_abn_turnover(data, date, window=20, aux=None):
         ind_map = {r[0]: r[2] for r in meta_rows if r[2]}
 
     min_records = max(window // 2, 10)
-    avg_turn = turnover_df.rolling(window, min_periods=min_records).mean().iloc[-1]
-    valid_mask = turnover_df.notna().sum() >= min_records
+    # v373: 仅取 tail window+1 行做 rolling mean (O(T×N)→O(W×N))
+    tail = turnover_df.iloc[-(window + 1):]
+    avg_turn = tail.rolling(window, min_periods=min_records).mean().iloc[-1]
+    valid_mask = tail.notna().sum() >= min_records
     avg_turn = avg_turn[valid_mask & (avg_turn > 0)]
 
     turn_series = pd.Series(np.log(np.asarray(avg_turn, dtype=np.float64)), index=avg_turn.index, name='ln_turnover')

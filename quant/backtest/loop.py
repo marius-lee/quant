@@ -347,6 +347,11 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
         data_full = store.get_daily(_all_symbols, start=_full_start, end=end_date)
         _log.info("backtest: pre-loaded %d days x %d symbols data", len(data_full), len(_all_symbols))
 
+        # v391: ztd 预加载一次 (generate_signals 内每日期 1700 次 → 1 次)
+        from quant.factor.compute.price._alternative import preload_ztd_cache
+        preload_ztd_cache(trading_days, _all_symbols)
+        _log.info("backtest: ztd cache preloaded for %d dates", len(trading_days))
+
         # ── 预计算共享算子 (原始计算图) ──
         from quant.factor.compute._primitives import precompute_primitives
         _log.info("backtest: precomputing shared primitives...")

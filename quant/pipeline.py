@@ -225,11 +225,12 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     if not bm.empty:
         benchmark_ret = bm[:pd.Timestamp(actual_date)]
 
-    # ── ztd 预计算缓存: 确保 compute_ztd 在实盘 / 回测均能命中缓存 ──
-    from quant.factor.compute.price._alternative import preload_ztd_cache
-    from quant.execution.calendar import is_trading_day as _is_td
-    _ztd_dates = [d for d in pd.date_range(start=pd.Timestamp(hist_start), end=pd.Timestamp(date_str), freq="B") if _is_td(d.date())]
-    preload_ztd_cache([d.strftime("%Y-%m-%d") for d in _ztd_dates], symbols)
+    # ── ztd 预计算缓存: 回测由 loop.py 一次性预加载, 避免每日期 O(n²) 重算 ──
+    if scope != "backtest":
+        from quant.factor.compute.price._alternative import preload_ztd_cache
+        from quant.execution.calendar import is_trading_day as _is_td
+        _ztd_dates = [d for d in pd.date_range(start=pd.Timestamp(hist_start), end=pd.Timestamp(date_str), freq="B") if _is_td(d.date())]
+        preload_ztd_cache([d.strftime("%Y-%m-%d") for d in _ztd_dates], symbols)
 
     # ── 因子值来源: factor_store (缓存) 优先, 无缓存直接抛错 ──
     if factor_store is None:

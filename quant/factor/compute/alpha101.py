@@ -102,15 +102,20 @@ def compute_alpha012(data, date, window=None):
 # Alpha #2: 量价背离 — -correlation(rank(delta(log(volume))), rank(return), 6)
 # ═══════════════════════════════════════════════
 def compute_alpha002(data, date, window=None):
-    """Alpha#2: 量价背离."""
+    """Alpha#2: 量价背离. v372: 仅取 tail 行做 rolling corr (O(T×N)→O(W×N))."""
     close = data["close"] if isinstance(data.columns, pd.MultiIndex) else data
     volume = data["volume"] if "volume" in data.columns.get_level_values(0) else None
     if close is None or volume is None or close.empty or len(close) < 10:
         return None
+    window = 6
     dlog_vol = np.log(volume.replace(0, np.nan)).diff()
     ret = close.pct_change()
-    window = 6
-    corr = _rolling_corr(dlog_vol.rank(pct=True), ret.rank(pct=True), window).iloc[-1]
+    # rank 仍需要全历史 (跨时间百分位), 但 rolling corr 仅需 tail window+2 行
+    tail = window + 2
+    corr = _rolling_corr(
+        dlog_vol.rank(pct=True).iloc[-tail:],
+        ret.rank(pct=True).iloc[-tail:],
+        window).iloc[-1]
     return _cs_zscore(-corr, sparse=True).rename("alpha002_vol_price_div")
 
 
@@ -145,7 +150,7 @@ def compute_alpha035(data, date, window=None):
 # Alpha #55: 筹码位置-量相关
 # ═══════════════════════════════════════════════
 def compute_alpha055(data, date, window=None):
-    """Alpha#55: 价格位置 vs 成交量 相关性."""
+    """Alpha#55: 价格位置 vs 成交量 相关性. v372: rolling max/min/rank 全历史, corr 仅 tail."""
     close = data["close"] if isinstance(data.columns, pd.MultiIndex) else data
     high = data["high"] if "high" in data.columns.get_level_values(0) else None
     low = data["low"] if "low" in data.columns.get_level_values(0) else None
@@ -156,6 +161,9 @@ def compute_alpha055(data, date, window=None):
     w = 12
     hh = high.rolling(w, min_periods=max(w // 2, 1)).max()
     ll = low.rolling(w, min_periods=max(w // 2, 1)).min()
-    pos = (close - ll) / (hh - ll).replace(0, np.nan)  # 价格在区间位置
-    corr = _rolling_corr(pos.rank(pct=True), volume.rank(pct=True), 6).iloc[-1]
+    pos = (close - ll) / (hh - ll).replace(0, np.nan)
+    # rank 全历史 (正确), rolling corr 仅 tail 8 行 (v372: O(T×N)→O(8×N))
+    pos_ranked = pos.rank(pct=True)
+    vol_ranked = volume.rank(pct=True)
+    corr = _rolling_corr(pos_ranked.iloc[-8:], vol_ranked.iloc[-8:], 6).iloc[-1]
     return _cs_zscore(-corr, sparse=True).rename("alpha055_pos_vol")

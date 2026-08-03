@@ -236,7 +236,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         raise RuntimeError(
             f"step 3: factor_store is None for {actual_date}, "
             f"run factor_cache materialization first: PYTHONPATH=. .venv/bin/python3 -c "
-            f"'from quant.scheduler.factor_cache import _run; _run({actual_date!r})'"
+            f"'from quant.scheduler.factor_cache import _run; _run({actual_date!r}, {actual_date!r})'"
         )
     factor_values = factor_store.load(actual_date, symbols=symbols, factor_names=None)
     if factor_values:

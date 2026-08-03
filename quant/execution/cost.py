@@ -110,6 +110,19 @@ class CostModel:
         impact = self.slippage_with_impact(value, shares, daily_volume, daily_vol)
         return self.commission(value) + self.stamp_tax(value, "sell") + impact
 
+    def estimate_market_impact(self, symbol: str, shares: int, side: str) -> float:
+        """估算单笔订单的市场冲击成本 (bps).
+        P2b: 简化模型 — 基于订单股数的固定冲击率;
+        完整版需 daily_volume 调用 slippage_with_impact.
+        来源: Almgren & Chriss (2001) — 线性冲击模型, 小单 ~5bps.
+        """
+        from quant.config.constants import _require_cfg
+        base_bps = _require_cfg("execution.default_impact_bps")
+        # 大单额外冲击: 超过100手的部分每手加0.1bps
+        lots = shares / _require_cfg("backtest.lot_size")
+        scale = 1.0 + max(0, lots - 100) * 0.001
+        return base_bps * scale
+
     def round_trip_cost_pct(self) -> float:
         """往返成本百分比 (买+卖)。"""
         return (self.commission_rate + self.slippage_rate) * 2 + self.stamp_tax_rate

@@ -200,6 +200,7 @@ execution:
   min_commission: 5
   slippage: 0.001
   impact_eta: 0.1
+  default_impact_bps: 5
   default_daily_vol: 0.02
   stamp_tax: 0.0005
   quote:

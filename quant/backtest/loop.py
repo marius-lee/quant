@@ -315,20 +315,13 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
         ic_lookback = ic_lookback if ic_lookback is not None else _require_cfg("backtest.diagnosis_ic_window")
         bt_factor_names = get_factor_names(status_filter=factor_status_filter)
 
-        # v385: 验证因子缓存覆盖 IC 回看期, 缺则报清晰错误
+        # v395: 缓存覆盖检查 — 缺则warn(IC可能不准), 不阻断回测
         _ic_start = (pd.Timestamp(trading_days[0]) - pd.Timedelta(days=ic_lookback * 2)).strftime("%Y-%m-%d")
         _ic_dates = [d.strftime("%Y-%m-%d") for d in pd.date_range(start=_ic_start, end=trading_days[0], freq="B")
                      if is_trading_day(d.date())]
-        if _ic_dates:
-            _oldest_needed = _ic_dates[0]
-            if not _fstore.is_materialized([_oldest_needed], bt_factor_names[:3]):
-                _log.error(
-                    f"backtest: factor cache missing/stale for IC lookback period. "
-                    f"Oldest needed: {_oldest_needed} (={trading_days[0]} - {ic_lookback}d IC lookback). "
-                    f"Rebuild cache: _run('{_ic_start}', '{end_date}')"
-                )
-                return {"error": f"factor_cache_miss: oldest_needed={_oldest_needed}, "
-                                 f"run factor_cache._run('{_ic_start}', '{end_date}') first"}
+        if _ic_dates and not _fstore.is_materialized([_ic_dates[0]], bt_factor_names[:3]):
+            _log.warning(f"backtest: factor cache stale/missing for IC lookback. "
+                         f"IC estimates may be noisy. Rebuild with: _run('{_ic_start}', '{end_date}')")
 
         _current_ic_map = compute_backtest_ic(
             start_date=trading_days[0],

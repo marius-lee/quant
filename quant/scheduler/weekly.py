@@ -82,7 +82,7 @@ def _run(today: str):
         if p1_ok:
             p2_ok = _run_phase("eval_phase2", today, lambda: (
                 __import__('quant.evaluation.phase2_single', fromlist=['screen_factors'])
-                .screen_factors(prefilter_from_diagnostics=True)
+                .screen_factors()
             ))
 
         # Phase 3: CPCV OOS + PBO (依赖 Phase 2)

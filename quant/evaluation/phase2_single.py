@@ -11,15 +11,11 @@ from quant.utils.logger import get_logger, set_trace_id
 from quant.factor.stats_cache import compute_factor_stats
 
 
-def screen_factors(input_json: str = None, output_json: str = None,
-                   prefilter_from_diagnostics: bool = True) -> dict:
+def screen_factors(input_json: str = None, output_json: str = None) -> dict:
     """运行单因子检验, 返回通过/未通过因子列表。
 
-    Parameters
-    ----------
-    prefilter_from_diagnostics: 是否从 diagnostics 预筛因子 (两步架构).
-        True → 只评估最近一次诊断的 keep/boost 因子.
-        False → 评估全部 backtesting 因子.
+    评估全部 backtesting 因子, 自己算 IC, 不依赖外部诊断数据。
+    计算完成后将 IC 结果写回 evaluation_runs.diagnostics 供后续参考。
 
     Returns
     -------
@@ -54,35 +50,10 @@ def screen_factors(input_json: str = None, output_json: str = None,
     logger.info(f"Phase 2 thresholds: |IC|≥{min_abs_ic}, ICIR≥{min_icir}, half-life≥{min_half_life}d | monitoring: |IC|≥{monitoring_min_abs_ic}, ICIR≥{monitoring_min_icir}")
 
 
-    # 获取 backtesting 因子 (两步架构: 可选诊断预筛)
+    # 获取全部 backtesting 因子 — 不再依赖外部诊断预筛
     from quant.factor.compute import get_factor_names
-    all_backtesting = get_factor_names(status_filter="backtesting")
-
-    if prefilter_from_diagnostics:
-        # 两步架构: 独立诊断模块 (run_diagnostics.py) 的 backtesting 因子 IC 快照
-        # 已写入 evaluation_runs, 此处取 passed 因子与 backtesting 因子取交集做预筛
-        from quant.evaluation.run_store import load_latest
-        diag = load_latest("diagnostics")
-        if diag and diag.get("passed"):
-            diag_passed = set(diag["passed"])
-            active_names = [n for n in all_backtesting if n in diag_passed]
-            if not active_names:
-                # 安全网: 交集为空时退回全部 backtesting (例如诊断数据过期)
-                active_names = all_backtesting
-                logger.warning("Phase 2: diagnostics passed ∩ backtesting = ∅, "
-                               "fallback: using all %d backtesting factors",
-                               len(active_names))
-            else:
-                logger.info("Phase 2: diagnostics pre-filter %d -> %d factors",
-                            len(all_backtesting), len(active_names))
-        else:
-            active_names = all_backtesting
-            logger.info("Phase 2: no diagnostics data in evaluation_runs — "
-                        "using all %d backtesting factors (run scripts/run_diagnostics.py first)",
-                        len(active_names))
-    else:
-        active_names = all_backtesting
-        logger.info(f"Phase 2: --all mode — evaluating all {len(active_names)} backtesting factors")
+    active_names = get_factor_names(status_filter="backtesting")
+    logger.info("Phase 2: evaluating all %d backtesting factors", len(active_names))
 
     # 计算因子统计
     n_symbols = _require_cfg("factor.evaluation.n_symbols")
@@ -196,6 +167,21 @@ def screen_factors(input_json: str = None, output_json: str = None,
     save_phase("phase2", slim)
     logger.info("Phase 2 saved to evaluation_runs (%d factors, ~%d bytes)",
                  slim["n_factors"], len(json.dumps(slim, default=str)))
+
+    # v361: 同时写 diagnostics (供下次 Phase 2 参考, 或独立查询)
+    try:
+        save_phase("diagnostics", {
+            "n_factors": len(active_names),
+            "passed": list(passed),
+            "factor_report": {
+                n: {"recommendation": "keep" if n in passed else "review",
+                    "ic_ir": round(abs(ic_irs.get(n, 0.0)), 2)}
+                for n in active_names
+            },
+            "summary": f"Phase2: {len(passed)}/{len(active_names)} passed",
+        })
+    except Exception as _de:
+        logger.warning(f"diagnostics save failed (non-fatal): {_de}")
 
     logger.info(f"Phase 2 complete ({time.monotonic()-t0:.1f}s). {len(passed)} factors advance to Phase 3.")
     return result

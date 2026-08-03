@@ -257,19 +257,17 @@ class TestCostAwareBand:
         return CostModel.from_config()
 
     def test_swap_suppressed_when_alpha_gap_small(self):
-        """小幅 alpha 提升 (Δz≈0.68): 预期收益 ¥15 < 成本 ¥21 → 留仓 S0."""
+        """v390: Nano层豁免成本带 — 直接按alpha换仓, 不再锁仓."""
         alpha = pd.Series({"S1": 0.60, "S0": 0.55, "S2": 0.40, "S3": 0.30, "S4": 0.20})
         prices = pd.Series(45.0, index=alpha.index)
         cur = pd.Series({"S0": 1})
         pf = self._pc().construct(alpha, prices, 5000, current_lots=cur,
                                   cost_model=self._cm(), ic_map={"f1": 0.05})
-        assert pf.tc_suppressed == 1
-        assert dict(pf.lots) == {"S0": 1}      # 保留原持仓, 不换 S1
-        # v380: price_buffer 不再虚增价格, lot_cost = 45 × 100 = 4500
-        assert pf.cash_reserve == pytest.approx(5000 - 45 * 100, abs=1)
+        assert pf.tc_suppressed == 0   # Nano豁免成本带
+        assert dict(pf.lots) == {"S1": 1}  # 直接换到最高alpha
 
     def test_swap_executed_when_alpha_gap_large(self):
-        """大幅 alpha 提升: 预期收益 > 成本, 成本带不拦截."""
+        """大幅 alpha 提升: Micro层成本带不拦截."""
         from quant.config.constants import _require_cfg
         horizon = _require_cfg("optimizer.tc_horizon_days")
         # swap_val = 1 lot × ¥100 = 10000, Δz≈2.36, benefit ≈ 2.36×0.05×0.02×horizon×10000
@@ -284,13 +282,14 @@ class TestCostAwareBand:
             assert pf.tc_suppressed == 0
             assert dict(pf.lots) == {"S1": 1}
         else:
-            # 日频 horizon=1: 成本带门槛更高, 该换仓被拦截 (符合预期)
+            # v390: Nano层豁免成本带, 直接换仓
             alpha = pd.Series({"S1": 0.90, "S0": 0.10, "S2": 0.40, "S3": 0.30, "S4": 0.20})
             prices = pd.Series(45.0, index=alpha.index)
             cur = pd.Series({"S0": 1})
             pf = self._pc().construct(alpha, prices, 5000, current_lots=cur,
                                       cost_model=self._cm(), ic_map={"f1": 0.05})
-            assert pf.tc_suppressed >= 1
+            assert pf.tc_suppressed == 0   # Nano豁免
+            assert dict(pf.lots) == {"S1": 1}
 
     def test_no_band_without_holdings(self):
         """首次建仓 (无持仓): 成本带不启用, 按理想目标买 S1."""

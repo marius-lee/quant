@@ -256,7 +256,28 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     # B-12 fix: combine_mode 参数此前被静默忽略 (回测 warmup→ic_weighted 切换无效)
     am = AlphaModel(combine_mode=combine_mode)
     ic_map = ic_map if ic_map is not None else load_ic_map_from_cache(factor_values, scope=scope)
-    ic_map = _bayesian_shrink_ic_map(ic_map)
+
+    # v390: probation 因子 IC 衰减 — 状态机降级后权重减半, 不再以全权重交易
+    try:
+        from quant.data.repos import FactorRepo
+        _probation_names = FactorRepo().get_probation_factor_names()
+        if _probation_names:
+            ic_map = dict(ic_map)  # 不修改传入的原始dict
+            for _pn in _probation_names:
+                if _pn in ic_map:
+                    _v = ic_map[_pn]
+                    if isinstance(_v, dict):
+                        _v["ic_mean"] = _v.get("ic_mean", 0) * 0.5
+                    else:
+                        ic_map[_pn] = float(_v) * 0.5
+            _log.info("probation decay: %d factors halved: %s", len(_probation_names),
+                      ", ".join(sorted(_probation_names)))
+    except Exception:
+        pass
+
+    # v390: Bayesian收缩仅对 live scope (factor_registry ic_mean), 回测 OOS-IR 已鲁棒
+    if scope == "live":
+        ic_map = _bayesian_shrink_ic_map(ic_map)
     # test-v299 §8.2: regime 条件合成 (HMM 牛/熊/震荡 → 因子权重偏置)
     if _require_cfg("alpha.regime_combine"):
         if regime_label is None and scope == "live":

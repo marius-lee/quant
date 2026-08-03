@@ -311,8 +311,9 @@ class PortfolioConstructor:
                     )
                     result = self._mean_variance_lot(a, p, capital, covariance, risk_aversion)
 
-        # ── §8.3 成本带 (Grinold α − λ·TC): 拦截不划算的换仓 ──
-        if current_lots is not None and len(current_lots) > 0 and cost_model is not None:
+        # ── §8.3 成本带: 拦截不划算的换仓 (Nano层豁免 — 单票集中, 锁仓比换仓更贵) ──
+        if current_lots is not None and len(current_lots) > 0 and cost_model is not None \
+                and tier != "nano":
             result = self._apply_tc_band(result, current_lots, a, p, cost_model, ic_map)
 
         # ── P1-3: min_weight 过滤 — 剔除权重过低的噪声仓位 ──

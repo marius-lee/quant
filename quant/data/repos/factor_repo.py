@@ -222,6 +222,12 @@ class FactorRepo:
         rows = self._query(f"SELECT {FR_NAME} FROM factor_registry")
         return [r["name"] for r in rows]
 
+    def get_probation_factor_names(self) -> list[str]:
+        """v390: 返回当前 probation 状态因子名列表 (用于IC权重衰减)."""
+        rows = self._query(f"SELECT {FR_NAME} FROM factor_registry WHERE {FR_STATUS}=?",
+                          ("probation",))
+        return [r["name"] for r in rows]
+
     def get_factor_updated_at(self, name: str) -> str | None:
         """Get updated_at timestamp for a factor (used for monitoring buffer check)."""
         row = self._query_one(f"SELECT {FR_UPDATED_AT} FROM factor_registry WHERE {FR_NAME}=?", (name,))

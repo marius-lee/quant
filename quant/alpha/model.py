@@ -87,32 +87,21 @@ class AlphaModel:
         from quant.alpha.synth import sleeve_compose, ic_weighted, equal_weight, intersection_alpha
 
         if self.combine_mode == "sleeve":
-            # IC filtering: drop factors with IC <= 0 (maintains independent sub-portfolios per ADR 017)
-            # Handles both {name: {ic_mean, ...}} (from compute_ic) and {name: float} (from DB)
+            # v390: IC>0 过滤, 负IC因子不参与sleeve (nlargest会选错方向)
             if ic_map:
                 def _ic_ok(name):
                     v = ic_map.get(name, {})
                     if isinstance(v, dict):
-                        ic_mean = v.get("ic_mean", 0)
-                        if ic_mean <= 0:
-                            return False
-                        # Grinold & Kahn (1999) Ch.6, Eq.6.16: w_k ∝ IC_k / σ²_k
-                        # Monitoring 因子权重按 |IC_5d| / |IC_60d| 连续比例衰减
-                        # 无地板 — 状态机在 10d 持续衰减后自动退役因子
-                        # Source: Active Portfolio Management, 2nd ed., p.178
-                        status = v.get("status", "active")
-                        if status == "probation":
-                            ic_5d = v.get("ic_5d", v.get("ic_mean", 0))
-                            ic_60d = v.get("ic_60d", v.get("ic_mean", 0))
-                            if abs(ic_60d) > 1e-5:
-                                decay = min(1.0, abs(ic_5d) / abs(ic_60d))
-                                return ic_mean * decay > 0
-                        return True
-                    return v > 0  # plain float from factor_registry
+                        return v.get("ic_mean", 0) > 0
+                    return v > 0  # plain float
                 keep = {k: v for k, v in factor_values.items() if _ic_ok(k)}
                 if len(keep) >= self.min_factors:
                     factor_values = keep
-                # else: keep all if insufficient factors survive filtering
+                else:
+                    # v390: 不及min_factors→不交易, 不再保留全因子(负IC因子nlargest选错方向)
+                    _log.info("sleeve: only %d factors survive IC filter (< %d), skip trading today",
+                              len(keep), self.min_factors)
+                    return pd.Series(dtype=float)
 
             alpha_raw = sleeve_compose(
                 factor_values,

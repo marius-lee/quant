@@ -245,11 +245,13 @@ class FactorStore:
             chunk_new_rows: dict[str, list[str]] = {d: [] for d in chunk_dates}
 
             # test-v398 (perf): ThreadPoolExecutor — 线程共享内存, 无 COW, numpy 释放 GIL
-            # ProcessPool fork → M1 8GB OOM; ThreadPool 4 workers ≈ 3x 加速
+            # test-v398 (perf): ThreadPoolExecutor — 线程共享内存, numpy 释放 GIL
+            # max_workers=2: M1 4性能核+4效率核, 物化是 CPU 密集 (>200MB data_full 共用)
+            # 4 workers 抢内存带宽互相拖慢, 2 workers 实测更快 (~1.5x→2x 加速)
             from concurrent.futures import ThreadPoolExecutor, as_completed
             from quant.factor.compute._preload import slice_aux_for_date
             chunk_dates_done = 0
-            with ThreadPoolExecutor(max_workers=4) as _ex:
+            with ThreadPoolExecutor(max_workers=2) as _ex:
                 _futures = {}
                 for date_str in chunk_dates:
                     existing = self._get_existing_factors(date_str)
@@ -269,7 +271,7 @@ class FactorStore:
                         chunk_new_rows[_ds].extend(_lines)
                         chunk_dates_done += 1
                     if chunk_dates_done % 20 == 0 or chunk_dates_done == len(_futures):
-                        _log.info("  chunk compute: %d/%d dates done (threads=4)",
+                        _log.info("  chunk compute: %d/%d dates done (threads=2)",
                                   chunk_dates_done, len(_futures))
             t4 = _time.time()
 

@@ -71,3 +71,56 @@ class BacktestContext:
             return self.prebuilt_constructor
         from quant.optimizer.portfolio import PortfolioConstructor
         return PortfolioConstructor()
+
+
+class LiveContext:
+    """test-v398: 实盘上下文 — 轻量 BacktestContext 工厂, 每日复用实例.
+
+    与 BacktestContext 的区别:
+      - 不做数据预加载 (实盘需数据新鲜度)
+      - 只复用 engine/cost_model/constructor (避免每日 DDL)
+      - 通过 to_backtest_context() 转为 BacktestContext 传给 generate_signals
+
+    用法:
+        ctx = LiveContext(db_path=TRADE_DB)
+        result = generate_signals(..., ctx=ctx.to_backtest_context())
+    """
+
+    __slots__ = ("db_path", "_engine", "_cost_model", "_constructor")
+
+    def __init__(self, db_path: str = TRADE_DB):
+        self.db_path = db_path
+        self._engine = None
+        self._cost_model = None
+        self._constructor = None
+
+    def to_backtest_context(self) -> "BacktestContext":
+        """转为 BacktestContext — 只填复用实例, 数据字段全部留 None (回退 DB 查询)."""
+        return BacktestContext(
+            prebuilt_engine=self.engine,
+            prebuilt_cost_model=self.cost_model,
+            prebuilt_constructor=self.constructor,
+            suppress_push=False,
+            db_path=self.db_path,
+        )
+
+    @property
+    def engine(self):
+        if self._engine is None:
+            from quant.execution.engine import ExecutionEngine
+            self._engine = ExecutionEngine(db_path=self.db_path)
+        return self._engine
+
+    @property
+    def cost_model(self):
+        if self._cost_model is None:
+            from quant.execution.cost import CostModel
+            self._cost_model = CostModel.from_config()
+        return self._cost_model
+
+    @property
+    def constructor(self):
+        if self._constructor is None:
+            from quant.optimizer.portfolio import PortfolioConstructor
+            self._constructor = PortfolioConstructor()
+        return self._constructor

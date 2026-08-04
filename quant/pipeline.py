@@ -55,10 +55,13 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
                      fund_close_piv = None,  # test-v398 (perf): 预加载 close pivot (复用 data_full)
                      fund_high_52w = None,   # test-v398 (perf): 预加载 52w high
                      all_symbols: list = None,  # test-v398 (perf): 预加载全量 symbol 列表
-                     ctx: "PipelineContext | None" = None) -> dict:
+                     ctx: "BacktestContext | PipelineContext | None" = None) -> dict:
     """Pipeline 阶段一: 盘前信号生成 (Steps 0-5, 不执行交易)。
 
-    用 T-1 收盘数据计算因子 → alpha → 风险过滤 → 组合优化 → 输出目标持仓。
+    test-v398: 新增 ctx (BacktestContext) 参数 - 回测传预加载上下文, 实盘传 None。
+    优先级: ctx > 显式 kwargs > PipelineContext (旧 ctx 参数)。
+
+    用 T-1 收盘数据计算因子 -> alpha -> 风险过滤 -> 组合优化 -> 输出目标持仓。
     status_filter: 控制因子计算池 ('using'=active+probation, 'backtesting'=evaluating+probation)
     scope: 控制 IC 权重来源 ('live'=factor_registry, 'backtest'=factor_ic_daily)
     ic_map: 显式传入 IC 权重 (回测用), 传入后跳过 scope 参数
@@ -71,14 +74,40 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     if date_str is None:
         date_str = datetime.today().strftime("%Y-%m-%d")
 
+    # ── test-v398: BacktestContext 解包 — 覆盖所有兼容参数 ──
+    from quant.backtest.context import BacktestContext
+    if isinstance(ctx, BacktestContext):
+        suppress_push = ctx.suppress_push
+        universe_size = ctx.universe_size if ctx.universe_size is not None else universe_size
+        db_path = ctx.db_path or db_path
+        preloaded_data = ctx.data_full if ctx.data_full is not None else preloaded_data
+        factor_store = ctx.factor_store if ctx.factor_store is not None else factor_store
+        factor_cache = ctx.factor_cache if ctx.factor_cache is not None else factor_cache
+        turnover_amount_roll = ctx.turnover_amount_roll if ctx.turnover_amount_roll is not None else turnover_amount_roll
+        bm_returns = ctx.bm_returns if ctx.bm_returns is not None else bm_returns
+        stock_names = ctx.stock_names if ctx.stock_names is not None else stock_names
+        preloaded_seal_ratios = ctx.preloaded_seal_ratios if ctx.preloaded_seal_ratios is not None else preloaded_seal_ratios
+        prebuilt_engine = ctx.prebuilt_engine if ctx.prebuilt_engine is not None else prebuilt_engine
+        prebuilt_cost_model = ctx.prebuilt_cost_model if ctx.prebuilt_cost_model is not None else prebuilt_cost_model
+        prebuilt_constructor = ctx.prebuilt_constructor if ctx.prebuilt_constructor is not None else prebuilt_constructor
+        fund_stocks_df = ctx.fund_stocks_df if ctx.fund_stocks_df is not None else fund_stocks_df
+        fund_val_piv = ctx.fund_val_piv if ctx.fund_val_piv is not None else fund_val_piv
+        fund_close_piv = ctx.fund_close_piv if ctx.fund_close_piv is not None else fund_close_piv
+        fund_high_52w = ctx.fund_high_52w if ctx.fund_high_52w is not None else fund_high_52w
+        all_symbols = ctx.all_symbols if ctx.all_symbols is not None else all_symbols
+        ic_map = ctx.ic_map if ctx.ic_map is not None else ic_map
+        combine_mode = ctx.combine_mode if ctx.combine_mode is not None else combine_mode
+        regime_label = ctx.regime_label if ctx.regime_label is not None else regime_label
+        regime_probs = ctx.regime_probs if ctx.regime_probs is not None else regime_probs
+
     from quant.utils.logger import get_trace_id, set_trace_id as _set_tid
     tid = get_trace_id() or _uuid.uuid4().hex[:12]
     _set_tid(tid)
     from quant.monitor.metrics import metrics as _m
     _m.inc("pipeline.runs")
-    # A3: resolve dependencies from PipelineContext if provided
-
-    if ctx is not None:
+    # A3: resolve dependencies from PipelineContext if provided (not BacktestContext)
+    from quant.backtest.context import BacktestContext as _BTCtx
+    if ctx is not None and not isinstance(ctx, _BTCtx):
         store = store or ctx.store
         factor_store = factor_store or ctx.factor_store
         db_path = db_path or ctx.db_path
@@ -567,13 +596,21 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
     _set_tid(tid)
     from quant.monitor.metrics import metrics as _m
     _m.inc("pipeline.runs")
-    # A3: resolve dependencies from PipelineContext if provided
-    if ctx is not None:
+    # A3: resolve dependencies from PipelineContext/BacktestContext if provided
+    from quant.backtest.context import BacktestContext as _BTCtx2
+    if isinstance(ctx, _BTCtx2):
+        db_path = ctx.db_path or db_path
+        suppress_push = ctx.suppress_push
+        engine = ctx.get_engine()
+        cost_model = ctx.get_cost_model()
+    elif ctx is not None:
         db_path = db_path or ctx.db_path
         suppress_push = suppress_push or ctx.suppress_push
-        # B-10 fix: execute_signals 没有 store/factor_store/preloaded_data/primitives/ic_map
-        # 这些变量 — 原代码从 generate_signals 复制粘贴, 传 ctx 即 NameError.
-        # execute 阶段只需要 db_path 与 suppress_push.
+        engine = ExecutionEngine(db_path=db_path)
+        cost_model = CostModel.from_config()
+    else:
+        engine = ExecutionEngine(db_path=db_path)
+        cost_model = CostModel.from_config()
 
     t0 = time.time()
     results = {"date": date_str, "steps": {}}
@@ -582,9 +619,6 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
     _ph_t0 = _time_ph.time()
     _ph_start = _time_ph.time()
     logger.info(f"execute_signals started trace_id={tid} date={date_str} strategy={strategy}")
-
-    engine = ExecutionEngine(db_path=db_path)
-    cost_model = CostModel.from_config()
 
     # Get current positions
     current_positions = engine.get_positions(strategy)

@@ -519,6 +519,20 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             except Exception as _re:
                 _log.warning("backtest: regime detection skipped (non-fatal): %s", _re)
 
+        # ── test-v398 (perf): BacktestContext — 收敛 16+ 参数为单一上下文 ──
+        from quant.backtest.context import BacktestContext
+        _ctx = BacktestContext(
+            data_full=data_full, all_symbols=_all_symbols,
+            fund_stocks_df=_stocks_df, fund_val_piv=_val_piv,
+            fund_close_piv=_close_piv_fund, fund_high_52w=_high_52w_fund,
+            factor_cache=_factor_cache, factor_store=_fstore,
+            stock_names=_stock_names, preloaded_seal_ratios=_preloaded_seal,
+            turnover_amount_roll=_amount_roll, bm_returns=_bm_returns_full,
+            prebuilt_engine=engine, prebuilt_cost_model=cost_model,
+            prebuilt_constructor=_prebuilt_constructor,
+            suppress_push=True, db_path=BACKTEST_DB, universe_size=universe_size,
+        )
+
         # ── Main loop ──
         equity_curve = [{"date": trading_days[0], "equity": float(capital)}]
         errors = 0
@@ -546,27 +560,9 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
                 "skip_pull": True,
                 "status_filter": factor_status_filter or "backtesting",
                 "scope": "backtest",
-                "suppress_push": True,
-                "universe_size": universe_size,
-                "db_path": BACKTEST_DB,
                 "store": store,
                 "exclude_symbols": cooloff_syms,
-                "preloaded_data": data_full,
-                "primitives": data_prims,
-                "factor_store": _fstore,
-                "factor_cache": _factor_cache,
-                "turnover_amount_roll": _amount_roll,
-                "bm_returns": _bm_returns_full,
-                "stock_names": _stock_names,
-                "preloaded_seal_ratios": _preloaded_seal,
-                "prebuilt_engine": engine,
-                "prebuilt_cost_model": cost_model,
-                "prebuilt_constructor": _prebuilt_constructor,
-                "fund_stocks_df": _stocks_df,
-                "fund_val_piv": _val_piv,
-                "fund_close_piv": _close_piv_fund,
-                "fund_high_52w": _high_52w_fund,
-                "all_symbols": _all_symbols,
+                "ctx": _ctx,
             }
             # Switch combine_mode from sleeve (warmup) to ic_weighted (walk-forward);
             # test-v298: run_backtest(combine_mode=...) 可覆盖 walk-forward 模式 (hyperopt)

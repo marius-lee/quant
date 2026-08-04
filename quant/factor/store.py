@@ -431,14 +431,20 @@ class FactorStore:
         """
         cache: dict[str, dict] = {}
         n = len(dates)
-        step = max(1, n // 10)
-        for i, ds in enumerate(dates):
-            fv = self.load(ds, symbols=symbols, factor_names=factor_names)
-            if fv:
-                cache[ds] = fv
-            if (i + 1) % step == 0 or i == n - 1:
-                _log.info("bulk_load: %d/%d dates loaded (%d factors avg)",
-                          i + 1, n, sum(len(v) for v in cache.values()) // max(len(cache), 1))
+
+        # test-v398 (perf): ThreadPoolExecutor 并行读 gzip — 262 次 I/O 串行 → 8 线程
+        # self.load() 只调 gzip.open + str.split, 无共享状态, 无线程安全风险
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=8) as _ex:
+            _futures = {_ex.submit(self.load, ds, symbols, factor_names): ds for ds in dates}
+            for i, _fu in enumerate(as_completed(_futures), 1):
+                ds = _futures[_fu]
+                fv = _fu.result()
+                if fv:
+                    cache[ds] = fv
+                if i % max(1, n // 10) == 0 or i == n:
+                    _log.info("bulk_load: %d/%d dates loaded (%d factors avg, threads=8)",
+                              i, n, sum(len(v) for v in cache.values()) // max(len(cache), 1))
         return cache
 
     def _read_raw_lines(self, date_str: str) -> list[str]:

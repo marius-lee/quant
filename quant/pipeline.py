@@ -185,10 +185,22 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     from quant.factor.windows import max_factor_calendar_days
     _eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(None))
     hist_start = (pd.Timestamp(date_str) - pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
+    # test-v398 (perf): 传全量 preloaded_data + end_idx, 避免每日 O(k) 切片拷贝
+    # iloc[-1] 改为 iloc[end_idx]; close_df 在 Step 4 用 iloc[:end_idx+1]
     if preloaded_data is None:
         data = store.get_daily(symbols, start=hist_start, end=date_str)
+        end_idx = len(data) - 1 if len(data) > 0 else 0
     else:
-        data = preloaded_data.loc[:pd.Timestamp(date_str)]
+        _ts = pd.Timestamp(date_str)
+        # DatetimeIndex.get_loc 对未命中返回前一个位置 (method=ffill), 用默认精确匹配
+        try:
+            end_idx = preloaded_data.index.get_loc(_ts)
+        except KeyError:
+            # 非交易日: 用最近的前一个交易日
+            end_idx = preloaded_data.index.get_indexer([_ts], method='ffill')[0]
+            if end_idx < 0:
+                end_idx = len(preloaded_data) - 1
+        data = preloaded_data
     # test-v398 (perf): 回测从共享 pivot 表组装基本面, 跳过 DB 查询
     # 存 pivot 而非 dict-of-DF: 全量回测 ~400MB, 每日期组装 O(1) 切片
     if fund_stocks_df is not None:
@@ -227,7 +239,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     results["steps"]["load"] = {"symbols": len(symbols), "status": "ok"}
     pe_cnt = int(fundamentals["pe"].notna().sum()) if "pe" in fundamentals.columns else 0
     pb_cnt = int(fundamentals["pb"].notna().sum()) if "pb" in fundamentals.columns else 0
-    logger.info(f"[2/5] load: {len(symbols)} symbols, {data.shape[0]} days, PE/PB={pe_cnt}/{pb_cnt}")
+    logger.info(f"[2/5] load: {len(symbols)} symbols, {end_idx + 1} days, PE/PB={pe_cnt}/{pb_cnt}")
     tracker.phases.append(PhaseResult(name="load", started=_ph_start, finished=_time_ph.time(), status="ok"))
     _ph_start = _time_ph.time()
     if not suppress_push:
@@ -237,8 +249,8 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     # Industry standard: risk filters applied to the ENTIRE universe BEFORE alpha scoring.
     # This replaces the old Step 4 apply_all_filters on the alpha-scored subset.
     _risk_limits = RiskLimits.from_config()
-    _latest_close = data["close"].iloc[-1].dropna()
-    _latest_amount = data["amount"].iloc[-1] if "amount" in data else pd.Series(dtype=float)
+    _latest_close = data["close"].iloc[end_idx].dropna()
+    _latest_amount = data["amount"].iloc[end_idx] if "amount" in data else pd.Series(dtype=float)
     _pre_df = pd.DataFrame({"close": _latest_close, "amount": _latest_amount})
     _pre_filtered = apply_all_filters(_pre_df, limits=_risk_limits, stock_names=stock_names if stock_names else store.get_stock_names(symbols))
     # ── 涨停封死预过滤 (test-v211): 昨日封成比>阈值的股票今日无法交易 ──
@@ -278,8 +290,8 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     # ── Step 2.5: Universe size filter (backtest only) ──
     if universe_size and len(symbols) > universe_size:
         close_df = data["close"]
-        latest_date = close_df.index[-1]
-        latest_close = close_df.loc[latest_date].dropna()
+        latest_date = close_df.index[end_idx]
+        latest_close = close_df.iloc[end_idx].dropna()
         candidate_syms = set(latest_close.index)
         if _require_cfg("backtest.universe_filter_affordable"):
             affordable = latest_close[latest_close * LOT_SIZE <= total_capital]
@@ -313,8 +325,8 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         fundamentals = fundamentals[fundamentals.index.isin(symbols)]
     # ── Step 3: Factor + Alpha ──
     actual_date = date_str
-    if pd.Timestamp(actual_date) not in data.index:
-        actual_date = data.index[-1].strftime("%Y-%m-%d")
+    if data.index[end_idx] != pd.Timestamp(actual_date):
+        actual_date = data.index[end_idx].strftime("%Y-%m-%d")
         logger.info(f"[3/5] date adjusted: {date_str} -> {actual_date}")
 
     # test-v398 (perf): benchmark 收益从预加载 Series 切片, 不查 DB
@@ -449,7 +461,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     # ── Step 4: Risk ──
     cov = None  # 协方差矩阵, Step 4 内计算, 供 Step 5 的 construct() 使用
     close_df = data["close"]
-    risk_date = actual_date if actual_date in close_df.index else close_df.index[-1].strftime("%Y-%m-%d")
+    risk_date = actual_date if actual_date in close_df.index[:end_idx+1] else close_df.index[end_idx].strftime("%Y-%m-%d")
     prices = close_df.loc[risk_date].dropna()
     mcap_real = fundamentals["total_mv"].reindex(prices.index)
     mcap_real = mcap_real.fillna(prices * 1e8)
@@ -460,7 +472,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     alpha_neut = neutralize(alpha, industries=industries, market_caps=mcap_real)
 
     # v393: 协方差懒计算 — 仅传 log_ret, Small 层在 construct() 内按需算
-    log_ret = np.log(close_df).diff().dropna(how="all")
+    log_ret = np.log(close_df.iloc[:end_idx + 1]).diff().dropna(how="all")
     cov = None  # construct() 按需懒计算 (test-v398: v393 已实现, cov=None 传递)
 
     # Step 4 candidates: alpha_neut already within investable universe (pre-filtered in Step 2.3)

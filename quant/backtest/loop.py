@@ -478,12 +478,6 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
         _last_retrain_idx = 0
         _log.info("backtest: initial IC: %d factors, retrain every %dd", len(_current_ic_map), retrain_freq)
 
-        # ── 预计算共享算子 (原始计算图) ──
-        # test-v398 (perf): 回测路径不调 compute_all_factors (factor_cache 内存读取),
-        # primitives 完全未被消费 — 跳过省 ~20s + ~11GB
-        data_prims = {}
-        _log.info("backtest: primitives skipped (not consumed in backtest path, factor_cache used)")
-
         # ── Diagnostics: factor tracker ──
         tracker = FactorTracker()
         _last_signals = None

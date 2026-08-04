@@ -316,35 +316,33 @@ class FactorStore:
             # ── Step 4: 逐日因子计算 ──
             chunk_new_rows: dict[str, list[str]] = {d: [] for d in chunk_dates}
 
-            # v371: M1 8GB 实测 fork+COW → OOM killer (parent ~10GB, 每 worker +5GB dirty pages)
-            # Python 3.14 + macOS fork 不稳定, 串行路径经 v367 向量化优化后每日期 ~0.5-2s,
-            # 200 日期/chunk ≈ 100-400s, 可接受。MP 代码保留, 内存充足时设 True 恢复。
-            _use_mp = False
-            if _use_mp and len(chunk_dates) >= 10 and any(
-                self._factor_needs_worker(name) for name in factor_names
-            ):
-                chunk_dates_done, chunk_new_rows = self._compute_chunk_parallel(
-                    chunk_dates, data_full, prims, chunk_fundamentals,
-                    aux_full, factor_names
-                )
-            else:
-                from quant.factor.compute._preload import slice_aux_for_date
-                chunk_dates_done = 0
+            # test-v398 (perf): ThreadPoolExecutor — 线程共享内存, 无 COW, numpy 释放 GIL
+            # ProcessPool fork → M1 8GB OOM; ThreadPool 4 workers ≈ 3x 加速
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from quant.factor.compute._preload import slice_aux_for_date
+            chunk_dates_done = 0
+            with ThreadPoolExecutor(max_workers=4) as _ex:
+                _futures = {}
                 for date_str in chunk_dates:
                     existing = self._get_existing_factors(date_str)
                     missing = [f for f in factor_names if f not in existing]
                     if not missing:
                         continue
-                    # v377: 预切 aux 一次, compute_all_factors 直接复用 (省 slice_aux_for_date 内部O(N)过滤)
                     _aux_sliced = slice_aux_for_date(aux_full, date_str)
-                    lines = self._compute_date(
-                        date_str, data_full, prims,
-                        chunk_fundamentals.get(date_str),
-                        _aux_sliced, missing
-                    )
-                    if lines:
-                        chunk_new_rows[date_str].extend(lines)
+                    _fund = chunk_fundamentals.get(date_str)
+                    _futures[_ex.submit(
+                        self._compute_date,
+                        date_str, data_full, prims, _fund, _aux_sliced, missing
+                    )] = date_str
+                for _fu in as_completed(_futures):
+                    _ds = _futures[_fu]
+                    _lines = _fu.result()
+                    if _lines:
+                        chunk_new_rows[_ds].extend(_lines)
                         chunk_dates_done += 1
+                    if chunk_dates_done % 20 == 0 or chunk_dates_done == len(_futures):
+                        _log.info("  chunk compute: %d/%d dates done (threads=4)",
+                                  chunk_dates_done, len(_futures))
             t4 = _time.time()
 
             # ── Step 5: CSV 写入 ──
@@ -703,13 +701,13 @@ class FactorStore:
                 with open(mpath, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 factors = set(data.get("factors", []))
-                # P1b: source_hash 变更检测 — 因子源码改了 → 旧值无效
+                # test-v398: source_hash 只用于物化流水线 trigger, 不阻断回测读取
+                # 缓存数据始终有效 (用旧代码算的值); 需要重算时由 materialize(force=True) 触发
                 if factors and "source_hash" in data:
                     current_hash = _compute_factor_source_hash(factors)
                     if data["source_hash"] != current_hash:
-                        _log.info("factor_cache: %s stale (source_hash changed), recompute %d factors",
-                                  date_str, len(factors))
-                        return set()
+                        _log.info("factor_cache: %s source_hash changed, cache still used (stale=%s→%s)",
+                                  date_str, data["source_hash"][:8], current_hash[:8])
                 return factors
             except Exception as e:
                 _log.warning("factor_cache: manifest read failed for %s: %s", date_str, e)

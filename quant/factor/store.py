@@ -424,6 +424,25 @@ class FactorStore:
 
         return {fn: pd.Series(data, name=fn) for fn, data in result.items() if data}
 
+    def bulk_load(self, dates: list[str], symbols=None, factor_names=None) -> dict[str, dict]:
+        """test-v397 (P0): 批量加载多日因子值到内存 dict。
+
+        Returns: {date_str: {factor_name: pd.Series(symbol→value)}}
+        用途: 回测启动时一次性加载全量, 消除逐日的 gzip I/O。
+        244 天 × 30 因子 × 800 股 ≈ 47 MB, 内存完全可接受。
+        """
+        cache: dict[str, dict] = {}
+        n = len(dates)
+        step = max(1, n // 10)
+        for i, ds in enumerate(dates):
+            fv = self.load(ds, symbols=symbols, factor_names=factor_names)
+            if fv:
+                cache[ds] = fv
+            if (i + 1) % step == 0 or i == n - 1:
+                _log.info("bulk_load: %d/%d dates loaded (%d factors avg)",
+                          i + 1, n, sum(len(v) for v in cache.values()) // max(len(cache), 1))
+        return cache
+
     def _read_raw_lines(self, date_str: str) -> list[str]:
         path = self._path(date_str)
         if not os.path.exists(path):

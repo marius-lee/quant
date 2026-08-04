@@ -1,4 +1,4 @@
-"""协方差估计 — 样本协方差 + Ledoit-Wolf 收缩。
+"""协方差估计 — 样本协方差 + Ledoit-Wolf 收缩 + 因子模型协方差。
 
 高维截面（~5000 股票 × 60 日）样本协方差不可靠:
   股票数 >> 样本数 → 样本协方差奇异，最小特征值接近 0
@@ -7,8 +7,14 @@ Ledoit-Wolf (2004) 收缩估计:
   Σ_shrink = (1 - δ) × Σ_sample + δ × F_target
   其中 δ 为最优收缩强度，F_target 为目标矩阵（常数相关模型）
 
-来源: ② Ledoit & Wolf (2004) — "A well-conditioned estimator for
-      large-dimensional covariance matrices"
+因子模型协方差 (test-v397, ADR-041 fix):
+  Σ_stock = X·F·X' + diag(σ²_ε)
+  其中 X 为 N×M 因子暴露矩阵（截面 z-score），F 为 M×M 因子协方差矩阵。
+  当 N >> T 时（800 股票 × 252 天），先取 top-K (K=30 ≤ T) 再算协方差，
+  保证 T > K，矩阵良态。来源: Barra USE4 (MSCI 2011)。
+
+来源: ② Ledoit & Wolf (2004); ② Barra USE4 (MSCI 2011);
+      ② Grinold & Kahn (2000) Ch.3.
 """
 
 import numpy as np
@@ -124,6 +130,9 @@ def covariance_matrix(
     min_periods: 最少需要的交易天数
 
     返回: 协方差矩阵 DataFrame
+
+    test-v397: 当 symbols 数 > window 时 (N > T)，自动降级用样本协方差+LW。
+    调用方应先用 covariance_subset() 对 top-K 股票子集计算，确保 T > K。
     """
     if window is None:
         window = _require_cfg("risk.covariance.window")
@@ -148,8 +157,14 @@ def covariance_matrix(
     from quant.utils.logger import get_logger
     _clog = get_logger("risk.covariance")
     n_syms = recent.shape[1]
+    n_periods = len(recent)
+    if n_syms > n_periods:
+        _clog.warning(
+            f"covariance: N={n_syms} > T={n_periods} — matrix may be near-singular. "
+            f"Consider using covariance_subset() with top-K < T."
+        )
     if n_syms > 100:
-        _clog.info(f"covariance: computing {n_syms}×{n_syms} matrix over {len(recent)} periods...")
+        _clog.info(f"covariance: computing {n_syms}×{n_syms} matrix over {n_periods} periods...")
     _t0 = _time.time()
 
     if method == "ledoit_wolf":
@@ -160,3 +175,34 @@ def covariance_matrix(
     if n_syms > 100:
         _clog.info(f"covariance: done in {_time.time()-_t0:.1f}s")
     return result
+
+
+def covariance_subset(
+    returns: pd.DataFrame,
+    symbols: list,
+    method: str = "ledoit_wolf",
+    window: int = None,
+    min_periods: int = None,
+) -> pd.DataFrame:
+    """对指定 symbol 子集计算协方差矩阵 (test-v397).
+
+    当 N > T 时调用方应传入 top-K ≤ T 的 symbols 子集，
+    保证矩阵良态。内部复用 covariance_matrix()。
+
+    returns: index=date, columns=symbols, 全量日收益率
+    symbols: 需要计算协方差的 symbol 子集 (e.g. alpha 排名 top 30)
+    """
+    common = [s for s in symbols if s in returns.columns]
+    if len(common) < 2:
+        from quant.utils.logger import get_logger
+        get_logger("risk.covariance").warning(
+            f"covariance_subset: only {len(common)}/{len(symbols)} symbols in returns"
+        )
+        # 有空 DataFrame 保底返回 2×2 零阵 → 调用方自然 fallback
+        empty = pd.DataFrame(0.0, index=common or symbols[:2], columns=common or symbols[:2])
+        if len(empty) < 2:
+            empty = pd.DataFrame([[1.0, 0.0], [0.0, 1.0]],
+                                 index=["A", "B"], columns=["A", "B"])
+        return empty
+    sub = returns[common]
+    return covariance_matrix(sub, method=method, window=window, min_periods=min_periods)

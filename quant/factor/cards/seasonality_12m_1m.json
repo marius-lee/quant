@@ -1,0 +1,10 @@
+{
+  "name": "seasonality_12m_1m",
+  "display_name": "seasonality_12m_1m",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": -0.0128,
+  "icir_12m": -0.0728,
+  "last_evaluated": "auto",
+  "n_obs": 127
+}

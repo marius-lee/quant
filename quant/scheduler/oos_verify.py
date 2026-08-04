@@ -209,6 +209,7 @@ def run_oos_check(
     test_days: int,
     decay_warn_threshold: float,
     n_symbols: int,
+    factor_cache: dict = None,  # test-v397 (P0): {date: {factor: Series}}, 跳过 gzip I/O
 ) -> dict:
     """编排层: 加载数据 → compute_ic_series → analyze_is_oos → 返回结果.
 
@@ -275,21 +276,36 @@ def run_oos_check(
               f"(IS×1/{_IS_SAMPLE_INTERVAL}) | {len(factor_names)} factors (filter={status_filter}) | "
               f"lookback={total_lookback}cd, {len(symbols)} symbols")
 
-    # ── 5. 批量加载因子值 (FactorStore 只创建一次, 循环外) ──
-    fs = FactorStore(db_path=FACTOR_CACHE_DB)
+    # ── 5. 批量加载因子值 — factor_cache (内存) 优先, 回退 FactorStore (gzip I/O) ──
+    # test-v397 (P0): 回测启动时已预加载全量因子值, 跳过 ~180 次 gzip 文件打开
     factor_values_by_date = {}
-    for ds in trading_days:
-        fv = fs.load(ds, symbols=symbols, factor_names=factor_names)
-        if fv:
-            factor_values_by_date[ds] = fv
-        else:
-            fs.close()
-            store.close()
-            raise RuntimeError(
-                f"factor_cache miss for {ds} ({len(symbols)} symbols, "
-                f"{len(factor_names)} factors), run materialization first"
-            )
-    fs.close()
+    if factor_cache is not None:
+        for ds in trading_days:
+            fv = factor_cache.get(ds)
+            if fv:
+                factor_values_by_date[ds] = fv
+            else:
+                store.close()
+                raise RuntimeError(
+                    f"factor_cache miss for {ds} ({len(symbols)} symbols, "
+                    f"{len(factor_names)} factors), run materialization first"
+                )
+    else:
+        from quant.factor.store import FactorStore
+        from quant.config.paths import FACTOR_CACHE_DB
+        fs = FactorStore(db_path=FACTOR_CACHE_DB)
+        for ds in trading_days:
+            fv = fs.load(ds, symbols=symbols, factor_names=factor_names)
+            if fv:
+                factor_values_by_date[ds] = fv
+            else:
+                fs.close()
+                store.close()
+                raise RuntimeError(
+                    f"factor_cache miss for {ds} ({len(symbols)} symbols, "
+                    f"{len(factor_names)} factors), run materialization first"
+                )
+        fs.close()
 
     # ── 6. 纯计算 (无 DB/Config 依赖) ──
     ic_series = compute_ic_series(

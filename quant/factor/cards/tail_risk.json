@@ -1,0 +1,10 @@
+{
+  "name": "tail_risk",
+  "display_name": "tail_risk",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.0033,
+  "icir_12m": 0.0382,
+  "last_evaluated": "auto",
+  "n_obs": 130
+}

@@ -3,8 +3,8 @@
   "display_name": "ocfp",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0143,
-  "icir_12m": 0.1828,
+  "ic_mean_12m": 0.0135,
+  "icir_12m": 0.175,
   "last_evaluated": "auto",
   "n_obs": 130
 }

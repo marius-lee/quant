@@ -1,0 +1,10 @@
+{
+  "name": "piotroski_fscore",
+  "display_name": "piotroski_fscore",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.0104,
+  "icir_12m": 0.1607,
+  "last_evaluated": "auto",
+  "n_obs": 130
+}

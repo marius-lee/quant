@@ -90,48 +90,85 @@ def sleeve_compose(
     min_factors: int,
 ) -> pd.Series:
     """分仓合成: 每个因子独立选取 top N 只股票, 取并集。
-    返回原始 z-score (保留信号梯度), 不做等权压扁。
 
     与 composite 模式的本质区别: 不做维度压缩。reversal 选超跌、
     volatility 选低波、momentum 选趋势 — 不同的逻辑不应该被加权冲淡。
+
+    test-v397 (Problem 4): 改用 mean-rank 替代 max(z-score)。
+    一支被 5 个因子同时选入 top-N 的股票，排名分位应高于只被 1 个因子选入的。
+    原先 max(z-score) 丢失了多因子共振信息。
 
     factor_values: {name: Series(index=symbol)} — 已 z-score 的截面因子值
     positions_per_factor: 每个因子选取的股票数
     min_factors: 最少有效因子数 (低于此数返回空)
 
-    返回: Series(index=symbol), 值 = 1.0 (标记入选)
+    返回: Series(index=symbol), 值 = mean-rank (0~1, 越高越好)
     """
     if len(factor_values) < min_factors:
         _log.debug("sleeve_compose: %d factors < min_factors=%d, returning empty", len(factor_values), min_factors)
         return pd.Series(dtype=float)
 
-    score_map = {}
+    # 第一步: 每个因子计算截面 z-score 的 rank 分位 (0~1)
+    # 第二步: 对每个因子, 标记其 top-N 股票
+    # 第三步: 对每只股票, 计算其被选中的因子数 + 在这些因子中的平均 rank 分位
+
+    all_ranks: dict[str, dict[str, float]] = {}  # factor_name → {symbol: rank_pct}
+    top_sets: dict[str, set] = {}  # factor_name → set of top-N symbols
 
     for name, scores in factor_values.items():
         valid = scores.dropna()
-        cnt = len(valid)
-        sel_n = min(positions_per_factor, cnt)
-        _log.debug("sleeve: %s → %d/%d valid, picking top %d", name, cnt, len(scores), sel_n)
         if len(valid) == 0:
             continue
+        # rank 分位: 1 = 最高 z-score
+        ranks = valid.rank(pct=True, ascending=True)
+        all_ranks[name] = dict(zip(valid.index, ranks.values))
 
-        # 取 top N (z-score 高者优先)
-        top_n = min(positions_per_factor, cnt)
+        top_n = min(positions_per_factor, len(valid))
         top_series = valid.nlargest(top_n)
-        for sym, val in top_series.items():
-            # 每个因子贡献其原始 z-score; 被多因子同时选中的取最大值
-            score_map[sym] = max(score_map.get(sym, -999), val)
+        top_sets[name] = set(top_series.index.tolist())
 
-    if not score_map:
-        # 诊断: 列出每个因子的有效值数量, 定位全 NaN 因子
-        diag = ", ".join(f"{name}({scores.dropna().count()}/{len(scores)})" for name, scores in list(factor_values.items())[:10])
-        _log.warning("sleeve_compose: 0 stocks selected from %d factors: %s", len(factor_values), diag)
+    if not all_ranks:
+        diag = ", ".join(f"{name}({scores.dropna().count()}/{len(scores)})"
+                         for name, scores in list(factor_values.items())[:10])
+        _log.warning("sleeve_compose: 0 stocks selected from %d factors: %s",
+                     len(factor_values), diag)
         return pd.Series(dtype=float)
-    _log.info("sleeve: %d factors → %d stocks (positions_per_factor=%d, score range %.2f~%.2f)",
-              len(factor_values), len(score_map), positions_per_factor,
-              min(score_map.values()), max(score_map.values()))
 
-    return pd.Series(score_map, name="alpha").sort_values(ascending=False)
+    # 对所有出现过的股票计算 mean-rank 和入选因子数
+    score_map = {}
+    factor_count = {}
+    for name, rank_dict in all_ranks.items():
+        for sym, rpct in rank_dict.items():
+            score_map[sym] = score_map.get(sym, 0.0) + rpct
+            factor_count[sym] = factor_count.get(sym, 0)
+            if sym in top_sets.get(name, set()):
+                factor_count[sym] = factor_count.get(sym, 0) + 1
+
+    # 只保留至少被一个因子选入 top-N 的股票
+    selected_syms = set()
+    for ts in top_sets.values():
+        selected_syms.update(ts)
+    if not selected_syms:
+        diag = ", ".join(f"{name}({len(s)})" for name, s in top_sets.items())
+        _log.warning("sleeve_compose: no stocks in any top-N: %s", diag)
+        return pd.Series(dtype=float)
+    score_map = {s: score_map[s] for s in selected_syms if s in score_map}
+    factor_count = {s: factor_count.get(s, 0) for s in selected_syms}
+
+    # mean-rank: 均值(出现在哪些因子的分位), 再乘以入选因子数加权
+    result_map = {}
+    for sym in score_map:
+        occ = factor_count.get(sym, 0) + 1  # +1 防止全 zero
+        mean_rank = score_map[sym] / occ
+        # bonus for multi-factor confirmation
+        result_map[sym] = mean_rank * (1.0 + 0.2 * factor_count.get(sym, 0))
+
+    _log.info("sleeve: %d factors → %d stocks (positions_per_factor=%d, score range %.2f~%.2f)",
+              len(all_ranks), len(result_map), positions_per_factor,
+              min(result_map.values()), max(result_map.values()))
+
+    result = pd.Series(result_map, name="alpha").sort_values(ascending=False)
+    return result
 
 
 def factor_attribution(factor_values: dict, target_symbols: list,

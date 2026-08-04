@@ -9,7 +9,7 @@ from quant.factor.synth import sleeve_compose, ic_weighted, equal_weight
 
 
 class TestSleeveCompose:
-    """sleeve_compose: 每因子独立选 top N, 取并集."""
+    """sleeve_compose: 每因子独立选 top N, 取并集, mean-rank 合成 (test-v397)."""
 
     def test_basic_sleeve(self):
         fv = {
@@ -20,11 +20,14 @@ class TestSleeveCompose:
         # f1 top 2: A(0.9), B(0.5)
         # f2 top 2: B(0.8), D(0.7)
         # union: A, B, D
+        # test-v397: mean-rank × (1 + 0.2 × factor_count)
+        # A: score_map=0.90+0.25=1.25, 1 factor top-N, mean_rank=0.625 → 0.625×1.2=0.750
+        # B: score_map=0.75+1.00=1.75, 2 factors top-N, mean_rank=0.583 → 0.583×1.4=0.817
+        # D: score_map=0.25+0.75=1.00, 1 factor top-N, mean_rank=0.500 → 0.500×1.2=0.600
         assert set(result.index) == {'A', 'B', 'D'}
-        # P43: sleeve_compose now returns raw z-score, not equal-weight 1.0
-        assert result["A"] == 0.9
-        assert result["B"] == 0.8  # max(f1=0.5, f2=0.8) = 0.8
-        assert result["D"] == 0.7
+        assert result["A"] == pytest.approx(0.75, abs=0.02)
+        assert result["B"] == pytest.approx(0.82, abs=0.02)
+        assert result["D"] == pytest.approx(0.60, abs=0.02)
 
     def test_overlap_sleeve(self):
         fv = {

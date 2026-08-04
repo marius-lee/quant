@@ -29,11 +29,27 @@ _log = get_logger("backtest.loop")
 _root = os.path.dirname(os.path.dirname(__file__))
 if _root not in sys.path:
     sys.path.insert(0, _root)
-def _get_prices(symbols, date_str, store, field="open"):
-    """Get prices from DataStore — reuses connection + LRU cache."""
+def _get_prices(symbols, date_str, store, field="open", data_full=None):
+    """Get prices — fast path from preloaded data_full, fallback to DataStore DB.
+
+    test-v398 (perf): 回测中 data_full 已预加载全量日线，直接从内存切片，
+    消除每日期 4+ 次 SQLite round-trip。非回测路径回退 DB 查询。
+    """
     syms = list(symbols)
     if not syms:
         return {}
+    # Fast path: slice from preloaded multi-field DataFrame (field × symbol MultiIndex)
+    if data_full is not None:
+        try:
+            if date_str in data_full.index and field in data_full.columns.get_level_values(0):
+                series = data_full.loc[date_str, field]
+                if hasattr(series, "dropna"):
+                    series = series.dropna()
+                return {s: float(v) for s, v in series.items()
+                        if s in syms and v and v > 0}
+        except (KeyError, TypeError, IndexError):
+            pass  # fall through to DB path
+    # Slow path: DB query (live / non-backtest / data_full miss)
     df = store.get_daily(syms, start=date_str, end=date_str, columns=[field])
     if df.empty or date_str not in df.index:
         return {}
@@ -41,6 +57,35 @@ def _get_prices(symbols, date_str, store, field="open"):
     return {s: float(v) for s, v in series.items() if v and v > 0}
 
 BACKTEST_DB = os.path.join(_root, "data", "backtest_trades.db")
+
+
+class _FactorCache:
+    """test-v398 (perf): 内存优化的因子缓存包装器。
+
+    内部存 dict-of-DataFrame (共享 Index, ~192KB/日期),
+    对外 API 不变: .get(date) → {factor: Series}。
+    对比原始 dict-of-Series: 全域回测 ~350MB vs ~3GB (省 ~2.5GB)。
+    """
+    __slots__ = ("_cache",)
+
+    def __init__(self, raw: dict[str, dict]):
+        self._cache: dict[str, "pd.DataFrame"] = {}
+        for date, fv in raw.items():
+            if fv:
+                self._cache[date] = pd.DataFrame(fv)
+
+    def get(self, date: str, default=None):
+        df = self._cache.get(date)
+        if df is None:
+            return default if default is not None else {}
+        # 按需转回 dict-of-Series (O(factors), 每日期 ~30 个 Series 构造)
+        return {col: df[col].dropna() for col in df.columns}
+
+    def __len__(self):
+        return len(self._cache)
+
+    def __contains__(self, date: str) -> bool:
+        return date in self._cache
 
 
 def _persist_backtest_result(strategy, start, end, capital, metrics, diagnosis, elapsed, avg_signals, errors):
@@ -214,7 +259,7 @@ def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
 
 def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, retrain_freq=None, mode='full',
                     universe_size=None, ic_lookback=None, factor_status_filter="backtesting",
-                    factor_store=None, combine_mode=None):  # deprecated: now auto-initialized from FACTOR_CACHE_DB
+                    factor_store=None, combine_mode=None, oos_start_date=None):  # deprecated: now auto-initialized from FACTOR_CACHE_DB
     """Run a full walk-forward backtest.
 
     Args:
@@ -228,6 +273,7 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             None=all factors)
         factor_store: FactorStore instance (因子值物化缓存). If provided, generate_signals()
             will read from cache instead of re-computing factors each day.
+        oos_start_date: test-v397 (Problem 8): OOS 验证期起始日
         combine_mode: walk-forward 合成模式覆盖 (None=默认: warmup 后切 ic_weighted)。
             test-v298: hyperopt 把 combine_mode 纳入 Optuna 搜索空间用。
 
@@ -288,9 +334,7 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
         _bc.close()
 
         store = DataStore()
-        broker = SimulatedBroker(store, engine, BACKTEST_DB)
-        _br = broker  # Python 3.14 兼容: 循环内 try 块通过别名访问
-        cost_model = CostModel.from_config()
+        # broker created after data_full preload (needs data_full ref)
 
         # ── Generate trading day list ──
         start_dt = pd.Timestamp(start_date)
@@ -323,14 +367,6 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             _log.warning(f"backtest: factor cache stale/missing for IC lookback. "
                          f"IC estimates may be noisy. Rebuild with: _run('{_ic_start}', '{end_date}')")
 
-        _current_ic_map = compute_backtest_ic(
-            start_date=trading_days[0],
-            n_train_days=ic_lookback,
-            status_filter=factor_status_filter or "backtesting"
-        )
-        _last_retrain_idx = 0
-        _log.info("backtest: initial IC: %d factors, retrain every %dd", len(_current_ic_map), retrain_freq)
-
         # ── Pre-load all daily data once (eliminates 843 DB queries) ──
         from quant.data.repos import UniverseRepo
         _all_symbols = UniverseRepo().get_symbols(exclude_market='BJ', start_date=start_date, end_date=end_date)
@@ -340,16 +376,113 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
         data_full = store.get_daily(_all_symbols, start=_full_start, end=end_date)
         _log.info("backtest: pre-loaded %d days x %d symbols data", len(data_full), len(_all_symbols))
 
+        # ── test-v398 (perf): broker + 复用实例 (需 data_full 已加载) ──
+        broker = SimulatedBroker(store, engine, BACKTEST_DB, data_full=data_full)
+        _br = broker  # Python 3.14 兼容: 循环内 try 块通过别名访问
+        cost_model = CostModel.from_config()
+        from quant.optimizer.portfolio import PortfolioConstructor
+        _prebuilt_constructor = PortfolioConstructor()
+
+        # ── test-v398 (perf): Benchmark 预加载一次, 消除每日 SQL 重复查询 ──
+        _bm_full = store.get_benchmark("000300", start=start_date)
+        _bm_returns_full = _bm_full.pct_change().dropna() if not _bm_full.empty else pd.Series(dtype=float)
+        _log.info("backtest: benchmark preloaded — %d days", len(_bm_full))
+
+        # ── test-v398 (perf): 静态数据预加载 — 消除每日 DB 查询 ──
+        _stock_names = dict(store.get_stock_names(_all_symbols))
+        _log.info("backtest: stock names preloaded — %d symbols", len(_stock_names))
+
+        # test-v398 (perf): 涨停封成比预加载 — 一次加载全表, 避免每日期独立连接
+        import sqlite3 as _sql3
+        from quant.config.paths import MARKET_DB
+        _preloaded_seal: dict[str, list] = {}
+        try:
+            _sconn = _sql3.connect(MARKET_DB)
+            _sconn.execute("CREATE TABLE IF NOT EXISTS limit_up_pool (date TEXT, symbol TEXT, seal_ratio REAL, PRIMARY KEY(date, symbol))")
+            _seal_rows = _sconn.execute(
+                "SELECT date, symbol, lock_capital, amount FROM limit_up_pool ORDER BY date"
+            ).fetchall()
+            _sconn.close()
+            for _sd, _ss, _slc, _sa in _seal_rows:
+                _preloaded_seal.setdefault(_sd, []).append((_ss, _slc, _sa))
+            _log.info("backtest: limit_up_pool preloaded — %d rows across %d dates",
+                      len(_seal_rows), len(_preloaded_seal))
+        except Exception as _se:
+            _log.warning("backtest: limit_up_pool preload failed (non-fatal): %s", _se)
+
         # v391: ztd 预加载一次 (generate_signals 内每日期 1700 次 → 1 次)
         from quant.factor.compute.price._alternative import preload_ztd_cache
         preload_ztd_cache(trading_days, _all_symbols)
         _log.info("backtest: ztd cache preloaded for %d dates", len(trading_days))
 
+        # ── test-v398 (perf): 基本面 PIT 组件预加载 (共享 pivot 表, 按日切片, 零拷贝) ──
+        # 存 shared pivot 而非 dict-of-DataFrame: 全量回测 1580d×5000s 仅 ~400MB
+        _fv_start = trading_days[0]
+        _fv_end = trading_days[-1]
+        _mconn = store._connect()
+        _val_df = pd.read_sql_query(
+            "SELECT symbol, date, pe_ttm, pb, ps_ttm, pcf_ttm, market_cap FROM daily_valuation "
+            "WHERE date >= ? AND date <= ? ORDER BY date",
+            _mconn, params=(_fv_start, _fv_end))
+        _stocks_df = pd.read_sql_query(
+            "SELECT symbol, pe, pe_ttm, pb, total_mv, roe, industry, high_52w, eps, bvps FROM stocks",
+            _mconn).set_index("symbol")
+        _log.info("backtest: fundamentals preload — %d valuation rows, %d stocks",
+                  len(_val_df), len(_stocks_df))
+
+        # PIT 估值 pivot: date × symbol × {pe_ttm, pb, market_cap}, ffill
+        _val_piv = None
+        if not _val_df.empty:
+            _val_df["date"] = pd.to_datetime(_val_df["date"])
+            _val_piv = _val_df.pivot(index="date", columns="symbol",
+                                     values=["pe_ttm", "pb", "market_cap"]).ffill()
+        # close pivot + 52w high 复用 data_full
+        _close_piv_fund = data_full["close"] if "close" in data_full.columns.levels[0] else None
+        _high_52w_fund = _close_piv_fund.rolling(244, min_periods=60).max() if _close_piv_fund is not None else None
+        _log.info("backtest: fundamentals PIT components ready (shared pivot, lazy per-day assembly)")
+
+        # ── test-v398 (perf): 成交额排名 — 存 _amount_roll DataFrame, 按日排序 O(N log N) ~1ms
+        # 不存 dict-of-list (1580d×5000s 字符串 = ~500MB), 避免全量回测 OOM
+        _turnover_days = _require_cfg("backtest.universe_turnover_days")
+        _amount_roll = data_full["amount"].rolling(window=_turnover_days, min_periods=1).mean()
+        _log.info("backtest: turnover rolling mean ready (%d dates, shared array ~100MB)", len(trading_days))
+
+        # test-v397 (P0): 全量因子值预加载到内存, 消除逐日 gzip I/O
+        _ic_start2 = (pd.Timestamp(trading_days[0]) - pd.Timedelta(days=ic_lookback * 2)).strftime("%Y-%m-%d")
+        _factor_dates = [d.strftime("%Y-%m-%d") for d in pd.date_range(start=_ic_start2, end=end_date, freq="B")
+                         if is_trading_day(d.date())]
+        # 符号预过滤: universe_size 限制时只加载流动性 top-N (避免烟雾测试加载5000+股)
+        # test-v397 fix: IC 计算需要 ≥200 只样本做 Spearman 相关, 取 max(universe_size, 200)
+        _factor_syms = _all_symbols
+        if universe_size and len(_all_symbols) > universe_size:
+            _ic_min = max(universe_size, 200)
+            _factor_syms = store.rank_by_turnover(
+                _all_symbols, trading_days[0],
+                lookback_days=_require_cfg("backtest.universe_turnover_days"),
+                top_n=min(_ic_min, len(_all_symbols)),
+            )
+        _log.info("backtest: preloading factor cache for %d dates x %d factors x %d symbols...",
+                  len(_factor_dates), len(bt_factor_names), len(_factor_syms))
+        _factor_cache_raw = _fstore.bulk_load(_factor_dates, symbols=_factor_syms, factor_names=bt_factor_names)
+        # test-v398 (perf): dict-of-Series → DataFrame 存储, 共享 Index 省 ~2.5GB
+        # 每日期: dict{30×Series(800 rows)} ~1.6MB → DataFrame(800×30) ~192KB
+        _factor_cache = _FactorCache(_factor_cache_raw)
+        _log.info("backtest: factor cache ready - %d dates in memory (DataFrame compact)", len(_factor_cache))
+
+        _current_ic_map = compute_backtest_ic(
+            start_date=trading_days[0],
+            n_train_days=ic_lookback,
+            status_filter=factor_status_filter or "backtesting",
+            factor_cache=_factor_cache,
+        )
+        _last_retrain_idx = 0
+        _log.info("backtest: initial IC: %d factors, retrain every %dd", len(_current_ic_map), retrain_freq)
+
         # ── 预计算共享算子 (原始计算图) ──
-        from quant.factor.compute._primitives import precompute_primitives
-        _log.info("backtest: precomputing shared primitives...")
-        data_prims = precompute_primitives(data_full)
-        _log.info("backtest: primitives ready (%d tables)", len(data_prims))
+        # test-v398 (perf): 回测路径不调 compute_all_factors (factor_cache 内存读取),
+        # primitives 完全未被消费 — 跳过省 ~20s + ~11GB
+        data_prims = {}
+        _log.info("backtest: primitives skipped (not consumed in backtest path, factor_cache used)")
 
         # ── Diagnostics: factor tracker ──
         tracker = FactorTracker()
@@ -405,7 +538,7 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             cooloff_syms = list(_rm.get_cooloff_symbols(today))
             # B-06 fix: sizing 用当日收盘 MTM 权益 (原成本价 → 无复利且亏损后仍满仓)
             _held = engine.get_positions(strategy)
-            _held_close = _get_prices([p["symbol"] for p in _held], today, store, field="close") if _held else {}
+            _held_close = _get_prices([p["symbol"] for p in _held], today, store, field="close", data_full=data_full) if _held else {}
             kwargs = {
                 "date_str": today,
                 "capital": engine.get_capital(strategy, prices=_held_close),
@@ -421,18 +554,33 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
                 "preloaded_data": data_full,
                 "primitives": data_prims,
                 "factor_store": _fstore,
+                "factor_cache": _factor_cache,
+                "turnover_amount_roll": _amount_roll,
+                "bm_returns": _bm_returns_full,
+                "stock_names": _stock_names,
+                "preloaded_seal_ratios": _preloaded_seal,
+                "prebuilt_engine": engine,
+                "prebuilt_cost_model": cost_model,
+                "prebuilt_constructor": _prebuilt_constructor,
+                "fund_stocks_df": _stocks_df,
+                "fund_val_piv": _val_piv,
+                "fund_close_piv": _close_piv_fund,
+                "fund_high_52w": _high_52w_fund,
+                "all_symbols": _all_symbols,
             }
             # Switch combine_mode from sleeve (warmup) to ic_weighted (walk-forward);
             # test-v298: run_backtest(combine_mode=...) 可覆盖 walk-forward 模式 (hyperopt)
-            if i >= warmup_days:
+            _in_oos = oos_start_date and today >= oos_start_date
+            if i >= warmup_days and not _in_oos:
                 kwargs["combine_mode"] = combine_mode or "ic_weighted"  # test-v307: None 时默认切 ic_weighted
-            # Walk-forward IC retrain
-            if retrain_freq > 0 and (i - _last_retrain_idx) >= retrain_freq and bt_factor_names:
+            # Walk-forward IC retrain - OOS 期冻结
+            if retrain_freq > 0 and (i - _last_retrain_idx) >= retrain_freq and bt_factor_names and not _in_oos:
                 _log.info("backtest: retraining IC at day %d (%s)", i, today)
                 _current_ic_map = compute_backtest_ic(
                     start_date=(pd.Timestamp(today) - pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
                     n_train_days=ic_lookback,
-                    status_filter=factor_status_filter or "backtesting"
+                    status_filter=factor_status_filter or "backtesting",
+                    factor_cache=_factor_cache,
                 )
                 _last_retrain_idx = i
             kwargs["ic_map"] = _current_ic_map
@@ -463,8 +611,8 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
                     ar = signals.get("_alpha_raw", pd.Series(dtype=float))
                     # Get next-day returns for PnL tracking
                     all_syms_track = list(set([tp["symbol"] for tp in targets]))
-                    next_close = _get_prices(all_syms_track, next_day, store, field="close") if all_syms_track and targets else {}
-                    today_close = _get_prices(all_syms_track, today, store, field="close") if all_syms_track and targets else {}
+                    next_close = _get_prices(all_syms_track, next_day, store, field="close", data_full=data_full) if all_syms_track and targets else {}
+                    today_close = _get_prices(all_syms_track, today, store, field="close", data_full=data_full) if all_syms_track and targets else {}
                     if isinstance(next_close, dict) and next_close:
                         ret_series = pd.Series({s: (next_close[s] / today_close[s] - 1) for s in next_close if s in today_close and today_close.get(s, 0) > 0})
                     else:
@@ -509,16 +657,28 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
                             f"{elapsed:.0f}s elapsed")
 
         elapsed = time.time() - t0
-        # Fetch benchmark returns before closing store
-        _bm_levels = store.get_benchmark("000300", start=start_date)
-        # B-07 fix: get_benchmark 返回指数点位(如 3900 点), 必须先转日收益率
-        # 再与策略日收益算 cov/beta/alpha/IR (此前直接拿点位算, 三个指标全是垃圾值)
-        _bm_returns = _bm_levels.pct_change().dropna() if not _bm_levels.empty else _bm_levels
+        # Fetch benchmark returns (test-v398: reuse preloaded, fallback DB)
+        if _bm_returns_full is not None and not _bm_returns_full.empty:
+            _bm_returns = _bm_returns_full
+        else:
+            _bm_levels = store.get_benchmark("000300", start=start_date)
+            _bm_returns = _bm_levels.pct_change().dropna() if not _bm_levels.empty else _bm_levels
         _bm_returns = _bm_returns.reindex(pd.to_datetime([e["date"] for e in equity_curve]), method='ffill')
         store.close()
 
         # ── Compute metrics ──
         metrics = _compute_backtest_metrics(equity_curve, _bm_returns)
+
+        # test-v397 (Problem 8): OOS split
+        if oos_start_date:
+            _is_curve = [e for e in equity_curve if e["date"] < oos_start_date]
+            _oos_curve = [e for e in equity_curve if e["date"] >= oos_start_date]
+            if len(_is_curve) >= 5:
+                metrics["is"] = _compute_backtest_metrics(_is_curve, _bm_returns)
+            if len(_oos_curve) >= 5:
+                metrics["oos"] = _compute_backtest_metrics(_oos_curve, _bm_returns)
+            metrics["oos_start_date"] = oos_start_date
+            _log.info("OOS split: IS %d days, OOS %d days", len(_is_curve), len(_oos_curve))
 
         # ── Post-backtest diagnosis ──
         _backtest_symbols = []

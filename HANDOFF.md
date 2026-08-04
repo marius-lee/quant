@@ -2,6 +2,42 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+## 当前状态 (test-v397, 2026-08-04)
+
+### 回测策略全链路审计修复 (12 项问题)
+详见 docs/reports/backtest-strategy-audit-2026-08-04.md。
+
+**第二轮审查修复 (test-v397, 2026-08-04):**
+- Bug: `get_regime_weights` 对 dict ic_map 做 `*=` 崩溃 — 入口展平 dic→float
+- Bug: `_apply_turnover_constraint` 丢弃 diff=0 持仓 — no_change_syms 自动保留
+- Bug: pipeline.py probation decay `_log` 未定义 — 改为 `logger`
+- 优化: factor_cache 预加载移到初始 IC 之前, 首次 IC 也走内存
+
+**性能优化 (P0/P1, test-v397):**
+- P0: FactorStore.bulk_load() 回测启动时一次性加载全量因子值到内存 (~47MB), 消除逐日 gzip I/O + IC 重算时的 720 次文件打开
+- P0: generate_signals / compute_backtest_ic / run_oos_check 支持 factor_cache 参数, 内存命中跳过 gzip
+- P1: neutralize_factors_batch() — 预构建投影矩阵 P 一次, 30 因子共享, 替代逐因子 lstsq (中性化 ~30x 加速)
+- 预期 1 年回测从 ~170s 降到 ~35s (5x)
+
+**结构修复:**
+1. **协方差 N>T** — portfolio.py Small 层改用 covariance_subset() 对 top-K(30) 股票子集计算, 保证 T(252) > K(30) 矩阵良态
+2. **TC 后置→再分配** — _apply_tc_band 拦截后调用 _rebalance_after_tc() 按权重比例再分配闲置现金
+3. **中性化前置** — pipeline.py Step 3: 因子级独立行业+市值中性化 (Barra USE4), 再合成, 全局中性化作二次保险
+4. **Sleeve mean-rank** — sleeve_compose() 改用多因子入选计数+平均rank分位 (替代 max z-score)
+5. **IC PIT 加固** — compute_backtest_ic() 日志显式标注 PIT 日期截止
+6. **止损已验证** — 执行时序正确, 无需修改
+7. **Kelly regime** — kelly.py 新增 `_regime_kelly_fraction()`, 根据 regime_label 动态调整 fraction (bull=0.8, sideways=0.5, bear=0.2), 通过 construct→_kelly_greedy→compute_lot_allocation 链路传入
+8. **OOS 隔离** — run_backtest(oos_start_date=...) 冻结参数并分别报告 IS/OOS 指标
+9. **换手率约束** — _apply_turnover_constraint() 全局换手超限时按成交量裁减
+10. **σ_daily 差异化** — _stock_sigma() 从 log_returns 取单股波动率替代硬编码 0.02
+11. **VaR 活代码** — 从 pipeline.py 死代码移至 portfolio.py Small 层 covariance 后实时检查
+12. **参数对齐** — nano_cap 30K→10K, tc_horizon_days 1→5, 新增 max_turnover_ratio=999
+
+### 关键指标
+- 因子: 84 注册 (0 active, 20 evaluating, 25 probation, 46 archived — 8 个新注册待评估)
+- 数据: 2019-2026 日线, 5208 只 (2019: 3551 只)
+- adj_factor: 4924/5208 覆盖 (94.5%), 2020-01-02 起
+
 ## 当前状态 (test-v370, 2026-08-03)
 
 ### 关键指标

@@ -49,7 +49,10 @@ LOT_SIZE = _require_cfg("backtest.lot_size")  # A股每手 100 股, ① 交易�
 _TC_LAMBDA = _require_cfg("optimizer.tc_lambda")
 _TC_HORIZON = _require_cfg("optimizer.tc_horizon_days")
 _TC_IC_REF = _require_cfg("optimizer.tc_ic_ref")
-_TC_SIGMA_DAILY = _require_cfg("execution.default_daily_vol")  # 典型日波动率 (impact 模型同源)
+_DEFAULT_SIGMA_DAILY = _require_cfg("execution.default_daily_vol")  # 典型日波动率 fallback
+
+# test-v397: 换手率约束 (Problem 9)
+_MAX_TURNOVER = _require_cfg("optimizer.max_turnover_ratio")
 
 _NORMAL = NormalDist()
 
@@ -82,6 +85,19 @@ def _alpha_to_z(alpha: pd.Series) -> pd.Series:
     ranks_asc = alpha.rank(method="first", ascending=True)  # 1 = 最低 alpha
     pct = (ranks_asc - 0.375) / (n + 0.25)
     return pct.map(_NORMAL.inv_cdf)
+
+
+def _stock_sigma(symbol: str, log_returns: pd.DataFrame = None) -> float:
+    """从 log_returns 面板取单只股票的近期日波动率 (test-v397, Problem 10).
+
+    若无 log_returns 或该 symbol 不在列中，回退到默认日波动率。
+    来源: 板块差异化 σ 替代硬编码 0.02。
+    """
+    if log_returns is not None and symbol in log_returns.columns:
+        s = log_returns[symbol].dropna()
+        if len(s) >= 20:
+            return float(max(s.std(), 0.005))  # 保底 0.5% (防止零波动)
+    return _DEFAULT_SIGMA_DAILY
 
 # ── risk_aversion 校准网格 ──
 # 来源: Markowitz (1952) 框架下 λ 典型范围 1-10。
@@ -241,12 +257,14 @@ class PortfolioConstructor:
         cost_model=None,
         price_buffer: Optional[float] = None,
         log_returns: Optional[pd.DataFrame] = None,  # v393: 懒计算协方差用
+        regime_label: str = None,  # test-v397 (Problem 7): regime-aware Kelly fraction
     ) -> TargetPortfolio:
         """资本自适应组合构建。
 
         covariance: Small 层 Markowitz 用 (外部预计算或 None)。
         log_returns: 若 covariance=None 且需要协方差, 从 log_returns 懒计算。
           来源: pipeline.py 的 close_df 对数收益面板 (仅 Small 层触发, Nano/Micro 跳过)。
+        regime_label: test-v397 — 传入 Kelly 动态调整 fraction (bull/sideways/bear).
         """
         common = alpha.dropna().index.intersection(prices.dropna().index)
         if len(common) == 0:
@@ -282,10 +300,28 @@ class PortfolioConstructor:
                 )
                 result = self._equal_weight_greedy(a, p, capital)
         else:  # small
-            # v393: 协方差懒计算 — 仅 Small 层触发, Nano/Micro 永不至此
+            # test-v397 (Problem 1): 协方差子集计算 — 仅对 top-K (K=30) 算协方差,
+            # 保证 T(252) > K(30), 矩阵良态。全量 800 股票时 N > T 无法求逆。
             if covariance is None and log_returns is not None:
-                from quant.risk.covariance import covariance_matrix
-                covariance = covariance_matrix(log_returns, method="ledoit_wolf")
+                from quant.risk.covariance import covariance_subset
+                _top_syms = list(a.index[:min(self.max_positions, len(a))])
+                covariance = covariance_subset(log_returns, _top_syms, method="ledoit_wolf")
+
+            # test-v397 (Problem 11): VaR check now runs here after cov compute
+            # (was dead code in pipeline.py Step 4 where cov was always None since v393)
+            if covariance is not None:
+                try:
+                    from quant.risk.var import compute_var
+                    _top_subset = a.index[:min(self.max_positions, len(a))]
+                    _top_cov = covariance.reindex(index=_top_subset, columns=_top_subset).dropna(how='all').fillna(0)
+                    _w_var = pd.Series(1.0 / max(len(_top_cov), 1), index=_top_cov.index)
+                    _var_val = compute_var(capital, _w_var, _top_cov, confidence=0.95)
+                    if _var_val and abs(_var_val / capital) > 0.03:
+                        logger.warning("[portfolio] VaR warning: daily VaR=%.1f (%.1f%% of capital)",
+                                       abs(_var_val), abs(_var_val / capital) * 100)
+                except Exception as _var_err:
+                    logger.debug("[portfolio] VaR check skipped (non-fatal): %s", _var_err)
+
             result = None
             # 风险优化器分发 (test-v299 §8.2)
             if covariance is not None:
@@ -297,7 +333,7 @@ class PortfolioConstructor:
                     result = rp
             if result is None:
                 if ic_map is not None:
-                    result = self._kelly_greedy(a, p, capital, ic_map)
+                    result = self._kelly_greedy(a, p, capital, ic_map, regime_label=regime_label)
                 elif covariance is None:
                     raise ValueError(
                         "Mean-variance tier requires covariance matrix. "
@@ -310,10 +346,18 @@ class PortfolioConstructor:
                     )
                     result = self._mean_variance_lot(a, p, capital, covariance, risk_aversion)
 
+        # ── test-v397 (Problem 9): 换手率全局约束 ──
+        if current_lots is not None and len(current_lots) > 0:
+            result = self._apply_turnover_constraint(result, current_lots, p)
         # ── §8.3 成本带: 拦截不划算的换仓 (Nano层豁免 — 单票集中, 锁仓比换仓更贵) ──
         if current_lots is not None and len(current_lots) > 0 and cost_model is not None \
                 and tier != "nano":
-            result = self._apply_tc_band(result, current_lots, a, p, cost_model, ic_map)
+            result = self._apply_tc_band(result, current_lots, a, p, cost_model, ic_map,
+                                         log_returns=log_returns)
+            # test-v397 (Problem 2): TC 过滤后资金再分配 — 被拦截的换仓释放出现金,
+            # 按持仓比例重新分配给剩余仓位，避免资金闲置。
+            if result.tc_suppressed > 0:
+                result = self._rebalance_after_tc(result, p, capital)
 
         # ── P1-3: min_weight 过滤 — 剔除权重过低的噪声仓位 ──
         result = self._apply_min_weight(result, p, capital)
@@ -328,6 +372,7 @@ class PortfolioConstructor:
         prices: pd.Series,
         cost_model,
         ic_map: dict = None,
+        log_returns: pd.DataFrame = None,
     ) -> TargetPortfolio:
         """Grinold α − λ·TC 无交易区间 (§8.3): 效益不足的换仓恢复为原持仓。
 
@@ -390,7 +435,7 @@ class PortfolioConstructor:
                 buy_val = shares * prices[b]
                 sell_val = shares * prices[a]
                 swap_val = min(buy_val, sell_val)
-                benefit = float(z[b] - z[a]) * ic_eff * _TC_SIGMA_DAILY * _TC_HORIZON * swap_val
+                benefit = float(z[b] - z[a]) * ic_eff * _stock_sigma(b, log_returns) * _TC_HORIZON * swap_val
                 cost = (cost_model.sell_cost(prices[a], shares)
                         + cost_model.buy_cost(prices[b], shares) - buy_val)
                 if benefit < _TC_LAMBDA * cost:
@@ -420,11 +465,14 @@ class PortfolioConstructor:
 
     def _kelly_greedy(
         self, alpha: pd.Series, prices: pd.Series, capital: float, ic_map: dict = None,
+        regime_label: str = None,
     ) -> TargetPortfolio:
         """Kelly 头寸分配 (Small 层 ¥100K+ 专用)。
 
         ⚠️  ADR 032: Kelly 仅在 Small 层启用。Nano/Micro 层禁止。
         在低资本层引入 Kelly 离散化误差 >25%，已反复造成 0 仓位 bug。
+
+        test-v397 (Problem 7): regime-aware — 牛市扩大头寸, 熊市收缩。
 
         来源: Kelly (1956), Fractional Kelly per Ralph Vince (1990).
         当 ic_map 为 None 或全零时退化为贪心等权 (向后兼容).
@@ -434,7 +482,8 @@ class PortfolioConstructor:
         if n_stocks == 0:
             return TargetPortfolio(pd.Series(dtype=int), capital, "kelly_greedy", 0.0)
         lots, cash = compute_lot_allocation(
-            alpha, prices, capital, ic_map, self.max_positions, LOT_SIZE
+            alpha, prices, capital, ic_map, self.max_positions, LOT_SIZE,
+            regime_label=regime_label,
         )
         total_value = (lots * prices.loc[lots.index] * LOT_SIZE).sum()
         if lots.sum() == 0:
@@ -479,6 +528,101 @@ class PortfolioConstructor:
         adjusted_cash = result.cash_reserve + reclaimed
         trimmed_val = (trimmed_lots * prices.loc[trimmed_lots.index] * LOT_SIZE).sum() if len(trimmed_lots) > 0 else 0
         return TargetPortfolio(trimmed_lots, adjusted_cash, result.method, trimmed_val, result.tc_suppressed)
+
+    def _apply_turnover_constraint(
+        self, result: TargetPortfolio, current_lots: pd.Series, prices: pd.Series,
+    ) -> TargetPortfolio:
+        """test-v397 (Problem 9): 全局换手率约束 — 日换手 > max_turnover_ratio 时按权重裁减。
+
+        买卖总量 = Σ|target_lots - current_lots| * lot_value。
+        超限时: 保留核心持仓 (差值最大的), 舍去边际最小的, 直到换手在限值内。
+        test-v397 fix: diff=0 的持仓同步保留, 防止零换手持仓被误删。
+        """
+        if _MAX_TURNOVER >= 999:  # 不限制
+            return result
+        all_syms = result.lots.index.union(current_lots.index)
+        tgt = result.lots.reindex(all_syms, fill_value=0).astype(int)
+        cur = current_lots.reindex(all_syms, fill_value=0).astype(int)
+        diff = tgt - cur
+
+        turnover = 0.0
+        for sym in diff.index:
+            px = prices.get(sym, 0)
+            if px <= 0:
+                continue
+            turnover += abs(diff[sym]) * px * LOT_SIZE
+        capital_est = float((cur * prices.reindex(cur.index, fill_value=0) * LOT_SIZE).sum())
+        if capital_est <= 0:
+            return result
+        ratio = turnover / capital_est
+        if ratio <= _MAX_TURNOVER:
+            return result
+
+        logger.info(
+            f"[portfolio] turnover {ratio:.1%} > {_MAX_TURNOVER:.1%}, "
+            f"scaling down by turnover value..."
+        )
+        # diff=0 的持仓自动保留; diff≠0 的按换手金额排序, 最大的先留
+        no_change_syms = set(diff[diff == 0].index)
+        trades = []
+        for sym in diff.index:
+            if diff[sym] == 0:
+                continue
+            tv = abs(diff[sym]) * prices.get(sym, 0) * LOT_SIZE
+            trades.append((sym, diff[sym], tv))
+        trades.sort(key=lambda x: -x[2])
+
+        target_tv = _MAX_TURNOVER * capital_est
+        kept_tv = 0.0
+        kept = set(no_change_syms)
+        for sym, d, tv in trades:
+            if kept_tv + tv <= target_tv:
+                kept.add(sym)
+                kept_tv += tv
+
+        trimmed_lots = result.lots.reindex(list(kept), fill_value=0)
+        trimmed_lots = trimmed_lots[trimmed_lots > 0]
+        trimmed_val = float((trimmed_lots * prices.loc[trimmed_lots.index] * LOT_SIZE).sum()) if len(trimmed_lots) else 0.0
+        freed_cash = result.total_value - trimmed_val
+        new_cash = result.cash_reserve + freed_cash
+        logger.info(f"[portfolio] turnover constrained: {len(result.lots)}→{len(trimmed_lots)} pos")
+        return TargetPortfolio(trimmed_lots, round(new_cash, 2), result.method, trimmed_val, result.tc_suppressed)
+
+    def _rebalance_after_tc(
+        self, result: TargetPortfolio, prices: pd.Series, capital: float,
+    ) -> TargetPortfolio:
+        """test-v397 (Problem 2): TC 过滤后现金再分配。
+
+        被成本带拦截的换仓释放出现金, 按持仓权重比例重新分配给剩余仓位,
+        避免资金闲置降低收益。
+        """
+        if result.lots.sum() == 0:
+            return result
+        current_invested = float((result.lots * prices.loc[result.lots.index] * LOT_SIZE).sum())
+        excess = round(result.cash_reserve + result.total_value - current_invested, 2)
+        if excess <= 0 or excess < prices.loc[result.lots.index].min() * LOT_SIZE:
+            return result  # 不够买一手
+        # 按当前仓位权重分配闲置资金
+        cur_values = result.lots * prices.loc[result.lots.index] * LOT_SIZE
+        weights = cur_values / cur_values.sum()
+        new_lots = result.lots.copy()
+        remaining = excess
+        # 按权重从大到小依次分配 (优先加仓核心持仓)
+        for sym in weights.sort_values(ascending=False).index:
+            px = prices.get(sym, 0)
+            if px <= 0:
+                continue
+            alloc = excess * weights[sym]
+            extra_lots = int(alloc / (px * LOT_SIZE))
+            extra_cost = extra_lots * px * LOT_SIZE
+            if extra_lots > 0 and extra_cost <= remaining:
+                new_lots[sym] += extra_lots
+                remaining -= extra_cost
+        new_invested = float((new_lots * prices.loc[new_lots.index] * LOT_SIZE).sum())
+        new_cash = round(remaining, 2)
+        logger.info(f"[portfolio] post-TC rebalance: excess=¥{excess:,.0f} → "
+                    f"invested=¥{new_invested:,.0f} cash=¥{new_cash:,.0f}")
+        return TargetPortfolio(new_lots, new_cash, result.method, new_invested, result.tc_suppressed)
 
     def _rank_concentrated(
         self, alpha: pd.Series, prices: pd.Series, capital: float,

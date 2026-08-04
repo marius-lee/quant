@@ -8,17 +8,25 @@ from typing import Optional
 
 
 class SimulatedBroker:
-    """Simulated broker for backtesting — wraps DataStore + ExecutionEngine."""
+    """Simulated broker for backtesting — wraps DataStore + ExecutionEngine.
 
-    def __init__(self, store, engine, db_path):
+    test-v398 (perf): 接收 data_full 预加载数据，get_prices 优先从内存切片，
+    消除每日期 SQLite round-trip。
+    """
+
+    def __init__(self, store, engine, db_path, data_full=None):
         self.store = store
         self.engine = engine
         self.db_path = db_path
+        self.data_full = data_full
 
     def get_prices(self, symbols, date, field="open"):
-        """Get prices from DataStore — reuses connection + LRU cache."""
+        """Get prices — fast path from preloaded data_full, fallback DataStore DB.
+
+        test-v398 (perf): 回测中 data_full 预加载全量日线，直接从内存切片。
+        """
         from quant.backtest.loop import _get_prices
-        return _get_prices(symbols, date, self.store, field=field)
+        return _get_prices(symbols, date, self.store, field=field, data_full=self.data_full)
 
     def execute(self, targets, date, strategy="quant", suppress_push=True):
         """Execute target positions at specified date prices."""

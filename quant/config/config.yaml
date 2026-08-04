@@ -59,7 +59,7 @@ alpha:
   sleeve:
     min_factors: 1
     positions_per_factor: 20
-  top_fraction: 0.3
+  top_fraction: 0.08
   train_window: 500
   sigmoid_steepness: 10
   regime_combine: true
@@ -108,7 +108,7 @@ backtest:
   rebalance_interval_days: 5
   universe_size: 800
   universe_turnover_days: 7
-  diagnosis_ic_window: 120
+  diagnosis_ic_window: 180
   progress_log_interval: 60
   min_trading_days: 10
   factor_cache_max_days: 2000
@@ -318,13 +318,14 @@ optimizer:
   method: hrp
   rebalance_freq: daily
   rebalance_weekday: 0
-  nano_cap: 30000
+  nano_cap: 10000
   micro_cap: 100000
   kelly_fraction: 0.5
   tc_lambda: 1.0
-  tc_horizon_days: 1
+  tc_horizon_days: 5
   tc_ic_ref: 0.015
   min_weight: 0.01
+  max_turnover_ratio: 999.0
 recon:
   cash_drift_tolerance: 1.0
 risk:
@@ -400,6 +401,10 @@ regime:
     sideways: 0.6       # 震荡半仓 — 来源: 恒泰 震荡≤60%仓位
     bear: 0.3           # 熊市三成 — 来源: 恒泰 熊市≤30%仓位, 保留现金抄底
     min_signal: 0.0     # 低于此阈值的信号不交易 (0=不启用)
+  kelly:
+    bull: 0.8           # test-v397: Kelly fraction 牛市激进 (原固定 0.5)
+    sideways: 0.5       # test-v397: 震荡中性
+    bear: 0.2           # test-v397: 熊市保守, 降 Kelly 防回撤
 market:
   annual_trading_days: 244
 
@@ -441,8 +446,7 @@ market:
 # backtest.default_start                2020-01-01     test-v262: 6.5年完整周期 (原2023→2020)
 # backtest.factor_cache_max_days        2000           test-v249: 修复裁剪过激 (244→2000)
 # backtest.factor_cache_start           2019-01-01     v383: 对齐2019数据回填(v348-351), 原2020(v255)
-# backtest.universe_size                800            中证800指数对标
-# backtest.diagnosis_ic_window          120            Qlib: IC回看60-120天
+# alpha.top_fraction                    0.08           test-v397: 800只×0.08≈64只进soft cutoff, 与max_positions=30合理衔接 (原0.3→240只gap过大)\n# alpha.weekly_weight                   0.30           Faber (2007) 双均线周权重\n# alpha.combine_mode                    sleeve         ADR-017: sleeve 并行>ensemble 串行\n# alpha.multi_tf_confirm                False          test-v249: 多时间框架确认 (默认关闭)\n# backtest.diagnosis_ic_window          180            test-v397: 180天 IC 估计减少采样误差 (原120)
 # backtest.min_trading_days             10             至少2个自然周
 # data.batch_size                       50             tushare 单次查询上限
 # data.rate_limit.tushare_calls_per_minute 50          tushare 免费档 50次/分钟
@@ -456,7 +460,9 @@ market:
 # factor.evaluation.max_lag             20             test-v249: IC 滞后扫描最大天数
 # factor.evaluation.n_quantiles         5              test-v249: 五分位数分组
 # optimizer.rebalance_freq              daily          test-v251: 日频调仓 (原 weekly)
-# optimizer.tc_horizon_days             1              test-v251: daily调仓成本分摊1天
+# optimizer.tc_horizon_days             5              test-v397: 对齐 alpha forward_horizon=5 (原 1)
+# optimizer.nano_cap                    10000          test-v397: ¥5,000起步, Nano层¥10K可达 (原 ¥30K)
+# optimizer.max_turnover_ratio          999.0          test-v397: 全局换手率约束 (999=不限, Real≥0.5)
 # optimizer.min_weight                  0.01           test-v250: 最小仓位 1%
 # risk.max_single_position              0.05           US mutual fund 单票上限5% (UCITS:10%)
 # risk.max_sector_exposure              0.35           UCITS 行业集中度上限35%

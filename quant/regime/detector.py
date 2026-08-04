@@ -161,16 +161,24 @@ def get_regime_weights(factor_names, ic_map, regime_label, regime_probs):
     Boosts factors known to perform well in the current regime.
     For factors not matching any regime bias, IC weights are unchanged.
 
-    Returns: dict[factor_name] = weight
+    Returns: dict[factor_name] = weight (all float values)
     """
     if regime_label not in FACTOR_REGIME_BIAS or not regime_probs:
         return ic_map or {}
+
+    # Normalize ic_map to flat floats (handles dict-valued entries from compute_backtest_ic)
+    weights = {}
+    if ic_map:
+        for name, v in ic_map.items():
+            if isinstance(v, dict):
+                weights[name] = float(v.get("weight", v.get("ic_mean", 0)))
+            else:
+                weights[name] = float(v)
 
     bias_set = set(FACTOR_REGIME_BIAS.get(regime_label, []))
     confidence = regime_probs.get(regime_label, 0.5)
     boost = 1.0 + confidence * 0.3  # up to 30% boost
 
-    weights = dict(ic_map) if ic_map else {}
     for name in factor_names:
         if name not in weights:
             weights[name] = 1.0 / max(len(factor_names), 1)

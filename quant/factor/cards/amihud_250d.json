@@ -26,9 +26,9 @@
       "reason": "IC = 0.018, t = 2.3"
     }
   ],
-  "ic_mean_12m": -0.004,
+  "ic_mean_12m": -0.0129,
   "ic_std_12m": 0.08,
-  "icir_12m": -0.0411,
+  "icir_12m": -0.0942,
   "half_life_days": 42,
   "decay_trend": "stable",
   "correlations": {

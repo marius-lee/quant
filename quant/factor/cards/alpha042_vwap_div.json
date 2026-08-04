@@ -1,0 +1,10 @@
+{
+  "name": "alpha042_vwap_div",
+  "display_name": "alpha042_vwap_div",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.0073,
+  "icir_12m": 0.1507,
+  "last_evaluated": "auto",
+  "n_obs": 130
+}

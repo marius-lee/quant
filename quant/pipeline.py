@@ -42,6 +42,19 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
                      suppress_push: bool = False, universe_size: int = None,
                      db_path: str = TRADE_DB, exclude_symbols: list = None, ic_map: dict = None, combine_mode: str = None, preloaded_data=None, primitives: dict = None, factor_store=None,
                      regime_label: str = None, regime_probs: dict = None,
+                     factor_cache: dict = None,  # test-v397 (P0): 预加载因子缓存 {date: {factor: Series}}
+                     turnover_amount_roll = None,  # test-v398 (perf): 成交额滚动均值 DataFrame, 按日排序
+                     bm_returns: "pd.Series | None" = None,  # test-v398 (perf): 预加载 benchmark 收益序列
+                     stock_names: dict = None,  # test-v398 (perf): 预加载股票名称 {symbol: name}
+                     preloaded_seal_ratios: dict = None,  # test-v398 (perf): 预加载涨停封成比 {date: {symbol: ratio}}
+                     prebuilt_engine = None,  # test-v398 (perf): 复用 ExecutionEngine
+                     prebuilt_cost_model = None,  # test-v398 (perf): 复用 CostModel
+                     prebuilt_constructor = None,  # test-v398 (perf): 复用 PortfolioConstructor
+                     fund_stocks_df = None,  # test-v398 (perf): 预加载 stocks 静态表
+                     fund_val_piv = None,    # test-v398 (perf): 预加载 daily_valuation pivot
+                     fund_close_piv = None,  # test-v398 (perf): 预加载 close pivot (复用 data_full)
+                     fund_high_52w = None,   # test-v398 (perf): 预加载 52w high
+                     all_symbols: list = None,  # test-v398 (perf): 预加载全量 symbol 列表
                      ctx: "PipelineContext | None" = None) -> dict:
     """Pipeline 阶段一: 盘前信号生成 (Steps 0-5, 不执行交易)。
 
@@ -91,9 +104,10 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     # ── Step 0: Init ──
     _store_in = store
     store = store or DataStore()  # DataStore 始终用 quant/data/market.db
-    engine = ExecutionEngine(db_path=db_path)
-    cost_model = CostModel.from_config()
-    constructor = PortfolioConstructor()
+    # test-v398 (perf): 回测复用预构建实例, 避免每日 new + DDL
+    engine = prebuilt_engine or ExecutionEngine(db_path=db_path)
+    cost_model = prebuilt_cost_model or CostModel.from_config()
+    constructor = prebuilt_constructor or PortfolioConstructor()
 
     from quant.data.repos import TradeRepo
     seed = TradeRepo(db_path=db_path).get_initial_capital(strategy)
@@ -119,20 +133,24 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         logger.info(f"[1/5] data: skipped (skip_pull=True)")
 
     # ── Step 2: Load ──
-    from quant.data.repos import UniverseRepo
-    if not universe_size:
-        from quant.config.loader import get as _cfg_get
-        _ucfg = _cfg_get("universe")
-        symbols = UniverseRepo().get_symbols(
-            exclude_market="BJ",
-            exclude_st=_ucfg["exclude_st"],
-            exclude_new_stock_days=_ucfg["exclude_new_stock_days"],
-            min_price=_ucfg["min_price"],
-            exclude_zero_turnover_days=_ucfg["exclude_zero_turnover_days"],
-            min_daily_amount=_ucfg["min_daily_amount"],
-        )
+    # test-v398 (perf): 回测用预加载 symbol 列表, 跳过每日 SQL JOIN (daily⋈stocks)
+    if all_symbols is not None:
+        symbols = list(all_symbols)
     else:
-        symbols = UniverseRepo().get_symbols(exclude_market="BJ")
+        from quant.data.repos import UniverseRepo
+        if not universe_size:
+            from quant.config.loader import get as _cfg_get
+            _ucfg = _cfg_get("universe")
+            symbols = UniverseRepo().get_symbols(
+                exclude_market="BJ",
+                exclude_st=_ucfg["exclude_st"],
+                exclude_new_stock_days=_ucfg["exclude_new_stock_days"],
+                min_price=_ucfg["min_price"],
+                exclude_zero_turnover_days=_ucfg["exclude_zero_turnover_days"],
+                min_daily_amount=_ucfg["min_daily_amount"],
+            )
+        else:
+            symbols = UniverseRepo().get_symbols(exclude_market="BJ")
 
     logger.info(f"[2/5] load: loading {len(symbols)} symbols from DB...")
     from quant.factor.windows import max_factor_calendar_days
@@ -142,7 +160,41 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         data = store.get_daily(symbols, start=hist_start, end=date_str)
     else:
         data = preloaded_data.loc[:pd.Timestamp(date_str)]
-    fundamentals = store.get_fundamentals(symbols, date=date_str)
+    # test-v398 (perf): 回测从共享 pivot 表组装基本面, 跳过 DB 查询
+    # 存 pivot 而非 dict-of-DF: 全量回测 ~400MB, 每日期组装 O(1) 切片
+    if fund_stocks_df is not None:
+        _ts = pd.Timestamp(date_str)
+        # 回退值: stocks 静态列, PIT val_piv 不可用时用这个
+        _dyn = {c: fund_stocks_df[c] for c in ("pe_ttm", "pb", "market_cap")
+                if c in fund_stocks_df.columns}
+        if fund_val_piv is not None and _ts in fund_val_piv.index:
+            _row = fund_val_piv.loc[_ts]  # Series with MultiIndex (field, symbol)
+            for _col in ["pe_ttm", "pb", "market_cap"]:
+                if _col in _row.index.get_level_values(0):
+                    _dyn[_col] = _row.loc[_col]  # PIT 覆盖回退值
+        if fund_close_piv is not None and _ts in fund_close_piv.index:
+            _dyn["close_latest"] = fund_close_piv.loc[_ts]
+        if fund_high_52w is not None and _ts in fund_high_52w.index:
+            _dyn["high_52w"] = fund_high_52w.loc[_ts]
+        fundamentals = pd.DataFrame({
+            **{c: fund_stocks_df[c] for c in fund_stocks_df.columns
+               if c not in ("pe_ttm", "pb", "market_cap", "close_latest", "high_52w")},
+            **_dyn,
+        }, index=fund_stocks_df.index)
+        # derive ROE
+        _null_roe = fundamentals["roe"].isna() | (fundamentals["roe"] <= 0)
+        if _null_roe.any():
+            _pe_col = "pe_ttm" if "pe_ttm" in fundamentals.columns else "pe"
+            _derived = fundamentals["pb"] / fundamentals[_pe_col].replace(0, None)
+            _derived = _derived.where((_derived > 0) & (_derived < 100))
+            fundamentals.loc[_null_roe, "roe"] = _derived.loc[_null_roe]
+        fundamentals.loc[fundamentals["pe"] <= 0, "pe"] = None
+        fundamentals.loc[fundamentals["pe"] > 1000, "pe"] = None
+        fundamentals.loc[fundamentals["pb"] <= 0, "pb"] = None
+        # 过滤到当前 symbols
+        fundamentals = fundamentals[fundamentals.index.isin(symbols)]
+    else:
+        fundamentals = store.get_fundamentals(symbols, date=date_str)
     results["steps"]["load"] = {"symbols": len(symbols), "status": "ok"}
     pe_cnt = int(fundamentals["pe"].notna().sum()) if "pe" in fundamentals.columns else 0
     pb_cnt = int(fundamentals["pb"].notna().sum()) if "pb" in fundamentals.columns else 0
@@ -159,21 +211,31 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     _latest_close = data["close"].iloc[-1].dropna()
     _latest_amount = data["amount"].iloc[-1] if "amount" in data else pd.Series(dtype=float)
     _pre_df = pd.DataFrame({"close": _latest_close, "amount": _latest_amount})
-    _pre_filtered = apply_all_filters(_pre_df, limits=_risk_limits, stock_names=store.get_stock_names(symbols))
+    _pre_filtered = apply_all_filters(_pre_df, limits=_risk_limits, stock_names=stock_names if stock_names else store.get_stock_names(symbols))
     # ── 涨停封死预过滤 (test-v211): 昨日封成比>阈值的股票今日无法交易 ──
+    # test-v398 (perf): 回测使用预加载的封成比表, 跳过每日 SQLite 连接
     from quant.risk.constraints import filter_sealed_limit_up
-    import sqlite3
-    from quant.config.paths import MARKET_DB
-    _mconn = sqlite3.connect(MARKET_DB)
-    _mconn.execute("CREATE TABLE IF NOT EXISTS limit_up_pool (date TEXT, symbol TEXT, seal_ratio REAL, PRIMARY KEY(date, symbol))")
-    _prev_dates = _mconn.execute(
-        "SELECT date FROM limit_up_pool WHERE date < ? ORDER BY date DESC LIMIT 1",
-        (date_str,)
-    ).fetchone()
-    _mconn.close()
-    if _prev_dates:
-        _pre_filtered = filter_sealed_limit_up(_pre_filtered, _prev_dates[0],
-                                                seal_ratio_threshold=_require_cfg("universe.sealed_limit_up_ratio"))
+    if preloaded_seal_ratios is not None:
+        # Find the most recent date before date_str
+        _sorted_dates = sorted(preloaded_seal_ratios.keys())
+        _prev_dates = [d for d in _sorted_dates if d < date_str]
+        if _prev_dates:
+            _pre_filtered = filter_sealed_limit_up(_pre_filtered, _prev_dates[-1],
+                                                    seal_ratio_threshold=_require_cfg("universe.sealed_limit_up_ratio"),
+                                                    seal_ratios=preloaded_seal_ratios)
+    else:
+        import sqlite3
+        from quant.config.paths import MARKET_DB
+        _mconn = sqlite3.connect(MARKET_DB)
+        _mconn.execute("CREATE TABLE IF NOT EXISTS limit_up_pool (date TEXT, symbol TEXT, seal_ratio REAL, PRIMARY KEY(date, symbol))")
+        _prev_dates = _mconn.execute(
+            "SELECT date FROM limit_up_pool WHERE date < ? ORDER BY date DESC LIMIT 1",
+            (date_str,)
+        ).fetchone()
+        _mconn.close()
+        if _prev_dates:
+            _pre_filtered = filter_sealed_limit_up(_pre_filtered, _prev_dates[0],
+                                                    seal_ratio_threshold=_require_cfg("universe.sealed_limit_up_ratio"))
     investable_symbols = _pre_filtered.index.tolist()
     logger.info(f"[2.3] risk pre-filters: {len(symbols)} → {len(investable_symbols)} investable "
                 f"(liquidity>{_risk_limits.min_daily_amount}, price>{_risk_limits.min_price}, no ST, limit-up)")
@@ -198,7 +260,13 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
 
         # ── Step 2.5b: Rank by turnover, take top N ──
         candidates = list(candidate_syms & set(symbols))
-        keep_syms = store.rank_by_turnover(candidates, date_str,
+        # test-v398 (perf): 从 _amount_roll 按日排序, O(N log N) ~1ms, 省 ~500MB 内存
+        if turnover_amount_roll is not None and date_str in turnover_amount_roll.index:
+            _row = turnover_amount_roll.loc[date_str].dropna().sort_values(ascending=False)
+            _cand_set = set(candidates)
+            keep_syms = [s for s in _row.index if s in _cand_set][:universe_size]
+        else:
+            keep_syms = store.rank_by_turnover(candidates, date_str,
                             lookback_days=_require_cfg("backtest.universe_turnover_days"),
                             top_n=universe_size)
         symbols = [s for s in symbols if s in keep_syms]
@@ -220,10 +288,14 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         actual_date = data.index[-1].strftime("%Y-%m-%d")
         logger.info(f"[3/5] date adjusted: {date_str} -> {actual_date}")
 
+    # test-v398 (perf): benchmark 收益从预加载 Series 切片, 不查 DB
     benchmark_ret = None
-    bm = store.get_benchmark("000300", start=_require_cfg("benchmark.start_date"))
-    if not bm.empty:
-        benchmark_ret = bm[:pd.Timestamp(actual_date)]
+    if bm_returns is not None and not bm_returns.empty:
+        benchmark_ret = bm_returns[:pd.Timestamp(actual_date)]
+    else:
+        bm = store.get_benchmark("000300", start=_require_cfg("benchmark.start_date"))
+        if not bm.empty:
+            benchmark_ret = bm[:pd.Timestamp(actual_date)]
 
     # ── ztd 预计算缓存: 回测由 loop.py 一次性预加载, 避免每日期 O(n²) 重算 ──
     if scope != "backtest":
@@ -232,16 +304,23 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         _ztd_dates = [d for d in pd.date_range(start=pd.Timestamp(hist_start), end=pd.Timestamp(date_str), freq="B") if _is_td(d.date())]
         preload_ztd_cache([d.strftime("%Y-%m-%d") for d in _ztd_dates], symbols)
 
-    # ── 因子值来源: factor_store (缓存) 优先, 无缓存直接抛错 ──
-    if factor_store is None:
+    # ── 因子值来源: factor_cache (内存) 优先, 否则 factor_store (gzip I/O) ──
+    # test-v397 (P0): 回测预加载全量因子值到内存, 跳过逐日 gzip 解压
+    if factor_cache is not None:
+        factor_values = factor_cache.get(actual_date, {})
+        if factor_values:
+            logger.info("step 3: loaded %d factors from factor_cache (memory) for %s",
+                        len(factor_values), actual_date)
+    elif factor_store is None:
         raise RuntimeError(
             f"step 3: factor_store is None for {actual_date}, "
             f"run factor_cache materialization first: PYTHONPATH=. .venv/bin/python3 -c "
             f"'from quant.scheduler.factor_cache import _run; _run({actual_date!r}, {actual_date!r})'"
         )
-    factor_values = factor_store.load(actual_date, symbols=symbols, factor_names=None)
-    if factor_values:
-        logger.info(f"step 3: loaded {len(factor_values)} factors from factor_cache for {actual_date}")
+    else:
+        factor_values = factor_store.load(actual_date, symbols=symbols, factor_names=None)
+        if factor_values:
+            logger.info("step 3: loaded %d factors from factor_cache for %s", len(factor_values), actual_date)
 
     if not len(symbols):
         logger.warning(f"[2.5] no symbols left for date={actual_date}, returning empty signals")
@@ -271,7 +350,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
                         _v["ic_mean"] = _v.get("ic_mean", 0) * 0.5
                     else:
                         ic_map[_pn] = float(_v) * 0.5
-            _log.info("probation decay: %d factors halved: %s", len(_probation_names),
+            logger.info("probation decay: %d factors halved: %s", len(_probation_names),
                       ", ".join(sorted(_probation_names)))
     except Exception:
         pass
@@ -279,6 +358,25 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     # v390: Bayesian收缩仅对 live scope (factor_registry ic_mean), 回测 OOS-IR 已鲁棒
     if scope == "live":
         ic_map = _bayesian_shrink_ic_map(ic_map)
+
+    # ── test-v397 (Problem 3 / P1): 因子层面中性化 (先于合成, 共享投影矩阵) ──
+    # Barra USE4 标准: 每个原始因子独立做行业+市值中性化，消除风格偏差。
+    # P1 优化: 用 neutralize_factors_batch() 预构建一次投影矩阵 P, 30 因子共享,
+    # 避免逐因子 lstsq → ~30x 加速。
+    try:
+        _ind_info = fundamentals["industry"].reindex(factor_values[next(iter(factor_values))].index) \
+            if "industry" in fundamentals.columns else None
+        _mcap_info = fundamentals["total_mv"].reindex(factor_values[next(iter(factor_values))].index) \
+            if "total_mv" in fundamentals.columns else None
+        if _ind_info is not None or _mcap_info is not None:
+            from quant.risk.neutralize import neutralize_factors_batch
+            factor_values = neutralize_factors_batch(
+                factor_values, industries=_ind_info, market_caps=_mcap_info,
+            )
+            logger.info("step 3: factor-level neutralize applied (%d factors, batch P)", len(factor_values))
+    except Exception as _fneut_err:
+        logger.warning(f"step 3: factor-level neutralize failed (non-fatal): {_fneut_err}")
+
     # test-v299 §8.2: regime 条件合成 (HMM 牛/熊/震荡 → 因子权重偏置)
     if _require_cfg("alpha.regime_combine"):
         if regime_label is None and scope == "live":
@@ -334,7 +432,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
 
     # v393: 协方差懒计算 — 仅传 log_ret, Small 层在 construct() 内按需算
     log_ret = np.log(close_df).diff().dropna(how="all")
-    cov = None  # construct() 按需懒计算
+    cov = None  # construct() 按需懒计算 (test-v398: v393 已实现, cov=None 传递)
 
     # Step 4 candidates: alpha_neut already within investable universe (pre-filtered in Step 2.3)
     # Risk pre-filters (liquidity/price/ST) are already applied — no re-filtering here.
@@ -352,10 +450,11 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     tracker.phases.append(PhaseResult(name="risk", started=_ph_start, finished=_time_ph.time(), status="ok"))
     _ph_start = _time_ph.time()
 
-    # VaR risk budget check: warn if portfolio VaR exceeds ~3% of exposure
-    try:
-        if cov is not None and len(filtered) > 0 and "close" in candidates.columns:
-            _v = candidates["close"].dropna()
+    # test-v397: VaR check relocated to PortfolioConstructor.construct() after cov compute.
+    # Old check (cov is None → dead code since v393): kept as no-op for backward compat.
+    if cov is not None:
+        try:
+            _v = candidates["close"].dropna() if "close" in candidates.columns else pd.Series(dtype=float)
             _exposure = float(_v.sum()) * LOT_SIZE if len(_v) > 0 else 0
             if _exposure > 0:
                 _w = pd.Series(1.0 / max(len(_v), 1), index=_v.index)
@@ -363,9 +462,8 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
                 if _var and abs(_var / _exposure) > 0.03:
                     logger.warning("[4/5] VaR warning: daily VaR=%.1f (%.1f%% of exposure)",
                                    abs(_var), abs(_var / _exposure) * 100)
-    except Exception as _var_err:
-        # Q7-5 fix: VaR 检查失败必须可观测 (原裸 except: pass 吞错)
-        logger.warning(f"[4/5] VaR check skipped (non-fatal): {_var_err}")
+        except Exception as _var_err:
+            logger.debug("[4/5] VaR check skipped (non-fatal): %s", _var_err)
     if not suppress_push:
         broker.update({"status": "risk_filtered", "progress": "4/5", "candidates": len(filtered), "trace_id": tid})
 
@@ -394,6 +492,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         covariance=cov, ic_map=ic_map,
         current_lots=current_lots, cost_model=cost_model,
         log_returns=log_ret,
+        regime_label=regime_label,
     )
     if portfolio.tc_suppressed:
         logger.info(f"[5/5] tc_band: {portfolio.tc_suppressed} swap(s) suppressed "
@@ -440,9 +539,9 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     if _store_in is None:
         store.close()
     elapsed = time.time() - t0
-    # Persist to daily_signals — every caller (scheduler, web, CLI) gets DB-backed signals
+    # Persist to daily_signals — 实盘/调度器需要, 回测 (suppress_push=True) 跳过
     targets = results.get("target_positions", [])
-    if targets:
+    if targets and not suppress_push:
         from quant.data.repos import TradeRepo
         TradeRepo(db_path=db_path).save_signals(date_str, targets, total_capital, strategy)
         logger.info(f"[pipeline] saved {len(targets)} targets to daily_signals for {date_str}")
@@ -567,29 +666,29 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
         broker.update({"status": "trades_executed", "progress": "6/7", "orders": len(orders), "trace_id": tid, "signals": target_positions})
     _m.inc("pipeline.trades", len(orders))
 
-    # ── Step 7: Monitor ──
-    positions = engine.get_positions(strategy)
-    trades = engine.get_trades(strategy, limit=50)
-    # B-06 fix: 监控口径按执行价 MTM (原成本价 → 总财富不含浮动盈亏)
-    total_wealth = engine.get_capital(
-        strategy, prices={s: float(v) for s, v in prices.items() if v and v > 0})
-    cash_balance = engine.get_cash(strategy)
-    from quant.data.repos import TradeRepo
-    seed = TradeRepo(db_path=db_path).get_initial_capital(strategy)
-    from quant.monitor.report import generate_report, push_to_web
-    report = generate_report(
-        date_str, cash_balance, positions, trades,
-        pnl_total=total_wealth - seed,
-        initial_capital=seed,
-    )
-    push_to_web(report)
-    cap = report["capital"]
-    results["steps"]["monitor"] = {
-        "cash": cap["cash"], "positions_value": cap["positions_value"],
-        "total_wealth": cap["total_wealth"],
-        "total_return": report["metrics"]["total_return_pct"], "status": "ok",
-    }
-    logger.info(f"execute monitor: wealth=Y{cap['total_wealth']:,.2f} return={report['metrics']['total_return_pct']}%")
+    # ── Step 7: Monitor (实盘 only, 回测 suppress_push=True 跳过) ──
+    if not suppress_push:
+        positions = engine.get_positions(strategy)
+        trades = engine.get_trades(strategy, limit=50)
+        total_wealth = engine.get_capital(
+            strategy, prices={s: float(v) for s, v in prices.items() if v and v > 0})
+        cash_balance = engine.get_cash(strategy)
+        from quant.data.repos import TradeRepo
+        seed = TradeRepo(db_path=db_path).get_initial_capital(strategy)
+        from quant.monitor.report import generate_report, push_to_web
+        report = generate_report(
+            date_str, cash_balance, positions, trades,
+            pnl_total=total_wealth - seed,
+            initial_capital=seed,
+        )
+        push_to_web(report)
+        cap = report["capital"]
+        results["steps"]["monitor"] = {
+            "cash": cap["cash"], "positions_value": cap["positions_value"],
+            "total_wealth": cap["total_wealth"],
+            "total_return": report["metrics"]["total_return_pct"], "status": "ok",
+        }
+        logger.info(f"execute monitor: wealth=Y{cap['total_wealth']:,.2f} return={report['metrics']['total_return_pct']}%")
 
     elapsed = time.time() - t0
     results["elapsed_sec"] = round(elapsed, 1)

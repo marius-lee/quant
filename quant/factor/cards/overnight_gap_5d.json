@@ -1,0 +1,10 @@
+{
+  "name": "overnight_gap_5d",
+  "display_name": "overnight_gap_5d",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.0157,
+  "icir_12m": 0.1401,
+  "last_evaluated": "auto",
+  "n_obs": 130
+}

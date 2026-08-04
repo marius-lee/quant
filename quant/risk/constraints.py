@@ -107,28 +107,47 @@ def filter_st_stocks(
     return candidates[~is_st].copy()
 
 
-def filter_sealed_limit_up(candidates, prev_date: str, seal_ratio_threshold: float = 3.0):
+def filter_sealed_limit_up(candidates, prev_date: str, seal_ratio_threshold: float = 3.0,
+                          seal_ratios: dict = None):
     """Exclude stocks sealed at limit-up on previous trading day.
 
     Sources: ADR-033 limit order design + test-v210 exec feedback loop.
     limit_up_pool table in market.db, synced daily by daily_sync.py.
     seal_ratio = lock_capital / amount; higher = stronger seal.
+
+    test-v398 (perf): seal_ratios dict {date: {symbol: (lock_capital, amount)}}
+    预加载后可跳过 DB 查询。
     """
     import sqlite3
     from quant.config.paths import MARKET_DB
     from quant.data.repos._base import DatabaseManager
-    conn = DatabaseManager.market()
-    try:
-        rows = conn.execute(
-            "SELECT symbol, lock_capital, amount FROM limit_up_pool WHERE date=?",
-            (prev_date,)
-        ).fetchall()
-    finally:
-        conn.close()
+
+    if seal_ratios is not None:
+        rows = seal_ratios.get(prev_date, [])
+    else:
+        conn = DatabaseManager.market()
+        try:
+            rows = conn.execute(
+                "SELECT symbol, lock_capital, amount FROM limit_up_pool WHERE date=?",
+                (prev_date,)
+            ).fetchall()
+        finally:
+            conn.close()
+
     if not rows:
         return candidates.copy()
     sealed_syms = set()
-    for sym, lock_cap, amt in rows:
+    for row in rows:
+        # Support both (symbol, lock_cap, amt) tuple and (symbol, (lock_cap, amt)) from dict
+        if isinstance(row, (list, tuple)):
+            if len(row) == 3:
+                sym, lock_cap, amt = row[0], row[1], row[2]
+            elif len(row) == 2 and isinstance(row[1], (list, tuple)):
+                sym, (lock_cap, amt) = row[0], row[1]
+            else:
+                continue
+        else:
+            continue
         try:
             lc = float(lock_cap or 0)
             a = float(amt or 0)

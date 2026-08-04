@@ -15,6 +15,12 @@ Fractional Kelly: 使用 1/N 凯利降低波动 (Ralph Vince 1990).
   μ  = 因子预期收益 (IC × 日波动率中位数)
   σ² = 因子收益方差
   Fractional Kelly: f* = Kelly / k (k=4 为四分之一凯利, 保守)
+
+test-v397 (Problem 7): regime-aware Kelly — 牛/熊/震荡动态调整 kelly_fraction。
+  牛市 (bull): 0.8 — 扩大头寸
+  震荡 (sideways): 0.5 — 中性
+  熊市 (bear): 0.2 — 收缩头寸, 防回撤
+  来源: regime.kelly.{bull,sideways,bear} in config.yaml.
 """
 
 import numpy as np
@@ -25,11 +31,26 @@ from quant.config.constants import _require_cfg
 _log = get_logger("optimizer.kelly")
 
 
+def _regime_kelly_fraction(regime_label: str = None) -> float:
+    """test-v397: 根据 regime 返回动态 Kelly fraction.
+
+    None / unknown → 回退到 optimizer.kelly_fraction (默认 0.5).
+    """
+    if not regime_label or regime_label == "unknown":
+        return float(_require_cfg("optimizer.kelly_fraction"))
+    try:
+        return float(_require_cfg(f"regime.kelly.{regime_label}"))
+    except (KeyError, TypeError):
+        _log.warning("kelly: unknown regime_label=%s, using default", regime_label)
+        return float(_require_cfg("optimizer.kelly_fraction"))
+
+
 def compute_kelly_fractions(
     alpha: pd.Series,
     ic_map: dict = None,
     fraction: float = None,
     cov: np.ndarray = None,
+    regime_label: str = None,
 ) -> pd.Series:
     """计算每只候选股的 Kelly 分数.
 
@@ -38,12 +59,13 @@ def compute_kelly_fractions(
         ic_map: {factor_name: ic_value} — 各因子的 IC 值, 用于估算预期收益.
                 如果为 None 或空, 按 alpha 得分比例分配 (退化到等权).
         fraction: Fractional Kelly 分数, 默认从 config 读 (optimizer.kelly_fraction).
+        regime_label: test-v397: 市场状态 (bull/sideways/bear), 动态调 kelly_fraction.
 
     Returns:
         Series (index=symbol, value=Kelly fraction) — 总和 ≤ 1.
     """
     if fraction is None:
-        fraction = _require_cfg("optimizer.kelly_fraction")
+        fraction = _regime_kelly_fraction(regime_label)
 
     # 展平嵌套 ic_map (兼容 compute_ic 产出格式)
     if ic_map and isinstance(next(iter(ic_map.values())), dict):
@@ -128,6 +150,7 @@ def compute_lot_allocation(
     ic_map: dict = None,
     max_positions: int = None,
     lot_size: int = 100,
+    regime_label: str = None,
 ) -> tuple[pd.Series, float]:
     """用 Kelly 分数计算整数手分配.
 
@@ -138,6 +161,7 @@ def compute_lot_allocation(
         ic_map: 因子 IC 映射
         max_positions: 最大持仓数
         lot_size: 每手股数 (A股=100)
+        regime_label: test-v397: market regime for dynamic kelly fraction
 
     Returns:
         (lots Series, remaining_cash)
@@ -149,7 +173,7 @@ def compute_lot_allocation(
     top_alpha = alpha.iloc[:n]
     top_prices = prices.loc[top_alpha.index]
 
-    kelly_weights = compute_kelly_fractions(top_alpha, ic_map)
+    kelly_weights = compute_kelly_fractions(top_alpha, ic_map, regime_label=regime_label)
     kelly_weights = kelly_weights.loc[top_alpha.index].fillna(0)
     if kelly_weights.sum() == 0:
         kelly_weights = pd.Series(1.0 / n, index=top_alpha.index)

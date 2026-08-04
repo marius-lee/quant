@@ -257,3 +257,91 @@ def _joint_neutralize(
     result = pd.Series(residuals, index=common)
     result = (result - result.mean()) / result.std(ddof=1)
     return result.reindex(scores.index)
+
+
+def _build_neutralize_projection(
+    industries: pd.Series,
+    market_caps: pd.Series,
+) -> tuple[np.ndarray, pd.Index]:
+    """test-v397 (P1): 预构建中性化投影矩阵 P = I - X(X'X)^(-1)X'.
+
+    返回 (P, common_index)。对每个因子 Series y, 残差 = P @ y[common_index]。
+    原先 30 个因子各自做一次 lstsq(X, y), 现在共用一个 P, 速度 ~30x。
+
+    industries: index=symbol, 行业分类
+    market_caps: index=symbol, 总市值
+    """
+    common = market_caps.dropna().index.intersection(industries.dropna().index)
+    if len(common) < _MIN_COMMON:
+        raise ValueError(f"_build_neutralize_projection: only {len(common)} common stocks")
+
+    log_mcap = np.log(np.asarray(market_caps.loc[common].values, dtype=np.float64))
+    ind_series = industries.loc[common]
+    ind_counts = ind_series.value_counts()
+    valid_inds = ind_counts[ind_counts >= 3].index
+    ind_series = ind_series.where(ind_series.isin(valid_inds), "other")
+    ind_dummies = pd.get_dummies(ind_series, drop_first=True).astype(np.float64)
+
+    X = np.column_stack([np.ones(len(common)), log_mcap, ind_dummies.values])
+    try:
+        XtX_inv = np.linalg.inv(X.T @ X)
+    except np.linalg.LinAlgError:
+        XtX_inv = np.linalg.pinv(X.T @ X)
+    H = X @ XtX_inv @ X.T  # hat matrix
+    P = np.eye(len(common)) - H   # projection onto residual space
+    return P.astype(np.float64), common
+
+
+def _apply_neutralize_batch(
+    P: np.ndarray,
+    common_index: pd.Index,
+    scores: pd.Series,
+) -> pd.Series:
+    """test-v397 (P1): 用预构建的 P 矩阵对单个因子做中性化。
+
+    P: _build_neutralize_projection() 返回的投影矩阵
+    common_index: 对应 P 的 index
+    scores: 因子 z-score Series (index=symbol)
+
+    返回: 中性化后的 z-score Series
+    """
+    aligned = scores.reindex(common_index)
+    if aligned.dropna().empty:
+        return scores
+    y = aligned.values.astype(np.float64)
+    residuals = P @ y
+    result = pd.Series(residuals, index=common_index)
+    result = (result - result.mean()) / result.std(ddof=1)
+    return result.reindex(scores.index)
+
+
+def neutralize_factors_batch(
+    factor_values: dict[str, pd.Series],
+    industries: pd.Series = None,
+    market_caps: pd.Series = None,
+) -> dict[str, pd.Series]:
+    """test-v397 (P1): 批量中性化所有因子 — 共享投影矩阵, 避免逐因子 lstsq。
+
+    factor_values: {factor_name: Series(index=symbol)}
+    industries: index=symbol
+    market_caps: index=symbol
+
+    返回: {factor_name: 中性化后的 Series}
+    """
+    if industries is None and market_caps is None:
+        return factor_values
+    try:
+        P, common = _build_neutralize_projection(industries, market_caps)
+    except ValueError as e:
+        logger.warning("[neutralize] batch: cannot build projection, skip: %s", e)
+        return factor_values
+
+    result = {}
+    for fname, fseries in factor_values.items():
+        if not isinstance(fseries, pd.Series) or fseries.dropna().empty:
+            result[fname] = fseries
+            continue
+        # z-score first, then neutralize
+        z = (fseries - fseries.mean()) / (fseries.std(ddof=1) + 1e-8)
+        result[fname] = _apply_neutralize_batch(P, common, z)
+    return result

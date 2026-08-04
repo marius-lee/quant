@@ -1,0 +1,10 @@
+{
+  "name": "earnings_growth_yoy",
+  "display_name": "earnings_growth_yoy",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": -0.0042,
+  "icir_12m": -0.0477,
+  "last_evaluated": "auto",
+  "n_obs": 75
+}

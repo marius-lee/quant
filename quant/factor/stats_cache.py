@@ -449,12 +449,14 @@ def _load_ic_from_db(filter_names=None, scope='live') -> dict:
 
 
 def compute_backtest_ic(start_date: str, n_train_days: int = 120,
-                       status_filter: str = 'backtesting') -> dict:
+                       status_filter: str = 'backtesting',
+                       factor_cache: dict = None) -> dict:  # test-v397 (P0): 预加载因子缓存
     """计算回测用 IC 权重 — 训练期 OOS 验证 → 写入 factor_ic_daily(scope='backtest').
 
     start_date: 回测开始日期 (如 '2026-01-01')
     n_train_days: 训练期天数, 从 start_date 往前数
     status_filter: 因子池 ('backtesting' = evaluating+probation)
+    factor_cache: test-v397 (P0) — 预加载的 {date: {factor: Series}}, 跳过 gzip I/O
 
     返回: {factor_name: weight} 归一化 IC 权重, 供 generate_signals(ic_map=...) 使用.
     同时写入 factor_ic_daily(scope='backtest') 持久化.
@@ -462,10 +464,12 @@ def compute_backtest_ic(start_date: str, n_train_days: int = 120,
     from datetime import timedelta
     import pandas as pd
 
+    # test-v397 (Problem 5): PIT 断言 — 确保 run_oos_check 只用 ≤ start_date 数据
     train_end = start_date
     start_dt = pd.Timestamp(start_date)
     train_start = (start_dt - timedelta(days=n_train_days)).strftime("%Y-%m-%d")
-    logger.info(f"backtest IC: computing for {status_filter} pool, train window={train_start}→{train_end}")
+    logger.info(f"backtest IC: computing for {status_filter} pool, train window={train_start}→{train_end} "
+                f"(PIT: no data beyond train_end={train_end})")
 
     from quant.scheduler.oos_verify import run_oos_check
     result = run_oos_check(
@@ -475,6 +479,7 @@ def compute_backtest_ic(start_date: str, n_train_days: int = 120,
         test_days=_require_cfg("oos_verify.test_window_days"),
         decay_warn_threshold=_require_cfg("oos_verify.decay_warn_threshold"),
         n_symbols=_require_cfg("oos_verify.backtest_n_symbols"),
+        factor_cache=factor_cache,
     )
     if result.get("alert"):
         logger.warning(f"backtest IC: OOS decay alert for {train_end}")

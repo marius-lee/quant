@@ -367,8 +367,10 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         logger.warning(f"[2.5] no symbols left for date={actual_date}, returning empty signals")
         return {"date": actual_date, "target_positions": [], "signal_count": 0, "steps": results["steps"]}
     if not factor_values:
+        # test-v398: 区分 factor_cache miss vs factor_store.load 空
+        _from = "factor_cache" if factor_cache is not None else "factor_store"
         raise RuntimeError(
-            f"step 3: factor_cache miss for {actual_date} ({len(symbols)} symbols), "
+            f"step 3: {_from} returned empty for {actual_date} ({len(symbols)} symbols), "
             f"run factor_cache materialization first"
         )
     n_valid = sum(1 for v in factor_values.values() if isinstance(v, pd.Series) and v.notna().sum() > 0)

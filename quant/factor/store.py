@@ -644,7 +644,9 @@ class FactorStore:
         return all(self._date_has_data(d, factor_names) for d in check_dates)
 
     def _date_has_data(self, date_str: str, factor_names: list[str]) -> bool:
-        return len(self._get_existing_factors(date_str)) >= len(factor_names)
+        """检查日期是否有缓存文件 (不检查 factor 数量 — 早期日期可能因历史不足缺部分因子)."""
+        import os
+        return os.path.exists(self._path(date_str))
 
     # ── 维护 ──
 

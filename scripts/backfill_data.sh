@@ -5,27 +5,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PYTHONPATH=. .venv/bin/python3 << 'PYEOF'
-import sys, time
-
-# ── 1. daily_valuation (JQData, ~2000交易日的daily表数据, 但只有未同步的才拉) ──
-print("[1/4] daily_valuation sync...", flush=True)
+import sys
+print("[1/4] daily_valuation sync 2019-01-02 → 2025-11-30 (逐日日志略多, 正常)", flush=True)
 from quant.data.em_valuation import sync_range as em_sync
-from quant.data.store import DataStore
-# 先统计待同步数量
-s = DataStore()
-c = s._connect()
-all_dates = [r[0] for r in c.execute(
-    "SELECT DISTINCT date FROM daily WHERE date >= '2019-01-02' AND date <= '2025-11-30' ORDER BY date").fetchall()]
-synced = {r[0] for r in c.execute(
-    "SELECT DISTINCT date FROM daily_valuation WHERE date >= '2019-01-02' AND date <= '2025-11-30'").fetchall()}
-todo = [d for d in all_dates if d not in synced]
-c.close()
-print(f"  daily_valuation: {len(todo)} dates to sync ({len(all_dates)} total, {len(synced)} already done)", flush=True)
-if todo:
-    print(f"  first: {todo[0]}, last: {todo[-1]}, est ~{len(todo)*0.5:.0f}s", flush=True)
-    em_sync(start="2019-01-02", end="2025-11-30")
-else:
-    print("  all already synced, skipping", flush=True)
+em_sync(start="2019-01-02", end="2025-11-30")
 print("[1/4] daily_valuation done", flush=True)
 
 # ── 2. lhb_detail 龙虎榜 (按月) ──

@@ -14,7 +14,7 @@ import pandas as pd
 
 store = DataStore()
 fs = FactorStore(db_path=FACTOR_CACHE_DB)
-dates = pd.date_range('2019-06-01', '2026-12-31', freq='B')
+dates = pd.date_range('2019-01-01', '2026-12-31', freq='B')
 date_strs = [d.strftime('%Y-%m-%d') for d in dates]
 factor_names = get_factor_names(status_filter='backtesting')
 symbols = UniverseRepo().get_symbols(exclude_market='BJ')

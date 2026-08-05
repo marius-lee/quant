@@ -359,13 +359,14 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
         ic_lookback = ic_lookback if ic_lookback is not None else _require_cfg("backtest.diagnosis_ic_window")
         bt_factor_names = get_factor_names(status_filter=factor_status_filter)
 
-        # v395: 缓存覆盖检查 — 缺则warn(IC可能不准), 不阻断回测
+        # v395: 缓存覆盖检查 — 缺则阻断 (不再 warn+继续半路 crash)
         _ic_start = (pd.Timestamp(trading_days[0]) - pd.Timedelta(days=ic_lookback * 2)).strftime("%Y-%m-%d")
         _ic_dates = [d.strftime("%Y-%m-%d") for d in pd.date_range(start=_ic_start, end=trading_days[0], freq="B")
                      if is_trading_day(d.date())]
-        if _ic_dates and not _fstore.is_materialized([_ic_dates[0]], bt_factor_names[:3]):
-            _log.warning(f"backtest: factor cache stale/missing for IC lookback. "
-                         f"IC estimates may be noisy. Rebuild with: _run('{_ic_start}', '{end_date}')")
+        if _ic_dates and not _fstore.is_materialized([_ic_dates[0]], bt_factor_names):
+            raise RuntimeError(
+                f"factor cache missing for IC lookback ({_ic_dates[0]}). "
+                f"Run: scripts/materialize_full.sh ({_ic_start} → {end_date})")
 
         # ── Pre-load all daily data once (eliminates 843 DB queries) ──
         from quant.data.repos import UniverseRepo

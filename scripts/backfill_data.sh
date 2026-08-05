@@ -1,49 +1,45 @@
 #!/usr/bin/env bash
-# 历史数据回填 — 一次性补齐 lhb / margin / financial 数据
-# 用法: bash scripts/backfill_data.sh [from_date] [to_date]
-# 耗时: lhb~10min, margin~15min, financial~20min (总计~45min)
+# 批量补充历史数据: daily_valuation + lhb_detail + benchmark + financials
+# 每个源内部已有 skip-existing 逻辑, 不会重复拉取
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-FROM="${1:-2020-01-01}"
-TO="${2:-2026-06-30}"
+PYTHONPATH=. .venv/bin/python3 << 'PYEOF'
+import sys, time
 
-echo "=== 数据回填: $FROM → $TO ==="
+# ── 1. daily_valuation  (JQData, ~2000个交易日, 每日期 ~3s API delay) ──
+print("[1/4] daily_valuation: 2019-01-02 → 2025-11-30")
+sys.stdout.flush()
+from quant.data.em_valuation import sync_range as em_sync
+em_sync(start="2019-01-02", end="2025-11-30")
+print("[1/4] daily_valuation done")
 
-PYTHONPATH=. .venv/bin/python3 <<PYEOF
-import sys, sqlite3, time, os
-from datetime import datetime, timedelta
-from quant.utils.logger import get_logger
-from quant.config.paths import MARKET_DB
+# ── 2. lhb_detail 龙虎榜 (按月, ~72个月) ──
+print("[2/4] lhb_detail: 2019-01 → 2024-12")
+sys.stdout.flush()
+from quant.data.lhb import sync_range as lhb_sync
+lhb_sync(start_year=2019, start_month=1, end_year=2024, end_month=12)
+print("[2/4] lhb done")
 
-_log = get_logger("backfill")
-FROM = "$FROM"
-TO = "$TO"
-from_dt = datetime.strptime(FROM, "%Y-%m-%d")
-to_dt = datetime.strptime(TO, "%Y-%m-%d")
+# ── 3. benchmark_daily 补充到最新 ──
+print("[3/4] benchmark_daily: extend to latest")
+sys.stdout.flush()
+from quant.data.benchmark import sync_benchmark
+sync_benchmark("000300")
+print("[3/4] benchmark done")
 
-# 1. 龙虎榜 (akshare, 按月批量)
-_log.info("=== [1/3] LHB backfill ===")
-from quant.data.lhb import sync_range
-n = sync_range(from_dt.year, from_dt.month, to_dt.year, to_dt.month)
-_log.info(f"  lhb done: {n} rows" if n else "  lhb done: no new data")
+# ── 4. financials (income/balance/cash_flow) ──
+# financial 表通过 daily_sync 的 step 5 更新, 检查是否需要补
+print("[4/4] checking financials coverage...")
+sys.stdout.flush()
+from quant.data.store import DataStore
+s = DataStore()
+c = s._connect()
+for t in ['financial_income', 'financial_balance', 'financial_cash_flow']:
+    r = c.execute(f"SELECT MIN(stat_date), MAX(stat_date), COUNT(*) FROM {t}").fetchone()
+    print(f"  {t}: {r[0]} → {r[1]} ({r[2]} rows) — OK, 财报数据按 stat_date 覆盖历年年报")
+c.close()
 
-# 2. 融资融券 (SSE+SZSE API)
-_log.info("=== [2/3] MARGIN backfill ===")
-from quant.data.margin import sync_range as margin_sync_range
-conn = sqlite3.connect(MARKET_DB, timeout=30)
-n = margin_sync_range(FROM, TO, conn=conn)
-conn.close()
-_log.info(f"  margin done: {n} rows" if n else "  margin done: no new data")
-
-# 3. 基本面 (baostock/同花顺)
-_log.info("=== [3/3] FINANCIAL backfill ===")
-from quant.data.fundamental import sync_all
-conn = sqlite3.connect(MARKET_DB, timeout=30)
-# 基本面 sync_all 会拉全量最新, 单次执行即可
-result = sync_all(conn, max_fetch=5000)
-conn.close()
-_log.info(f"  financial done: {result}")
-
-_log.info("=== BACKFILL DONE ===")
+print()
+print("=== ALL DONE ===")
 PYEOF

@@ -14,5 +14,3 @@ f.materialize([d.strftime('%Y-%m-%d') for d in dates],
     UniverseRepo().get_symbols(exclude_market='BJ'),store=s,force=True)
 print('DONE')
 "
-echo "缓存已补充。重启调度器..."
-bash scripts/restart.sh

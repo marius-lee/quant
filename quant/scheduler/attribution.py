@@ -271,11 +271,17 @@ def _run(today: str):
         vals = [r["ic_value"] for r in rolling if r["ic_value"] is not None]
         if len(vals) < max(3, IC_ROLLING_WINDOW // 4):
             continue
-        current = vals[-1]
-        rolling_mean = sum(vals[:-1]) / max(len(vals[:-1]), 1)
-        if rolling_mean and abs((current - rolling_mean) / max(abs(rolling_mean), 1e-10)) > IC_DEGRADATION_THRESHOLD:
+        # [test-v398] L1: 近5日均值替代原单日 vals[-1]。
+        # 原逻辑用单日IC与60日滚动均值比较, 但单日IC噪声 σ≈3-5×mean,
+        # 30%偏离近乎必然触发 → active→probation 误杀。
+        # 改为5日滚动均值: Grinold & Kahn (1999) 建议月频窗口,
+        # WorldQuant 101 Alphas 用周频。窗口长度由 config attribution.l1_rolling_days 控制。
+        recent_n = min(_require_cfg("attribution.l1_rolling_days"), len(vals))
+        current_mean = sum(vals[-recent_n:]) / recent_n
+        rolling_mean = sum(vals[:-recent_n]) / max(len(vals[:-recent_n]), 1)
+        if rolling_mean and abs((current_mean - rolling_mean) / max(abs(rolling_mean), 1e-10)) > IC_DEGRADATION_THRESHOLD:
             degraded_l1.add(name)
-            _log.warning(f"[{today}] L1: {name} IC rolling decline (mean={rolling_mean:+.4f}→current={current:+.4f})")
+            _log.warning(f"[{today}] L1: {name} IC rolling decline (mean={rolling_mean:+.4f}→{recent_n}d={current_mean:+.4f})")
 
     # ── Step C: Level 2 — OOS/IS 比率 ──
     degraded_l2 = set()
@@ -361,12 +367,15 @@ def _run(today: str):
         mean_ic = np.mean(ic_vals)
         se_ic = np.std(ic_vals, ddof=1) / np.sqrt(len(ic_vals)) if len(ic_vals) > 1 else 0
         t_stat = mean_ic / se_ic if se_ic > 0 else 0
-        # |t| < 1.0: 不显著异于 0 → IC 已无效 → 归档
-        if abs(t_stat) < 1.0:
+        # [test-v398] L3: t-test 归档阈值从 |t|<1.0 提升到 |t|<2.0。
+        # |t|<1.0 对应 ~68% 置信 (p≈0.32), 只需微弱证据即归档 — 过于激进。
+        # |t|<2.0 对应 ~95% 置信 (p≈0.05), 需较强证据才归档因子。
+        # 依据: De Prado (2018) Ch.7 建议 t>2.0 为 IC 显著性最低门槛。
+        if abs(t_stat) < 2.0:
             _v = cpcv_verdicts.get(pname, {})
             fsm.transition(pname, "IC_PERSISTENT",
-                reason=f"[LIVE] 持续衰减归档: |t|={abs(t_stat):.2f}<1.0, DSR={_v.get('dsr')}")
-            _log.warning(f"[{today}] {pname}: probation → archived (|t|={abs(t_stat):.2f}<1.0, 持续衰减)")
+                reason=f"[LIVE] 持续衰减归档: |t|={abs(t_stat):.2f}<2.0, DSR={_v.get('dsr')}")
+            _log.warning(f"[{today}] {pname}: probation → archived (|t|={abs(t_stat):.2f}<2.0, 持续衰减)")
             _m.inc("scheduler.attribution.retired", 1)
         else:
             _log.info(f"[{today}] {pname}: probation, |t|={abs(t_stat):.2f}≥1.0 — still observing")

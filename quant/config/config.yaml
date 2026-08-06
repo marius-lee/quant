@@ -67,6 +67,9 @@ alpha:
 attribution:
   ic_rolling_window: 60
   ic_degradation_threshold: 0.3
+  l1_rolling_days: 5          # [test-v398] L1 IC衰减检测改用5日均值 (原单日vals[-1])
+  # 依据: Grinold & Kahn (1999) 建议月频IC窗口, WorldQuant 101 Alphas 用周频,
+  # 单日IC噪声σ≈3-5×mean, 30%偏离近乎必然触发, 导致active→probation误杀
   monitoring_buffer_days: 20
   promotion_stability_days: 10
   dsr_degraded_threshold: 0.5
@@ -78,7 +81,9 @@ attribution:
   risk_free_rate: 0.02
   corr_redundant_threshold: 0.7
   oos_warning_decay: 0.5
-  oos_recovery_threshold: 1.5
+  oos_recovery_threshold: 0.7   # [test-v398] probation→active 恢复门槛 (原1.5)
+  # 依据: AQR 20-for-20 (2018) 因子淘汰条件为OOS/IS<0.2, 恢复即>0.5;
+  # Two Sigma Factor Lens (2021) 无>1.0恢复概念; OOS/IS>0.7已属优秀
   tier_nano_cap: 50000        # 来源: test-v284, 精简模式 AUM 上限
   tier_micro_cap: 500000      # 来源: test-v284, 标准模式 AUM 上限
   turnover_limit_nano: 999.0  # 来源: test-v284, Nano层不限换手
@@ -435,13 +440,13 @@ market:
 # attribution.slippage_limit_nano       0.05           test-v283: Nano层5%滑点
 # attribution.slippage_limit_micro      0.02           test-v283: Micro层2%滑点
 # attribution.slippage_limit_small      0.01           test-v283: Small层1%滑点
-# attribution.ic_rolling_window         20             P4: 一个月交易日, 减少误判 (5→20)
+# attribution.l1_rolling_days            5              test-v398: L1 IC 5日滚动均值 (日频→周均, 防日噪声误杀)
 # attribution.ic_degradation_threshold  0.30           Grinold & Kahn: IC衰减>30%需review
 # attribution.monitoring_buffer_days    10             test-v261: 两交易周, 防单日噪声误杀
 # attribution.promotion_stability_days  5              P2: 一周交易日, 确认IC恢复非噪声
 # attribution.oos_warn_threshold        0.50           test-v261: OOS衰减>50%→告警 (明汯标准)
 # attribution.oos_warning_decay         0.5            test-v261: OOS/IS 比率告警阈值
-# attribution.oos_recovery_threshold    1.5            test-v261: IC恢复阈值
+# attribution.oos_recovery_threshold    0.7            AQR标准: OOS/IS>0.7即优秀 (原1.5要求反超不现实)
 # attribution.corr_redundant_threshold  0.7            test-v261: 因子相关性冗余阈值
 # backtest.default_start                2020-01-01     test-v262: 6.5年完整周期 (原2023→2020)
 # backtest.factor_cache_max_days        2000           test-v249: 修复裁剪过激 (244→2000)

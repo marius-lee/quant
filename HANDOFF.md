@@ -2,6 +2,54 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+## 当前状态 (test-v399, 2026-08-05)
+
+### factor_snapshot 缓存失效修复
+
+**`get_cached_factor_stats` — 缓存感知数据变化 (High)**
+- 原: 纯 24h TTL 判断, 不感知 factor_cache 文件变化, factor_cache 物化后仍返回旧空数据
+- 改: 检查 factor_cache/*.csv.gz 最新 mtime, 比 snapshot 新则自动失效重算
+
+**`compute_factor_stats` — 因子范围扩大 (Medium)**
+- 原: 默认 status_filter='backtesting' 仅覆盖 evaluating+probation
+- 改: 默认 ('active','probation','evaluating') 全量非归档因子
+
+---
+
+## 当前状态 (test-v398, 2026-08-05)
+
+### 因子归因阈值对齐业界标准 (Critical)
+
+背景: 全量数据回填完成后 96 因子 0 active, 审计发现三处偏离业界实践。
+详见项目记忆 `project/factor-eval-full-audit-2026-08-05`。
+
+**attribution.py L1 — 单日 IC → 5 日滚动均值 (High)**
+- 原: `vals[-1]` 单日 IC vs 60d 均值, 偏离 >30% 告警 → 日噪声误杀 active→probation
+- 改: 近 5 日滚动均值, 窗口由 config `attribution.l1_rolling_days` 控制
+- 依据: Grinold & Kahn (1999) 月频; WorldQuant 101 Alphas 周频
+
+**config oos_recovery_threshold — 1.5→0.7 (High)**
+- 原: OOS_IR > IS_IR × 1.5 才能 probation→active (变量反超, 不现实)
+- 改: 0.7 (AQR 20-for-20 2018: 淘汰条件 <0.2, 恢复 >0.5; OOS/IS>0.7 已属优秀)
+- 依据: AQR, Two Sigma Factor Lens (2021)
+
+**attribution.py L3 — t-test |t|<1.0→|t|<2.0 (High)**
+- 原: |t|<1.0 (~68% 置信, p≈0.32) 即归档 (过于激进)
+- 改: |t|<2.0 (~95% 置信, p≈0.05)
+- 依据: De Prado (2018) Ch.7
+
+**层面二评估管线阈值 — 已审计, 暂缓**
+- pbo_max 0.20→0.10, dsr_degraded 0.50→0.80, net_sharpe 0.30→0.50, min_oos_points 5→20
+- 暂缓原因: 当前 0 active, 加严评估管线会使新因子更难通过; 等有 active 后再对齐
+
+### 关键指标
+- 因子: 96 注册 (0 active, 20 evaluating, 14 probation, 62 archived)
+- 数据: 2019-2026 日线 + daily_valuation 678万行 + lhb_detail 10万行 + financials 5万行
+- adj_factor: 4924/5208 覆盖 (94.5%)
+- 因子缓存: 物化 1841 日期 × 32 因子 × 5208 符号 → 1.99 亿行
+
+---
+
 ## 当前状态 (test-v397, 2026-08-04)
 
 ### 回测策略全链路审计修复 (12 项问题)

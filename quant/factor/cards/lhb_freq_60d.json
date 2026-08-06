@@ -3,8 +3,8 @@
   "display_name": "lhb_freq_60d",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0274,
-  "icir_12m": 0.2449,
+  "ic_mean_12m": 0.021,
+  "icir_12m": 0.1119,
   "last_evaluated": "auto",
   "n_obs": 130
 }

@@ -17,8 +17,9 @@ import requests
 
 from quant.config.constants import _require_cfg
 from quant.utils.date import validate_date_format
+from quant.utils.logger import get_logger
 
-_log = logging.getLogger("data.em_valuation")
+_log = get_logger("data.em_valuation")
 
 DB = os.path.join(os.path.dirname(__file__), "market.db")
 

@@ -3,8 +3,8 @@
   "display_name": "earnings_growth_yoy",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.0042,
-  "icir_12m": -0.0477,
+  "ic_mean_12m": 0.0067,
+  "icir_12m": 0.0358,
   "last_evaluated": "auto",
-  "n_obs": 75
+  "n_obs": 77
 }

@@ -45,11 +45,13 @@ def _ensure_table(conn):
             PRIMARY KEY (symbol, trade_date)
         )
     """)
-    # 动态加列 (兼容旧 schema)
+    # 动态加列 (兼容旧 schema) — 先检查列是否存在
+    existing = {r[1] for r in conn.execute("PRAGMA table_info('lhb_detail')").fetchall()}
     for col, typ in [('name','TEXT'),('circ_mv','REAL'),
                       ('post_1d','REAL'),('post_2d','REAL'),
                       ('post_5d','REAL'),('post_10d','REAL')]:
-        conn.execute(f"ALTER TABLE lhb_detail ADD COLUMN {col} {typ}")
+        if col not in existing:
+            conn.execute(f"ALTER TABLE lhb_detail ADD COLUMN {col} {typ}")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_lhb_date ON lhb_detail(trade_date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_lhb_symbol ON lhb_detail(symbol)")
     conn.commit()

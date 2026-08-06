@@ -1,3 +1,59 @@
+## [test-v399] — 2026-08-05
+
+### 因子归因阈值对齐业界标准 (Critical)
+
+**factor_snapshot 缓存失效逻辑修复 (High)**
+
+`get_cached_factor_stats` 的缓存失效仅依赖 24h TTL，不感知底层 factor_cache 文件变化。
+factor_cache 物化完成后 snapshot 仍返回旧的空数据（全 0 IC），前端因子页长期显示错误。
+修复: 读取缓存时检查 factor_cache 目录下最新 csv.gz 文件的 mtime，如果比 snapshot
+创建时间新则自动失效并重算。
+
+**compute_factor_stats 因子范围扩大 (Medium)**
+
+原默认 `status_filter='backtesting'` 仅覆盖 evaluating+probation 池，active 因子
+的 IC/ICIR 不出现在前端因子页。
+修复: 默认覆盖 `('active', 'probation', 'evaluating')` 全量非归档因子。
+
+---
+
+### 因子归因阈值对齐业界标准 (Critical)
+
+背景: 全量数据回填完成后 96 个因子 0 active, 审计发现三处偏离业界实践。
+
+**attribution.py L1 — 单日 IC 噪声误杀 (High)**
+
+原逻辑用 `vals[-1]` (最新单日 IC) 与 60 日滚动均值比较, 偏离 >30% 即告警。
+但单日 IC 噪声 σ≈3-5×mean, 偏离必然触发 → active→probation 误杀。
+修复: 改为近 5 日滚动均值 (由 config `attribution.l1_rolling_days` 控制)。
+依据: Grinold & Kahn (1999) 建议月频窗口; WorldQuant 101 Alphas 用周频。
+
+**config attribution.oos_recovery_threshold — 恢复门槛 1.5→0.7 (High)**
+
+原值要求 `OOS_IR > IS_IR × 1.5` 才能 probation→active, 金融数据中不存在此现象。
+修复: 降为 0.7。
+依据: AQR 20-for-20 (2018) 因子淘汰条件为 OOS/IS<0.2, 恢复即>0.5;
+Two Sigma Factor Lens (2021) 无>1.0 恢复概念; OOS/IS>0.7 已属优秀。
+
+**attribution.py L3 — t-test 归档阈值 |t|<1.0→|t|<2.0 (High)**
+
+原值对应 ~68% 置信 (p≈0.32), 只需微弱证据即可归档 — 过于激进。
+修复: 提升到 |t|<2.0 (~95% 置信, p≈0.05)。
+依据: De Prado (2018) Ch.7 建议 t>2.0 为 IC 显著性最低门槛。
+
+**config 新增 attribution.l1_rolling_days: 5 (Medium)**
+
+L1 IC 滚动均值窗口配置化 (原硬编码 single-day)。
+
+### 层面二评估管线阈值 (暂缓, 等有 active 因子后对齐)
+
+- `pbo_max` 0.20→0.10 (De Prado 标准)
+- `dsr_degraded_threshold` 0.50→0.80 (PSR 解释)
+- `net_sharpe_min` 0.30→0.50 (AQR 标准)
+- `min_oos_points` 5→20 (统计 power)
+
+---
+
 ## [P71] — 2026-07-09
 
 ### 代码安全与稳定性修复

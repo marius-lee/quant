@@ -3,8 +3,8 @@
   "display_name": "piotroski_fscore",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0104,
-  "icir_12m": 0.1607,
+  "ic_mean_12m": 0.0032,
+  "icir_12m": 0.0205,
   "last_evaluated": "auto",
   "n_obs": 130
 }

@@ -88,14 +88,14 @@ def compute_factor_stats(
 
     if not symbols:
         logger.warning("No symbols available for factor evaluation")
-        return _empty_result(factor_names)
+        return _empty_result(factor_names, status_filter)
 
     # 2. 获取评估日期
     if factor_names is None:
-        # 回测池 = candidate + monitoring + retired (ADR-026)
-        # 排除: active(已投产, 实盘模块管理), rejected(永久淘汰)
+        # [test-v399] 前端因子页需全量活跃因子 (active + probation + evaluating)
+        # 原仅 backtesting 池 (evaluating+probation), active 因子的 IC 不显示
         if status_filter is None:
-            status_filter = 'backtesting'
+            status_filter = ('active', 'probation', 'evaluating')
         factor_names = get_factor_names(status_filter=status_filter)
     factor_values_by_date = {name: {} for name in factor_names}
 
@@ -112,7 +112,7 @@ def compute_factor_stats(
 
     if not eval_date_strs:
         logger.warning("No eval dates available")
-        return _empty_result(factor_names)
+        return _empty_result(factor_names, status_filter)
 
     logger.info(f"eval dates: {len(eval_date_strs)} dates, {eval_date_strs[0]}→{eval_date_strs[-1]}, "
                 f"{len(factor_names)} factors, {_MAX_WORKERS} threads")
@@ -161,7 +161,7 @@ def compute_factor_stats(
         close_parts.append(_pd.Series(s.values, index=mi, name='close'))
     if not close_parts:
         logger.warning("No close data — cannot compute forward returns")
-        return _empty_result(factor_names)
+        return _empty_result(factor_names, status_filter)
     close = _pd.concat(close_parts)
     if isinstance(close, _pd.Series):
         close = close.unstack()
@@ -308,23 +308,23 @@ def compute_factor_stats(
     return result
 
 
-def _empty_result(factor_names: list = None) -> dict:
+def _empty_result(factor_names: list = None, status_filter=None) -> dict:
     """返回空结果（数据不足时）。使用传入 factor_names，None 时回退到全量因子。"""
     if factor_names is None:
         from quant.factor.compute import get_factor_names
-        # 回测池 = candidate + monitoring + retired (ADR-026)
-        # 排除: active(已投产, 实盘模块管理), rejected(永久淘汰)
+        # 前端因子页需全量活跃因子 (active + probation + evaluating)
         if status_filter is None:
-            status_filter = 'backtesting'
+            status_filter = ('active', 'probation', 'evaluating')
         factor_names = get_factor_names(status_filter=status_filter)
-    names = factor_names
+    names = factor_names or []
     return {
         "factors": names,
         "factor_keys": names,
         "ic": [0.0] * len(names),
         "ic_ir": [0.0] * len(names),
+        "ic_series": {},
         "decay": {n: [0.0, 0.0, 0.0] for n in names},
-        "corr": np.eye(len(names)).tolist(),
+        "corr": np.eye(len(names)).tolist() if names else [],
         "meta": {n: {"display": n, "category": "—", "source": "—", "n_periods": 0} for n in names},
         "cached_at": datetime.now().isoformat(),
     }
@@ -351,11 +351,29 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
             if row:
                 cached = json.loads(row[0])
                 cached_at = datetime.fromisoformat(cached.get("cached_at", "2000-01-01"))
-                age_sec = (datetime.now() - cached_at).total_seconds()
-                if age_sec < _SNAPSHOT_TTL_SEC:
-                    logger.info(f"factor snapshot hit, age={age_sec/60:.0f}min")
-                    return cached
-                logger.info(f"factor snapshot expired, age={age_sec/3600:.1f}h")
+                # [test-v399] 感知底层数据变化: factor_cache 文件比 snapshot 新 → 失效
+                import os, glob
+                _cache_dir = os.path.join(os.path.dirname(_DB_PATH), "factor_cache")
+                _cache_files = glob.glob(os.path.join(_cache_dir, "*.csv.gz"))
+                if _cache_files:
+                    _newest_cache_mtime = max(os.path.getmtime(f) for f in _cache_files)
+                    _newest_cache_dt = datetime.fromtimestamp(_newest_cache_mtime)
+                    if _newest_cache_dt > cached_at:
+                        logger.info(
+                            f"factor snapshot stale: cache files newer ({_newest_cache_dt}) "
+                            f"than snapshot ({cached_at}), forcing refresh"
+                        )
+                    else:
+                        age_sec = (datetime.now() - cached_at).total_seconds()
+                        if age_sec < _SNAPSHOT_TTL_SEC:
+                            logger.info(f"factor snapshot hit, age={age_sec/60:.0f}min")
+                            return cached
+                        logger.info(f"factor snapshot expired, age={age_sec/3600:.1f}h")
+                else:
+                    age_sec = (datetime.now() - cached_at).total_seconds()
+                    if age_sec < _SNAPSHOT_TTL_SEC:
+                        logger.info(f"factor snapshot hit (no cache files), age={age_sec/60:.0f}min")
+                        return cached
         except Exception as e:
             logger.warning(f"Factor snapshot read failed: {e}")
 
@@ -370,7 +388,7 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
                 return json.loads(row[0])
         except Exception:
             import logging; logging.getLogger("quant.factor.stats_cache").warning("load_latest failed", exc_info=True)
-            return _empty_result()
+            return _empty_result(status_filter=status_filter)
 
     try:
         logger.info("computing factor stats (this may take ~30s)...")

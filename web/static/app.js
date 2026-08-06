@@ -62,6 +62,7 @@ function showTab(name) {
   if (bt) bt.classList.add('active');
   const activeTab = name;
   if (activeTab === 'factors' && window._factorData) {
+    renderFactorKPIs(window._factorData); renderScanLine(window._factorData);
     renderHeatmap(window._factorData); renderICTrend(window._factorData);
     renderICDecay(window._factorData); renderCorrelation(window._factorData);
   }
@@ -320,7 +321,7 @@ function renderFactorKPIs(fd) {
 
 function renderICTrend(fd) {
   const el = document.getElementById('chart-ic-trend');
-  if (!el) return;
+  if (!el || !fd) return;
   const factors = buildFactorObjs(fd).filter(f => f.ic != null).sort((a,b)=>Math.abs(b.ic)-Math.abs(a.ic)).slice(0, 8);
   if (!factors.length) return;
   const pf = plotlyFont(), bg = plotlyBg();

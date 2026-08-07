@@ -72,6 +72,12 @@ from quant.factor.compute.price._alternative import (  # noqa: F401
     compute_str,
     compute_trcf,
     compute_ztd,
+    # test-v402 P1: 缺失因子实现
+    compute_abn_turnover_resid,
+    compute_overnight_gap_ratio,
+    compute_price_channel_position,
+    compute_qlib_vema,
+    compute_wq_alpha_006,
 )
 
 # test-v323: 核心缺失因子
@@ -168,6 +174,12 @@ _PRICE_FN_MAP = {
     "seasonality_12m_1m":     (compute_seasonality_12m_1m, None),
     "tail_risk":              (compute_tail_risk, 252),
     "industry_momentum":      (compute_industry_momentum, 63),
+    # test-v402 P1: 5 个 evaluating 因子补实现
+    "abn_turnover_resid":     (compute_abn_turnover_resid, 20),
+    "overnight_gap_ratio":    (compute_overnight_gap_ratio, 5),
+    "price_channel_position": (compute_price_channel_position, 20),
+    "qlib_vema":              (compute_qlib_vema, 20),
+    "wq_alpha_006":           (compute_wq_alpha_006, 10),
 }
 
 

@@ -44,7 +44,7 @@ def register_all():
              desc="计算所有 using 因子，生成 Alpha 信号与目标持仓", has_multiprocess=True)
     register("execute",      "09:30",       label="交易执行",
              desc="读取信号、获取行情、执行调仓订单", has_multiprocess=True)
-    register("snapshot_open",  "09:30 (execute后)", label="开盘快照",
+    register("snapshot_open",  "10:00 (execute后)", label="开盘快照",
              desc="快照所有A股开盘30分钟实时价+量, 供日内反转/量比因子")
     register("snapshot_close", "14:55 (收盘前)", label="尾盘快照",
              desc="快照所有A股尾盘5分钟实时价+量, 供尾盘异动因子")

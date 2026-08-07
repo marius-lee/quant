@@ -520,18 +520,16 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
          if int(p["shares"]) >= LOT_SIZE},
         dtype=int,
     )
-    # ── test-v309 §8.3: regime 动态仓位管理 ──
-    # 牛/熊/震荡 → 调整可用资金, 熊市少买保留现金.
-    _sizing_capital = total_capital
-    if regime_label and regime_label != "unknown":
-        from quant.regime.detector import get_regime_sizing
-        _multiplier = get_regime_sizing(regime_label)
-        _sizing_capital = total_capital * _multiplier
-        logger.info(f"[5/5] regime sizing: {regime_label} → "
-                    f"capital=¥{_sizing_capital:,.0f} (×{_multiplier})")
+    # ── test-v399: regime sizing 挪入 construct() 内部 ──
+    # 不再在外部缩资 (v309 _sizing_capital 导致 Nano 层 ¥3K 买不起任何1手)。
+    # 改为传入 regime_label, construct() 按 tier 分别处理:
+    #   Nano: regime 限制每只股票手数 (震荡/熊市→1手), 不缩资本
+    #   Micro: regime 调整分配资本上限
+    #   Small: 已有 _regime_kelly_fraction() (v397 Problem 7)
+    # 详见 HANDOFF.md §test-v399.
     portfolio = constructor.construct(
         filtered["alpha"], filtered["close"],
-        _sizing_capital,
+        total_capital,
         covariance=cov, ic_map=ic_map,
         current_lots=current_lots, cost_model=cost_model,
         log_returns=log_ret,
@@ -584,10 +582,12 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     elapsed = time.time() - t0
     # Persist to daily_signals — 实盘/调度器需要, 回测 (suppress_push=True) 跳过
     targets = results.get("target_positions", [])
-    if targets and not suppress_push:
+    # test-v399: 0-target 也写 daily_signals — 防止 execute 回退到旧信号
+    # (原守卫 `if targets` 导致 0-target 日不留痕, execute 读到3天前数据)
+    if not suppress_push:
         from quant.data.repos import TradeRepo
-        TradeRepo(db_path=db_path).save_signals(date_str, targets, total_capital, strategy)
-        logger.info(f"[pipeline] saved {len(targets)} targets to daily_signals for {date_str}")
+        TradeRepo(db_path=db_path).save_signals(date_str, targets or [], total_capital, strategy)
+        logger.info(f"[pipeline] saved {len(targets) if targets else 0} targets to daily_signals for {date_str}")
 
     results["elapsed_sec"] = round(elapsed, 1)
     logger.info(f"generate_signals done trace_id={tid} elapsed={elapsed:.1f}s phases=[{tracker.summary()}] date={date_str}")

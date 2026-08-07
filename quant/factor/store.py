@@ -198,18 +198,16 @@ class FactorStore:
             _log.info("factor_cache: chunk %d/%d — %s → %s (%d dates)",
                       ci + 1, n_chunks, chunk_start_dt, chunk_end_dt, len(chunk_dates))
 
-            # ── 快速跳过: 日期文件已存在 → 跳过数据加载+原语计算 ──
-            # test-v274 原逻辑比 factor_names 完整性, 但新因子不可能在旧缓存中,
-            # 导致 all_cached 永 False. test-v286 改为只检查文件存在性,
-            # 新因子对旧日期返回 NaN, pipeline 端会处理.
+            # ── test-v403: 检查因子完整性而非文件存在 ──
+            # test-v274/test-v286 旧逻辑只看文件是否存在 → 新因子无法触发重算
+            # 修复: 抽查 chunk 首尾日期的因子覆盖, 不全则进入 Step 1-5
             if not force:
-                all_exist = True
-                for date_str in chunk_dates:
-                    if not os.path.exists(self._path(date_str)):
-                        all_exist = False
-                        break
-                if all_exist:
-                    _log.info("factor_cache: chunk %d/%d — all %d dates cached, skip",
+                _sample_dates = [chunk_dates[0], chunk_dates[-1]]
+                _all_cached = all(
+                    self._date_has_all_factors(d, factor_names) for d in _sample_dates
+                ) if len(chunk_dates) > 1 else self._date_has_all_factors(chunk_dates[0], factor_names)
+                if _all_cached:
+                    _log.info("factor_cache: chunk %d/%d — all %d dates fully cached, skip",
                               ci + 1, n_chunks, len(chunk_dates))
                     continue
 
@@ -276,7 +274,7 @@ class FactorStore:
             t4 = _time.time()
 
             # ── Step 5: CSV 写入 ──
-            chunk_rows = self._write_chunk_rows(chunk_new_rows)
+            chunk_rows = self._write_chunk_rows(chunk_new_rows, factor_names)
             t5 = _time.time()
 
             # P3b: 断点续传
@@ -384,10 +382,13 @@ class FactorStore:
         with gzip.open(path, 'rt', encoding='utf-8') as f:
             return [line.strip() for line in f if line.strip()]
 
-    def _write_chunk_rows(self, chunk_rows: dict[str, list[str]]) -> int:
+    def _write_chunk_rows(self, chunk_rows: dict[str, list[str]], factor_names: list[str]) -> int:
         """批量写一个 chunk 的 CSV 缓存 (A3 + C2 manifest)。
 
-        对已有文件只做一次 读→合并→压缩→写; 新文件直接压缩写。
+        对已有文件读→合并→压缩→写; 新文件直接压缩写。
+        test-v403: 
+        - 过滤 factor_names 外的因子行 (防止 archived 因子残留)
+        - 同 key 新值覆盖旧值 (因子代码修复后缓存值应更新)
         写完后更新 manifest, 记录该日期已物化的因子集合。
         返回实际写入的总行数。
         """
@@ -396,14 +397,31 @@ class FactorStore:
             if not lines:
                 continue
             path = self._path(date_str)
-            existing = self._get_existing_factors(date_str)
-            if os.path.exists(path) and existing:
-                existing_lines = self._read_raw_lines(date_str)
-                existing_set = set(existing_lines)
-                for line in lines:
-                    if line not in existing_set:
-                        existing_lines.append(line)
-                lines = existing_lines
+            # test-v403: prune — 只保留 factor_names 中的因子,
+            # 同 (symbol, factor) 新值覆盖旧值
+            _key = lambda line: (line.split(",", 2)[0], line.split(",", 2)[1]) if "," in line else (line, "")
+            new_map = {}
+            for line in lines:
+                parts = line.split(",", 2)
+                if len(parts) < 3:
+                    continue
+                sym, fname = parts[0], parts[1]
+                if fname in factor_names:
+                    new_map[(sym, fname)] = line
+            if os.path.exists(path):
+                old_lines = self._read_raw_lines(date_str)
+                for line in old_lines:
+                    parts = line.split(",", 2)
+                    if len(parts) < 3:
+                        continue
+                    sym, fname = parts[0], parts[1]
+                    k = (sym, fname)
+                    if k not in new_map:
+                        if fname in factor_names:
+                            new_map[k] = line  # 旧行有效且未更新→保留
+                        # else: fname 不在 factor_names → prune
+                # else: new_map 已有 → 新值覆盖旧值
+            lines = list(new_map.values())
 
             raw = "\n".join(lines).encode()
             compressed = gzip.compress(raw, compresslevel=_require_cfg("factor.compute.cache_compresslevel"))
@@ -568,7 +586,8 @@ class FactorStore:
         """返回该日期已物化的因子名集合。
 
         C2: 优先读 manifest, 不存在时回退扫描 gzip CSV (兼容旧缓存)。
-        P1b: manifest 存在但 source_hash 不匹配 → 视为过期 → 返回空集合。
+        test-v403: manifest source_hash 不匹配 → 返回空集合 → 触发重算。
+        旧行为 (v398) 只 log 不重算, 导致因子代码修复后缓存值永久过时。
         """
         mpath = self._manifest_path(date_str)
         if os.path.exists(mpath):
@@ -576,13 +595,12 @@ class FactorStore:
                 with open(mpath, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 factors = set(data.get("factors", []))
-                # test-v398: source_hash 只用于物化流水线 trigger, 不阻断回测读取
-                # 缓存数据始终有效 (用旧代码算的值); 需要重算时由 materialize(force=True) 触发
                 if factors and "source_hash" in data:
                     current_hash = _compute_factor_source_hash(factors)
                     if data["source_hash"] != current_hash:
-                        _log.info("factor_cache: %s source_hash changed, cache still used (stale=%s→%s)",
+                        _log.info("factor_cache: %s source_hash changed → invalidating (%s→%s)",
                                   date_str, data["source_hash"][:8], current_hash[:8])
+                        return set()  # test-v403: 触发重算
                 return factors
             except Exception as e:
                 _log.warning("factor_cache: manifest read failed for %s: %s", date_str, e)
@@ -641,7 +659,7 @@ class FactorStore:
         step = max(1, len(date_range) // 20)
         for i in range(step, len(date_range) - 1, step):
             check_dates.append(date_range[i])
-        return all(self._date_has_data(d, factor_names) for d in check_dates)
+        return all(self._date_has_all_factors(d, factor_names) for d in check_dates)
 
     def _date_has_data(self, date_str: str, _factor_names_hint: list[str] | None = None) -> bool:
         """回测用: 检查 gzip 文件物理存在 (不管里面有几个因子)。"""
@@ -681,6 +699,10 @@ class FactorStore:
             date_str = f.replace('.csv.gz', '')
             if date_str < cutoff:
                 os.remove(os.path.join(self._cache_dir, f))
+                # test-v403: 同步删除 manifest, 防止孤立文件残留
+                mf = self._manifest_path(date_str)
+                if os.path.exists(mf):
+                    os.remove(mf)
                 deleted += 1
         if deleted:
             _log.info("factor_cache: trimmed %d files before %s", deleted, cutoff)

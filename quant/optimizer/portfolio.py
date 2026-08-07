@@ -193,6 +193,32 @@ def _iterative_clip(w, max_single, max_iter=20):
     return w
 
 
+def _get_regime_max_lots(tier: str, regime_label: str | None) -> int:
+    """test-v401: 统一的 tier+regime 手数限制 (Nano/Micro 共享模式).
+
+    Nano: 震荡/熊市→1手, 牛市→不限. 来源: config optimizer.nano.regime_max_lots.
+    Micro: 震荡→5手, 熊市→2手, 牛市→不限. 来源: config optimizer.micro.regime_max_lots.
+    Small: 不使用 lot cap, 已有 _regime_kelly_fraction() (v397 Problem 7).
+    """
+    if regime_label is None or regime_label == "unknown":
+        return 999
+    key = f"optimizer.{tier}.regime_max_lots"
+    sizing = _require_cfg(key)
+    return int(sizing.get(regime_label, 999))
+
+
+def _apply_regime_sizing(capital: float, regime_label: str | None) -> float:
+    """test-v399: Micro 层 regime 调整分配资本上限 (v401 废弃 — 改为 lot-based cap).
+
+    保留函数体供回测兼容, 新调用路径走 _get_regime_max_lots("micro", ...).
+    """
+    if regime_label is None or regime_label == "unknown":
+        return capital
+    from quant.regime.detector import get_regime_sizing
+    multiplier = get_regime_sizing(regime_label)
+    return capital * multiplier
+
+
 class PortfolioConstructor:
     """资本自适应组合构建器。
 
@@ -264,7 +290,10 @@ class PortfolioConstructor:
         covariance: Small 层 Markowitz 用 (外部预计算或 None)。
         log_returns: 若 covariance=None 且需要协方差, 从 log_returns 懒计算。
           来源: pipeline.py 的 close_df 对数收益面板 (仅 Small 层触发, Nano/Micro 跳过)。
-        regime_label: test-v397 — 传入 Kelly 动态调整 fraction (bull/sideways/bear).
+        regime_label: test-v399 — 传入 construct 内部按 tier 分别处理:
+          Nano: 限制每只股票手数 (regime_max_lots), 不缩资本 (防 ¥5K 空仓)。
+          Micro: 调整分配资本上限 (×regime_sizing)。
+          Small: 已有 _regime_kelly_fraction() (v397 Problem 7)。
         """
         common = alpha.dropna().index.intersection(prices.dropna().index)
         if len(common) == 0:
@@ -285,20 +314,52 @@ class PortfolioConstructor:
         )
 
         if tier == "nano":
+            # test-v399: regime sizing 挪入 construct — Nano 层不缩资本,
+            # 改为限制每只股票手数 (震荡/熊市→1手, 牛市→不限)。
+            # 原因: v309 在外部缩资 (¥5K×0.6=¥3K) → ¥3K < cheapest_lot → 空仓。
+            # ADR-032 反模式 #4: 0 仓位必须暴露, 不得吞掉。
+            _max_lots = _get_regime_max_lots("nano", regime_label)
             try:
-                result = self._rank_concentrated(a, p, capital, log_returns=log_returns)
-            except ValueError:
-                # v380: 价格缓冲已移除, 0 仓位只能来自真实价格过高 → 保留现金
-                logger.warning("[portfolio] nano tier: capital too small for any lot, holding cash")
-                return TargetPortfolio(pd.Series(dtype=int), capital, "equal_weight", 0.0)
+                result = self._rank_concentrated(a, p, capital, log_returns=log_returns,
+                                                  max_lots_per_stock=_max_lots)
+            except ValueError as _ve:
+                # v399: 恢复 ADR-032 反模式 #4 — 仅 0-lots 错误需特殊日志
+                # (其他 ValueError 如 numpy read-only 原样传播)
+                if "produced 0 lots" not in str(_ve):
+                    raise
+                logger.error(
+                    "[portfolio] nano tier: capital=¥%s too small for any lot "
+                    "(cheapest≈¥%s), re-raising",
+                    f"{capital:,.0f}",
+                    f"{p.loc[a.index[:min(self.max_positions, len(a))]].min() * LOT_SIZE:,.0f}"
+                )
+                raise
         elif tier == "micro":
-            result = self._score_weighted_rounding(a, p, capital)
+            # test-v401: Micro 层统一为 lot-based regime cap (与 Nano 一致)。
+            # v400 用 capital × regime_sizing, 但 fallback 绕过 → 不一致。
+            # 新方案: score_weighted 按 alpha 权重分配 raw capital,
+            # max_lots_per_stock 限制每只股票手数 (牛=不限, 震荡=5, 熊=2)。
+            _max_lots = _get_regime_max_lots("micro", regime_label)
+            try:
+                result = self._score_weighted_rounding(a, p, capital,
+                                                       max_lots_per_stock=_max_lots)
+            except ValueError:
+                result = TargetPortfolio(pd.Series(dtype=int), capital, "score_weighted", 0.0)
             if result.lots.sum() == 0:
                 logger.warning(
                     "[portfolio] micro tier produced 0 lots (capital=¥%s), "
                     "falling back to equal-weight greedy", f"{capital:,.0f}"
                 )
-                result = self._equal_weight_greedy(a, p, capital)
+                try:
+                    result = self._equal_weight_greedy(a, p, capital,
+                                                       max_lots_per_stock=_max_lots)
+                except ValueError as _eqv:
+                    logger.error(
+                        "[portfolio] micro tier: even greedy fallback produced 0 lots "
+                        "(capital=¥%s, error=%s), re-raising",
+                        f"{capital:,.0f}", str(_eqv)
+                    )
+                    raise
         else:  # small
             # test-v397 (Problem 1): 协方差子集计算 — 仅对 top-K (K=30) 算协方差,
             # 保证 T(252) > K(30), 矩阵良态。全量 800 股票时 N > T 无法求逆。
@@ -627,9 +688,11 @@ class PortfolioConstructor:
     def _rank_concentrated(
         self, alpha: pd.Series, prices: pd.Series, capital: float,
         log_returns: Optional[pd.DataFrame] = None,
+        max_lots_per_stock: int = 999,
     ) -> TargetPortfolio:
         """排名集中: 按 alpha 降序逐只满仓买入, 直至资金不足买下一手。
         v393: 2+持仓时用协方差剔除高相关性票 (ρ>0.7则弃低alpha).
+        v399: max_lots_per_stock — regime 手数限制 (牛=不限, 震荡/熊=1手)。
         """
         n_candidates = min(self.max_positions, len(alpha))
         if n_candidates == 0:
@@ -645,7 +708,8 @@ class PortfolioConstructor:
             cost_per_lot = prices[sym] * LOT_SIZE
             if cash < cost_per_lot:
                 continue
-            max_lots = int(cash // cost_per_lot)
+            # v399: regime 手数限制 — 每只股票最多 max_lots_per_stock 手
+            max_lots = min(int(cash // cost_per_lot), max_lots_per_stock)
             lots[sym] = max_lots
             cash -= max_lots * cost_per_lot
             if cash < cheapest_lot:
@@ -659,9 +723,11 @@ class PortfolioConstructor:
             _common = [s for s in _syms if s in log_returns.columns]
             if len(_common) >= 2:
                 cov_sub = covariance_matrix(log_returns[_common], method="ledoit_wolf")
-                corr = cov_sub.copy()
                 std = np.sqrt(np.diag(cov_sub.values))
-                corr.values[:] = cov_sub.values / np.outer(std, std)
+                # v399: 显式构造 DataFrame 避 numpy read-only 错误
+                # corr.values[:] = ... 在某些 numpy 版本 .values 返回只读视图
+                _corr_vals = cov_sub.values / np.outer(std, std)
+                corr = pd.DataFrame(_corr_vals, index=cov_sub.index, columns=cov_sub.columns)
                 # 剔除高相关低alpha票 (ρ > 0.7, 来源: WorldQuant 冗余阈值)
                 dropped = set()
                 for i, s1 in enumerate(_common):
@@ -685,8 +751,11 @@ class PortfolioConstructor:
 
     def _equal_weight_greedy(
         self, alpha: pd.Series, prices: pd.Series, capital: float,
+        max_lots_per_stock: int = 999,
     ) -> TargetPortfolio:
-        """贪心等权: 每轮给得分最高的未满仓股票加 1 手。"""
+        """贪心等权: 每轮给得分最高的未满仓股票加 1 手。
+        v401: max_lots_per_stock — regime 手数限制 (牛=不限, 震荡/熊=有限制)。
+        """
         n_stocks = min(self.max_positions, len(alpha))
         if n_stocks == 0:
             return TargetPortfolio(pd.Series(dtype=int), capital, "equal_weight", 0.0)
@@ -694,6 +763,7 @@ class PortfolioConstructor:
         cash = capital
         symbol_order = list(alpha.index[:n_stocks])
         max_lots_per = max(1, int(capital / (n_stocks * prices.loc[alpha.index[:n_stocks]].mean() * LOT_SIZE)) + 1)
+        max_lots_per = min(max_lots_per, max_lots_per_stock)  # v401: regime cap
         for _ in range(max_lots_per):
             for sym in symbol_order:
                 cost = prices[sym] * LOT_SIZE
@@ -713,8 +783,11 @@ class PortfolioConstructor:
 
     def _score_weighted_rounding(
         self, alpha: pd.Series, prices: pd.Series, capital: float,
+        max_lots_per_stock: int = 999,
     ) -> TargetPortfolio:
-        """得分倾斜 + 整数舍入。"""
+        """得分倾斜 + 整数舍入。
+        v401: max_lots_per_stock — regime 手数限制 (牛=不限, 震荡/熊=有限制)。
+        """
         n_stocks = min(self.max_positions, len(alpha))
         top = alpha.iloc[:n_stocks]
         p = prices.loc[top.index]
@@ -728,6 +801,7 @@ class PortfolioConstructor:
         for i, sym in enumerate(top.index):
             alloc = capital * weights[i]
             n_lots = int(alloc / (p[sym] * LOT_SIZE))
+            n_lots = min(n_lots, max_lots_per_stock)  # v401: regime cap
             if n_lots > 0:
                 cost = n_lots * p[sym] * LOT_SIZE
                 if cost <= cash:

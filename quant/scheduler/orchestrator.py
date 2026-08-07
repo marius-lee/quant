@@ -103,8 +103,19 @@ def _run():
         try:
             fn(task_today)
             elapsed = _time.time() - t0
-            _log.info(f"[SCHEDULER] {task_today} | TASK={name} | STATUS=OK | elapsed={elapsed:.1f}s")
-            _m.inc(f"scheduler.{name}.ok")
+            # test-v400: 回读 task_runs 确认真实状态, 不看异常
+            # (execute._run 在 no-signals 分支 early-return 不抛异常,
+            #  但 finally 写 status=failed → orchestrator 之前误报 OK)
+            _db_status = _get_today_status(task_today).get(name)
+            if _db_status == "ok":
+                _log.info(f"[SCHEDULER] {task_today} | TASK={name} | STATUS=OK | elapsed={elapsed:.1f}s")
+                _m.inc(f"scheduler.{name}.ok")
+            elif _db_status == "failed":
+                _log.error(f"[SCHEDULER] {task_today} | TASK={name} | STATUS=FAILED (DB) | elapsed={elapsed:.1f}s")
+            elif _db_status == "aborted":
+                _log.warning(f"[SCHEDULER] {task_today} | TASK={name} | STATUS=ABORTED (DB) | elapsed={elapsed:.1f}s")
+            else:
+                _log.info(f"[SCHEDULER] {task_today} | TASK={name} | STATUS={_db_status} | elapsed={elapsed:.1f}s")
         except Exception as e:
             elapsed = _time.time() - t0
             _log.error(f"[SCHEDULER] {task_today} | TASK={name} | STATUS=FAILED | elapsed={elapsed:.1f}s | error={e}")
@@ -162,11 +173,14 @@ def _run():
                     _run_task("execute", _execute_run, today)
 
         # ═══════════════════════════════════════════
-        # 2.5 09:30 — 开盘30分钟价格快照 (test-v324: 日内反转因子数据)
+        # 2.5 10:00 — 开盘30分钟价格快照 (test-v402: 09:30→10:00 修正)
+        # 原 v324 在 09:30 触发，实际拉到的是开盘价而非开盘30分钟后价格，
+        # 导致 intraday_reversal 因子退化为隔夜缺口因子。
+        # 详见 HANDOFF.md §test-v402.
         # ═══════════════════════════════════════════
         s = status.get("snapshot_open")
         if s not in ("ok", "failed") and _retry_ok("snapshot_open"):
-            if hhmm >= time(9, 30) and "execute" in status:
+            if hhmm >= time(10, 0) and "execute" in status:
                 from quant.scheduler.snapshot import snapshot_open
                 _run_task("snapshot_open", snapshot_open, today)
 

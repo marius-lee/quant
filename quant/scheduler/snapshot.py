@@ -1,6 +1,8 @@
-"""开盘30分钟价格快照 (test-v324).
+"""开盘30分钟价格快照 (test-v324, 修正于 test-v402).
 
-每日 09:30 执行, 快照所有A股的实时价, 供 intraday_reversal 因子使用.
+每日 10:00 执行, 快照所有A股的开盘30分钟后实时价, 供 intraday_reversal 因子使用.
+test-v402: 触发时间从 09:30 修正为 10:00 — 09:30 拉到的是开盘价,
+不是开盘30分钟后的价格, 导致因子退化为隔夜缺口因子.
 60天积累后激活日内反转因子 (IC_IR≈0.8+, A股最强因子之一).
 
 数据源: 腾讯财经实时行情 (qt.gtimg.cn), 批量拉取.
@@ -32,7 +34,8 @@ def _symbol_to_tencent(s: str) -> str:
 
 
 def _fetch_batch(batch: list[str]) -> dict[str, dict]:
-    """批量拉取实时价格+成交量. 返回 {symbol: {price, volume}}."""
+    """批量拉取实时价格+成交量+昨收. 返回 {symbol: {price, volume, prev_close}}.
+    v402: 新增 prev_close (fields[4]) — intraday_reversal 因子需要."""
     codes = ",".join(_symbol_to_tencent(s) for s in batch)
     req = urllib.request.Request(_TENCENT_URL + codes, headers=_TENCENT_HEADERS)
     try:
@@ -53,10 +56,11 @@ def _fetch_batch(batch: list[str]) -> dict[str, dict]:
         try:
             price = float(fields[3]) if fields[3] else 0
             volume = int(float(fields[6])) if len(fields) > 6 and fields[6] else 0
+            prev_close = float(fields[4]) if len(fields) > 4 and fields[4] else 0
             if price <= 0:
                 continue
             symbol = m.group(1)[2:]
-            results[symbol] = {"price": round(price, 2), "volume": volume}
+            results[symbol] = {"price": round(price, 2), "volume": volume, "prev_close": round(prev_close, 2)}
         except (ValueError, IndexError):
             continue
     return results
@@ -128,9 +132,9 @@ def _snapshot(today: str = None, mode: str = "open"):
             try:
                 if mode == "open":
                     conn.execute(
-                        "INSERT OR REPLACE INTO intraday_snapshot(symbol, date, open_30min, open_30min_vol) "
-                        "VALUES (?, ?, ?, ?)",
-                        (sym, today, data["price"], data["volume"]))
+                        "INSERT OR REPLACE INTO intraday_snapshot(symbol, date, open_30min, open_30min_vol, prev_close) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (sym, today, data["price"], data["volume"], data["prev_close"]))
                 else:
                     conn.execute(
                         "UPDATE intraday_snapshot SET close_5min=?, close_5min_vol=? "

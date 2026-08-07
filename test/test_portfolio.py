@@ -28,13 +28,13 @@ class TestPortfolioConstructorGreedy:
         assert pf.invested == 20 * 100
 
     def test_capital_too_small_for_any_stock(self):
-        """资本 100, 股价 50 → 1手需5000 > 100 → 空持仓, 保留现金 (v380: 不抛异常)."""
+        """资本 100, 股价 50 → 1手需5000 > 100 → 抛 ValueError (v399: 恢复 ADR-032 反模式 #4)."""
         pc = PortfolioConstructor({"max_positions": 20, "max_single_position": 0.05})
         alpha = pd.Series([1.0, 0.5], index=["000001", "000002"])
         prices = pd.Series([50.0, 60.0], index=["000001", "000002"])
-        pf = pc.construct(alpha, prices, 100)
-        assert pf.positions == 0
-        assert pf.cash_reserve == 100
+        import pytest
+        with pytest.raises(ValueError, match="rank_concentrated produced 0 lots"):
+            pc.construct(alpha, prices, 100)
 
     def test_multiple_stocks_one_cycle(self):
         """资本够买 2 只低价股各 1 手."""
@@ -426,3 +426,71 @@ class TestHRP:
         prices = pd.Series([10.0 + i for i in range(8)], index=alpha.index)
         with pytest.raises(ValueError, match="requires covariance"):
             pc.construct(alpha, prices, 200000)
+
+
+class TestMicroRegimeLotCaps:
+    """v401: Micro 层 regime lot cap — 统一 Nano/Micro 为 lot-based."""
+
+    def _pc_micro(self):
+        return PortfolioConstructor({
+            "max_positions": 5, "max_single_position": 0.30,
+            "nano_cap": 5000, "micro_cap": 50000,
+        })
+
+    def test_micro_sideways_cap_limits_concentration(self):
+        """震荡市 max_lots=5: 2 只等权股, 每只最多分配 5 手."""
+        pc = self._pc_micro()
+        alpha = pd.Series([1.0, 1.0], index=["A", "B"])
+        prices = pd.Series([10.0, 10.0], index=["A", "B"])
+        pf = pc.construct(alpha, prices, 10000, regime_label="sideways")
+        assert pf.method == "score_weighted"
+        assert pf.positions == 2
+        assert pf.lots["A"] == 5
+        assert pf.lots["B"] == 5
+
+    def test_micro_bear_cap_limits_concentration(self):
+        """熊市 max_lots=2: 2 只等权股, 每只最多 2 手, 剩余现金保留."""
+        pc = self._pc_micro()
+        alpha = pd.Series([1.0, 1.0], index=["A", "B"])
+        prices = pd.Series([10.0, 10.0], index=["A", "B"])
+        pf = pc.construct(alpha, prices, 10000, regime_label="bear")
+        assert pf.method == "score_weighted"
+        assert pf.positions == 2
+        assert pf.lots["A"] == 2
+        assert pf.lots["B"] == 2
+        assert pf.invested == 4000
+
+    def test_micro_bull_no_cap(self):
+        """牛市 max_lots=999: 无限制, 相当于普通 score_weighted."""
+        pc = self._pc_micro()
+        alpha = pd.Series([1.0, 0.9], index=["A", "B"])
+        prices = pd.Series([5.0, 5.0], index=["A", "B"])
+        pf = pc.construct(alpha, prices, 5000, regime_label="bull")
+        assert pf.method == "score_weighted"
+        assert pf.positions >= 1
+
+    def test_micro_unknown_regime_no_cap(self):
+        """未知 regime → max_lots=999 (不限)."""
+        pc = self._pc_micro()
+        alpha = pd.Series([1.0, 1.0], index=["A", "B"])
+        prices = pd.Series([10.0, 10.0], index=["A", "B"])
+        pf = pc.construct(alpha, prices, 10000, regime_label="unknown")
+        assert pf.method == "score_weighted"
+        assert pf.positions == 2
+
+    def test_micro_none_regime_no_cap(self):
+        """regime_label=None → max_lots=999 (向后兼容)."""
+        pc = self._pc_micro()
+        alpha = pd.Series([1.0, 1.0], index=["A", "B"])
+        prices = pd.Series([10.0, 10.0], index=["A", "B"])
+        pf = pc.construct(alpha, prices, 10000, regime_label=None)
+        assert pf.method == "score_weighted"
+        assert pf.positions == 2
+
+    def test_micro_greedy_fallback_respects_cap(self):
+        """Micro fallback (equal_weight_greedy) 也遵循 regime cap."""
+        pc = self._pc_micro()
+        alpha = pd.Series([1.0, 0.9], index=["A", "B"])
+        prices = pd.Series([2000.0, 2000.0], index=["A", "B"])
+        with pytest.raises(ValueError, match="greedy produced 0 lots"):
+            pc.construct(alpha, prices, 10000, regime_label="sideways")

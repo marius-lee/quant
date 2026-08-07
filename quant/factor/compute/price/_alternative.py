@@ -645,6 +645,169 @@ def compute_fund_flow_3m(data, date, window=60, aux=None):
     return _cs_zscore(result).rename("fund_flow_3m")
 
 
+# ═══════════════════════════════════════════════════════════
+# test-v402: P1 缺失因子实现 — 5 个 evaluating 因子补 compute 函数
+# ═══════════════════════════════════════════════════════════
+
+def compute_abn_turnover_resid(data, date, window=20, aux=None):
+    """异常换手率残差: turnover − cross-sectional median(turnover).
+
+    与 abn_turnover 的区别: abn_turnover 用滚动均值和标准差,
+    残差版用截面中位数差分, 对极端值更稳健。
+    来源: 华泰金工(2022)《换手率类因子全解析》。
+    IC预估: −5%~−7% (低残差换手→高分)。
+    """
+    close = data["close"] if isinstance(data.columns, pd.MultiIndex) else data
+    volume = data["volume"] if isinstance(data.columns, pd.MultiIndex) and "volume" in data.columns.get_level_values(0) else None
+    if volume is None or close is None or close.empty:
+        return None
+    if date not in volume.index:
+        return None
+    idx = volume.index.get_loc(date)
+    start = max(0, idx - window + 1)
+    avg_vol = volume.iloc[start:idx + 1].mean()
+    if hasattr(close, 'columns') and not isinstance(close.columns, pd.MultiIndex):
+        pass
+    # 计算换手率代理: 成交量/流通市值 (简化: 用成交量替代)
+    # 截面残差: volume_i − median(volume)
+    latest_vol = volume.iloc[idx]
+    if latest_vol.sum() == 0:
+        return None
+    median_vol = latest_vol.median()
+    resid = latest_vol - median_vol
+    result = -resid  # 低残差→高分
+    result = result.replace([np.inf, -np.inf], np.nan)
+    return _cs_zscore(result).rename("abn_turnover_resid")
+
+
+def compute_overnight_gap_ratio(data, date, window=5):
+    """隔夜跳空比率: avg((open − prev_close)/prev_close, N日).
+
+    衡量隔夜跳空方向的持续性。
+    来源: 华安证券(2020)《昼夜分离因子》。
+    窗口默认 5 日 (周频调仓)。
+    """
+    if not isinstance(data.columns, pd.MultiIndex):
+        return None
+    opn = data["open"] if "open" in data.columns.get_level_values(0) else None
+    close = data["close"]
+    if opn is None or close is None or close.empty:
+        return None
+    if date not in close.index:
+        return None
+    idx = close.index.get_loc(date)
+    start = max(0, idx - window + 1)
+    gaps = []
+    for i in range(start, idx + 1):
+        if i == 0:
+            continue
+        prev_c = close.iloc[i - 1]
+        cur_o = opn.iloc[i]
+        g = (cur_o - prev_c) / prev_c.replace(0, np.nan)
+        gaps.append(g)
+    if not gaps:
+        return None
+    avg_gap = pd.concat(gaps, axis=1).mean(axis=1) if len(gaps) > 1 else gaps[0]
+    result = avg_gap  # 正向: 持续高开→高分
+    result = result.replace([np.inf, -np.inf], np.nan)
+    return _cs_zscore(result).rename("overnight_gap_ratio")
+
+
+def compute_price_channel_position(data, date, window=20):
+    """价格通道位置: (close − lowest_N) / (highest_N − lowest_N).
+
+    Donchian Channel 位置指标。
+    接近通道顶→可能超买, 接近通道底→可能超卖。
+    取负: 低位→高分 (均值回复逻辑)。
+    来源: Donchian (1960); WorldQuant 101 Alphas. IC预估: −4%~−6%。
+    """
+    if not isinstance(data.columns, pd.MultiIndex):
+        return None
+    close = data["close"]
+    high = data["high"] if "high" in data.columns.get_level_values(0) else None
+    low = data["low"] if "low" in data.columns.get_level_values(0) else None
+    if close is None or high is None or low is None:
+        return None
+    if date not in close.index:
+        return None
+    idx = close.index.get_loc(date)
+    start = max(0, idx - window + 1)
+    hh = high.iloc[start:idx + 1].max()
+    ll = low.iloc[start:idx + 1].min()
+    cc = close.iloc[idx]
+    rng = hh - ll
+    position = (cc - ll) / rng.replace(0, np.nan)
+    result = -position  # 低位→高分 (均值回复)
+    result = result.replace([np.inf, -np.inf], np.nan)
+    return _cs_zscore(result).rename("price_channel_position")
+
+
+def compute_qlib_vema(data, date, window=20):
+    """量权EMA: EMA(close × volume) / EMA(volume) − close.
+
+    Qlib 风格量价背离因子。量权均价偏离收盘价 → 量价分歧。
+    正偏离 → 收盘价低于量权均价 → 可能低估。
+    来源: Microsoft Qlib (2020); WorldQuant Alpha#2 变体。
+    IC预估: +3%~+5% (正偏离→高分)。
+    """
+    if not isinstance(data.columns, pd.MultiIndex):
+        return None
+    close = data["close"]
+    volume = data["volume"] if "volume" in data.columns.get_level_values(0) else None
+    if close is None or volume is None or close.empty:
+        return None
+    if date not in close.index:
+        return None
+    idx = close.index.get_loc(date)
+    start = max(0, idx - window + 1)
+    close_win = close.iloc[start:idx + 1]
+    vol_win = volume.iloc[start:idx + 1]
+    # EMA with span=window
+    span = window
+    cv = close_win * vol_win
+    ema_cv = cv.ewm(span=span, adjust=False).mean().iloc[-1]
+    ema_v = vol_win.ewm(span=span, adjust=False).mean().iloc[-1]
+    vema = ema_cv / ema_v.replace(0, np.nan)
+    result = vema - close_win.iloc[-1]  # 量权均价 − 收盘价
+    result = result.replace([np.inf, -np.inf], np.nan)
+    return _cs_zscore(result).rename("qlib_vema")
+
+
+def compute_wq_alpha_006(data, date, window=10):
+    """WorldQuant Alpha#006: −correlation(open, volume, 10).
+
+    开盘价与成交量的负相关。
+    高相关性→价量同步→趋势确认, 负相关性→价量背离→反转信号。
+    Alpha#006 原文: −1 * correlation(open, volume, 10)。
+    来源: WorldQuant (2015) 101 Formulaic Alphas.
+    IC预估: −3%~−5% (负相关→高分, 反转逻辑)。
+    """
+    if not isinstance(data.columns, pd.MultiIndex):
+        return None
+    opn = data["open"] if "open" in data.columns.get_level_values(0) else None
+    volume = data["volume"] if "volume" in data.columns.get_level_values(0) else None
+    if opn is None or volume is None or opn.empty:
+        return None
+    if date not in opn.index:
+        return None
+    idx = opn.index.get_loc(date)
+    start = max(0, idx - window + 1)
+    opn_win = opn.iloc[start:idx + 1]
+    vol_win = volume.iloc[start:idx + 1]
+    # Rolling correlation per symbol
+    corr = {}
+    for sym in opn_win.columns:
+        o = opn_win[sym].dropna()
+        v = vol_win[sym].dropna()
+        common = o.index.intersection(v.index)
+        if len(common) >= max(window // 2, 3):
+            corr[sym] = -o.loc[common].corr(v.loc[common])
+    if not corr:
+        return None
+    result = pd.Series(corr, dtype=float)
+    result = result.replace([np.inf, -np.inf], np.nan)
+    return _cs_zscore(result).rename("wq_alpha_006")
+
 
 # ═══════════════════════════════════════════════════════════
 # Factor registration map

@@ -2,6 +2,230 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+## 当前状态 (test-v404, 2026-08-06)
+
+### factor_cache 物化全链路 Bug 修复 (6 项)
+
+**背景**: 全量审计物化流程发现 6 个 Bug, 导致新因子无法入库、旧因子残留、
+代码变更不触发重算、文件清理不彻底。
+
+**Bug 1 (P0) — `is_materialized` 用错检查函数**:
+- 调 `_date_has_data()` (只看文件是否存在) 而非 `_date_has_all_factors()` (检查因子完整)
+- → 新因子注册后, 旧缓存文件被误判为"已物化", materialize 全跳过
+- 修复: L663 `_date_has_data` → `_date_has_all_factors`
+
+**Bug 2 (P1) — Chunk 跳过也只检查文件存在**:
+- materialize L201-213 快速跳过逻辑只检查 `os.path.exists`, 不看因子完整性
+- → Bug 1 修复后 is_materialized 放行, 但 chunk skip 仍拦住
+- 修复: 改为抽查首尾日期 `_date_has_all_factors()`
+
+**Bug 3 (P1) — 旧因子缓存残留, merge 不 prune**:
+- `_write_chunk_rows` 合并新旧行时只加不删, 已 archived 因子行永久残留
+- → 3 个 archived 因子 (alpha012_vol_dir/ideal_amplitude/limit_touch_no_seal) 残留在缓存
+- 修复: 合并时过滤 `factor_names` 外的因子行
+
+**Bug 4 (P1) — manifest source_hash 变更不触发重算**:
+- `_get_existing_factors` source_hash 不匹配时只 log, 仍返回旧 factors → missing=[] → 不重算
+- → 因子代码修复后缓存值永久过时
+- 修复: source_hash 不匹配 → return `set()` → 触发重算
+
+**Bug 5 (P2) — trim 不清理 manifest**:
+- `trim_to_max_days` 只删 CSV, 不删 `.manifest.json`
+- → 孤立的 manifest 文件堆积
+- 修复: 删除 CSV 时同步 `os.remove(manifest_path)`
+
+**Bug 6 (P2) — merge 旧值优先, 新值被丢弃**:
+- 旧逻辑 `if line not in existing_set: existing_lines.append(line)`
+- → 同 (symbol, factor) 的旧值保留, 新值丢弃 (因子代码修复后缓存不更新)
+- 修复: 改为 dict[(symbol,factor)] → 新值覆盖旧值
+
+### 关键指标
+- 因子: 100 注册 (0 active, 24 evaluating, 14 probation, 62 archived)
+- _PRICE_FN_MAP: 72 条目
+- Web: VERSION=test-v405
+
+### 需要重跑物化
+lhb_detail 修复 + limit_up/lhb 纳入晚间链后, 需重跑物化验证 lhb_reversal_5d:
+```bash
+PYTHONPATH=. .venv/bin/python3 -c "
+from quant.scheduler.factor_cache import _run
+_run('2026-08-05', '2026-08-05')
+"
+```
+_run('2026-08-05', '2026-08-05')
+"
+```
+
+---
+
+## 当前状态 (test-v403, 2026-08-06)
+
+### 数据完整性修复 — 因子注册 + 缺失实现 + prev_close 填充
+
+**背景**: 全量数据审计发现 9 个因子存在注册/实现/数据源问题:
+- 4 个在 `_PRICE_FN_MAP` 但未注册到 `factor_registry` (intraday_reversal/open_volume_ratio/
+  close_surge/alpha033_gap) → pipeline 永远不加载它们
+- 5 个在 `factor_registry` 注册为 evaluating 但 `_PRICE_FN_MAP` 无对应 compute 函数
+  (abn_turnover_resid/overnight_gap_ratio/price_channel_position/qlib_vema/wq_alpha_006)
+  → factor_cache 物化时跳过
+- intraday_snapshot.prev_close 列永不为0 → intraday_reversal 即使注册也静默失败
+
+**修改 1 — intraday_snapshot.prev_close 填充 (P0)**:
+- `snapshot.py`: `_fetch_batch` 新增 prev_close 字段 (腾讯 fields[4]=昨收)
+- `snapshot.py`: INSERT 语句新增 prev_close 列
+
+**修改 2 — 注册 4 个未注册因子 (P0)**:
+- `factor_registry`: intraday_reversal/open_volume_ratio/close_surge/alpha033_gap
+  → 注册为 evaluating (等60天快照积累后评估)
+
+**修改 3 — 实现 5 个缺失 compute 函数 (P1)**:
+- `_alternative.py`: 新增 5 个函数:
+  - `compute_abn_turnover_resid`: 换手率截面残差 (华泰2022)
+  - `compute_overnight_gap_ratio`: 隔夜跳空比率 (华安2020)
+  - `compute_price_channel_position`: Donchian价格通道位置 (Donchian 1960)
+  - `compute_qlib_vema`: 量权EMA偏离 (Qlib 2020)
+  - `compute_wq_alpha_006`: WorldQuant Alpha#6 价量相关 (WorldQuant 2015)
+- `price/__init__.py`: import + `_PRICE_FN_MAP` 条目
+
+**数据回填命令 (P1: limit_up_pool + factor_cache)**:
+```bash
+# limit_up_pool 回填 7/9 至今
+PYTHONPATH=. .venv/bin/python3 quant/data/limit_up.py 2026-07-09 2026-08-06
+
+# factor_cache 重物化 (含新注册的 9 个因子)
+PYTHONPATH=. .venv/bin/python3 -c "
+from quant.scheduler.factor_cache import _run
+_run('2026-08-05', '2026-08-05')
+"
+```
+
+### 已知待处理
+- `lhb_reversal_5d` (probation) 7/31 后从缓存消失 — 等晚间链重物化后观察
+- 3 个 archived 因子 (alpha012_vol_dir/ideal_amplitude/limit_touch_no_seal) 缓存残留
+  — P2, 需增加物化清理步骤
+- 0 active 因子 — 需推进评估管线 (evaluating→probation→active)
+
+### 关键指标
+- 因子: 100 注册 (0 active, 24 evaluating, 14 probation, 62 archived)
+- _PRICE_FN_MAP: 72 条目 (新增 5)
+- Web: VERSION=test-v403
+
+---
+
+## 当前状态 (test-v402, 2026-08-06)
+
+### snapshot_open 触发时间 09:30→10:00 修正
+
+**问题**: snapshot_open 在 09:30 执行, 拉取腾讯实时行情写入 `open_30min` 列。
+但 09:30 市场刚开盘, 实际拉到的是开盘价, 不是"开盘30分钟后"的价格。
+`intraday_reversal` 因子公式 `-(open_30min/prev_close - 1)` 因此退化为隔夜缺口因子,
+缺少 30 分钟价格发现过程, 经济含义偏差。
+
+**修改**:
+- `orchestrator.py`: 触发条件 `hhmm >= time(9, 30)` → `time(10, 0)`
+- `status.py`: 注册描述 `09:30 (execute后)` → `10:00 (execute后)`
+- `snapshot.py`: 模块 docstring 更新
+
+**尾盘快照 14:55 确认正确**:
+A股 14:57 进入收盘集合竞价, 14:55 是连续竞价最后一笔有效成交价。
+`close_surge` 因子计算 `-(收盘价 - 14:55价)/全天振幅` 衡量尾盘异动,
+这是 AQR/WorldQuant 标准做法, 时点选择正确。
+
+### 关键指标
+- 因子: 96 注册 (0 active, 20 evaluating, 14 probation, 62 archived)
+- Web: VERSION=test-v402
+
+---
+
+## 当前状态 (test-v401, 2026-08-06)
+
+### Micro 层 regime sizing 统一为 lot-based cap (Critical)
+
+**背景**: test-v400 将 Nano 层 regime sizing 从 capital-based 改为 lot-based，但 Micro 层
+仍保留 `_apply_regime_sizing()` (capital × multiplier) + fallback 绕过 →
+前后不一致: 同一 sideways 市场中, Nano 层限制每只 1 手, Micro 层因 fallback
+可能完全不限手数。
+
+**修改 — Micro 层统一为 lot-based (方案 A 的完成态)**:
+- `config.yaml`: 新增 `optimizer.micro.regime_max_lots: {bull: 999, sideways: 5, bear: 2}`
+- `portfolio.py`: 废弃 `_get_nano_regime_max_lots()`, 统一为 `_get_regime_max_lots(tier, regime_label)`
+- `portfolio.py`: Micro 层 `construct()` 从 capital×regime 改为 `max_lots_per_stock` 手数上限
+- `portfolio.py`: `_score_weighted_rounding()` 新增 `max_lots_per_stock` 参数, 计算后 `min(n_lots, cap)`
+- `portfolio.py`: `_equal_weight_greedy()` 新增 `max_lots_per_stock` 参数, `max_lots_per = min(..., cap)`
+- `portfolio.py`: Micro fallback 加 try/except ValueError — 防御 greedy 0-lots crash
+- `portfolio.py`: `_apply_regime_sizing()` 保留函数体标记废弃, 供回测兼容
+- `test_portfolio.py`: 新增 `TestMicroRegimeLotCaps` (6 个测试): 震荡5手/熊市2手/牛市不限/
+  unknown不限/None不限/greedy fallback 防御
+
+**三层 regime 策略对比 (最终态)**:
+
+| Tier | regime 策略 | 配置来源 |
+|------|-----------|---------|
+| Nano | 每只股票最多 N 手, 不缩资本 | `optimizer.nano.regime_max_lots` |
+| Micro | 每只股票最多 N 手, 不缩资本 | `optimizer.micro.regime_max_lots` |
+| Small | Kelly fraction × regime | `_regime_kelly_fraction()` (v397) |
+
+**决策依据**: Nano/Micro 层瓶颈是离散约束 (1手=100股), capital scaling
+在资金低于 1手成本时直接空仓 → lot cap 是唯一可持续方案。
+Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
+
+**测试**: 全量 227 passed, 新增 6 测试全绿。
+
+### orchestrator `_run_task` 回读 DB 确认状态 (方案 D)
+
+**背景**: `execute._run` 在 no-signals 分支 early-return (不抛异常), finally 写 status=failed,
+但 orchestrator `_run_task` 只看异常 → 日志 STATUS=OK, 实际 DB failed, 前后不一致。
+
+**修改**: `_run_task` 在 `fn()` 正常返回后回读 `task_runs` 表确认真实状态:
+- DB="ok" → STATUS=OK
+- DB="failed" → STATUS=FAILED (DB)
+- DB="aborted" → STATUS=ABORTED (DB)
+- 异常仍然走原 STATUS=FAILED 路径。
+
+---
+
+## 当前状态 (test-v400, 2026-08-06)
+
+### regime sizing 挪入 construct() 内部 + 0-target 持久化 (Critical)
+
+**背景**: 2026-08-04~06 连续 3 天 execute 任务报"今日失败"(error=no signals)。
+根因链: HMM regime=sideways → v309 外部缩资 ¥5K×0.6=¥3K → ¥3K < nano_cap(¥10K)
+→ nano tier → cheapest_lot≈¥3K+ → 买不起任何1手 → ValueError 被 v380 静默吞掉
+→ 0 positions → save_signals 跳过 (guard: `if targets`) → daily_signals 仍是3天前数据
+→ execute 读到的 date≠today → targets=[] → "no signals".
+
+**修改 1 — regime sizing 挪入 construct() (方案 A)**:
+- `pipeline.py`: 删除 `_sizing_capital` 外部缩资, 传原始 `total_capital` 进 `construct()`
+- `portfolio.py`: `construct()` 按 tier 分别处理 regime:
+  - Nano: 不缩资本, 改为限制每只股票手数 (`max_lots_per_stock`, config: `optimizer.nano.regime_max_lots`)。震荡/熊市→1手, 牛市→999(不限)
+  - Micro: 调整分配资本上限 (`_apply_regime_sizing()`), 不改变 tier 判定
+  - Small: 已有 `_regime_kelly_fraction()` (v397 Problem 7)
+- `portfolio.py`: Nano 层 ValueError 恢复 re-raise (修复 v380 违反 ADR-032 反模式 #4)
+- `config.yaml`: 新增 `optimizer.nano.regime_max_lots: {bull: 999, sideways: 1, bear: 1}`
+- 新增辅助函数: `_get_nano_regime_max_lots()`, `_apply_regime_sizing()`
+
+**修改 2 — 0-target 也写 daily_signals (方案 B)**:
+- `pipeline.py`: `if targets and not suppress_push` → `if not suppress_push`, 写 `targets or []`
+- 0-target 日写空数组 `[]`, execute 读到的 date=today, targets=[], 不会回退到3天前数据
+
+**历史追溯**:
+| 版本 | 日期 | 变更 | 影响 |
+|------|------|------|------|
+| ADR-032 | 07-15 | 三层资本分段, 反模式 #4: 0仓位必须暴露 | 基线 |
+| v181 | 07-21 | `_rank_concentrated` 引入 | — |
+| v309 | 07-31 | `get_regime_sizing()` sideways×0.6 外部缩资 | **引入 capital×regime 交互** |
+| v380 | 08-03 | Nano ValueError 从 re-raise 改为静默吞掉 | **违反 ADR-032 反模式 #4** |
+| v397 | 08-04 | nano_cap ¥30K→¥10K | 意图让¥5K可交易 |
+| v398 | 08-04 | save_signals 加 `and not suppress_push` | — |
+| v400 | 08-06 | **本次修复** | — |
+
+### 关键指标
+- 因子: 96 注册 (0 active, 20 evaluating, 14 probation, 62 archived)
+- 数据: 2019-2026 日线 + daily_valuation 678万行
+- Web: VERSION=test-v400
+
+---
+
 ## 当前状态 (test-v399, 2026-08-05)
 
 ### factor_snapshot 缓存失效修复

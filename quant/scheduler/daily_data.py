@@ -87,6 +87,24 @@ def _run(today: str):
     except Exception:
         _log.warning(f"[{today}] freshness check failed: {traceback.format_exc()}")
 
+    # ── limit_up_pool (涨停池) ──
+    # test-v404: 此前未纳入晚间链, 依赖手动 daily_sync.py, 7/9-7/16 永久缺失
+    try:
+        from quant.data.limit_up import sync_date as _lu_sync
+        _lu_n = _lu_sync(today)
+        _log.info(f"[{today}] limit_up sync: {_lu_n} rows")
+    except Exception:
+        _log.warning(f"[{today}] limit_up sync failed: {traceback.format_exc()}")
+
+    # ── lhb_detail (龙虎榜) ──
+    # test-v404: 此前未纳入晚间链, lhb_reversal_5d 因子因 post_5d 缺失而静默失败
+    try:
+        from quant.data.lhb import sync_date as _lhb_sync_date
+        _lhb_n = _lhb_sync_date(today)
+        _log.info(f"[{today}] lhb sync: {_lhb_n} rows")
+    except Exception:
+        _log.warning(f"[{today}] lhb sync failed: {traceback.format_exc()}")
+
     status = "ok"
     summary = {"rows": n, "elapsed": round(elapsed, 1)}
     _log.info(f"[SCHEDULER] {today} | TASK=daily_data | STATUS=OK | "

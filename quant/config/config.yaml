@@ -325,6 +325,16 @@ optimizer:
   rebalance_weekday: 0
   nano_cap: 10000
   micro_cap: 100000
+  nano:
+    regime_max_lots:
+      bull: 999          # 牛市无限制 — 来源: v399 regime sizing 挪入 construct
+      sideways: 1        # 震荡市每只股票最多1手 — 来源: v400 防¥5K空仓
+      bear: 1            # 熊市每只股票最多1手 — 来源: v400 防¥5K空仓
+  micro:
+    regime_max_lots:
+      bull: 999          # 牛市无限制 — 来源: v401 Micro 统一为 lot-based
+      sideways: 5        # 震荡市每只股票最多5手 — 来源: v401 ¥50K 侧 ~47%/只
+      bear: 2            # 熊市每只股票最多2手 — 来源: v401 ¥50K 侧 ~19%/只
   kelly_fraction: 0.5
   tc_lambda: 1.0
   tc_horizon_days: 5

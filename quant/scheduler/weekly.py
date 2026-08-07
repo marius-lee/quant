@@ -100,8 +100,9 @@ def _run(today: str):
             ))
 
         # Phase 5b: 状态同步 → factor_registry (依赖 Phase 2-4)
+        p5_ok = False
         if p2_ok:
-            _run_phase("eval_phase5", today, lambda: (
+            p5_ok = _run_phase("eval_phase5", today, lambda: (
                 __import__('quant.evaluation.phase5_monitor', fromlist=['sync_factor_status'])
                 .sync_factor_status()
             ))
@@ -132,13 +133,17 @@ def _run(today: str):
         _log.info(f"[{today}] IC decay check: {len(decay)} factors OK (retention >= 30%)")
 
     elapsed = _time.time() - t0
-    phases_ok = sum([curation_ok, p1_ok, p2_ok, p3_ok, p4_ok])
+    # v420: 收紧 ok 判定 — 任一阶段失败不得标 ok.
+    # 重启补跑门控 (_base._weekly_loop) 仅 'ok' 不重跑, 失败必须留 failed
+    # 才能让当天重跑补救 (如 phase5 状态裁决失败 → 重启后自动重试).
+    phases_ok = sum([curation_ok, p1_ok, p2_ok, p3_ok, p4_ok, p5_ok])
+    ok = phases_ok == 6
     _log.info(f"[{today}] weekly evaluation done: {phases_ok}/6 phases OK, {n_factors} factors, "
               f"{len(decaying)} decay alerts ({elapsed:.1f}s)")
-    _tk_finish("weekly_eval", today, "ok" if phases_ok >= 5 else "failed",
+    _tk_finish("weekly_eval", today, "ok" if ok else "failed",
                summary={"phases_ok": phases_ok, "factors": n_factors,
                         "decay_alerts": len(decaying), "elapsed": round(elapsed, 1)})
-    _log.info(f"[SCHEDULER] {today} | TASK=weekly_eval | STATUS={'OK' if phases_ok >= 5 else 'FAILED'} | "
+    _log.info(f"[SCHEDULER] {today} | TASK=weekly_eval | STATUS={'OK' if ok else 'FAILED'} | "
               f"phases={phases_ok}/6 factors={n_factors} | elapsed={elapsed:.1f}s")
     _m.inc("scheduler.weekly.ok")
 

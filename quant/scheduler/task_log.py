@@ -180,6 +180,27 @@ def query_date(date: str) -> list[dict]:
         conn.close()
 
 
+def last_status(task_name: str, date: str) -> str | None:
+    """v420: 读该任务当日最后一条状态 (ok/failed/aborted/running), 无记录 → None.
+
+    用途: _weekly_loop 重启补跑门控 — 重试语义以 DB 为准:
+        'ok'      → 当日已完成, 不重跑 (防止随重启重复执行整周评估)
+        'failed'  → 当日失败, 允许重跑 (修复部署后仍需补救验证)
+        'aborted' → 超时中断, 允许重跑
+        None      → 当日未跑过, 正常触发
+    """
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT status FROM task_runs WHERE task_name=? AND date=? "
+            "ORDER BY id DESC LIMIT 1",
+            (task_name, date)
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
 # ═══════════════════════════════════════════════════════════
 # P1a: 任务装饰器 — 消除 start/try/finish 样板代码
 # ═══════════════════════════════════════════════════════════

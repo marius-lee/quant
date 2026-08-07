@@ -2,6 +2,25 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+## 当前状态 (test-v420, 2026-08-08)
+
+### v420: 周末评估重启补跑门控 — 「失败重试」语义闭环 (2026-08-08)
+
+**背景**: 08-08 周六首次 weekly_eval 07:05→07:42 (旧代码, 5/6 phases, phase5 NameError **窃标 ok** — 旧判定 `phases_ok >= 5`); 用户重启 web 后 07:45 第二轮 (新代码 v419) 自动重跑 → 重跑恰好**补救**了 phase5, 但对业务侧是"重启副作用"而非受控重试.
+
+**业务逻辑分析 (用户询问"重跑有没有问题")**: 重跑本身是**必要且正确的失败重试** (今天正是它让 phase5 修复被验证); 裂缝有二 —
+1. **失败被标 ok**: `phases_ok >= 5 → "ok"`, 一个阶段失败时 weekly_eval 仍显示 OK, 与子任务 failed 状态自相矛盾, 且会让门控误判"已完成";
+2. **成功也重跑**: 6/6 完成后任意一次重启 → 又 37 分钟全量重算 + phase5 retry_count 二次递增.
+
+**修复 (三处, 门控+状态收紧)**:
+  - `quant/scheduler/task_log.py`: 新增只读 `last_status(task_name, date)` — 取当日最后一条状态, 无记录→None. 语义: `ok`→当日已完成不重跑; `failed/aborted/None`→允许重跑.
+  - `quant/scheduler/_base.py::_weekly_loop`: 触发前 `last_status(name, today) == "ok"` → 跳过并置 `ran=True` (复用现有护栏). 重启后: 今天已完成 → 不再跑; 当天失败 → 自动补跑 = **受控重试**.
+  - `quant/scheduler/weekly.py::_run`: 捕获 `p5_ok`; 判定收紧为 **6/6 全 OK** 才标 ok — 任一阶段失败留 failed, 才能被补跑门控拾起.
+
+**验证**: `test_v420_weekly_rerun_gate.py` 5/5 (临时 SQLite 隔离, 覆盖 None/ok/failed/取最新/按日期隔离). 全量 `pytest test/` **284 passed**. VERSION → test-v420.
+
+**行为变化**: 周六 run 失败后重启 web → 当日自动重试 (原设计已隐含, 现在有明确语义); 周六成功后再重启 → 不再重跑 (省 37 分钟/次).
+
 ## 当前状态 (test-v419, 2026-08-08)
 
 ### v419: phase5 状态同步 NameError 修复 (2026-08-08)

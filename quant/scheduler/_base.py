@@ -92,11 +92,19 @@ def _weekly_loop(name: str, target_weekday: int, target_time: time, run_fn):
         hhmm = time(now.hour, now.minute)
 
         if not ran and hhmm >= target_time:
-            t0 = _time.time()
-            run_fn(today)
-            elapsed = _time.time() - t0
-    
-            ran = True
+            # v420: 重启后进程内 ran 标志丢失 → 当天会重复触发整周评估.
+            # 以 task_runs 当日最后状态为准: 已 'ok' 则跳过 (重试语义),
+            # failed/aborted/None 允许重跑 (修复部署后补跑验证).
+            from quant.scheduler.task_log import last_status
+            if last_status(name, today) == "ok":
+                log.info(f"[{today}] {name} already done 'ok' earlier — skip rerun after restart")
+                ran = True
+            else:
+                t0 = _time.time()
+                run_fn(today)
+                elapsed = _time.time() - t0
+
+                ran = True
         else:
             wait_min = (target_time.hour * 60 + target_time.minute) - (hhmm.hour * 60 + hhmm.minute)
 

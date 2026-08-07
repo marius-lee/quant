@@ -62,6 +62,7 @@ def _run(today: str):
 
     except Exception as e:
         error_msg = str(e)
+        _m.inc("pipeline.errors")
         _log.exception(f"[{today}] signals crashed: {e}")
         raise
     finally:

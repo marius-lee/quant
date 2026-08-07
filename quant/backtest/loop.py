@@ -144,18 +144,26 @@ def _persist_backtest_result(strategy, start, end, capital, metrics, diagnosis, 
 def _compute_dsr(returns: pd.Series) -> float | None:
     """ADR-041: Compute Deflated Sharpe Ratio for statistical significance.
     Bailey & Lopez de Prado (2014). DSR < 0.5 → likely overfit.
+    v406: 修复三重 bug — 传数组而非 float, 缺 n_obs, 返回 dict 当 tuple 解包.
     """
     try:
         from quant.evaluation.deflated_sharpe import deflated_sharpe_ratio
         vals = returns.dropna().values
         if len(vals) < 20:
             return None
-        n_factors = _require_cfg("factor.evaluation.n_symbols")  # proxy for N trials
-        sr, dsr = deflated_sharpe_ratio(
-            vals, n_trials=max(n_factors, 1),
+        # 计算年化 Sharpe
+        ann_days = _require_cfg("market.annual_trading_days")
+        daily_rf = _require_cfg("benchmark.risk_free_rate") / ann_days
+        excess = vals - daily_rf
+        sr = float(np.mean(excess) / np.std(excess) * np.sqrt(ann_days)) if np.std(excess) > 0 else 0.0
+        n_factors = _require_cfg("factor.evaluation.n_symbols")
+        result = deflated_sharpe_ratio(
+            observed_sr=sr,
+            n_trials=max(n_factors, 1),
+            n_obs=len(vals),
             skewness=-0.5, kurtosis=8.0,
         )
-        return round(dsr, 4)
+        return round(result["dsr"], 4)
     except Exception:
         return None
 
@@ -259,7 +267,7 @@ def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
 
 def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, retrain_freq=None, mode='full',
                     universe_size=None, ic_lookback=None, factor_status_filter="backtesting",
-                    factor_store=None, combine_mode=None, oos_start_date=None):  # deprecated: now auto-initialized from FACTOR_CACHE_DB
+                    factor_store=None, combine_mode=None, oos_start_date=None, suppress_push=False):  # v406: suppress_push for phase8
     """Run a full walk-forward backtest.
 
     Args:
@@ -504,7 +512,7 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
                 from quant.regime.detector import RegimeDetector
                 _bm_rets = store.get_benchmark(
                     _require_cfg("backtest.benchmark"),
-                    start=_require_cfg("regime.train_start")) * 100
+                    start=_require_cfg("regime.train_start"))  # v413: 去掉 *100, 与 live 路径量纲一致
                 _train_rets = _bm_rets[_bm_rets.index < pd.Timestamp(start_date)]
                 _regime_detector = RegimeDetector().train(_train_rets)
                 _log.info("backtest: PIT regime HMM trained on %d days (< %s)",
@@ -525,7 +533,7 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             turnover_amount_roll=_amount_roll, bm_returns=_bm_returns_full,
             prebuilt_engine=engine, prebuilt_cost_model=cost_model,
             prebuilt_constructor=_prebuilt_constructor,
-            suppress_push=True, db_path=BACKTEST_DB, universe_size=universe_size,
+            suppress_push=suppress_push, db_path=BACKTEST_DB, universe_size=universe_size,
         )
 
         # ── Main loop ──

@@ -36,7 +36,9 @@ def validate_oos(input_json: str = "/tmp/_eval_phase2.json",
         logger.error("Phase 3: no Phase 2 data in evaluation_runs — aborting (no temp file fallback)")
         return {"kept": [], "oos_irs": [], "pbo_result": {}, "n_folds": 0}
 
-    candidates = p2.get('passed', [])
+    # v406: v346 将 Phase2 输出键对齐为 active/probation/archived,
+    # Phase3 之前读 'passed' → 永远空, 评估链路全断
+    candidates = p2.get('active', [])
     if not candidates:
         logger.warning("No candidates from Phase 2. Stopping.")
         return {"kept": [], "oos_irs": [], "pbo_result": {}, "n_folds": 0}

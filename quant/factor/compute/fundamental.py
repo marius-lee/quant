@@ -951,20 +951,21 @@ def compute_dividend_yield(fundamentals, date, financials=None):
         GROUP BY symbol
     """, [start_date.strftime("%Y-%m-%d"), date] + _syms).fetchall()
 
-    # 取股价 (从 stocks.high_52w 或 close_latest)
+    # v406: 股息率 = 每股股息 / 股价, 不是股息额
+    # 原实现只取了 div 直接做截面标准化, 实际是"股息额因子"而非"股息率"
+    # 用 total_mv / total_shares 估股价, 或从 fundamentals.close_latest 取
     price_rows = conn.execute(f"""
-        SELECT symbol, pe, total_mv FROM stocks WHERE symbol IN ({_ph})
+        SELECT symbol, close_latest FROM stocks WHERE symbol IN ({_ph})
     """, _syms).fetchall()
+    price_map = {r[0]: r[1] for r in price_rows if r[1] and r[1] > 0}
 
     div_map = {r[0]: r[1] for r in div_rows if r[1] and r[1] > 0}
-    # 用 total_mv / total_shares 估股价 (更稳健)
     vals = {}
     for sym in fundamentals.index:
         div = div_map.get(sym)
-        if div and div > 0:
-            # 用 fundamentals 里的 pe/total_mv 反推股价: price = total_mv / total_shares
-            # 简化: 直接用 div 做截面标准化 (量纲统一)
-            vals[sym] = div
+        price = price_map.get(sym)
+        if div and div > 0 and price and price > 0:
+            vals[sym] = div / price  # 股息率 = 每股股息 / 股价
 
     result = pd.Series(vals, name="dividend_yield")
     result = result.replace([float('inf'), float('-inf')], float('nan'))

@@ -193,6 +193,16 @@ def covariance_subset(
     symbols: 需要计算协方差的 symbol 子集 (e.g. alpha 排名 top 30)
     """
     common = [s for s in symbols if s in returns.columns]
+    # v413: 剔除含 NaN 的列, 防止单个 NaN 污染全协方差矩阵
+    if common:
+        sub = returns[common]
+        nan_mask = sub.isna().any(axis=0)
+        clean = [s for s in common if not nan_mask.get(s, True)]
+        if len(clean) < len(common):
+            from quant.utils.logger import get_logger
+            get_logger("risk.covariance").debug(
+                f"covariance_subset: dropped {len(common)-len(clean)} NaN columns")
+        common = clean
     if len(common) < 2:
         from quant.utils.logger import get_logger
         get_logger("risk.covariance").warning(

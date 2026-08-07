@@ -95,6 +95,28 @@ def _run(today: str):
             total_v = sum(port_values.values()) or 1
             port_weights = {k: v/total_v for k, v in port_values.items()}
 
+            # v409: Brinson Rp 从实盘持仓日收益计算，而非同源 sector_returns
+            # 计算每只持仓的日收益
+            pos_returns = {}
+            for p in positions:
+                sym = p["symbol"]
+                sym_data = df[df["symbol"] == sym].sort_values("date")
+                if len(sym_data) >= 2:
+                    ret = sym_data["close"].pct_change().dropna().iloc[-1] if len(sym_data) >= 2 else 0
+                    pos_returns[sym] = ret
+            # 按行业加权组合收益
+            port_sector_ret = {}
+            port_sector_val = {}
+            for p in positions:
+                sec = p.get("sector", "其他")
+                ret = pos_returns.get(p["symbol"], 0)
+                val = p.get("value", 0)
+                port_sector_ret[sec] = port_sector_ret.get(sec, 0) + ret * val
+                port_sector_val[sec] = port_sector_val.get(sec, 0) + val
+            for sec in port_sector_ret:
+                if port_sector_val.get(sec, 0) > 0:
+                    port_sector_ret[sec] /= port_sector_val[sec]
+
             # P5: 基准改用市值加权 (daily_valuation.market_cap 按行业汇总)
             all_sectors = set(list(sector_returns.keys()) + list(port_weights.keys()))
             sec_mkt_cap = {}
@@ -122,7 +144,7 @@ def _run(today: str):
                     port_weights[s] = 0
 
             import pandas as pd
-            Rp = pd.Series({s: sector_returns.get(s, 0) for s in all_sectors})
+            Rp = pd.Series({s: port_sector_ret.get(s, 0) for s in all_sectors})
             Rb = pd.Series({s: bench_returns.get(s, 0) for s in all_sectors})
             Wp = pd.Series(port_weights)
             Wb = pd.Series(bench_weights)
@@ -534,8 +556,13 @@ def _run(today: str):
     # ── Benchmark tracking (Gap 8) ──
     engine2 = ExecutionEngine()
     total_wealth = engine2.get_capital(strategy="quant")
-    from quant.benchmark.tracker import BenchmarkTracker
+    from quant.benchmark.tracker import BenchmarkTracker, compute_rolling_metrics
     _bt = BenchmarkTracker()
     _bt.record(today, total_wealth)
+    # v409: 每日更新滚动指标 (alpha/IR/beta)
+    try:
+        compute_rolling_metrics(window=60, strategy="quant")
+    except Exception:
+        pass
 def _loop():
     _timed_loop("attribution", time(15, 30), _run, skip_deadline=time(15, 45))

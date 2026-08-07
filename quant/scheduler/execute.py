@@ -161,6 +161,25 @@ def _run(today: str):
             _log.info(f"[{today}] after sealed pre-check: {len(targets)} targets remain "
                       f"(removed {len(sealed_at_open)}: {sealed_at_open})")
 
+        # ── Step 3.6: 跌停卖出预检 (v412) ──
+        # 持仓标的一字跌停时无法卖出, 跳过避免废单
+        limit_down_symbols = []
+        for p in current_positions:
+            sym = p["symbol"]
+            q = quotes.get(sym, {})
+            bid_vol = q.get("bid_volume", 0) or 0
+            last_price = q.get("price", 0) or q.get("open", 0)
+            prev_close = q.get("prev_close", 0)
+            if prev_close <= 0 or last_price <= 0:
+                continue
+            limit_pct = 0.20 if sym.startswith(("68", "30")) else (0.30 if sym[:1] in ("4", "8") or sym.startswith("92") else 0.10)
+            limit_down_price = round(prev_close * (1 - limit_pct), 2)
+            if abs(last_price - limit_down_price) <= 0.02 and bid_vol == 0:
+                limit_down_symbols.append(sym)
+                _log.info(f"[{today}] {sym} 一字跌停 (bid=0, px={last_price}), skip sell")
+        if limit_down_symbols:
+            current_positions = [p for p in current_positions if p["symbol"] not in limit_down_symbols]
+
         # ── Step 4-6: 统一执行链 (报告 §1.2/§6.1, ExecutionModel 重构) ──
         # 冷却过滤(DB持久化,Q7-2) → 固定止损+冷却登记 → delta
         # (skip_cash_feasibility=True, pipeline 已分配) → validate+按alpha裁剪(B-13)

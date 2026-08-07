@@ -129,7 +129,7 @@ class LgbAlphaModel:
                 "bagging_fraction": 0.8,
                 "bagging_freq": 5,
                 "verbose": -1,
-                "n_estimators": 200,
+                "n_estimators": 200,  # v407: 单次全量 fit (100特征峰值~11.5GB, 16GB安全)
                 "min_data_in_leaf": 20,
                 "max_depth": 6,
                 "lambda_l1": 0.1,
@@ -175,20 +175,25 @@ class LgbAlphaModel:
                 continue
 
             X_day = np.column_stack([
-                factor_values[fn].loc[date_str].reindex(syms).fillna(0).values
+                factor_values[fn].loc[date_str].reindex(syms).values
                 if fn in factor_values and date_str in factor_values[fn].index
-                else np.zeros(len(syms))
+                else np.full(len(syms), np.nan)
                 for fn in feature_names
-            ]).astype(np.float32)  # float32 减半内存
-            y_day = forward_returns.loc[ts].reindex(syms).fillna(0).values.astype(np.float32)
+            ]).astype(np.float32)
+            y_day = forward_returns.loc[ts].reindex(syms).values.astype(np.float32)
 
             mask = ~np.isnan(y_day)
             if mask.sum() < 20:
                 n_skipped["mask"] += 1
                 continue
 
-            X_chunks.append(X_day[mask])
-            y_chunks.append(y_day[mask])
+            # v406: fillna(0) 必须在 mask 之后 — 原在 mask 前 fillna,
+            # 无收益股票 (y=NaN) 被填为 0 标签进入训练集
+            X_day = np.nan_to_num(X_day[mask], nan=0.0)
+            y_day = y_day[mask]  # y 无 NaN (已由 mask 过滤)
+
+            X_chunks.append(X_day)
+            y_chunks.append(y_day)
             total_samples += mask.sum()
             dates_used.append(ts)
 
@@ -223,38 +228,22 @@ class LgbAlphaModel:
             len(y), X.shape[1], len(dates_used),
         )
 
-        # ── 分块训练: 每批 ≤4M 样本, 用 init_model 串联 ──
-        # LightGBM GBDT 是加性模型, 分块训练数学等价于全量训练.
-        # 内存峰值 ~4M×75×4B ≈ 1.2GB (vs 全量 21.8M → ~25GB OOM).
-        # 来源: 2026-07-30 OOM kill 后改造.
-        CHUNK_SAMPLES = _require_cfg("alpha.lgb.train.train_chunk_samples")
-        n_total = len(y)
+        # v407: 单次全量训练 — v275 时的 OOM (21.8M样本×75特征>25GB)
+        # 已不适用: v398 内存优化 + 特征数降到 29, X仅 ~1.1GB.
+        # 即使 100 特征全量回测, 峰值 ~11.5GB, 16GB M1 仍安全.
         self._lgb = lgb.LGBMRegressor(**lgb_params)
+        _log.info("lgb train: %d samples × %d features, single fit", len(y), X.shape[1])
+        self._lgb.fit(X, y)
 
-        for batch_start in range(0, n_total, CHUNK_SAMPLES):
-            batch_end = min(batch_start + CHUNK_SAMPLES, n_total)
-            batch_n = batch_end - batch_start
-            _log.info("lgb train: batch %d-%d/%d (%.1fM samples)",
-                      batch_start, batch_end, n_total, batch_n / 1e6)
-            self._lgb.fit(
-                X[batch_start:batch_end],
-                y[batch_start:batch_end],
-                init_model=self._lgb.booster_ if batch_start > 0 else None,
-            )
-
-        # ── 评估训练集 IC (分块 predict, 避免 21.9M 全量内存峰值) ──
-        y_pred_chunks = []
-        for batch_start in range(0, n_total, CHUNK_SAMPLES):
-            batch_end = min(batch_start + CHUNK_SAMPLES, n_total)
-            y_pred_chunks.append(self._lgb.predict(X[batch_start:batch_end]))
-        y_pred = np.concatenate(y_pred_chunks)
+        # ── 评估训练集 IC ──
+        y_pred = self._lgb.predict(X)
         ic = np.corrcoef(y_pred, y)[0, 1] if len(y) > 1 else 0.0
         ic_std = round(float(np.std(y_pred - y)), 6)
         n_samples_val = len(y)
         n_features_val = X.shape[1]
 
         # 释放 X/y (后续只保留 booster + metadata)
-        del X, y, y_pred, y_pred_chunks
+        del X, y, y_pred
 
         # ── 保存模型 ──
         train_date = pd.Timestamp.now().strftime("%Y-%m-%d")
@@ -318,25 +307,13 @@ class LgbAlphaModel:
         if not symbols:
             return pd.Series(dtype=float)
 
-        # 构建特征矩阵
+        # v406: 按训练列序对齐特征 — 原缺列零填充放在末尾,
+        # 导致全截面列序错位, 预测结果乱序
         X = np.column_stack([
             factor_values.get(fn, pd.Series(0, index=symbols))
             .reindex(symbols).fillna(0).values
-            for fn in self._feature_names
-            if fn in factor_values
+            for fn in self._feature_names  # 严格按训练列序
         ])
-
-        if X.shape[1] < len(self._feature_names):
-            missing = set(self._feature_names) - set(factor_values.keys())
-            _log.warning(
-                "lgb predict: %d/%d features available (missing: %s), "
-                "padding with zeros",
-                X.shape[1], len(self._feature_names),
-                ", ".join(sorted(missing)[:5]),
-            )
-            # 用零填充缺失特征
-            pad = np.zeros((X.shape[0], len(self._feature_names) - X.shape[1]))
-            X = np.column_stack([X, pad])
 
         preds = self._lgb.predict(X)
         result = pd.Series(preds, index=symbols, name="alpha_lgb")

@@ -143,7 +143,7 @@ def compute_trades(
     if skip_cash_feasibility:
         return orders
 
-    available_cash = cash if cash > 0 else capital
+    available_cash = max(cash, 0)  # v412: cash<0 时不用 capital 代替 (原 cash=0 用总资产当现金)
     if available_cash > 0 and orders:
         sell_orders = [o for o in orders if o.side == "sell"]
         buy_orders = [o for o in orders if o.side == "buy"]

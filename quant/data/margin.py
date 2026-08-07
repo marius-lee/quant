@@ -73,25 +73,27 @@ def _sync_sse_raw(date_str: str, conn) -> int:
     if not rows:
         return 0
 
-    n = 0
+    # v408: executemany
+    batch = []
     for row in rows:
         sym = row.get("stockCode", "")
         if not sym or len(sym) < 6:
             continue
-        conn.execute("""
-            INSERT OR REPLACE INTO margin_detail
-            (symbol, date, market, margin_buy, margin_balance, margin_repay,
-             short_sell_vol, short_balance, margin_total)
-            VALUES (?, ?, 'SH', ?, ?, ?, ?, ?, ?)
-        """, (sym, date_str,
+        batch.append((sym, date_str,
               _to_float(row.get("rzmre")),
               _to_float(row.get("rzye")),
               _to_float(row.get("rzche")),
               _to_float(row.get("rqmcl")),
               _to_float(row.get("rqyl")),
               None))
-        n += 1
-    conn.commit()
+    if batch:
+        conn.executemany("""
+            INSERT OR REPLACE INTO margin_detail
+            (symbol, date, market, margin_buy, margin_balance, margin_repay,
+             short_sell_vol, short_balance, margin_total)
+            VALUES (?, ?, 'SH', ?, ?, ?, ?, ?, ?)
+        """, batch)
+        n = len(batch)
     return n
 
 
@@ -130,25 +132,27 @@ def _sync_szse_wrapper(date_str: str, conn) -> int:
             lambda x: str(int(x)).zfill(6) if pd.notna(x) and isinstance(x, (int, float)) else str(x).zfill(6)
         )
 
-    n = 0
+    # v408: executemany 替代逐行 INSERT
+    batch = []
     for _, row in df.iterrows():
         sym = str(row.get('symbol', '')).strip()
         if len(sym) < 6:
             continue
-        conn.execute("""
-            INSERT OR REPLACE INTO margin_detail
-            (symbol, date, market, margin_buy, margin_balance, margin_repay,
-             short_sell_vol, short_balance, margin_total)
-            VALUES (?, ?, 'SZ', ?, ?, ?, ?, ?, ?)
-        """, (sym, date_str,
+        batch.append((sym, date_str,
               _to_float(row.get('margin_buy')),
               _to_float(row.get('margin_balance')),
               None,
               _to_float(row.get('short_sell_vol')),
               _to_float(row.get('short_balance')),
               _to_float(row.get('margin_total'))))
-        n += 1
-    conn.commit()
+    if batch:
+        conn.executemany("""
+            INSERT OR REPLACE INTO margin_detail
+            (symbol, date, market, margin_buy, margin_balance, margin_repay,
+             short_sell_vol, short_balance, margin_total)
+            VALUES (?, ?, 'SZ', ?, ?, ?, ?, ?, ?)
+        """, batch)
+        n = len(batch)
     return n
 
 def sync_range(start_date: str, end_date: str, conn=None):

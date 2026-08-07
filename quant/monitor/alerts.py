@@ -84,7 +84,7 @@ _LAST_ALERT_KEYS: set[str] = set()
 
 def push_alerts(alerts: list[dict]):
     """推送告警到 SSE (通过 broker). 相同告警不重复推送."""
-    from web.state_broker import broker
+    from quant.core.state_broker import broker
 
     current_keys = {a["rule"] for a in alerts} if alerts else set()
     global _LAST_ALERT_KEYS

@@ -25,7 +25,7 @@ from quant.config.constants import _require_cfg
 
 _log = get_logger("execution.impact")
 
-_MARKET_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
+from quant.config.paths import MARKET_DB as _MARKET_DB
 
 
 def estimate_impact_pct(

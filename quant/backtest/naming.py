@@ -9,7 +9,7 @@ Queries strategy_config table to find the next available number.
 
 import os, sqlite3
 
-_TRADES_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "trades.db")
+from quant.config.paths import TRADE_DB as _TRADES_DB
 
 
 def next_name(prefix: str) -> str:

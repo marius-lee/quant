@@ -96,6 +96,9 @@ def _compare_signals(live_start: str, live_end: str) -> dict:
         live_by_date[d] = sigs
 
     # ── Generate backtest signals for each live date ──
+    # v406: 修复 NameError (factor_store 未定义)
+    from quant.factor.store import FactorStore
+    factor_store = FactorStore()
     dates_sorted = sorted(live_by_date.keys())
     all_dates = [d for d in pd.date_range(dates_sorted[0], dates_sorted[-1], freq="B")
                  if _is_td(d.date())]

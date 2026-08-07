@@ -24,7 +24,7 @@ SLOS = {
     "adj_factor": 15,      # 复权因子变化低频
 }
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "market.db")
+from quant.config.paths import MARKET_DB as DB_PATH
 
 # 源表 → 依赖它的因子 (物化池裁剪用, 审计 P0-3)。
 # fund_flow: compute_main_flow_ratio 经 aux["fund_flow"] 读同一张表 (实证 _preload.py:139)

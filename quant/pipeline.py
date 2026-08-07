@@ -126,7 +126,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     _ph_t0 = _time_ph.time()
     _ph_start = _time_ph.time()
     if not suppress_push:
-        from web.state_broker import broker
+        from quant.core.state_broker import broker
         broker.update({"status": "signals_started", "progress": "0/5", "date": date_str, "trace_id": tid})
     logger.info(f"generate_signals started trace_id={tid} date={date_str}")
 
@@ -710,7 +710,7 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
     }
     logger.info(f"execute: {len(orders)} orders ({results['steps']['execution']['buys']} buys, {results['steps']['execution']['sells']} sells)")
     if not suppress_push:
-        from web.state_broker import broker
+        from quant.core.state_broker import broker
         broker.update({"status": "trades_executed", "progress": "6/7", "orders": len(orders), "trace_id": tid, "signals": target_positions})
     _m.inc("pipeline.trades", len(orders))
 

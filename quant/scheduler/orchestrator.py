@@ -260,7 +260,7 @@ def _run():
                          "from quant.scheduler.evening import _run;"
                          f"_run('{today}')"],
                         cwd=os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                        env={**os.environ, "PYTHONPATH": "."},
+                        env={**os.environ, "PYTHONPATH": ".", "_EVENING_SUBPROCESS": "1"},
                     )
             else:
                 ret = _evening_proc.poll()
@@ -403,6 +403,34 @@ def _check_timeouts(today: str):
                 _log.warning(
                     f"[{today}] {task_name} running for {elapsed:.0f}s > {limit}s → aborted (zombie)"
                 )
+                _m.inc(f"alerts.task_aborted.{task_name}")
+        # v408: 告警 — 回撤检查 + 数据滞后检查
+        try:
+            from quant.data.repos import TradeRepo
+            repo = TradeRepo()
+            base = repo.get_initial_capital("quant")
+            if base > 0:
+                equity = repo.get_cash("quant") + sum(
+                    p["shares"] * p.get("price", 0) for p in repo.get_positions("quant")
+                )
+                drawdown = (equity - base) / base
+                if drawdown < -0.20:
+                    _log.critical(f"[{today}] ALERT: drawdown {drawdown:.1%} < -20%")
+                    _m.inc("alerts.drawdown.critical")
+                elif drawdown < -0.10:
+                    _log.warning(f"[{today}] ALERT: drawdown {drawdown:.1%} < -10%")
+                    _m.inc("alerts.drawdown.warning")
+        except Exception:
+            pass
+        try:
+            from quant.data.freshness import check_freshness
+            fresh = check_freshness(today)
+            stale = [r for r in fresh if r["stale"]]
+            for r in stale:
+                _log.critical(f"[{today}] ALERT: DATA STALE {r['table']} lag={r['lag_days']}d")
+                _m.inc(f"alerts.data_stale.{r['table']}")
+        except Exception:
+            pass
         conn.commit()
         conn.close()
     except Exception as e:

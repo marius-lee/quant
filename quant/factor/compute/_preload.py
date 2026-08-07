@@ -23,7 +23,7 @@ import os
 _log = get_logger("factor.preload")
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-_DB = os.path.join(_ROOT, "data", "market.db")
+from quant.config.paths import MARKET_DB as _DB
 
 _AUX_TABLES = [
     "margin_detail",

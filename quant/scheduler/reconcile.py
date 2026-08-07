@@ -291,6 +291,17 @@ def _run(today: str):
         summary = {"recon_status": result["status"],
                    "breaks": result["breaks"],
                    "elapsed": round(_time.time() - t0, 1)}
+        # v410: 写入 daily_equity 快照 (回撤告警 + Sharpe 计算依赖)
+        try:
+            from quant.execution.engine import ExecutionEngine
+            from quant.data.repos import TradeRepo
+            engine = ExecutionEngine()
+            cash = engine.get_cash("quant", mode="live")
+            positions = engine.get_positions("quant", mode="live")
+            pos_value = sum(p["shares"] * p.get("price", 0) for p in positions)
+            TradeRepo().record_daily_equity(today, cash, pos_value)
+        except Exception:
+            pass
         _log.info(f"[SCHEDULER] {today} | TASK=reconcile | STATUS=OK | "
                   f"recon={result['status']} breaks={result['breaks']} | "
                   f"elapsed={summary['elapsed']}s")

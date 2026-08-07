@@ -14,6 +14,7 @@ G1 (oos_verify 需当日缓存) 与 G4 (factor PnL 需当日缓存) 每个交易
 - cron 与 orchestrator daemon 并存时, 各阶段 _tk_start grace 去重, 不会双跑
 """
 import importlib
+import os
 import time as _time
 import uuid as _uuid
 from datetime import datetime
@@ -66,7 +67,10 @@ def _run(today: str):
                     qr = check_daily_quality(today)
                     _log.info(f"[{today}] data quality gate: {qr['overall']}")
                     if qr["overall"] == "error":
-                        _log.error(f"[{today}] data quality ERROR — review before factor_cache")
+                        _log.error(f"[{today}] data quality ERROR — aborting chain before factor_cache")
+                        status = "failed"
+                        error_msg = "data quality gate: error"
+                        break
                 except Exception as _qe:
                     _log.warning(f"[{today}] data quality check failed (non-fatal): {_qe}")
             # lgb_train: 仅周一/周四执行
@@ -111,7 +115,10 @@ def _run(today: str):
                 else:
                     stage._run(today)
             except Exception as e:
-                _log.error(f"[{today}] evening chain: {name} raised: {e}")
+                _log.exception(f"[{today}] evening chain: {name} crashed: {e}")
+                status = "failed"
+                error_msg = f"{name} crashed: {e}"
+                break
             st = _stage_status(today, name)
             if st != "ok":
                 error_msg = f"{name} status={st or 'no-record'}, chain aborted (后续阶段跳过)"
@@ -123,3 +130,9 @@ def _run(today: str):
         _log.info(f"[SCHEDULER] {today} | TASK=evening_chain | STATUS={status.upper()} | elapsed={elapsed:.1f}s")
     finally:
         _tk_finish("evening_chain", today, status, error=error_msg)
+    # v410: failed → exit(1) 触发 orchestrator 重试 (上限2次)
+    # 仅在子进程模式退出 (环境变量 _EVENING_SUBPROCESS=1, orchestrator 设置)
+    if status == "failed" and os.environ.get("_EVENING_SUBPROCESS") == "1":
+        _log.error(f"[{today}] evening chain FAILED, exit(1) to trigger retry")
+        import sys as _sys
+        _sys.exit(1)

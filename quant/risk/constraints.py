@@ -136,6 +136,8 @@ def filter_sealed_limit_up(candidates, prev_date: str, seal_ratio_threshold: flo
 
     if not rows:
         return candidates.copy()
+    from quant.utils.logger import get_logger
+    _log_seal = get_logger("risk.constraints.sealed")  # v412: 定义移到使用前
     sealed_syms = set()
     for row in rows:
         # Support both (symbol, lock_cap, amt) tuple and (symbol, (lock_cap, amt)) from dict
@@ -155,8 +157,6 @@ def filter_sealed_limit_up(candidates, prev_date: str, seal_ratio_threshold: flo
                 sealed_syms.add(sym)
         except (ValueError, TypeError) as _e:
             _log_seal.debug("seal ratio check skipped: %s", _e)
-    from quant.utils.logger import get_logger
-    _log_seal = get_logger("risk.constraints.sealed")
     logger = get_logger("risk.constraints")
     removed = [s for s in sealed_syms if s in candidates.index]
     if removed:

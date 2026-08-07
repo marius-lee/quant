@@ -23,7 +23,7 @@ from quant.utils.logger import get_logger
 
 _log = get_logger("execution.stop_loss")
 
-_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
+from quant.config.paths import MARKET_DB as _DB
 _CACHE = {}  # symbol -> (atr, ts)
 
 

@@ -37,7 +37,7 @@ warnings.filterwarnings("ignore", message="An input array is constant")
 
 logger = get_logger("factor.stats_cache")
 
-_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
+from quant.config.paths import MARKET_DB as _DB_PATH
 _SNAPSHOT_TTL_SEC = _require_cfg("factor.stats.snapshot_ttl_sec")
 _MAX_WORKERS = _require_cfg("factor.evaluation.max_workers")
 _WORKER_TIMEOUT_SEC = _require_cfg("factor.evaluation.worker_timeout_sec")

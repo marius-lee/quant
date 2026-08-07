@@ -123,11 +123,11 @@ def compute_kelly_fractions(
     else:
         return _alpha_proportional(alpha)
 
-    # 单只股票上限
-    max_single = _require_cfg("risk.max_single_position")
+    # v406: 删除第二次归一化 — 原在 clip 后再除 sum,
+    # 与第一次归一化数学上抵消 → fractional Kelly 实际是空操作
+    # Bug 根因: kelly.clip(upper=max_single) 后 / kelly.sum() 恢复了 clip 前的比例
+    # 详见 docs/reports/CODE-REVIEW-2026-08-07.md §3, P0-10
     kelly = kelly.clip(upper=max_single)
-    if kelly.sum() > 0:
-        kelly = kelly / kelly.sum()
 
     _log.debug(
         f"Kelly fractions: {len(kelly)} stocks, "

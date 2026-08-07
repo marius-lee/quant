@@ -150,5 +150,5 @@ def generate_report(
 def push_to_web(report: dict):
     logger.debug(f"[web-push] pushing report to shared state")
     """推送报告到 Web 前端 (通过 web/shared.py 内存共享)。"""
-    from web.shared import update_state
-    update_state(report)
+    from quant.core.state_broker import broker
+    broker.update(report)

@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v405"
+VERSION = "test-v414"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 
@@ -69,7 +69,7 @@ def _capital(strategy: str) -> float:
         repo.set_initial_capital(strategy, cap)
     return cap
 
-from web.state_broker import broker
+from quant.core.state_broker import broker
 from web.shared import get_state, update_state  # deprecated, kept for compat
 
 
@@ -925,6 +925,21 @@ def api_metrics():
     """模板9 T1: 指标快照 (Prometheus 本地等价)."""
     from quant.monitor.metrics import metrics as _mm
     return _api_response(data=_mm.snapshot())
+
+
+@app.route("/api/benchmark")
+def api_benchmark():
+    """v409: 基准跟踪 — alpha/IR/beta/up_capture/down_capture."""
+    import sqlite3
+    from quant.config.paths import TRADE_DB
+    conn = sqlite3.connect(TRADE_DB)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM benchmark_tracking WHERE strategy='quant' ORDER BY date DESC LIMIT 60"
+    ).fetchall()
+    conn.close()
+    return _api_response(data=[dict(r) for r in rows])
+
 
 if __name__ == "__main__":
     port = int(_require_cfg("web.port"))

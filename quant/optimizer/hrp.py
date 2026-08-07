@@ -67,15 +67,23 @@ def _recursive_bisection(cov: np.ndarray, sorted_idx: list) -> np.ndarray:
             var_left = 1.0 / max(np.diag(cov_left).sum() if cov_left.size > 1 else cov_left[0, 0], 1e-8)
             var_right = 1.0 / max(np.diag(cov_right).sum() if cov_right.size > 1 else cov_right[0, 0], 1e-8)
 
+            # v413: De Prado (2016) 原文 — 簇内逆方差加权 (IVP), 非等权
+            # 子簇间按风险平价分配 alpha, 子簇内按 1/σ²_i 分配
             alpha = var_left / (var_left + var_right)
 
-            # 分配权重: 按风险平价分配子簇间，子簇内等权
-            w_left = alpha / len(left)
-            w_right = (1 - alpha) / len(right)
-            for idx in left:
-                w[idx] = w_left
-            for idx in right:
-                w[idx] = w_right
+            # Left cluster IVP
+            diag_left = np.diag(cov_left) if cov_left.size > 1 else np.array([cov_left[0, 0]])
+            ivp_left = 1.0 / np.maximum(diag_left, 1e-8)
+            ivp_left = ivp_left / ivp_left.sum()
+            for i, idx in enumerate(left):
+                w[idx] = alpha * ivp_left[i]
+
+            # Right cluster IVP
+            diag_right = np.diag(cov_right) if cov_right.size > 1 else np.array([cov_right[0, 0]])
+            ivp_right = 1.0 / np.maximum(diag_right, 1e-8)
+            ivp_right = ivp_right / ivp_right.sum()
+            for i, idx in enumerate(right):
+                w[idx] = (1 - alpha) * ivp_right[i]
 
             bisected.append(left)
             bisected.append(right)

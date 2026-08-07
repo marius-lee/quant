@@ -21,7 +21,7 @@ from quant.utils.logger import get_logger
 
 _log = get_logger("data.em_valuation")
 
-DB = os.path.join(os.path.dirname(__file__), "market.db")
+from quant.config.paths import MARKET_DB as DB
 
 _URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 _HEADERS = {

@@ -33,7 +33,7 @@ def _run_continuous_inner(today: str, stop_event=None):
     """盘中持续风控循环 — 09:35-11:30, 13:00-14:55 每 30s 检查一次 (午休跳过).
     v368: 响应 stop_event 避免被 orchestrator 孤立后仍写 task_runs. """
     from quant.scheduler.status import register
-    from web.state_broker import broker
+    from quant.core.state_broker import broker
     from quant.execution.calendar import is_market_open
 
     register("monitor", "09:35-11:30,13:00-14:55", has_multiprocess=False)

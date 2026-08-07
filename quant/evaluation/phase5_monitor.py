@@ -31,9 +31,9 @@ def sync_factor_status() -> dict:
     # ── 探伤断点: 全零 IC 守卫 ──
     p2_ic_vals_raw = p2.get("ic_means", {})
     p2_n_factors = p2.get("n_factors", 0)
-    p2_n_passed = len(p2.get("passed", []))
+    p2_n_active = len(p2.get("active", []))  # v406: v346 对齐 active (原 passed)
     if (p2_n_factors > 4
-            and p2_n_passed == 0
+            and p2_n_active == 0
             and p2_ic_vals_raw
             and all(abs(v) < 1e-10 for v in p2_ic_vals_raw.values())):
         _log.critical(

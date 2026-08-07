@@ -139,7 +139,10 @@ def factor_pnl_attribution(
             else:
                 direction = "neutral"
 
-            contribution_bps = round(abs(exposure * ic_mean) * 100, 2)
+            # v409: bps 转换 — 1 bps = 0.01% = 0.0001
+            # exposure×ic_mean 是分数 (如 0.01=1%), 转 bps 需 ×10000
+            # 来源: 1% = 100 bps, 分数 → bps = 分数 × 10000 (数学定义, 非可配参数)
+            contribution_bps = round(abs(exposure * ic_mean) * 10000, 2)
 
             results[fname] = {
                 "exposure": round(exposure, 4),

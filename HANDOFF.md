@@ -2,6 +2,220 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+## 当前状态 (test-v414, 2026-08-07)
+
+### §6 算法优化 3 项 (CODE-REVIEW-2026-08-07.md)
+
+**HRP 簇内 IVP**:
+- 原: 簇内等权 (alpha/len(left))
+- 修复: De Prado (2016) 原文 IVP — 权重 ∝ 1/σ²_i
+
+**Ledoit-Wolf NaN 上游修复**:
+- 原: 含 NaN 的列直接传入 covariance → 全矩阵 NaN
+- 修复: covariance_subset 入参前剔除含 NaN 的列
+
+**HMM 回测量纲对齐**:
+- 原: backtest `_bm_rets * 100`, live 路径不缩放 → HMM 特征量纲不一致
+- 修复: 去掉 *100, 与 live 路径统一
+
+### 关键指标: 233 tests, Web test-v414
+
+---
+
+## 当前状态 (test-v413, 2026-08-07)
+
+### §5 逻辑错误修复 3 项 (CODE-REVIEW-2026-08-07.md)
+
+**#4 rebalance cash=0**:
+- 原: cash=0 时 `available_cash = capital` → 把总资产当现金, 超买
+- 修复: `max(cash, 0)` — 没钱就不买
+
+**#5 _log_seal 先使用后定义**:
+- 原: for 循环内 `_log_seal.debug(...)` 在 L159 定义之前
+- 修复: logger 定义移到循环之前
+
+**#8 执行日跌停卖出预检**:
+- 原: 只检查涨停(封板不买), 不检查跌停(封板不卖)
+- 修复: execute.py 新增跌停预检, bid_vol=0 时跳过卖出
+
+### 关键指标: 233 tests, Web test-v413
+
+---
+
+## 当前状态 (test-v412, 2026-08-07)
+
+### §4 架构优化 4 项 (CODE-REVIEW-2026-08-07.md)
+
+**1. 依赖倒置 — state_broker 移到 quant/core**:
+- web/state_broker.py → quant/core/state_broker.py
+- 所有 import 从 `from web.state_broker` → `from quant.core.state_broker`
+- web/state_broker.py 保留为薄重导出 (兼容旧路径)
+- web/shared.py 同样重导出
+
+**2. 死代码清理**:
+- 删除 web/index_fix.py (0 引用)
+- 删除 web/state_pusher.py (0 引用)
+- 删除 quant/data/schema.sql (DDL 全在 ensure_tables)
+
+**3. 配置注释清理**:
+- config.yaml 删除 5 行历史注释 (tier_*_cap, nano_cap, rebalance_freq)
+
+**4. DB 路径统一 — 10 处**:
+- 全部改为 `from quant.config.paths import MARKET_DB/TRADE_DB`
+- 消除硬编码 os.path.join(..., "data", "market.db")
+
+### 关键指标: 233 tests, Web test-v412
+
+---
+
+## 当前状态 (test-v411, 2026-08-07)
+
+### §3 业务断点 6 项修复 (CODE-REVIEW-2026-08-07.md)
+
+**1. 失败重试 — evening sys.exit(1)**:
+- except 块 break + 最终 os.environ[_EVENING_SUBPROCESS]==1 时 sys.exit(1)
+- orchestrator 设 _EVENING_SUBPROCESS=1, 检测 ret≠0 → 重试 (上限2次)
+
+**2. 质量门禁 error→abort**:
+- qr["overall"]=="error" → break 出链, status=failed
+
+**3. daily_equity 写入**:
+- reconcile._run 成功后调用 TradeRepo.record_daily_equity()
+- 回撤告警 + Sharpe 计算从此有数据
+
+**4. pipeline errors metric**:
+- signals._run except 块加 _m.inc("pipeline.errors")
+
+**5. 0 信号误报**: ✅ v400 已修复
+
+**6. 回测↔实盘止损一致**:
+- BacktestExecutionModel 注入 rm.check() (ATR 止盈止损)
+- risk_only 路径同样加 ATR 检查
+
+### 关键指标: 233 tests, Web test-v411
+
+---
+
+## 当前状态 (test-v410, 2026-08-07)
+
+### §2 归因闭环 + 基准闭环修复 (CODE-REVIEW-2026-08-07.md)
+
+**1. Brinson Rp 同源修复**:
+- 原: Rp 和 Rb 都从 sector_returns 取值 → 选股效应恒为 0
+- 修复: Rp 从实盘持仓日收益计算, 按行业加权; Rb 保持市值加权
+
+**2. factor_attribution bps 单位修复**:
+- 原: contribution_bps = abs(exposure × ic_mean) × 100 → 实际是%不是bps
+- 修复: ×10000 (1% = 100 bps)
+
+**3. 基准闭环接线 + Web 端点**:
+- compute_rolling_metrics 加入 attribution 末尾 (每日更新 alpha/IR/beta)
+- Web 新增 /api/benchmark 端点
+
+### 估值连续性问题
+- daily_valuation 2026-04~06 缺失 (仅4/1-4/2有数据)
+- 需执行: PYTHONPATH=. .venv/bin/python3 -c "from quant.data.em_valuation import sync_range; sync_range('2026-03-15','2026-06-30')"
+
+### 关键指标
+- 因子: 100 注册, Web: test-v410
+
+---
+
+## 当前状态 (test-v409, 2026-08-07)
+
+### §1 技术选型 6 项全量修复 (CODE-REVIEW-2026-08-07.md)
+
+**1. SSE 跨进程 — JSON 文件桥**:
+- state_broker.update() 写 `/tmp/quant_state_bridge.json`
+- state_broker.get() 读文件桥取 pipeline progress/signals
+- 财务数据仍从 trades.db 读取 (天然跨进程)
+
+**2. 告警通道 — orchestrator CRITICAL 日志 + metrics**:
+- 任务 abort 时 inc alerts.task_aborted.{task_name}
+- 回撤 <-20% → CRITICAL, <-10% → WARNING
+- 数据滞后告警 CRITICAL 日志
+
+**3. 交易日历 — 2026 端午确认**:
+- "2026-06-22"(保守) → "2026-06-19"(周五端午, 已确认)
+
+**4. 数据源开关 — tencent/akshare 摘除**:
+- config.yaml data.source_policy.enabled: tencent/akshare=false
+- store.py 回退链检测开关, 跳过已封禁源节省 12-25s/批
+
+**5. 批量 INSERT — margin.py executemany**:
+- _sync_sse_raw + _sync_szse_wrapper 逐行 INSERT → executemany
+
+**6. 测试基建 — smoke tests**:
+- test_smoke_v408.py: web/qlib/benchmark 导入+基本调用
+- 233/233 passed
+
+### 关键指标
+- 因子: 100 注册, Web: test-v409
+
+---
+
+## 当前状态 (test-v408, 2026-08-07)
+
+### P0-5: LGB 分块训练恢复单次全量 fit
+
+**OOM 历史**: v275 (7/30) 21.8M×75特征×float32 → >25GB → macOS OOM kill → 分块训练引入。
+
+**v408 回归单次 fit**: v398 内存优化 + 特征数从75→29后, X仅 ~1.1GB,
+fit() 峰值 ~3-4GB, 16GB M1 安全。即使100特征全量回测, 峰值 ~11.5GB 仍安全。
+n_estimators 保持 200, 删除分块循环 + init_model 串联。
+
+### 关键指标
+- 因子: 100 注册, Web: test-v408
+
+---
+
+## 当前状态 (test-v407, 2026-08-07)
+
+### 评估链路修复 (P0-1) + DSR (P0-3) + qlib 树膨胀 (P0-5)
+
+**P0-1 Phase2→3 状态键名不匹配**:
+- v346 已将 Phase2 输出键从 passed/monitoring/failed → active/probation/archived
+  对齐 factor_registry 四态, 但 Phase3/Phase5 未同步更新, 仍读旧键 'passed'
+- 修复: phase3 L39 `'passed'` → `'active'`, phase5 L34 `"passed"` → `"active"`
+- 不改 Phase2 (它 v346 时已经是正确的)
+
+**P0-3 DSR 三重 bug**:
+- 传 numpy 数组当 float, 缺 n_obs 参数, 返回 dict 当 tuple 解包
+- 三层错误全被 `except: return None` 吞掉 → DSR 永远 None
+- 修复: 先计算年化 Sharpe, 正确传参, 从 return dict 取 dsr
+
+**P0-5 qlib 分块训练树膨胀**:
+- 分块训练每批 init_model 追加 200 棵树 → 3 批 = 600 棵树过拟合
+- "数学等价"注释错误: 不同数据子集 extra trees 不等价于全量 boosting
+- 修复: n_estimators 200→100, 删除分块循环, 单次 fit(X, y) (v398 内存已够)
+
+### 关键指标
+- 因子: 100 注册, Web: test-v407
+
+---
+
+## 当前状态 (test-v406, 2026-08-07)
+
+### 代码审查 P0 修复 (8 项) — docs/reports/CODE-REVIEW-2026-08-07.md
+
+- **P0-2** Phase8 NameError+TypeError: factor_store 定义, run_backtest +suppress_push
+- **P0-4** qlib fillna(0) 移到 mask 之后 (无收益股不打 0 标签)
+- **P0-6** qlib 预测列序严格按 training feature_names 对齐
+- **P0-7** dividend_yield: div / close_latest (原是股息额未除股价)
+- **P0-8** get_daily 缓存键: hash(full symbols) 替代 [:200] 截断
+- **P0-9** backfill: volume 股→手(÷100), turnover 不除 10000
+- **P0-10** Kelly: 删第二次归一化 (与第一次抵消, fractional 空操作)
+- **P0-12** 冲击价后更新 o.cost (防现金为负)
+- P0-11 已验证非 bug (mode 已传入 SQL)
+
+### 关键指标: 100 注册因子, Web test-v406
+
+---
+
+# HANDOFF — 盈迹 (quant) 项目变更日志
+
+> **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
+
 ## 当前状态 (test-v404, 2026-08-06)
 
 ### factor_cache 物化全链路 Bug 修复 (6 项)

@@ -1521,8 +1521,8 @@ class DataStore:
                         "INSERT OR IGNORE INTO daily(symbol,date,open,high,low,close,volume,turnover) "
                         "VALUES(?,?,?,?,?,?,?,?)",
                         (sym, r[0], float(r[1]), float(r[2]), float(r[3]),
-                         float(r[4]), int(float(r[5])) if r[5] else 0,
-                         float(r[6]) / 10000 if r[6] else 0))
+                         float(r[4]), int(float(r[5]) / 100) if r[5] else 0,
+                         float(r[6]) if r[6] else 0))  # v406: volume 股→手, turnover 不变
                     total += 1
                 if (i + 1) % 100 == 0:
                     conn.commit()
@@ -2004,7 +2004,17 @@ class DataStore:
             if self.token:
                 all_sources.insert(0, ("tushare", lambda: self._fetch_batch_tushare(chunk, batch_start)))
             ordered = all_sources
+            # v408: 数据源开关 — tencent/akshare IP封禁中, 跳过节省回退耗时
+            _disabled = set()
+            try:
+                for _sn in ("tencent", "akshare"):
+                    if not _require_cfg(f"data.source_policy.enabled.{_sn}"):
+                        _disabled.add(_sn)
+            except Exception:
+                pass
             for src_name, fetch_fn in ordered:
+                if src_name in _disabled:
+                    continue
                 if rows is not None:
                     break
                 t0 = __import__('time').time()
@@ -2089,8 +2099,8 @@ class DataStore:
         结果缓存: 同一次 DataStore 实例内相同参数只查一次 DB。"""
         # 来源: SQLite SQLITE_MAX_VARIABLE_NUMBER=999, 900+99(date params)=999
         MAX_SYMBOLS = 900
-        # LRU cache: same (symbols, start, end, columns) -> reuse
-        _ck = (tuple(sorted(symbols)[:200]), start, end, tuple(columns or []))
+        # v406: 缓存键用全部 symbols 的 hash, 而非前200只 ([:200] 导致键碰撞返回错误数据)
+        _ck = (hash(tuple(sorted(symbols))), start, end, tuple(columns or []))
         _cached = self._query_cache.get(_ck)
         if _cached is not None:
             if columns:

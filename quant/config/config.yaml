@@ -153,6 +153,12 @@ data:
     baostock_per_stock_sec: 0.3
     akshare_industry_sec: 0.8
   source_policy:
+    enabled:
+      tencent: false    # v408: IP 封禁中, 关闭节省回退耗时
+      akshare: false    # v408: IP 封禁中, 关闭节省回退耗时
+      tushare: true
+      baostock: true
+      tickflow: true
     full_universe_sources:
     - tushare
     - tencent
@@ -442,8 +448,6 @@ market:
 # alpha.weekly_weight                   0.30           Faber (2007) 双均线周权重
 # alpha.combine_mode                    sleeve         ADR-017: sleeve 并行>ensemble 串行
 # alpha.multi_tf_confirm                False          test-v249: 多时间框架确认 (默认关闭)
-# attribution.tier_nano_cap             50000          test-v284: 精简模式 AUM 上限
-# attribution.tier_micro_cap            500000         test-v284: 标准模式 AUM 上限
 # attribution.turnover_limit_nano       999.0          test-v283: Nano层不限换手
 # attribution.turnover_limit_micro      2.0            test-v283: Micro层200%阈值
 # attribution.turnover_limit_small      0.5            test-v283: Small层50%阈值
@@ -474,9 +478,7 @@ market:
 # factor.evaluation.min_icir            0.25           Grinold & Kahn: IR=0.25=弱, 0.5=合格, 1.0=优秀
 # factor.evaluation.max_lag             20             test-v249: IC 滞后扫描最大天数
 # factor.evaluation.n_quantiles         5              test-v249: 五分位数分组
-# optimizer.rebalance_freq              daily          test-v251: 日频调仓 (原 weekly)
 # optimizer.tc_horizon_days             5              test-v397: 对齐 alpha forward_horizon=5 (原 1)
-# optimizer.nano_cap                    10000          test-v397: ¥5,000起步, Nano层¥10K可达 (原 ¥30K)
 # optimizer.max_turnover_ratio          999.0          test-v397: 全局换手率约束 (999=不限, Real≥0.5)
 # optimizer.min_weight                  0.01           test-v250: 最小仓位 1%
 # risk.max_single_position              0.05           US mutual fund 单票上限5% (UCITS:10%)

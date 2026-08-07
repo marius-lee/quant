@@ -112,6 +112,7 @@ class ExecutionModel(ABC):
 
         if risk_only:
             positions = ctx.engine.get_positions(ctx.strategy)
+            # 硬止损
             stops = rm.check_hard_stop(positions, ctx.prices)
             for st in stops:
                 _log.warning(f"[{ctx.today}] stop-loss (risk_only): {st['symbol']} "
@@ -122,6 +123,15 @@ class ExecutionModel(ABC):
                     ctx.today, ctx.strategy)
                 rm.set_cooloff(st["symbol"], ctx.today)
                 result.stopped_out.append(st["symbol"])
+            # v410: ATR 动态止盈止损 (回测↔实盘一致)
+            _quotes = {s: {"price": p} for s, p in ctx.prices.items() if p > 0}
+            atr_stops = rm.check(positions, _quotes, ctx.today)
+            for _as in atr_stops:
+                ctx.engine.execute(
+                    [Order(symbol=_as["symbol"], side="sell", shares=_as["shares"],
+                           price=_as["price"], cost=0)],
+                    ctx.today, ctx.strategy)
+                result.stopped_out.append(_as["symbol"])
             result.sells = len(result.stopped_out)
             result.buys_mode = "none"
             return result
@@ -133,9 +143,10 @@ class ExecutionModel(ABC):
             _log.info(f"[{ctx.today}] cooloff filter: {sorted(cooling)} excluded")
         target_lots = {tp["symbol"]: tp["shares"] // LOT_SIZE for tp in targets}
 
-        # ── 2. 固定止损 (RiskManager 统一) ──
+        # ── 2. 固定止损 + ATR 动态止盈止损 (v410: 回测↔实盘一致) ──
         positions = ctx.engine.get_positions(ctx.strategy)
         current_lots = {p["symbol"]: p["shares"] // LOT_SIZE for p in positions}
+        # 硬止损
         stops = rm.check_hard_stop(positions, ctx.prices)
         for st in stops:
             _log.warning(f"[{ctx.today}] stop-loss: {st['symbol']} "
@@ -152,6 +163,19 @@ class ExecutionModel(ABC):
             target_lots = {s: l for s, l in target_lots.items()
                            if s not in result.stopped_out}
             targets = [tp for tp in targets if tp["symbol"] not in result.stopped_out]
+
+        # v410: ATR 动态止盈止损 (回测↔实盘一致)
+        # 构建 quotes dict (回测用日线价格)
+        _quotes = {s: {"price": p} for s, p in ctx.prices.items() if p > 0}
+        atr_stops = rm.check(positions, _quotes, ctx.today)
+        for _as in atr_stops:
+            _log.warning(f"[{ctx.today}] ATR stop: {_as['symbol']} {_as['reason']}")
+            ctx.engine.execute(
+                [Order(symbol=_as["symbol"], side="sell", shares=_as["shares"],
+                       price=_as["price"], cost=0)],
+                ctx.today, ctx.strategy)
+            result.stopped_out.append(_as["symbol"])
+            result.sells += 1
 
         # ── 3. delta 计算 ──
         cash = ctx.engine.get_cash(ctx.strategy)
@@ -231,6 +255,8 @@ class BacktestExecutionModel(ExecutionModel):
                         o.price = round(o.price * (1 + impact_bps / 10000), 2)
                     else:
                         o.price = round(o.price * (1 - impact_bps / 10000), 2)
+                    # v406: 价格调整后更新 cost, 防止成交现金为负
+                    o.cost = round(o.cost + o.price * o.shares * (impact_bps / 10000), 2)
             _log.debug(f"[{ctx.today}] cost model: {len(orders)} {side} orders, "
                        f"impact_bps={impact_bps:.1f}")
         except Exception as e:

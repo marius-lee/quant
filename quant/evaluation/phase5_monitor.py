@@ -203,8 +203,12 @@ def sync_factor_status() -> dict:
         new_retry = retry_map.get(name, 0) + 1
         # test-v306: probation 因子不能走 EVAL_FAIL (状态机只允许 evaluating→EVAL_FAIL).
         # 已在实盘的 probation 因子应走 IC_PERSISTENT 归档.
-        current = f_repo.get_factor_by_name(name)
-        current_status = current["status"] if current else "evaluating"
+        # v419 fix: 原 f_repo 未定义 (v346 重写时删了 FactorRepo 初始化但留引用 →
+        # NameError 每周六必炸). 直接查 factor_registry 状态, 消除 repo 依赖.
+        current_row = conn.execute(
+            "SELECT status FROM factor_registry WHERE name=?", (name,)
+        ).fetchone()
+        current_status = current_row[0] if current_row else "evaluating"
         event = "EVAL_FAIL" if current_status == "evaluating" else "IC_PERSISTENT"
         try:
             fsm.transition(name, event, reasons[name], retry_count=new_retry)

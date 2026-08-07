@@ -2,6 +2,20 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+## 当前状态 (test-v419, 2026-08-08)
+
+### v419: phase5 状态同步 NameError 修复 (2026-08-08)
+
+**现象**: Web 调度页「评估-状态同步」(eval_phase5) 今日失败, 错误 `name 'f_repo' is not defined` (07:28:33, 前四阶段全 OK, weekly_eval 总任务卡 running).
+
+**根因 (v346 重写回归)**: `v331 (85b2930)` 曾修复同一 NameError, 加了 `from quant.data.repos.factor_repo import FactorRepo; f_repo = FactorRepo()`; `v346 (b383132)` 重写 phase5_monitor 时删掉了该初始化 (连同导出重构), 但 **L206 的 `f_repo.get_factor_by_name(name)` 引用保留** → 每周六 phase5 必炸. 过去两周 (08-01/08-08) 均失败, 因子状态裁决从未生效.
+
+**修复** (`quant/evaluation/phase5_monitor.py:206-211`): 该查询仅需 factor_registry 的 status 列, 且函数内已有 `conn` (DatabaseManager.market), 直接 SQL 查询消除 FactorRepo 依赖 — 零新增依赖, 减少一个 repo 往返.
+
+**验证**: `test_codereview_phase5_fix.py` 2/2 (全 mock: 临时 market.db + 假 phase2/3/4 数据 + StubFSM; 断言不抛 NameError + retired 事件选择合法); 全量 `pytest test/` **279 passed** (277+2). VERSION → test-v419.
+
+**遗留**: weekly_eval 08-08 的 running 残留行 (进程退出即失效, 下周六 dedup 由 pid 存活检测接管); 周六最终裁决需 08-15 下一次真实执行验证 (与 v417 weekly 断链修复同一验证点).
+
 ## 当前状态 (test-v418, 2026-08-08)
 
 ### CODE-REVIEW-2026-08-07 遗留 R1-R11 全量修复 (2026-08-08, v418)

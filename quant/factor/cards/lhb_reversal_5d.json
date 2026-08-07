@@ -3,8 +3,8 @@
   "display_name": "lhb_reversal_5d",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.056,
-  "icir_12m": -1.0973,
+  "ic_mean_12m": -0.0574,
+  "icir_12m": -1.126,
   "last_evaluated": "auto",
   "n_obs": 130
 }

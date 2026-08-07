@@ -37,22 +37,31 @@ class MultiTimeframeConfirmer:
         self.weekly_weight = weekly_weight or _require_cfg("alpha.weekly_weight")
 
     def _get_weekly_return(self, symbol: str, date: str) -> float:
-        """获取周线收益率 (本周五 vs 上周五收盘价)."""
+        """获取周线收益率 (最近完整周五 vs 再上一周五收盘价).
+
+        C5 (CODE-REVIEW): 原 `end_of_week = date - (dayofweek-4)` 取"本周五",
+        周三/周四调用时拿到未来日期 → 用未来收盘算周收益 (前视偏差).
+        修: 取 ≤ date 的最近周五 (周一~四 → 上周五), 非交易日用 ≤ 该日的
+        最近交易日, 严格 PIT.
+        """
         conn = sqlite3.connect(MARKET_DB)
         try:
-            # 取上周五和本周五收盘价
             date_ts = pd.Timestamp(date)
-            end_of_week = date_ts - pd.Timedelta(days=date_ts.dayofweek - 4)
-            prev_week = end_of_week - pd.Timedelta(days=7)
+            # 距最近一个周五的天数 (周五=0, 周一=3); (dayofweek-4)%7 保证非负
+            last_fri = date_ts - pd.Timedelta(days=(date_ts.dayofweek - 4) % 7)
+            prev_fri = last_fri - pd.Timedelta(days=7)
 
-            rows = conn.execute(
-                "SELECT date, close FROM daily "
-                "WHERE symbol=? AND date IN (?, ?) ORDER BY date DESC",
-                (symbol, end_of_week.strftime("%Y-%m-%d"), prev_week.strftime("%Y-%m-%d"))
-            ).fetchall()
+            end = conn.execute(
+                "SELECT close FROM daily WHERE symbol=? AND date <= ? "
+                "ORDER BY date DESC LIMIT 1",
+                (symbol, last_fri.strftime("%Y-%m-%d"))).fetchone()
+            start = conn.execute(
+                "SELECT close FROM daily WHERE symbol=? AND date <= ? "
+                "ORDER BY date DESC LIMIT 1",
+                (symbol, prev_fri.strftime("%Y-%m-%d"))).fetchone()
 
-            if len(rows) >= 2 and rows[0][1] > 0 and rows[1][1] > 0:
-                return (rows[0][1] - rows[1][1]) / rows[1][1]
+            if end and start and end[0] > 0 and start[0] > 0:
+                return (end[0] - start[0]) / start[0]
         finally:
             conn.close()
         return 0.0

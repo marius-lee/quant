@@ -40,22 +40,10 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
                      skip_pull: bool = False, store=None, status_filter: str = "using",
                      scope: str = "live",
                      suppress_push: bool = False, universe_size: int = None,
-                     db_path: str = TRADE_DB, exclude_symbols: list = None, ic_map: dict = None, combine_mode: str = None, preloaded_data=None, primitives: dict = None, factor_store=None,
+                     db_path: str = TRADE_DB, exclude_symbols: list = None, ic_map: dict = None, combine_mode: str = None, primitives: dict = None, factor_store=None,
                      regime_label: str = None, regime_probs: dict = None,
-                     factor_cache: dict = None,  # test-v397 (P0): 预加载因子缓存 {date: {factor: Series}}
-                     turnover_amount_roll = None,  # test-v398 (perf): 成交额滚动均值 DataFrame, 按日排序
-                     bm_returns: "pd.Series | None" = None,  # test-v398 (perf): 预加载 benchmark 收益序列
-                     stock_names: dict = None,  # test-v398 (perf): 预加载股票名称 {symbol: name}
-                     preloaded_seal_ratios: dict = None,  # test-v398 (perf): 预加载涨停封成比 {date: {symbol: ratio}}
-                     prebuilt_engine = None,  # test-v398 (perf): 复用 ExecutionEngine
-                     prebuilt_cost_model = None,  # test-v398 (perf): 复用 CostModel
-                     prebuilt_constructor = None,  # test-v398 (perf): 复用 PortfolioConstructor
-                     fund_stocks_df = None,  # test-v398 (perf): 预加载 stocks 静态表
-                     fund_val_piv = None,    # test-v398 (perf): 预加载 daily_valuation pivot
-                     fund_close_piv = None,  # test-v398 (perf): 预加载 close pivot (复用 data_full)
-                     fund_high_52w = None,   # test-v398 (perf): 预加载 52w high
-                     all_symbols: list = None,  # test-v398 (perf): 预加载全量 symbol 列表
-                     ctx: "BacktestContext | PipelineContext | None" = None) -> dict:
+                     ctx: "BacktestContext | None" = None,  # v418 (R4): preload 依赖收敛进 BacktestContext
+                     ) -> dict:
     """Pipeline 阶段一: 盘前信号生成 (Steps 0-5, 不执行交易)。
 
     test-v398: 新增 ctx (BacktestContext) 参数 - 回测传预加载上下文, 实盘传 None。
@@ -74,27 +62,34 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     if date_str is None:
         date_str = datetime.today().strftime("%Y-%m-%d")
 
+    # ── v418 (R4): preload 依赖已收敛进 ctx; 无 ctx 时全部为 None (不预加载) ──
+    preloaded_data = factor_cache = turnover_amount_roll = bm_returns = None
+    stock_names = preloaded_seal_ratios = None
+    prebuilt_engine = prebuilt_cost_model = prebuilt_constructor = None
+    fund_stocks_df = fund_val_piv = fund_close_piv = fund_high_52w = None
+    all_symbols = None
+
     # ── test-v398: BacktestContext 解包 — 覆盖所有兼容参数 ──
     from quant.backtest.context import BacktestContext
     if isinstance(ctx, BacktestContext):
         suppress_push = ctx.suppress_push
         universe_size = ctx.universe_size if ctx.universe_size is not None else universe_size
         db_path = ctx.db_path or db_path
-        preloaded_data = ctx.data_full if ctx.data_full is not None else preloaded_data
-        factor_store = ctx.factor_store if ctx.factor_store is not None else factor_store
-        factor_cache = ctx.factor_cache if ctx.factor_cache is not None else factor_cache
-        turnover_amount_roll = ctx.turnover_amount_roll if ctx.turnover_amount_roll is not None else turnover_amount_roll
-        bm_returns = ctx.bm_returns if ctx.bm_returns is not None else bm_returns
-        stock_names = ctx.stock_names if ctx.stock_names is not None else stock_names
-        preloaded_seal_ratios = ctx.preloaded_seal_ratios if ctx.preloaded_seal_ratios is not None else preloaded_seal_ratios
-        prebuilt_engine = ctx.prebuilt_engine if ctx.prebuilt_engine is not None else prebuilt_engine
-        prebuilt_cost_model = ctx.prebuilt_cost_model if ctx.prebuilt_cost_model is not None else prebuilt_cost_model
-        prebuilt_constructor = ctx.prebuilt_constructor if ctx.prebuilt_constructor is not None else prebuilt_constructor
-        fund_stocks_df = ctx.fund_stocks_df if ctx.fund_stocks_df is not None else fund_stocks_df
-        fund_val_piv = ctx.fund_val_piv if ctx.fund_val_piv is not None else fund_val_piv
-        fund_close_piv = ctx.fund_close_piv if ctx.fund_close_piv is not None else fund_close_piv
-        fund_high_52w = ctx.fund_high_52w if ctx.fund_high_52w is not None else fund_high_52w
-        all_symbols = ctx.all_symbols if ctx.all_symbols is not None else all_symbols
+        preloaded_data = ctx.data_full
+        factor_store = factor_store if factor_store is not None else ctx.factor_store
+        factor_cache = ctx.factor_cache
+        turnover_amount_roll = ctx.turnover_amount_roll
+        bm_returns = ctx.bm_returns
+        stock_names = ctx.stock_names
+        preloaded_seal_ratios = ctx.preloaded_seal_ratios
+        prebuilt_engine = ctx.prebuilt_engine
+        prebuilt_cost_model = ctx.prebuilt_cost_model
+        prebuilt_constructor = ctx.prebuilt_constructor
+        fund_stocks_df = ctx.fund_stocks_df
+        fund_val_piv = ctx.fund_val_piv
+        fund_close_piv = ctx.fund_close_piv
+        fund_high_52w = ctx.fund_high_52w
+        all_symbols = ctx.all_symbols
         ic_map = ctx.ic_map if ctx.ic_map is not None else ic_map
         combine_mode = ctx.combine_mode if ctx.combine_mode is not None else combine_mode
         regime_label = ctx.regime_label if ctx.regime_label is not None else regime_label
@@ -426,10 +421,11 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
             from quant.regime.detector import get_current_regime
             regime_label, regime_probs = get_current_regime()
         if regime_label is not None:
-            from quant.regime.detector import get_regime_sizing
-            _sizing = get_regime_sizing(regime_label)
+            # v418 (R8): 删 get_regime_sizing (capital 乘数法废弃) — 展示 lot cap
+            from quant.optimizer.portfolio import _get_regime_max_lots
+            _sizing = _get_regime_max_lots("micro", regime_label)
             if not suppress_push:
-                broker.update({"regime": regime_label, "regime_sizing": _sizing,
+                broker.update({"regime": regime_label, "regime_max_lots": _sizing,
                            "regime_confidence": round(regime_probs.get(regime_label, 0), 2) if regime_probs else 0})
             alpha_raw = am.combine_regime(factor_values, ic_map=ic_map,
                                           regime_label=regime_label,
@@ -597,13 +593,15 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
 def execute_signals(target_positions: list[dict], date_str: str, strategy: str = "quant",
                     prices: dict = None, db_path: str = TRADE_DB,
                     suppress_push: bool = False, ctx = None,
-                    risk_only: bool = False) -> dict:
+                    risk_only: bool = False, ohlc: dict = None) -> dict:
     """Pipeline 阶段二: 开盘执行 (Step 6)。
 
     prices: 预提供的开盘价dict (回测用); None则由fetch_quotes获取实时报价.
     db_path: 交易数据库路径 (回测用); None使用默认.
     suppress_push: True→不调用 broker.update (回测用).
     risk_only: True→只跑硬止损, 不再平衡 (weekly 非调仓日, rebalance_freq).
+    ohlc: B8 (CODE-REVIEW) 回测用 {symbol: {open,high,low,prev_close}} —
+          一字板涨跌停成交阻断; None → 不做限制 (live 有独立 quote 预检).
     """
     from quant.utils.logger import get_trace_id, set_trace_id as _set_tid
     tid = get_trace_id() or _uuid.uuid4().hex[:12]
@@ -694,6 +692,7 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
     _exec_ctx = ExecutionContext(
         engine=engine, strategy=strategy, today=date_str, prices=prices,
         cost_model=cost_model,
+        ohlc=ohlc,  # B8: 一字板涨跌停阻断 (回测); None=live 无限制
     )
     _exec_res = BacktestExecutionModel().run(target_positions, _exec_ctx,
                                              risk_only=risk_only)

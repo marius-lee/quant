@@ -528,10 +528,13 @@ class EnsembleAlphaModel:
                 else np.zeros(len(syms))
                 for fn in feature_names
             ]).astype(np.float32)  # float32 减半内存
-            y_day = forward_returns.loc[ts].reindex(syms).fillna(0).values.astype(np.float32)
-            mask = ~np.isnan(y_day)
+            # B4 (CODE-REVIEW): mask 先于 fillna — 原 fillna(0) 后再 isnan →
+            # 掩码恒真, NaN 前向收益日 (停牌/新股) 以 0 混入训练集
+            y_day_raw = forward_returns.loc[ts].reindex(syms)
+            mask = y_day_raw.notna().values
             if mask.sum() < 20:
                 continue
+            y_day = y_day_raw.fillna(0).values.astype(np.float32)
             X_chunks.append(X_day[mask])
             y_chunks.append(y_day[mask])
 
@@ -650,10 +653,12 @@ def rolling_train_cv(
                 (factor_values[fn].loc[ds].reindex(syms).fillna(0).values
                  if fn in factor_values and ds in factor_values[fn].index
                  else np.zeros(len(syms))) for fn in feature_names])
-            y = forward_returns.loc[ts].reindex(syms).fillna(0).values
-            m = ~np.isnan(y)
+            # B4: mask 先于 fillna (原 fillna(0)→isnan 恒 False)
+            y_raw = forward_returns.loc[ts].reindex(syms)
+            m = y_raw.notna().values
             if m.sum() < 20:
                 continue
+            y = y_raw.fillna(0).values
             X_tr.append(X[m]); y_tr.append(y[m])
         if not X_tr:
             continue
@@ -680,10 +685,12 @@ def rolling_train_cv(
                 (factor_values[fn].loc[ds].reindex(syms).fillna(0).values
                  if fn in factor_values and ds in factor_values[fn].index
                  else np.zeros(len(syms))) for fn in feature_names])
-            y_te = forward_returns.loc[ts].reindex(syms).fillna(0).values
-            mask = ~np.isnan(y_te)
+            # B4: mask 先于 fillna (OOS 预测同样剔除无前向收益的样本)
+            y_te_raw = forward_returns.loc[ts].reindex(syms)
+            mask = y_te_raw.notna().values
             if mask.sum() < 20:
                 continue
+            y_te = y_te_raw.fillna(0).values
             yp_all.append(m.predict(X_te[mask]))
             yt_all.append(y_te[mask])
         if yp_all:

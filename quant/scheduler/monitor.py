@@ -17,7 +17,16 @@ from quant.monitor.metrics import metrics as _m
 from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
 from quant.scheduler.order_manager import OrderManager
 from quant.data.repos import TradeRepo
-from quant.config.paths import TRADE_DB
+from quant.config.paths import TRADE_DB, MARKET_DB
+# v418 (R6): 跨层 import 提为模块顶部 (运行时 import 隐藏循环依赖,
+# 实为静态拓扑, 顶层声明让依赖可 lint/审查)
+from quant.scheduler.status import register
+from quant.core.state_broker import broker
+from quant.execution.calendar import is_market_open, is_trading_day
+from quant.execution.broker_adapter import get_broker_adapter
+from quant.execution.engine import ExecutionEngine, Order
+from quant.execution.quote import fetch_quotes
+from quant.execution.stop_loss import RiskManager
 
 _log = get_logger(__name__)
 
@@ -32,10 +41,6 @@ QUOTE_THROTTLE_SEC = 5  # 行情 API 限频
 def _run_continuous_inner(today: str, stop_event=None):
     """盘中持续风控循环 — 09:35-11:30, 13:00-14:55 每 30s 检查一次 (午休跳过).
     v368: 响应 stop_event 避免被 orchestrator 孤立后仍写 task_runs. """
-    from quant.scheduler.status import register
-    from quant.core.state_broker import broker
-    from quant.execution.calendar import is_market_open
-
     register("monitor", "09:35-11:30,13:00-14:55", has_multiprocess=False)
 
     _log.info(f"[{today}] monitor started — interval={CHECK_INTERVAL_SEC}s")
@@ -117,7 +122,6 @@ def _run_continuous_inner(today: str, stop_event=None):
         if now_ts - last_quote_ts >= QUOTE_THROTTLE_SEC:
             last_quote_ts = now_ts
             # 合并持仓符号 + 挂单符号, 统一拉取行情
-            from quant.execution.quote import fetch_quotes
             _pos_syms = [p["symbol"] for p in positions] if positions else []
             _pending_list = OrderManager().get_pending(today, strategy="quant")
             _pending_syms = [po.symbol for po in _pending_list]
@@ -195,7 +199,9 @@ def _run_continuous_inner(today: str, stop_event=None):
                         finally:
                             conn2.close()
                 except Exception as e:
-                    _log.debug(f"VaR check skipped (non-fatal): {type(e).__name__}")
+                    # v418 (R2): 原 debug 吞错 → warning + metric 可观测化
+                    _m.inc("scheduler.monitor.check_failed.var")
+                    _log.warning(f"[{today}] VaR check failed (will retry): {type(e).__name__}: {e}")
 
             # ── P6-d: 流动性过滤器 ──
             if positions:
@@ -212,13 +218,13 @@ def _run_continuous_inner(today: str, stop_event=None):
                     finally:
                         conn2.close()
                 except Exception as e:
-                    _log.debug(f"Liquidity check skipped (non-fatal): {type(e).__name__}")
+                    _m.inc("scheduler.monitor.check_failed.liquidity")
+                    _log.warning(f"[{today}] Liquidity check failed (will retry): {type(e).__name__}: {e}")
 
             # ── P6-e: 交易频率监控 (R2: 防止过度交易) ──
             try:
                 max_trades = _require_cfg("monitor.max_trades_per_day")
                 max_daily_turnover = _require_cfg("monitor.max_daily_turnover_pct")
-                from quant.execution.engine import ExecutionEngine
                 eng = ExecutionEngine()
                 today_trades = eng.get_trades(strategy="quant", limit=max_trades * 2)
                 today_cnt = sum(1 for t in today_trades if t.get("date") == today)
@@ -235,10 +241,10 @@ def _run_continuous_inner(today: str, stop_event=None):
                     if turnover_pct > max_daily_turnover:
                         alerts.append(f"换手率告警: 今日{turnover_pct*100:.0f}% > {max_daily_turnover*100:.0f}%")
             except Exception as e:
-                _log.debug(f"Trade frequency check skipped (non-fatal): {type(e).__name__}")
+                _m.inc("scheduler.monitor.check_failed.tradefreq")
+                _log.warning(f"[{today}] Trade frequency check failed (will retry): {type(e).__name__}: {e}")
 
-            from quant.execution.stop_loss import RiskManager as _RM
-            rm = _RM()
+            rm = RiskManager()
             # test-v313: 加载持久化的峰值/止盈标记 (进程重启后恢复)
             _trepo = TradeRepo()
             for p in positions:
@@ -302,14 +308,14 @@ def _run_continuous_inner(today: str, stop_event=None):
 def _execute_sell(today: str, symbol: str, shares: int, price: float,
                   reason: str, pnl_pct: float):
     """执行卖出订单 — ADR-036: 优先通过 broker_adapter, 回退 engine.execute."""
-    from quant.execution.broker_adapter import get_broker_adapter
-
     # ADR-036: 尝试 broker adapter
     adapter = None
     try:
         adapter = get_broker_adapter()
     except Exception as e:
-        _log.debug(f"broker adapter unavailable, using engine fallback: {e}")
+        # v418 (R2): 原 debug 吞错 → critical + metric (适配器故障时静默走模拟执行是危险默认)
+        _m.inc("scheduler.monitor.adapter_fallback")
+        _log.critical(f"[{today}] broker adapter unavailable → 降级模拟执行: {type(e).__name__}: {e}")
 
     if adapter is not None and adapter.is_connected() and not adapter.name == "simulated":
         result = adapter.sell(symbol, price, shares, order_type="MARKET")
@@ -330,7 +336,6 @@ def _execute_sell(today: str, symbol: str, shares: int, price: float,
 
 def _engine_sell(today: str, symbol: str, shares: int, price: float):
     """模拟卖出 — engine.execute 写入 sim_trades。"""
-    from quant.execution.engine import ExecutionEngine, Order
     engine = ExecutionEngine()
     engine.execute(
         [Order(symbol=symbol, side="sell", shares=shares,
@@ -341,8 +346,6 @@ def _engine_sell(today: str, symbol: str, shares: int, price: float):
 
 def _outer_loop():
     """外层循环: 每天等待到 09:35 后启动 _run_continuous."""
-    from quant.execution.calendar import is_trading_day
-
     today = None
     started = False
 
@@ -382,7 +385,6 @@ def _set_monitor_stage(stage: str):
     """更新当前 monitor 实例的 task_runs 状态 (running → lunch → running).
     v369: 按 pid 精确更新, 不覆写同日期其他 monitor 实例的行 (Bug C)."""
     import sqlite3, os
-    from quant.config.paths import MARKET_DB
     from datetime import date
     today = date.today().strftime("%Y-%m-%d")
     try:
@@ -407,6 +409,5 @@ def _loop():
 def _get_market_conn():
     """获取 market.db 只读连接 (P6 辅助)."""
     import sqlite3
-    from quant.config.paths import MARKET_DB
     conn = sqlite3.connect(MARKET_DB)
     return conn

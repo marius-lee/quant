@@ -60,7 +60,7 @@ from typing import Optional
 from quant.config.constants import *
 from quant.factor.registry import _cs_zscore, _db_connect, _FIN_FACTORS
 from quant.factor.compute._shared import _market_db_path
-from quant.data.repos._base import DatabaseManager
+from quant.data.repos._base import DatabaseManager  # noqa: F401 (bw compat)
 from quant.factor.compute.missing import compute_revenue_growth_yoy  # test-v323
 from quant.factor.compute.missing import (
     compute_earnings_growth_yoy, compute_piotroski_fscore,
@@ -670,7 +670,7 @@ def compute_asset_growth(fundamentals, date, financials=None):
     # 当前季度: fin 已有最新 total_assets
     # 需要去年同期: 查询 financial_balance
     db = _market_db_path()
-    conn = DatabaseManager.market()
+    conn = _db_connect()
 
     # 获取每个 symbol 的最新 stat_date
     _syms = fundamentals.index.tolist()
@@ -768,7 +768,7 @@ def compute_sue(fundamentals, date, financials=None):
     import sqlite3, pandas as pd, numpy as np
 
     db = _market_db_path()
-    conn = DatabaseManager.market()
+    conn = _db_connect()
 
     _syms = fundamentals.index.tolist()
     _ph = ",".join(["?"] * len(_syms))
@@ -849,7 +849,7 @@ def compute_holder_reduction(fundamentals, date, financials=None):
     import sqlite3, pandas as pd
 
     db = _market_db_path()
-    conn = DatabaseManager.market()
+    conn = _db_connect()
 
     _syms = fundamentals.index.tolist()
     _ph = ",".join(["?"] * len(_syms))
@@ -890,7 +890,7 @@ def compute_pledge_ratio(fundamentals, date, financials=None):
     import sqlite3, pandas as pd
 
     db = _market_db_path()
-    conn = DatabaseManager.market()
+    conn = _db_connect()
 
     _syms = fundamentals.index.tolist()
     _ph = ",".join(["?"] * len(_syms))
@@ -933,7 +933,7 @@ def compute_dividend_yield(fundamentals, date, financials=None):
     import sqlite3, pandas as pd
 
     db = _market_db_path()
-    conn = DatabaseManager.market()
+    conn = _db_connect()
 
     _syms = fundamentals.index.tolist()
     _ph = ",".join(["?"] * len(_syms))
@@ -1016,7 +1016,7 @@ def compute_ocfp(fundamentals, date, financials=None):
 
     # TTM经营现金流: 直接查 financial_cash_flow 表最近4个季度
     ocfp_vals = {}
-    _conn = DatabaseManager.market()
+    _conn = _db_connect()
     placeholders = ",".join("?" for _ in valid_syms)
     cf_df = pd.read_sql_query(
         f"""SELECT symbol, stat_date, net_operate_cash_flow
@@ -1068,8 +1068,6 @@ def compute_ocfp(fundamentals, date, financials=None):
 # P71: 涨跌停制度特有效因子 — 封成比 / 封板时间 / 涨停打开 / 净涨停占比
 # ═══════════════════════════════════════════════════════════
 
-_shared_limit_conn = None  # 模块级共享连接, 避免每个因子重复开 DB
-
 def compute_epa(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
     """EPA估值异常: PE 截面 Z-score 取负 (PE高→估值贵→负信号).
 
@@ -1109,7 +1107,7 @@ def compute_insider_cluster(data, date, window=60):
     import sqlite3, os as _os5
     symbols = list(data.index)
     result = pd.Series(0.0, index=symbols)
-    conn = DatabaseManager.market()
+    conn = _db_connect()
     rows = conn.execute(
         "SELECT symbol, holder_type, direction, change_ratio FROM holder_trade "
         "WHERE ann_date >= date(?, '-{} days') AND direction IN ('增加','增持','买入')".format(window),
@@ -1140,7 +1138,7 @@ def compute_earnings_upgrade(data, date, window=90):
     import sqlite3, os as _os6
     symbols = list(data.index)
     result = pd.Series(0.0, index=symbols)
-    conn = DatabaseManager.market()
+    conn = _db_connect()
     # Get latest analyst forecast for each stock
     rows = conn.execute(
         "SELECT symbol, buy_count, overweight_count, neutral_count, "
@@ -1175,7 +1173,7 @@ def compute_earnings_upgrade(data, date, window=90):
 def _get_macro_value(indicator: str, date: str) -> float:
     """读取 macro_indicator 表中最近可用的宏观指标值."""
     import sqlite3
-    conn = DatabaseManager.market()
+    conn = _db_connect()
     row = conn.execute(
         "SELECT value FROM macro_indicator WHERE indicator=? AND date <= ? ORDER BY date DESC LIMIT 1",
         (indicator, date)

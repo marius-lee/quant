@@ -1,11 +1,3 @@
-# quant — A股量化选股系统 配置文件 (单一真相源)
-# 所有参数均有文献或业界依据, 详见行内注释与底部来源对照表。
-# ADR-041: 参数全面对齐业界标准 (2026-07-28, test-v281 恢复+更新)
-
-# quant — A股量化选股系统 配置文件 (单一真相源)
-# 所有参数均有文献或业界依据, 详见行内注释与底部来源对照表。
-# ADR-041: 参数全面对齐业界标准 (2026-07-28, test-v281 恢复+更新)
-
 alpha:
   lgb:
     train:
@@ -13,7 +5,7 @@ alpha:
       test_start: '2024-01-01'
       forward_horizon: 5
       cv_folds: 5
-      train_chunk_samples: 4_000_000   # 来源: 2026-07-30 OOM 实测, MacBook 16GB, 4M×75×float32≈1.2GB/批安全
+      train_chunk_samples: 4000000
     predict:
       fallback: ic_weighted
     params:
@@ -34,21 +26,21 @@ alpha:
     train:
       start_date: '2015-01-01'
       forward_horizon: 5
-      train_chunk_samples: 4_000_000   # 来源: 复用 lgb 实测值, xgb 内存占用相近
+      train_chunk_samples: 4000000
     predict:
       fallback: ic_weighted
     params:
       objective: reg:squarederror
       booster: gbtree
       n_estimators: 200
-      learning_rate: 0.01              # 来源: 量化常用低学习率, 配合早停防过拟合
-      max_depth: 5                     # 来源: 量化树深 3-6, 防噪音学习
-      subsample: 0.8                   # 来源: 行采样 0.7-0.8
-      colsample_bytree: 0.8            # 来源: 列采样 0.7-0.8
-      reg_lambda: 1.0                  # 来源: L2 正则, 量化第一要务 (1-10)
-      reg_alpha: 0.1                   # 来源: L1 正则辅助
-      min_child_weight: 20             # 来源: 等价 lgb min_data_in_leaf
-      early_stopping_rounds: 20        # 来源: 早停, 未提供 eval_set 时内部忽略
+      learning_rate: 0.01
+      max_depth: 5
+      subsample: 0.8
+      colsample_bytree: 0.8
+      reg_lambda: 1.0
+      reg_alpha: 0.1
+      min_child_weight: 20
+      early_stopping_rounds: 20
   combine_mode: sleeve
   intersection_primary: gap_5d
   intersection_top_fraction: 0.2
@@ -67,9 +59,7 @@ alpha:
 attribution:
   ic_rolling_window: 60
   ic_degradation_threshold: 0.3
-  l1_rolling_days: 5          # [test-v398] L1 IC衰减检测改用5日均值 (原单日vals[-1])
-  # 依据: Grinold & Kahn (1999) 建议月频IC窗口, WorldQuant 101 Alphas 用周频,
-  # 单日IC噪声σ≈3-5×mean, 30%偏离近乎必然触发, 导致active→probation误杀
+  l1_rolling_days: 5
   monitoring_buffer_days: 20
   promotion_stability_days: 10
   dsr_degraded_threshold: 0.5
@@ -81,17 +71,15 @@ attribution:
   risk_free_rate: 0.02
   corr_redundant_threshold: 0.7
   oos_warning_decay: 0.5
-  oos_recovery_threshold: 0.7   # [test-v398] probation→active 恢复门槛 (原1.5)
-  # 依据: AQR 20-for-20 (2018) 因子淘汰条件为OOS/IS<0.2, 恢复即>0.5;
-  # Two Sigma Factor Lens (2021) 无>1.0恢复概念; OOS/IS>0.7已属优秀
-  tier_nano_cap: 50000        # 来源: test-v284, 精简模式 AUM 上限
-  tier_micro_cap: 500000      # 来源: test-v284, 标准模式 AUM 上限
-  turnover_limit_nano: 999.0  # 来源: test-v284, Nano层不限换手
-  turnover_limit_micro: 2.0   # 来源: test-v284, Micro层200%阈值
-  turnover_limit_small: 0.5   # 来源: test-v284, Small层50%阈值
-  slippage_limit_nano: 0.05   # 来源: test-v284, Nano层5%滑点
-  slippage_limit_micro: 0.02  # 来源: test-v284, Micro层2%滑点
-  slippage_limit_small: 0.01  # 来源: test-v284, Small层1%滑点
+  oos_recovery_threshold: 0.7
+  tier_nano_cap: 50000
+  tier_micro_cap: 500000
+  turnover_limit_nano: 999.0
+  turnover_limit_micro: 2.0
+  turnover_limit_small: 0.5
+  slippage_limit_nano: 0.05
+  slippage_limit_micro: 0.02
+  slippage_limit_small: 0.01
 oos_verify:
   train_window_days: 170
   test_window_days: 20
@@ -154,8 +142,8 @@ data:
     akshare_industry_sec: 0.8
   source_policy:
     enabled:
-      tencent: false    # v408: IP 封禁中, 关闭节省回退耗时
-      akshare: false    # v408: IP 封禁中, 关闭节省回退耗时
+      tencent: false
+      akshare: false
       tushare: true
       baostock: true
       tickflow: true
@@ -237,12 +225,10 @@ factor:
     earnings_decay_lambda: 0.0077
     zscore_min_count_dense: 30
     zscore_min_count_sparse: 10
-    # v365: 物化性能参数
-    cache_compresslevel: 1               # gzip 压缩级别 (1=快/大, 6=慢/小, M1 Max实测级别1快3x)
-    cache_worker_threshold: 50           # 因子数超此阈值时 max_workers 4→2 (防 OOM)
-    cache_checkpoint_ttl_sec: 86400      # 断点有效期 (24h), 超时视为过期
-    # v363: Alpha 冗余检测
-    redundancy_corr_threshold: 0.7        # 因子对相关系数超此值视为冗余 (WorldQuant 标准)
+    cache_compresslevel: 1
+    cache_worker_threshold: 50
+    cache_checkpoint_ttl_sec: 86400
+    redundancy_corr_threshold: 0.7
   debt_ratio:
     max: 2
     min: 0
@@ -262,10 +248,10 @@ factor:
     min_abs_ic: 0.02
     min_half_life: 20
     min_icir: 0.25
-    monitoring_min_icir: 0.20            # 来源: test-v285, probation参与信号后从0.15→0.20 (Grinold & Kahn IR≥0.25=弱, 观察池向下取0.20)
-    monitoring_min_abs_ic: 0.015         # 来源: test-v285, probation参与信号后从0.01→0.015 (IC=0.01无经济意义, Qlib标准≥0.02)
+    monitoring_min_icir: 0.2
+    monitoring_min_abs_ic: 0.015
     max_retries: 3
-    diagnostics_min_icir: 0.20            # 来源: test-v285, 与 monitoring_min_icir 对齐 (原本 0.15)
+    diagnostics_min_icir: 0.2
     diagnostics_pnl_threshold: 0.1
     diagnostics_review_threshold: -0.5
     n_days: 252
@@ -333,14 +319,14 @@ optimizer:
   micro_cap: 100000
   nano:
     regime_max_lots:
-      bull: 999          # 牛市无限制 — 来源: v399 regime sizing 挪入 construct
-      sideways: 1        # 震荡市每只股票最多1手 — 来源: v400 防¥5K空仓
-      bear: 1            # 熊市每只股票最多1手 — 来源: v400 防¥5K空仓
+      bull: 999
+      sideways: 1
+      bear: 1
   micro:
     regime_max_lots:
-      bull: 999          # 牛市无限制 — 来源: v401 Micro 统一为 lot-based
-      sideways: 5        # 震荡市每只股票最多5手 — 来源: v401 ¥50K 侧 ~47%/只
-      bear: 2            # 熊市每只股票最多2手 — 来源: v401 ¥50K 侧 ~19%/只
+      bull: 999
+      sideways: 5
+      bear: 2
   kelly_fraction: 0.5
   tc_lambda: 1.0
   tc_horizon_days: 5
@@ -417,78 +403,9 @@ universe:
 regime:
   retrain_days: 7
   train_start: '2024-01-01'
-  sizing:
-    bull: 1.0           # 牛市满仓 — 来源: 九坤/明汯 牛市≥100%仓位
-    sideways: 0.6       # 震荡半仓 — 来源: 恒泰 震荡≤60%仓位
-    bear: 0.3           # 熊市三成 — 来源: 恒泰 熊市≤30%仓位, 保留现金抄底
-    min_signal: 0.0     # 低于此阈值的信号不交易 (0=不启用)
   kelly:
-    bull: 0.8           # test-v397: Kelly fraction 牛市激进 (原固定 0.5)
-    sideways: 0.5       # test-v397: 震荡中性
-    bear: 0.2           # test-v397: 熊市保守, 降 Kelly 防回撤
+    bull: 0.8
+    sideways: 0.5
+    bear: 0.2
 market:
   annual_trading_days: 244
-
-# ═══════════════════════════════════════════════════════════
-# 参数来源对照表 (ADR-041: 全面对齐业界标准, test-v281 恢复+更新)
-# ═══════════════════════════════════════════════════════════
-# 参数                                  值             来源
-# ───────────────────────────────────── ────────────   ──────────────────────────────────
-# alpha.lgb.train.train_chunk_samples   4_000_000      test-v281: MacBook 16GB OOM 实测, ~1.2GB/批安全
-# alpha.lgb.train.start_date            2015-01-01     Qlib: 10年训练数据覆盖完整牛熊周期
-# alpha.lgb.train.test_start            2024-01-01     Grinold & Kahn: 2年 OOS 足够评估IC持续性
-# alpha.lgb.train.forward_horizon       5              Qlib 标准5日前向收益
-# alpha.lgb.params.num_leaves           31             LightGBM 文档: 31叶平衡精度/速度
-# alpha.lgb.params.learning_rate        0.05           LightGBM 默认学习率
-# alpha.lgb.params.n_estimators         200            LightGBM 文档: 200轮足够收敛
-# alpha.retrain_freq                    60             Grinold & Kahn Ch.6: IC 月度重估
-# alpha.sleeve.min_factors              1              最小因子数
-# alpha.sleeve.positions_per_factor     20             Grinold & Kahn: N=IR²/λ, IR≈0.3→N≈10-30
-# alpha.top_fraction                    0.30           Qlib topk=0.3 软截断
-# alpha.weekly_weight                   0.30           Faber (2007) 双均线周权重
-# alpha.combine_mode                    sleeve         ADR-017: sleeve 并行>ensemble 串行
-# alpha.multi_tf_confirm                False          test-v249: 多时间框架确认 (默认关闭)
-# attribution.turnover_limit_nano       999.0          test-v283: Nano层不限换手
-# attribution.turnover_limit_micro      2.0            test-v283: Micro层200%阈值
-# attribution.turnover_limit_small      0.5            test-v283: Small层50%阈值
-# attribution.slippage_limit_nano       0.05           test-v283: Nano层5%滑点
-# attribution.slippage_limit_micro      0.02           test-v283: Micro层2%滑点
-# attribution.slippage_limit_small      0.01           test-v283: Small层1%滑点
-# attribution.l1_rolling_days            5              test-v398: L1 IC 5日滚动均值 (日频→周均, 防日噪声误杀)
-# attribution.ic_degradation_threshold  0.30           Grinold & Kahn: IC衰减>30%需review
-# attribution.monitoring_buffer_days    10             test-v261: 两交易周, 防单日噪声误杀
-# attribution.promotion_stability_days  5              P2: 一周交易日, 确认IC恢复非噪声
-# attribution.oos_warn_threshold        0.50           test-v261: OOS衰减>50%→告警 (明汯标准)
-# attribution.oos_warning_decay         0.5            test-v261: OOS/IS 比率告警阈值
-# attribution.oos_recovery_threshold    0.7            AQR标准: OOS/IS>0.7即优秀 (原1.5要求反超不现实)
-# attribution.corr_redundant_threshold  0.7            test-v261: 因子相关性冗余阈值
-# backtest.default_start                2020-01-01     test-v262: 6.5年完整周期 (原2023→2020)
-# backtest.factor_cache_max_days        2000           test-v249: 修复裁剪过激 (244→2000)
-# backtest.factor_cache_start           2019-01-01     v383: 对齐2019数据回填(v348-351), 原2020(v255)
-# alpha.top_fraction                    0.08           test-v397: 800只×0.08≈64只进soft cutoff, 与max_positions=30合理衔接 (原0.3→240只gap过大)\n# alpha.weekly_weight                   0.30           Faber (2007) 双均线周权重\n# alpha.combine_mode                    sleeve         ADR-017: sleeve 并行>ensemble 串行\n# alpha.multi_tf_confirm                False          test-v249: 多时间框架确认 (默认关闭)\n# backtest.diagnosis_ic_window          180            test-v397: 180天 IC 估计减少采样误差 (原120)
-# backtest.min_trading_days             10             至少2个自然周
-# data.batch_size                       50             tushare 单次查询上限
-# data.rate_limit.tushare_calls_per_minute 50          tushare 免费档 50次/分钟
-# data.rate_limit.tushare_batch_sec     1.2            tushare 批次间隔
-# execution.limit_order.runaway_start   0.03           test-v252: Kissell IS 时间紧迫度曲线
-# execution.limit_order.runaway_end     0.005          test-v252: 收盘前最大容忍
-# execution.limit_order.volume_limit_pct 0.01          test-v252: 单量>日均1%→跳过
-# factor.compute.winsorize_pct          0.01           Barra USE4: 1%/99%分位裁剪
-# factor.evaluation.min_abs_ic          0.02           Qlib: IC<0.02无经济意义
-# factor.evaluation.min_icir            0.25           Grinold & Kahn: IR=0.25=弱, 0.5=合格, 1.0=优秀
-# factor.evaluation.max_lag             20             test-v249: IC 滞后扫描最大天数
-# factor.evaluation.n_quantiles         5              test-v249: 五分位数分组
-# optimizer.tc_horizon_days             5              test-v397: 对齐 alpha forward_horizon=5 (原 1)
-# optimizer.max_turnover_ratio          999.0          test-v397: 全局换手率约束 (999=不限, Real≥0.5)
-# optimizer.min_weight                  0.01           test-v250: 最小仓位 1%
-# risk.max_single_position              0.05           US mutual fund 单票上限5% (UCITS:10%)
-# risk.max_sector_exposure              0.35           UCITS 行业集中度上限35%
-# risk.stop_loss_pct                    0.08           8%硬止损 (ATR止损不触发时的兜底)
-# risk.atr_period                       14             Wilder (1978) 标准ATR周期
-# risk.atr_mult_stop_loss               2.0            2×ATR 止损 (Turtle Trading)
-# risk.covariance.window                 252            Ledoit-Wolf: T>N 需要足够样本
-# risk.covariance.min_periods           60             最少60天协方差
-# monitor.circuit_breaker_pct           10.0           对冲基金标准: 10-20% drawdown熔断
-# monitor.max_single_concentration      0.10           UCITS: 单票集中度≤10%
-# market.annual_trading_days            244            A股标准年交易日数
-# regime.retrain_days                   7              周频HMM重训练

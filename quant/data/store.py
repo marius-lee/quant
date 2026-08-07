@@ -260,7 +260,7 @@ class DataStore:
                 fields="ts_code,symbol,name,list_date,market")
             if df is not None and not df.empty:
                 # cache the raw response
-                _stock_list_cache.put("symbols", df.to_dict(orient="records"))
+                _stock_list_cache.set("symbols", df.to_dict(orient="records"))
                 for _, row in df.iterrows():
                     sym = row["symbol"]
                     exchange = row.get("market", "")
@@ -433,7 +433,7 @@ class DataStore:
             ind = str(row.get("industry", "")).strip()
             if len(sym) == 6 and ind:
                 industry_map[sym] = ind
-        _industry_cache.put("mapping", industry_map)
+        _industry_cache.set("mapping", industry_map)
 
         updated = 0
         for _, row in df.iterrows():
@@ -1505,7 +1505,7 @@ class DataStore:
             code = f"sh.{sym}" if sym.startswith(('6','5','9')) else f"sz.{sym}"
             try:
                 rs = bs.query_history_k_data_plus(
-                    code, 'date,open,high,low,close,volume,turn',
+                    code, 'date,open,high,low,close,volume,amount,turn',
                     start_date=start, end_date=end, frequency='d', adjustflag='2')
                 if rs.error_code != '0':
                     continue
@@ -1518,11 +1518,12 @@ class DataStore:
                     if r[1] == '' or float(r[1]) == 0:
                         continue
                     conn.execute(
-                        "INSERT OR IGNORE INTO daily(symbol,date,open,high,low,close,volume,turnover) "
-                        "VALUES(?,?,?,?,?,?,?,?)",
+                        "INSERT OR IGNORE INTO daily(symbol,date,open,high,low,close,volume,amount,turnover) "
+                        "VALUES(?,?,?,?,?,?,?,?,?)",
                         (sym, r[0], float(r[1]), float(r[2]), float(r[3]),
                          float(r[4]), int(float(r[5]) / 100) if r[5] else 0,
-                         float(r[6]) if r[6] else 0))  # v406: volume 股→手, turnover 不变
+                         float(r[6]) if r[6] else 0,   # v407: amount 元 (A3 fix)
+                         float(r[7]) if r[7] else 0))
                     total += 1
                 if (i + 1) % 100 == 0:
                     conn.commit()
@@ -2183,9 +2184,13 @@ class DataStore:
         """同步 PE/PB/市值 — 批量PE+市值, 逐只补PB, 多源容错"""
         try:
             from quant.data.fundamental import sync_all
-            result = sync_all(self._connect(), max_fetch=-1)
-            logger.info(f"fundamentals: PE={result['pe_count']} PB={result['pb_count']}")
-            return result["pe_count"]
+            _fund_conn = self._connect()
+            try:
+                result = sync_all(_fund_conn, max_fetch=-1)
+            finally:
+                _fund_conn.close()
+            logger.info(f"fundamentals: PE/PB/市值 updated count={result['count']}")
+            return result["count"]
         except (ImportError, ModuleNotFoundError):
             logger.warning("fundamentals sync skipped: data/fundamental.py not found")
             return 0
@@ -2443,7 +2448,7 @@ def market_conn(mode='ro'):
     """统一数据库连接 — 自动 WAL + busy_timeout=30s.
     mode: 'ro' = read-only (附加 read_uncommitted), 'rw' = read-write.
     """
-    _db = os.path.join(os.path.dirname(__file__), "market.db")
+    _db = MARKET_DB
     _c = DatabaseManager.get_connection(_db)
     _c.execute("PRAGMA journal_mode=WAL")
     _c.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")

@@ -13,7 +13,8 @@ from quant.evaluation.pbo import compute_pbo
 
 
 def validate_oos(input_json: str = "/tmp/_eval_phase2.json",
-                 output_json: str = "/tmp/_eval_phase3.json") -> dict:
+                 output_json: str = "/tmp/_eval_phase3.json",
+                 eval_start: str = None, eval_end: str = None) -> dict:
     """CPCV walk-forward OOS 检验 + PBO 计算。
 
     复用 Phase 2 的全量 IC 时序, 在 IC 序列上做 purged folding
@@ -73,6 +74,8 @@ def validate_oos(input_json: str = "/tmp/_eval_phase2.json",
             factor_names=candidates,
             n_symbols=None,
             lookback=lookback,
+            eval_start=eval_start,
+            eval_end=eval_end,
         )
         # Phase 3 需要 factor_snapshot.ic_series 但该字段已在 v233 移除。
         # IC 序列应从 factor_ic_daily 表读取（由每日归因 G1 OOS 写入），

@@ -148,12 +148,14 @@ class XgbAlphaModel:
                 else np.zeros(len(syms))
                 for fn in feature_names
             ]).astype(np.float32)
-            y_day = forward_returns.loc[ts].reindex(syms).fillna(0).values.astype(np.float32)
-
-            mask = ~np.isnan(y_day)
+            # B4 (CODE-REVIEW): mask 必须在 fillna 之前算 —
+            # 原 fillna(0) → np.isnan 恒 False → mask 恒真, 噪声日混入训练
+            y_day_raw = forward_returns.loc[ts].reindex(syms)
+            mask = y_day_raw.notna().values
             if mask.sum() < 20:
                 n_skipped["mask"] += 1
                 continue
+            y_day = y_day_raw.fillna(0).values.astype(np.float32)
 
             X_chunks.append(X_day[mask])
             y_chunks.append(y_day[mask])
@@ -178,36 +180,18 @@ class XgbAlphaModel:
 
         _log.info("xgb train: %d samples x %d features", len(y), X.shape[1])
 
-        # 分块训练: XGBoost 支持 xgb_model 参数继续训练
-        train_chunk_samples = _require_cfg("alpha.xgb.train.train_chunk_samples")
-        n_total = len(y)
-        self._xgb = None
-
-        for batch_start in range(0, n_total, train_chunk_samples):
-            batch_end = min(batch_start + train_chunk_samples, n_total)
-            batch_n = batch_end - batch_start
-            _log.info("xgb train: batch %d-%d/%d (%.1fM samples)",
-                      batch_start, batch_end, n_total, batch_n / 1e6)
-
-            model = xgb.XGBRegressor(**xgb_params)
-            model.fit(
-                X[batch_start:batch_end],
-                y[batch_start:batch_end],
-                xgb_model=self._xgb.get_booster() if self._xgb is not None else None,
-                verbose=False,
-            )
-            self._xgb = model
+        # B5 (CODE-REVIEW): 原分块训练把同一批数据用 xgb_model=
+        # 续训 n 次 → 树数 ×chunks 超配 (4M 分块时 2000+ 树过拟合);
+        # 全量矩阵已在内存中, 单次 fit 即可且收敛语义正确
+        self._xgb = xgb.XGBRegressor(**xgb_params)
+        self._xgb.fit(X, y, verbose=False)
 
         # 训练集 IC
-        y_pred_chunks = []
-        for batch_start in range(0, n_total, train_chunk_samples):
-            batch_end = min(batch_start + train_chunk_samples, n_total)
-            y_pred_chunks.append(self._xgb.predict(X[batch_start:batch_end]))
-        y_pred = np.concatenate(y_pred_chunks)
+        y_pred = self._xgb.predict(X)
         ic = np.corrcoef(y_pred, y)[0, 1] if len(y) > 1 else 0.0
         ic_std = round(float(np.std(y_pred - y)), 6)
 
-        del X, y, y_pred, y_pred_chunks
+        del X, y, y_pred
 
         # 保存模型
         train_date = pd.Timestamp.now().strftime("%Y-%m-%d")

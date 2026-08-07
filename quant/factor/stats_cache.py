@@ -47,10 +47,13 @@ _COMPUTE_LOCK = threading.Lock()  # in-process reentrancy guard: 因子计算最
 def compute_factor_stats(
     symbols: list = None, n_symbols: int = None, lookback: int = None,
     factor_names: list = None, status_filter=None,
+    eval_start: str = None, eval_end: str = None,
 ) -> dict:
     """计算所有已注册因子的评估统计量，返回前端可用格式。
 
     n_symbols / lookback 默认值来源: config.yaml factor.evaluation (单一真相源).
+    eval_start / eval_end (YYYY-MM-DD): 评估窗口边界 (Phase 7 训练窗口注入,
+    默认今天往前的 lookback×1.5 日). 回测 PIT 采样用, 缺省逻辑不变.
     """
     if n_symbols is None:
         n_symbols = _require_cfg("factor.evaluation.n_symbols")
@@ -100,8 +103,11 @@ def compute_factor_stats(
     factor_values_by_date = {name: {} for name in factor_names}
 
     conn = store._connect()
-    end_date = datetime.today().strftime("%Y-%m-%d")
-    start_date = (datetime.today() - pd.Timedelta(days=lookback * 1.5)).strftime("%Y-%m-%d")
+    end_date = eval_end or datetime.today().strftime("%Y-%m-%d")
+    start_date = (pd.Timestamp(end_date)
+                  - pd.Timedelta(days=lookback * 1.5)).strftime("%Y-%m-%d")
+    if eval_start:
+        start_date = max(start_date, eval_start)
     eval_dates_raw = conn.execute(
         "SELECT DISTINCT date FROM daily WHERE date >= ? AND date <= ? ORDER BY date",
         (start_date, end_date)

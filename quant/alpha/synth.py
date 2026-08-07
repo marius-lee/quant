@@ -140,7 +140,8 @@ def sleeve_compose(
     for name, rank_dict in all_ranks.items():
         for sym, rpct in rank_dict.items():
             score_map[sym] = score_map.get(sym, 0.0) + rpct
-            factor_count[sym] = factor_count.get(sym, 0)
+            # v418: 原第143行 `factor_count[sym] = factor_count.get(sym, 0)` 每轮重置计数,
+            # 多因子同时入 top-N 时 count 恒 ≤1, 下方 0.2×count bonus 永远无效
             if sym in top_sets.get(name, set()):
                 factor_count[sym] = factor_count.get(sym, 0) + 1
 

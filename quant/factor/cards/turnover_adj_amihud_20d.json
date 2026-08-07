@@ -3,8 +3,8 @@
   "display_name": "turnover_adj_amihud_20d",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.02,
-  "icir_12m": 0.1096,
+  "ic_mean_12m": 0.0214,
+  "icir_12m": 0.1148,
   "last_evaluated": "auto",
   "n_obs": 130
 }

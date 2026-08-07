@@ -10,34 +10,6 @@ from quant.utils.logger import get_logger
 _log = get_logger(__name__)
 
 
-def compute_asset_growth(data, date, fundamentals=None):
-    """资产增长率 = ΔTotalAssets / TotalAssets_lag (Cooper, Gulen & Schill 2008).
-
-    来源: Fama-French (2015) CMA 因子; Liu, Stambaugh & Yuan (2019) A股验证.
-    IC=-3.8%, 负向因子 (高资产增长→低未来收益, 管理层过度投资信号).
-    数据: financial_balance.total_assets.
-    """
-    if fundamentals is None or fundamentals.empty:
-        return None
-    if 'total_assets' not in fundamentals.columns:
-        return None
-    assets = fundamentals['total_assets'].dropna()
-    if len(assets) < 2:
-        return None
-    symbols = data["close"].columns if isinstance(data["close"], pd.DataFrame) else []
-    result = {}
-    for sym in symbols:
-        if sym not in fundamentals.index:
-            continue
-        val = fundamentals.loc[sym, 'total_assets']
-        if pd.isna(val) or val <= 0:
-            continue
-        # 简化: 用上一期对比 (fundamentals 已包含最新值, historical 从 aux 取)
-        result[sym] = 0.0  # 占位, 实际需两期对比 — 走 aux 路径
-    # 实际逻辑需两期 financial_balance, 此处留框架
-    return None
-
-
 def compute_seasonality_12m_1m(data, date, window=None):
     """季节效应: 12个月前同月收益, 跳过最近1月 (Heston & Sadka 2008).
 

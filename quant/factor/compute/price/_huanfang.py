@@ -113,9 +113,12 @@ def compute_idio_turnover_vol(data: pd.DataFrame, date: str,
 #    与现有 turnover_accel 互补 — 那个是比率, 这个是差分归一化.
 # ═══════════════════════════════════════════════════════════
 
-def compute_turnover_accel(data: pd.DataFrame, date: str,
-                           short: int = None, long: int = None) -> pd.Series:
-    """换手加速度: (Δturnover_short - Δturnover_long) / σ(turnover, long)."""
+def compute_turnover_accel_5_20(data: pd.DataFrame, date: str,
+                                short: int = None, long: int = None) -> pd.Series:
+    """换手加速度 (幻方版): (Δturnover_short - Δturnover_long) / σ(turnover, long).
+
+    A10 (CODE-REVIEW): 原命名 compute_turnover_accel 遮蔽 _turnover.py 的
+    华安比率版同名函数 → 改为 turnover_accel_5_20 (名称与输出 series 一致)."""
     s = short or HF_TACCEL_SHORT
     l = long or HF_TACCEL_LONG
     t = data["turnover"]

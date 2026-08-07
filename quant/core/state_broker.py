@@ -13,11 +13,18 @@ import json as _json
 import threading as _threading, queue
 import os as _os
 import logging
+import sqlite3 as _sqlite
 import time as _time
 import copy as _copy
+from quant.config.paths import MARKET_DB, TRADE_DB
 
 _FINANCIAL_KEYS = ("capital", "total_asset", "pnl", "metrics", "pos_value", "positions")
 _STATE_TTL = 3.0  # B-27 fix: 财务状态缓存 TTL (秒)
+
+# v418 (R5): JSON 文件桥 (/tmp/quant_state_bridge.json) → SQLite 消息表。
+# 跨进程 (pipeline cron → web) 状态传递, 单行整体存 JSON, 原子写。
+_BRIDGE_DB = TRADE_DB
+_BRIDGE_TABLE = "state_bridge"
 
 
 class InProcessBroker:
@@ -49,7 +56,7 @@ class InProcessBroker:
                  'summary': {}, 'timestamp': '', 'trace_id': ''}
         try:
             from quant.data.repos import TradeRepo
-            db = _os.path.join(_root, "quant", "data", "trades.db")
+            db = TRADE_DB
             repo = TradeRepo(db)
             # 首次启动自动播种策略资金
             if repo.get_initial_capital("quant") <= 0:
@@ -62,7 +69,7 @@ class InProcessBroker:
             close_map = {}
             import sqlite3 as _sql2
             try:
-                market_db = _os.path.join(_root, "quant", "data", "market.db")
+                market_db = MARKET_DB
                 if _os.path.exists(market_db):
                     mc = _sql2.connect(market_db)
                     for rp in raw_positions:
@@ -116,7 +123,7 @@ class InProcessBroker:
 
             import sqlite3 as _sql3
             try:
-                market_db = _os.path.join(_root, "quant", "data", "market.db")
+                market_db = MARKET_DB
                 if _os.path.exists(market_db):
                     mc = _sql3.connect(market_db)
                     syms = [p["symbol"] for p in positions]
@@ -143,7 +150,7 @@ class InProcessBroker:
             try:
                 from datetime import datetime as _dt_sig
                 today = _dt_sig.now().strftime("%Y-%m-%d")
-                sig_path = _os.path.join(_root, "quant", "data", "trades.db")
+                sig_path = TRADE_DB
                 sc_sig = _sql2.connect(sig_path)
                 sc_sig.row_factory = _sql2.Row
                 # mode='live' 是实盘, 排除了回测写入的 backtest 信号
@@ -164,8 +171,11 @@ class InProcessBroker:
                         exec_notes_str = en_row["exec_notes"] if en_row else "{}"
                     try:
                         exec_notes = _json_sig.loads(exec_notes_str) if exec_notes_str else {}
-                    except Exception:
+                    except Exception as _en_err:
                         exec_notes = {}
+                        # v418 (R2): 原静默降级 → warning 可观测
+                        logging.getLogger("web.state_broker").warning(
+                            f"_init_state: exec_notes JSON 解析失败 (降级空dict): {_en_err}")
                     for s in signals:
                         s["exec_note"] = exec_notes.get(s.get("symbol", ""), "")
                     # 从 market.db stocks 表补充名称 (test-v205)
@@ -181,24 +191,33 @@ class InProcessBroker:
                             for s in signals:
                                 s["name"] = name_map.get(s.get("symbol", ""), "")
                         mdb.close()
-                    except Exception:
-                        pass
+                    except Exception as _nm_err:
+                        # v418 (R2): 原静默 → warning 可观测
+                        logging.getLogger("web.state_broker").warning(
+                            f"_init_state: 信号股票名称补充失败: {_nm_err}")
                     state["signals"] = signals
                 sc_sig.close()
-            except Exception:
-                pass
+            except Exception as _sig_err:
+                # v418 (R2): 原静默吞错 → warning + exc_info (signals 是监控页核心数据)
+                logging.getLogger("web.state_broker").warning(
+                    f"_init_state: 读取 daily_signals 失败: {_sig_err}", exc_info=True)
 
             state["positions"] = positions
             # test-v310: 市场状态实时展示 (非仅信号生成时)
             try:
-                from quant.regime.detector import get_current_regime, get_regime_sizing
+                from quant.regime.detector import get_current_regime
+                from quant.optimizer.portfolio import _get_regime_max_lots
                 rlabel, rprobs = get_current_regime()
                 if rlabel:
                     state["regime"] = rlabel
-                    state["regime_sizing"] = get_regime_sizing(rlabel)
+                    # v418 (R8): 删 get_regime_sizing (capital 乘数法已废弃) —
+                    # 展示 lot-based 手数上限 (web UI 只读展示)
+                    state["regime_max_lots"] = _get_regime_max_lots("micro", rlabel)
                     state["regime_confidence"] = round(rprobs.get(rlabel, 0), 2)
-            except Exception:
-                pass
+            except Exception as _reg_err:
+                # v418 (R2): 原静默 → warning (regime 缺失降级展示, 不阻断)
+                logging.getLogger("web.state_broker").warning(
+                    f"_init_state: regime 状态不可用: {_reg_err}")
         except Exception:
             import logging
             logging.getLogger("web.state_broker").warning("_init_state failed", exc_info=True)
@@ -206,7 +225,10 @@ class InProcessBroker:
 
     def _start_quote_thread(self):
         """后台线程: 每 3s 刷新实时报价到 _quote_result (唯一的 fetch_quotes 调用点)。"""
+        _quotes_errors = 0
+
         def _refresh_loop():
+            nonlocal _quotes_errors
             import time as _t
             while True:
                 try:
@@ -219,8 +241,13 @@ class InProcessBroker:
                             syms = [p["symbol"] for p in raw]
                             self._quote_result = fetch_quotes(syms) or {}
                             self._quote_ts = _t.time()
-                except Exception:
-                    pass
+                        _quotes_errors = 0
+                except Exception as _q_err:
+                    # v418 (R2): 原静默 → 连续失败才告警 (每 3s 轮询, 单次失败不刷屏)
+                    _quotes_errors += 1
+                    if _quotes_errors in (1, 10, 100, 1000):
+                        logging.getLogger("web.state_broker").warning(
+                            f"quote refresh failed ({_quotes_errors} consecutive): {_q_err}")
                 _t.sleep(3)
         t = _threading.Thread(target=_refresh_loop, daemon=True, name="quote-refresh")
         t.start()
@@ -277,19 +304,28 @@ class InProcessBroker:
                 self._state_ts = _time.monotonic()
         with self._lock:
             cached = dict(self._cache)
-        # v408: 从文件桥读取 pipeline 进度 (跨进程可见)
+        # v418 (R5): 从 SQLite 消息表读取 pipeline 进度 (跨进程可见)
         # 财务数据仍从 DB 读取, 只 overlay progress/signals/trace_id/timestamp
         try:
-            import tempfile, json as _json_r
-            _bridge_path = _os.path.join(tempfile.gettempdir(), "quant_state_bridge.json")
-            if _os.path.exists(_bridge_path):
-                with open(_bridge_path) as _bf:
-                    _bridge_data = _json_r.load(_bf)
+            _conn = _sqlite.connect(_BRIDGE_DB, timeout=2.0)
+            _conn.row_factory = _sqlite.Row
+            _conn.execute(
+                f"CREATE TABLE IF NOT EXISTS {_BRIDGE_TABLE} "
+                "(id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL, updated_at REAL NOT NULL)"
+            )
+            _row = _conn.execute(
+                f"SELECT payload FROM {_BRIDGE_TABLE} WHERE id = 1"
+            ).fetchone()
+            _conn.close()
+            if _row and _row["payload"]:
+                _bridge_data = _json.loads(_row["payload"])
                 for k in ("signals", "progress", "mood", "trace_id", "timestamp"):
                     if k in _bridge_data:
                         cached[k] = _bridge_data[k]
-        except Exception:
-            pass
+        except Exception as _br_err:
+            # v418 (R5): 原静默 pass → warning 可观测 (桥仅进度显示, 不阻断)
+            logging.getLogger("web.state_broker").warning(
+                f"get(): state_bridge 读取失败: {_br_err}")
         # pipeline 进度/信号 overlay (signals/progress/mood/trace_id/timestamp)
         for k in ("signals", "progress", "mood", "trace_id", "timestamp"):
             if k in cached:
@@ -309,15 +345,24 @@ class InProcessBroker:
         with self._lock:
             self._cache.update(data)
             payload = dict(self._cache)
-        # v408: 写 JSON 文件桥 — pipeline 和 web 是不同进程,
-        # 纯内存 _cache 跨进程不可见. 文件桥让 web 能读到 pipeline 进度.
+        # v418 (R5): 写 SQLite 消息表 — pipeline 和 web 是不同进程,
+        # 纯内存 _cache 跨进程不可见. 原子 upsert 单行 JSON payload.
         try:
-            import tempfile, json as _json_w
-            _bridge_path = _os.path.join(tempfile.gettempdir(), "quant_state_bridge.json")
-            with open(_bridge_path, 'w') as _bf:
-                _json_w.dump(payload, _bf)
-        except Exception:
-            pass
+            _conn = _sqlite.connect(_BRIDGE_DB, timeout=2.0)
+            _conn.execute(
+                f"CREATE TABLE IF NOT EXISTS {_BRIDGE_TABLE} "
+                "(id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL, updated_at REAL NOT NULL)"
+            )
+            _conn.execute(
+                f"INSERT OR REPLACE INTO {_BRIDGE_TABLE} (id, payload, updated_at) VALUES (1, ?, ?)",
+                (_json.dumps(payload, ensure_ascii=False), _time.time()),
+            )
+            _conn.commit()
+            _conn.close()
+        except Exception as _br_err:
+            # v418 (R5): 原静默 pass → warning 可观测 (桥仅进度显示, 不阻断 pipeline)
+            logging.getLogger("web.state_broker").warning(
+                f"update(): state_bridge 写入失败: {_br_err}")
         dead = []
         for q in self._clients:
             try:

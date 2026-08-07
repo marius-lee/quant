@@ -9,10 +9,44 @@ IC_IR≈0.8+, A股最强因子之一 (T+1结构下隔夜信息在开盘一次性
 """
 import numpy as np
 import pandas as pd
+from functools import lru_cache
 from quant.factor.registry import _cs_zscore
 from quant.utils.logger import get_logger
 
 _log = get_logger(__name__)
+
+# v418 (R10): 快照因子门控 — intraday 因子依赖 intraday_snapshot 表,
+# 该表由 scheduler/snapshot.py 每日 10:00/14:55 写入. 数据积累 < 60 个交易日前
+# 因子计算会产生 NaN/0 噪声 (快照缺失), 必须显式跳过而非静默产出.
+# 60 天阈值: docs/reports/CODE-REVIEW-2026-08-07.md Gap 3 来源.
+SNAPSHOT_MIN_DAYS = 60
+
+
+@lru_cache(maxsize=8)
+def _snapshot_history_days_db() -> int:
+    """DB 兜底路径: distinct 快照日期数 (无 aux 时每进程仅查一次)."""
+    from quant.data.repos._base import DatabaseManager
+    _conn = DatabaseManager.market()
+    _n = _conn.execute(
+        "SELECT COUNT(DISTINCT date) FROM intraday_snapshot"
+    ).fetchone()[0]
+    _conn.close()
+    return int(_n or 0)
+
+
+def _snapshot_matured(aux=None) -> bool:
+    """v418 (R10): 快照数据是否积累满 SNAPSHOT_MIN_DAYS.
+
+    aux 路径 (回测/物化) 零查询 — 读 chunk 预载附带的 intraday_snapshot_days
+    计数 (每日切片仍透传, 见 slice_aux_for_date);
+    无 aux / 计数缺失 → DB COUNT 一次 (lru_cache per 进程).
+    未成熟 → 因子返回 None (跳过当日), 不产生 NaN 噪声.
+    """
+    if aux is not None:
+        days = aux.get("intraday_snapshot_days")
+        if days is not None:
+            return int(days) >= SNAPSHOT_MIN_DAYS
+    return _snapshot_history_days_db() >= SNAPSHOT_MIN_DAYS
 
 
 def compute_intraday_reversal(data, date, window=None, aux=None):
@@ -28,6 +62,11 @@ def compute_intraday_reversal(data, date, window=None, aux=None):
     else:
         close = data
         opn_data = None
+
+    # v418 (R10): 快照未积累满 60 天 → 显式跳过 (避免静默 NaN 因子)
+    if not _snapshot_matured(aux=aux):
+        _log.debug("intraday_reversal: snapshot < %d days, skipped", SNAPSHOT_MIN_DAYS)
+        return None
 
     if close is None or close.empty:
         return None
@@ -89,6 +128,10 @@ def compute_open_volume_ratio(data, date, window=None, aux=None):
     if not isinstance(data.columns, pd.MultiIndex):
         return None
     volume = data["volume"] if "volume" in data.columns.get_level_values(0) else None
+    # v418 (R10): 快照未积累满 60 天 → 显式跳过 (避免静默 NaN 因子)
+    if not _snapshot_matured(aux=aux):
+        _log.debug("open_volume_ratio: snapshot < %d days, skipped", SNAPSHOT_MIN_DAYS)
+        return None
     if volume is None or volume.empty:
         return None
     total_vol = volume.iloc[-1]  # 全天成交量
@@ -138,6 +181,10 @@ def compute_close_surge(data, date, window=None, aux=None):
         return None
     close = data["close"]
     high = data["high"] if "high" in data.columns.get_level_values(0) else None
+    # v418 (R10): 快照未积累满 60 天 → 显式跳过 (避免静默 NaN 因子)
+    if not _snapshot_matured(aux=aux):
+        _log.debug("close_surge: snapshot < %d days, skipped", SNAPSHOT_MIN_DAYS)
+        return None
     if close is None or close.empty:
         return None
 

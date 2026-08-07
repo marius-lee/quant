@@ -139,11 +139,11 @@ def _run():
             _evening_done = False
             _log.info(f"[{today}] new day, orchestrator ready")
 
-        # ── 非交易日 ──
-        if not is_trading_day():
-            _check_timeouts(today)
-            _time.sleep(POLL)
-            continue
+        # ═══════════════════════════════════════════
+        # v416 (CODE-REVIEW 调度修复): 状态读取提前 — 周度评估在非交易日
+        # (周六) 也必须运行, 因此 status/_retry_ok 与触发块必须位于
+        # `if not is_trading_day(): continue` 之前, 否则周六永远不可达.
+        # ═══════════════════════════════════════════
 
         # ── 读取 DB 权威状态 ──
         status = _get_today_status(today)
@@ -152,6 +152,34 @@ def _run():
         def _retry_ok(name: str) -> bool:
             """B-23: aborted 重试次数未超限才允许再次触发."""
             return aborted.get(name, 0) < _MAX_TASK_RETRIES
+
+        # ═══════════════════════════════════════════
+        # 0. 周六 06:00 — 周度因子评估 subprocess
+        # (test-v301 引入时放在 is_trading_day continue 之后 → 永不可达;
+        #  test-v416 修复: 前移到非交易日短路之前, 周六照常触发,
+        #  窗口放宽至 06:00-12:00 — 周六早间 restart 错过 06:00-06:05
+        #  会漏掉整周评估; _tk_start dedup 保证三路触发不重复执行)
+        # ═══════════════════════════════════════════
+        if now.weekday() == 5 and time(6, 0) <= hhmm < time(12, 0):
+            s = status.get("weekly_eval")
+            if s not in ("ok", "failed") and _retry_ok("weekly_eval"):
+                _log.info(f"[{today}] 06:00-12:00 — spawning weekly eval subprocess")
+                subprocess.Popen(
+                    [".venv/bin/python3", "-c",
+                     "from quant.utils.excepthook import setup; setup();"
+                     "from quant.scheduler.weekly import _run;"
+                     f"_run('{today}')"],
+                    cwd=os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                    env={**os.environ, "PYTHONPATH": "."},
+                )
+            elif s != "ok":
+                _log.debug(f"[{today}] weekly_eval window: status={s} (waiting for retry/stuck check)")
+
+        # ── 非交易日 ──
+        if not is_trading_day():
+            _check_timeouts(today)
+            _time.sleep(POLL)
+            continue
 
         # ═══════════════════════════════════════════
         # 1. 08:30-15:30 — 信号生成
@@ -224,22 +252,6 @@ def _run():
             if time(15, 5) <= hhmm < time(15, 30):
                 from quant.scheduler.reconcile import _run as _recon_run
                 _run_task("reconcile", _recon_run, today)
-
-        # ═══════════════════════════════════════════
-        # 5. 周六 06:00 — 周度因子评估 subprocess
-        # ═══════════════════════════════════════════
-        if hhmm >= time(6, 0) and hhmm < time(6, 5) and datetime.now().weekday() == 5:
-            s = status.get("weekly_eval")
-            if s not in ("ok", "failed") and _retry_ok("weekly_eval"):
-                _log.info(f"[{today}] 06:00 — spawning weekly eval subprocess")
-                subprocess.Popen(
-                    [".venv/bin/python3", "-c",
-                     "from quant.utils.excepthook import setup; setup();"
-                     "from quant.scheduler.weekly import _run;"
-                     f"_run('{today}')"],
-                    cwd=os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                    env={**os.environ, "PYTHONPATH": "."},
-                )
 
         # ═══════════════════════════════════════════
         # 6. 19:00+ — 晚间链 subprocess (test-v288)
@@ -316,6 +328,7 @@ _TIMEOUTS = {
     "monitor": None,
     "reconcile": 600,
     "evening_chain": 14400,  # test-v288: evening.py 引用, subprocess 超时
+    "weekly_eval": 43200,    # v416: 周度评估 subprocess 超时 (12h, 评估 5 阶段可能数小时)
 }
 
 # B-23 fix: 同一任务当日最多重试次数 (aborted 后 orchestrator 会重新触发,

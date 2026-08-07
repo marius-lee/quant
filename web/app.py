@@ -8,14 +8,14 @@ import json, os, sqlite3
 from quant.config.constants import _require_cfg
 
 from quant.utils.excepthook import setup; setup()
-from quant.config.paths import TRADE_DB, MARKET_DB  # crash → app.log
+from quant.config.paths import TRADE_DB, MARKET_DB, BACKTEST_DB  # crash → app.log
 from quant.config.loader import get as cfg, validate; validate()  # 启动时校验 config.yaml 类型
 from quant.data.store import market_conn  # P69: 统一连接层
 from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v414"
+VERSION = "test-v418"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 
@@ -50,6 +50,24 @@ def _api_response(data=None, *, meta=None, error=None):
     error 格式: {"code": "ERROR_CODE", "message": "人类可读描述", "details": [...]} (可选)
     """
     return jsonify({"data": data, "meta": meta, "error": error})
+
+
+def _require_token():
+    """C14 (CODE-REVIEW): 写操作统一鉴权入口 — 设置 QUANT_API_TOKEN 后,
+    所有 POST 必须带 X-API-Token 头 (hmac 比较防时序侧信道).
+
+    返回 None 表示通过; 否则返回 (response, status) 供路由直接返回.
+    """
+    import hmac as _hmac
+    from flask import request
+    _token = os.environ.get("QUANT_API_TOKEN")
+    if not _token:
+        return None
+    _given = request.headers.get("X-API-Token", "")
+    if not _hmac.compare_digest(_given, _token):
+        return _api_response(error={"code": "UNAUTHORIZED",
+                                    "message": "missing or invalid X-API-Token"}), 401
+    return None
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
@@ -129,6 +147,9 @@ def api_curator_submit():
     """因子策展提交 — 手动添加因子到内置库."""
     try:
         from flask import request
+        _auth = _require_token()
+        if _auth:
+            return _auth
         body = request.get_json(force=True)
         name = body.get("name", "").strip()
         expression = body.get("expression", "").strip()
@@ -241,7 +262,7 @@ def api_backtest_history():
     """回测历史记录 — backtest_runs 表最近 20 条。"""
     try:
         import sqlite3, json
-        db = os.path.join(os.path.dirname(os.path.dirname(__file__)), "quant", "data", "backtest_trades.db")
+        db = BACKTEST_DB
         conn = sqlite3.connect(db)
         rows = conn.execute('''
             SELECT strategy, start_date, end_date, initial_capital,
@@ -263,7 +284,8 @@ def api_backtest_history():
             })
         return _api_response(data=result)
     except Exception as e:
-        return _api_response(error=str(e))
+        logger.warning(f"backtest history failed: {e}")
+        return _api_response(error={"code": "INTERNAL", "message": "backtest history 查询失败"}), 500
 
 
 @app.route("/api/factors")
@@ -350,7 +372,7 @@ def api_trades():
         _names = {}
         try:
             import sqlite3, os
-            _mdb = os.path.join(os.path.dirname(__file__), "..", "quant", "data", "market.db")
+            _mdb = MARKET_DB
             _mc = sqlite3.connect(_mdb)
             _mc.execute("PRAGMA busy_timeout=3000")
             _syms = list(set(t["symbol"] for t in (raw_trades or [])))
@@ -382,15 +404,9 @@ def api_trades():
 def api_record_trade():
     """记录一笔交易 → trades.db (手动交易，strategy='manual')"""
     from flask import request
-    # B-28 fix: 可选鉴权 — 设置 QUANT_API_TOKEN 环境变量后,
-    # 请求必须带 X-API-Token 头 (hmac 比较防时序侧信道)
-    _token = os.environ.get("QUANT_API_TOKEN")
-    if _token:
-        import hmac as _hmac
-        _given = request.headers.get("X-API-Token", "")
-        if not _hmac.compare_digest(_given, _token):
-            return _api_response(error={"code": "UNAUTHORIZED",
-                                        "message": "missing or invalid X-API-Token"}), 401
+    _auth = _require_token()
+    if _auth:
+        return _auth
     data = request.get_json(force=True)
     side = data.get("side")
     strategy = "manual"
@@ -436,6 +452,9 @@ def api_record_trade():
 def api_update_state():
     """pipeline 更新状态"""
     from flask import request
+    _auth = _require_token()
+    if _auth:
+        return _auth
     data = request.get_json(force=True)
     data["timestamp"] = datetime.now().isoformat()
     update_state(data)
@@ -485,8 +504,8 @@ def api_risk():
     import sqlite3, math
     market_db = MARKET_DB
     result = []
+    mc = market_conn("ro")
     try:
-        mc = market_conn("ro")
         for sym in symbols:
             rows = mc.execute(
                 "SELECT close FROM daily WHERE symbol=? ORDER BY date DESC LIMIT ?",
@@ -525,6 +544,8 @@ def api_risk():
     except Exception as e:
         logger.warning(f"risk query failed: {e}")
         return _api_response(error={"code": "INTERNAL", "message": str(e)}), 500
+    finally:
+        mc.close()
 
     # Merge with portfolio weights from state
     state = broker.get()
@@ -776,15 +797,18 @@ def api_health():
     """模板9 T1: 健康检查 — DB连接 + 最近 pipeline 状态."""
     import sqlite3, os as _os, time as _time
     status = {"status": "ok", "checks": {}}
-    # DB 连通性
+    # DB 连通性 (C14: 每次请求后必须 close, 原实现泄漏连接)
+    conn = None
     try:
-        db = MARKET_DB
         conn = market_conn("ro")
         conn.execute("SELECT 1").fetchone()
         status["checks"]["market_db"] = "ok"
     except Exception as e:
         status["checks"]["market_db"] = f"fail: {e}"
         status["status"] = "degraded"
+    finally:
+        if conn:
+            conn.close()
     # 最近 pipeline 状态
     state = broker.get()
     status["pipeline"] = {
@@ -907,6 +931,12 @@ def api_scheduler():
             t["status_label"] = _badge("yellow", "异常终止")
             t["status"] = "aborted"
             t["error_msg"] = err[:120]
+            t["last_run"] = (run["finished_at"] or run["started_at"] or "")[:16].replace("T", " ")
+        elif run and run["status"] == "skipped":
+            # C10 (CODE-REVIEW): lgb_train 无 lightgbm 时落 skipped,
+            # 修复前落入 else → 显示"未配置"(误导). 展示为独立的黄色徽标.
+            t["status_label"] = _badge("yellow", "今日跳过")
+            t["status"] = "skipped"
             t["last_run"] = (run["finished_at"] or run["started_at"] or "")[:16].replace("T", " ")
         elif has_cron:
             t["status_label"] = _badge("gray", "等待调度")

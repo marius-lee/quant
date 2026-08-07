@@ -56,7 +56,7 @@ from quant.factor.compute.price._turnover import (
     compute_turnover_accel,
 )
 
-from quant.factor.compute.price._huanfang import compute_turnover_vol, compute_mif, compute_idio_turnover_vol, compute_turnover_accel, compute_vp_divergence
+from quant.factor.compute.price._huanfang import compute_turnover_vol, compute_mif, compute_idio_turnover_vol, compute_turnover_accel_5_20, compute_vp_divergence
 from quant.factor.compute.price._bb import compute_bb_pct_b, compute_bb_width, compute_bb_squeeze
 from quant.factor.compute.price._alternative import (  # noqa: F401
     _get_limit_pool,

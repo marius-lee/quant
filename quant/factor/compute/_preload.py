@@ -276,6 +276,7 @@ def preload_aux_data_chunk(symbols: list, date_from: str, date_to: str,
                      "change_pct", "close", "circ_mv", "post_5d"])
 
     # intraday_snapshot: chunk 日期范围 (ADR-043 layer1: 替代 3 个 intraday 因子 per-date 查询)
+    # v418 (R10): 附带 total days 计数 — 供 _snapshot_matured 门控 (快照积累<60日跳过因子)
     try:
         df = pd.read_sql_query(
             "SELECT symbol, date, open_30min, prev_close, open_30min_vol, close_5min "
@@ -285,10 +286,13 @@ def preload_aux_data_chunk(symbols: list, date_from: str, date_to: str,
         result["intraday_snapshot"] = df if not df.empty else pd.DataFrame(
             columns=["symbol", "date", "open_30min", "prev_close",
                      "open_30min_vol", "close_5min"])
+        result["intraday_snapshot_days"] = int(
+            result["intraday_snapshot"]["date"].nunique())
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
         result["intraday_snapshot"] = pd.DataFrame(
             columns=["symbol", "date", "open_30min", "prev_close",
                      "open_30min_vol", "close_5min"])
+        result["intraday_snapshot_days"] = 0
 
     # news_daily_count: chunk 日期范围 (v366: 消除 3 个新闻因子 per-date SQL)
     try:
@@ -378,7 +382,10 @@ def slice_aux_for_date(aux_full: dict, date: str) -> dict:
         result["fund_hold"] = fh
 
     # intraday_snapshot: 精确日期匹配 (ADR-043 layer1)
+    # v418 (R10): 透传 intraday_snapshot_days 总天数计数 (门控用)
     snap = aux_full.get("intraday_snapshot", pd.DataFrame())
+    if "intraday_snapshot_days" in aux_full:
+        result["intraday_snapshot_days"] = aux_full["intraday_snapshot_days"]
     if not snap.empty and "date" in snap.columns:
         result["intraday_snapshot"] = snap.loc[pd.to_datetime(snap["date"]) == ts]
     else:

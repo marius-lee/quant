@@ -17,7 +17,7 @@ from quant.utils.logger import get_logger
 
 _log = get_logger("regime.detector")
 
-_MARKET_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "market.db")
+# v418 (R9): 删除硬编码 _MARKET_DB — 无任何引用, DB 路径统一由 quant.config.paths 推导
 
 REGIME_LABELS = {0: "bull", 1: "sideways", 2: "bear"}  # 按drift降序: 0=最高=牛, 1=中间=横盘, 2=最低=熊 (2026-07-21 audit M8)
 FACTOR_REGIME_BIAS = {
@@ -195,18 +195,4 @@ def get_regime_weights(factor_names, ic_map, regime_label, regime_probs):
         weights = {k: v / total * len(weights) for k, v in weights.items()}
 
     return weights
-
-
-def get_regime_sizing(regime_label: str) -> float:
-    """§8.3: regime 动态仓位乘数.
-
-    牛市满仓、震荡半仓、熊市三成仓, 保留现金应对回撤.
-    来源: 恒泰/九坤 regime-adaptive position sizing.
-    """
-    sizing = {
-        "bull": _require_cfg("regime.sizing.bull"),
-        "sideways": _require_cfg("regime.sizing.sideways"),
-        "bear": _require_cfg("regime.sizing.bear"),
-    }
-    return float(sizing.get(regime_label, 1.0))
 

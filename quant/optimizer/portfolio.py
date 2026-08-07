@@ -207,18 +207,6 @@ def _get_regime_max_lots(tier: str, regime_label: str | None) -> int:
     return int(sizing.get(regime_label, 999))
 
 
-def _apply_regime_sizing(capital: float, regime_label: str | None) -> float:
-    """test-v399: Micro 层 regime 调整分配资本上限 (v401 废弃 — 改为 lot-based cap).
-
-    保留函数体供回测兼容, 新调用路径走 _get_regime_max_lots("micro", ...).
-    """
-    if regime_label is None or regime_label == "unknown":
-        return capital
-    from quant.regime.detector import get_regime_sizing
-    multiplier = get_regime_sizing(regime_label)
-    return capital * multiplier
-
-
 class PortfolioConstructor:
     """资本自适应组合构建器。
 

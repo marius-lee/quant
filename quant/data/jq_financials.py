@@ -7,10 +7,11 @@ import sqlite3
 import logging
 import os as _os
 from quant.utils.date import validate_date_format
+from quant.config.paths import MARKET_DB
 
 _log = logging.getLogger("data.jq_financials")
 
-DB = _os.path.join(_os.path.dirname(__file__), "market.db")
+DB = MARKET_DB
 
 
 def ensure_tables(conn: sqlite3.Connection):

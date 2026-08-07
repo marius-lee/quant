@@ -19,7 +19,9 @@ def save_phase(phase: str, data: dict) -> int:
     from quant.data.repos import EvaluationRepo
     data_json = json.dumps(data, ensure_ascii=False, default=str)
     n_factors = data.get("n_factors") or len(data.get("factors", []))
-    n_passed = len(data.get("passed", []))
+    # P0-3: phase2 输出键为 active (v346 对齐), 原读 passed → n_passed 恒 0
+    n_passed = len(data.get("passed") or data.get("active")
+                   or data.get("kept") or [])
     repo = EvaluationRepo()
     row_id = repo.save_evaluation(phase, data_json, n_factors, n_passed)
 

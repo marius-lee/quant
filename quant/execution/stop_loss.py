@@ -205,15 +205,27 @@ class RiskManager:
             # ════════════════════════════════
             # 止盈
             # ════════════════════════════════
+            # C4 (CODE-REVIEW): TP1 卖一半但不少于一手, 一手残量则全卖 —
+            # 原 max(100, shares//2//100*100): 100 股时 =100 (卖全仓), 300 股时=100 ✓,
+            # 但 200 股时 =100 ✓ 且 100 股时语义错. 修: half 取整手向下, 至少 1 手,
+            # 不超过持仓 (留一半)。
             if not tp1_hit and gain >= self.atr_mult_tp1 * atr:
-                sell_shares = max(100, (shares // 2 // 100) * 100)
+                half_lots = shares // 2 // 100
+                sell_shares = max(100, half_lots * 100)
+                if sell_shares >= shares:
+                    sell_shares = max(100, shares // 2)  # 一手内无法整除 → 卖超保护
+                sell_shares = min(sell_shares, shares)
                 results.append({"symbol": sym, "action": "sell", "shares": sell_shares,
                                 "price": cur, "reason": "TP1(+{:.1f}ATR)".format(self.atr_mult_tp1)})
                 tp1_hit = True
                 p["_tp1_hit"] = True  # 持久化, 防止同轮次重复触发 (2026-07-21 audit C6)
 
             elif tp1_hit and gain >= self.atr_mult_tp2 * atr:
-                results.append({"symbol": sym, "action": "sell", "shares": shares - max(100, (shares // 2 // 100) * 100),
+                # C4: TP2 卖剩仓 — 不可能再 =0 (修前 100股残留时算 0)
+                rest = shares - max(100, (shares // 2 // 100) * 100)
+                if rest <= 0 or rest > shares:
+                    rest = shares
+                results.append({"symbol": sym, "action": "sell", "shares": rest,
                                 "price": cur, "reason": "TP2(+{:.1f}ATR)".format(self.atr_mult_tp2)})
 
             elif tp1_hit and peak > cost + self.atr_mult_tp1 * atr:
@@ -231,7 +243,10 @@ class RiskManager:
                                 "price": cur, "reason": "hard_sl(-{:.1f}ATR)".format(self.atr_mult_sl)})
                 continue
 
-            if peak > cost and (peak - cur) >= self.atr_mult_sl * atr:
+            # C4: trail_sl 需盈利 ≥ TP1 水平 (peak ≥ cost + tp1×ATR) 才启用 —
+            # 原仅 peak>cost 即启用, 微利 (+0.25ATR) 波动即触发, 属噪音出场.
+            if peak >= cost + self.atr_mult_tp1 * atr \
+                    and (peak - cur) >= self.atr_mult_sl * atr:
                 results.append({"symbol": sym, "action": "sell", "shares": shares,
                                 "price": cur, "reason": "trail_sl({:.1f}ATR from peak)".format(self.atr_mult_sl)})
                 continue

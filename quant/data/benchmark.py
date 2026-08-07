@@ -12,9 +12,10 @@ from datetime import datetime
 import pandas as pd
 from quant.utils.logger import get_logger
 from quant.utils.date import validate_date_format
+from quant.config.paths import MARKET_DB
 
 logger = get_logger("data.benchmark")
-_MARKET_DB = os.path.join(os.path.dirname(__file__), "market.db")
+_MARKET_DB = MARKET_DB
 
 BENCHMARKS = {
     "000300": "沪深300",

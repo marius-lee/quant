@@ -103,11 +103,11 @@ _run('$DATE')
 "
         ;;
     daemon)
-        echo ">>> TASK: orchestrator daemon (08:30-15:30 daily)"
+        echo ">>> TASK: all schedulers daemon (orchestrator + weekly thread, v416)"
         PYTHONPATH=. .venv/bin/python3 -c "
 from quant.utils.excepthook import setup; setup()
-from quant.scheduler.orchestrator import start
-start()
+from quant.scheduler import start_all
+start_all()
 import time
 while True:
     time.sleep(60)

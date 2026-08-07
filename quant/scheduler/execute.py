@@ -53,9 +53,12 @@ def _run(today: str):
                   f"(generated {signals_date})")
 
         if not targets and _rebalance:
-            _log.error(f"[{today}] 今日无信号，拒绝执行 (no fallback)")
-            error_msg = "no signals"
+            # C11 (CODE-REVIEW): 无信号是业务空转, 任务状态记 ok (非系统故障),
+            # 但保留 no_targets metric 供告警. 修复前 finally 落 failed → 每日红.
+            _log.warning(f"[{today}] 今日无信号, 跳过执行 (business idle, ok)")
             _m.inc("scheduler.execute.no_targets")
+            status = "ok"
+            summary = {"reason": "no signals", "targets": 0}
             return
         if not _rebalance:
             targets = []  # risk_only 不使用 targets

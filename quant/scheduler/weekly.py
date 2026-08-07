@@ -38,7 +38,7 @@ def _run(today: str):
     from quant.utils.logger import offline_mode, cleanup_old_logs
     cleanup_old_logs(keep_days=14)  # test-v321: 周度评估时清理14天前旧日志
 
-    rid = _tk_start("weekly_eval", today, grace_seconds=7200)
+    rid = _tk_start("weekly_eval", today, grace_seconds=43200)
     if rid is None:
         _log.info(f"[{today}] weekly_eval already running, skip duplicate trigger")
         return

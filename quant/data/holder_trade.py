@@ -12,9 +12,10 @@ import pandas as pd
 import akshare as ak
 from quant.utils.logger import get_logger
 from quant.utils.date import validate_date_format
+from quant.config.paths import MARKET_DB
 
 logger = get_logger("data.holder_trade")
-DB_PATH = os.path.join(os.path.dirname(__file__), "market.db")
+DB_PATH = MARKET_DB
 
 
 def _ensure_table(conn):

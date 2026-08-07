@@ -1,0 +1,10 @@
+{
+  "name": "overnight_gap_ratio",
+  "display_name": "overnight_gap_ratio",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.0162,
+  "icir_12m": 0.1473,
+  "last_evaluated": "auto",
+  "n_obs": 130
+}

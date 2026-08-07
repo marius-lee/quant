@@ -108,25 +108,24 @@ def compute_kelly_fractions(
             _log.debug("kelly: dynamic var=%.6f from cov diag", var)
 
     # Kelly: f = (μ - r_f) / σ², r_f=0 (A股无风险利率极低)
-    kelly_raw = mu / max(var, 1e-8)
-
     # 过滤负 Kelly (因子预期该股下跌)
-    kelly_raw = kelly_raw.clip(lower=0)
+    kelly_raw = (mu / max(var, 1e-8)).clip(lower=0)
 
-    # Fractional Kelly: 除以 k
-    kelly = kelly_raw / fraction
-
-    # ── 归一化: 总和不超过 1 ──
-    total = kelly.sum()
-    if total > 0:
-        kelly = kelly / total
-    else:
+    # ── 归一化: 相对比例总和 = 1 (必须在 ×fraction 之前完成) ──
+    total = kelly_raw.sum()
+    if total <= 0:
         return _alpha_proportional(alpha)
+    kelly = kelly_raw / total
 
-    # v406: 删除第二次归一化 — 原在 clip 后再除 sum,
-    # 与第一次归一化数学上抵消 → fractional Kelly 实际是空操作
-    # Bug 根因: kelly.clip(upper=max_single) 后 / kelly.sum() 恢复了 clip 前的比例
-    # 详见 docs/reports/CODE-REVIEW-2026-08-07.md §3, P0-10
+    # ── Fractional Kelly: 按 fraction 缩放部署资本 (regime-aware) ──
+    # CODE-REVIEW P0-10 fix: 原代码 kelly_raw/fraction 语义反了, 且归一化
+    # (除以 sum) 与乘/除 fraction 数学上相互抵消 → 熊市 fraction=0.2 缩仓空操作。
+    # 正确顺序: 归一化(sum=1) → ×fraction(总仓位强度) → clip(max_single)。
+    kelly = kelly * fraction
+
+    # 单票仓位上限 (risk.max_single_position)。
+    # clip 后总和可略低于 fraction — 保守方向, 可接受, 不再重归一化 (v406)。
+    max_single = _require_cfg("risk.max_single_position")
     kelly = kelly.clip(upper=max_single)
 
     _log.debug(

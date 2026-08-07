@@ -55,6 +55,20 @@ def historical_cvar(returns: "pd.Series", confidence: float = 0.95) -> float:
     return float(abs(tail.mean()))
 
 
+def _to_psd(matrix: np.ndarray) -> np.ndarray:
+    """v418 (R7): 数值噪声/NaN 会导致协方差非 PSD → w'Σw 负值或 NaN.
+
+    eigen-clip: 对称化后 eigh, 负特征值 clip 到 0, 重建 PSD 矩阵.
+    """
+    S = (matrix + matrix.T) / 2.0
+    eigvals, eigvecs = np.linalg.eigh(S)
+    eigvals = np.nan_to_num(eigvals, nan=0.0, posinf=0.0, neginf=0.0)
+    clip = np.maximum(eigvals, 0.0)
+    if np.array_equal(clip, eigvals):
+        return S
+    return (eigvecs * clip) @ eigvecs.T
+
+
 def compute_var(portfolio_value, weights, cov_matrix, confidence=0.95):
     """Parametric VaR: loss that won't be exceeded with given confidence.
 
@@ -67,7 +81,7 @@ def compute_var(portfolio_value, weights, cov_matrix, confidence=0.95):
     Sigma = cov_matrix.values if hasattr(cov_matrix, 'values') else np.array(cov_matrix)
     common = min(len(w), Sigma.shape[0])
     w = w[:common]
-    Sigma = Sigma[:common, :common]
+    Sigma = _to_psd(Sigma[:common, :common])  # v418 (R7): 非 PSD → 负方差 → 错误 VaR
     port_var = w.T @ Sigma @ w
     if port_var <= 0:
         return None
@@ -88,7 +102,7 @@ def compute_cvar(portfolio_value, weights, cov_matrix, confidence=0.95):
     Sigma = cov_matrix.values if hasattr(cov_matrix, 'values') else np.array(cov_matrix)
     common = min(len(w), Sigma.shape[0])
     w = w[:common]
-    Sigma = Sigma[:common, :common]
+    Sigma = _to_psd(Sigma[:common, :common])  # v418 (R7)
     port_var = w.T @ Sigma @ w
     if port_var <= 0:
         return None
@@ -102,10 +116,8 @@ def compute_cvar(portfolio_value, weights, cov_matrix, confidence=0.95):
 
 
 def marginal_var(weights, cov_matrix, confidence=0.95):
-    import numpy as np
-    from scipy.stats import norm
     w = weights.values if hasattr(weights,'values') else np.array(list(weights.values()))
-    S = cov_matrix.values if hasattr(cov_matrix,'values') else np.array(cov_matrix)
+    S = _to_psd(cov_matrix.values if hasattr(cov_matrix,'values') else np.array(cov_matrix))  # v418 (R7)
     n = min(len(w), S.shape[0])
     w, S = w[:n], S[:n,:n]
     pv = w.T @ S @ w
@@ -243,8 +255,13 @@ def update_daily_risk(engine, strategy="quant"):
     _start = (_d.today() - _td(days=_require_cfg("data.lookback_days"))).strftime("%Y-%m-%d")
     recent_data = store.get_daily(syms, start=_start)
     if recent_data is not None and not recent_data.empty:
+        # v418 (R7): dropna 对齐 (个别 symbol 无数据日 → 空协方差/NaN VaR)
         log_ret = np.log(recent_data["close"]).diff().dropna(how="all")
-        cov = covariance_matrix(log_ret, method="ledoit_wolf")
+        log_ret = log_ret.dropna(axis=1, how="any")
+        if log_ret.shape[1] == 0 or log_ret.shape[0] < 2:
+            cov = None
+        else:
+            cov = covariance_matrix(log_ret, method="ledoit_wolf")
     else:
         cov = None
 

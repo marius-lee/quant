@@ -38,6 +38,7 @@ class ExecutionContext:
     cost_model: CostModel
     repo: object = None          # TradeRepo — Live 熔断/冷却需要; 回测可 None
     risk_manager: RiskManager = None  # 注入以共享 cooloff store; None 则按模式自建
+    ohlc: dict = None            # B8: 回测 {symbol: {open,high,low,prev_close}} — 一字板涨跌停判定
 
 
 @dataclass
@@ -229,12 +230,51 @@ class ExecutionModel(ABC):
 class BacktestExecutionModel(ExecutionModel):
     """回测: 买卖均按给定价格 (开盘价) 立即成交。
     P2b: 接入 Almgren-Chriss 成本模型, 模拟滑点和市场冲击。
+    B8: 一字板涨跌停无法成交 (open==high==low==涨/跌停价) — 阻断对应订单。
     """
 
     skip_cash_feasibility = False
 
     def __init__(self):
         self.cooloff_store = {}  # 回测热路径: 内存冷却, 零 DB 写
+
+# ── B8: 一字板涨跌停判定 ──
+    def _sealed_orders(self, orders, ctx):
+        """按一字板涨跌停阻断订单: 返回 (allowed, blocked) 两个列表.
+
+        A股制度: 主板±10% / 创业板·科创板±20% / 北交所±30% (B-16)。
+        判定: open==high==low 触及涨/跌停价 → 全天无成交 → 该方向订单不可能成交。
+        数据缺失 (ohlc 未提供 / 字段缺) → 不阻断, 保持旧行为。
+        """
+        from quant.execution.engine import _price_limit_pct
+        if not orders or not ctx.ohlc:
+            return list(orders), []  # 数据缺失: 不阻断 (保持旧行为)
+        allowed, blocked = [], []
+        for o in orders:
+            d = ctx.ohlc.get(o.symbol) or {}
+            op, hi, lo, pc = d.get("open"), d.get("high"), d.get("low"), d.get("prev_close")
+            if not (op and hi and lo and pc):
+                allowed.append(o)
+                continue
+            limit_pct = _price_limit_pct(o.symbol)
+            sealed = False
+            if o.side == "buy":
+                # 开盘即涨停且全天未开板: 买入无法成交
+                limit_up = round(pc * (1 + limit_pct), 2)
+                if hi == lo == op and abs(op - limit_up) <= 0.02:
+                    sealed = True
+            else:
+                # 开盘即跌停且全天未开板: 卖出无法成交
+                limit_down = round(pc * (1 - limit_pct), 2)
+                if hi == lo == op and abs(op - limit_down) <= 0.02:
+                    sealed = True
+            if sealed:
+                _log.info(f"[{ctx.today}] B8 sealed {o.side} blocked: {o.symbol} "
+                          f"open={op} (limit {'up' if o.side == 'buy' else 'down'}), skip")
+                blocked.append(o)
+            else:
+                allowed.append(o)
+        return allowed, blocked
 
     def _apply_cost(self, orders: list, ctx: ExecutionContext, side: str):
         """P2b: 对订单应用市场冲击成本。
@@ -245,6 +285,7 @@ class BacktestExecutionModel(ExecutionModel):
         """
         if ctx.cost_model is None:
             return
+        impact_bps = 0.0  # B6 (CODE-REVIEW): 循环外初始化, 原空订单列表时 UnboundLocalError
         try:
             for o in orders:
                 impact_bps = ctx.cost_model.estimate_market_impact(
@@ -263,13 +304,17 @@ class BacktestExecutionModel(ExecutionModel):
             _log.debug(f"[{ctx.today}] cost model apply failed (non-fatal): {e}")
 
     def execute_sells(self, orders, ctx):
-        self._apply_cost(orders, ctx, "sell")
-        if orders:
-            ctx.engine.execute(orders, ctx.today, ctx.strategy)
+        # B8: 一字跌停阻断 (无法卖出)
+        sellable, _blocked = self._sealed_orders(orders, ctx)
+        self._apply_cost(sellable, ctx, "sell")
+        if sellable:
+            ctx.engine.execute(sellable, ctx.today, ctx.strategy)
 
     def execute_buys(self, orders, ctx):
-        self._apply_cost(orders, ctx, "buy")
-        ctx.engine.execute(orders, ctx.today, ctx.strategy)
+        # B8: 一字涨停阻断 (无法买入)
+        buyable, _blocked = self._sealed_orders(orders, ctx)
+        self._apply_cost(buyable, ctx, "buy")
+        ctx.engine.execute(buyable, ctx.today, ctx.strategy)
         return "filled"
 
 

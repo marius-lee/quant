@@ -211,6 +211,60 @@ class TestPortfolioConstructorEdgeCases:
             assert "Z" in pf.lots.index
 
 
+class TestKellyFractions:
+    """CODE-REVIEW P0-1: Kelly fractional Kelly 数学正确性.
+
+    修复前: kelly_raw/fraction 语义反了, 且随后归一化 sum=1 将 fraction
+    完全抵消 → 熊市 fraction=0.2 缩仓实际是空操作; 且后续
+    clip(upper=max_single) 引用已删变量 → Small 层 NameError.
+    """
+
+    def _alpha(self, n: int = 20, uniform: bool = True):
+        if uniform:
+            return pd.Series(1.0, index=[f"S{i}" for i in range(n)])
+        return pd.Series(np.linspace(1.0, 0.1, n), index=[f"S{i}" for i in range(n)])
+
+    @staticmethod
+    def _call(alpha, fraction=None, regime_label=None):
+        from quant.optimizer.kelly import compute_kelly_fractions
+        return compute_kelly_fractions(
+            alpha, ic_map={"f1": {"ic_mean": 0.05, "ic_ir": 0.03}},
+            fraction=fraction, regime_label=regime_label,
+        )
+
+    def test_sum_equals_fraction(self):
+        """fraction=0.5 → 权重总和 = 0.5 (总仓位强度受控, 修复前=1)."""
+        w = self._call(self._alpha(), fraction=0.5)
+        assert w.sum() == pytest.approx(0.5, abs=1e-9)
+
+    def test_bear_fraction_actually_reduces(self):
+        """熊市 regime fraction=0.2 → 总和 0.2 < 牛市 0.8 (修复前两者均=1)."""
+        w_bear = self._call(self._alpha(), regime_label="bear")
+        w_bull = self._call(self._alpha(), regime_label="bull")
+        assert w_bear.sum() == pytest.approx(0.2, abs=1e-9)
+        assert w_bull.sum() == pytest.approx(0.8, abs=1e-9)
+        assert 0 < w_bear.sum() < w_bull.sum() <= 1.0
+
+    def test_no_max_single_nameerror(self):
+        """clip(upper=max_single) 引用不再崩溃."""
+        self._call(self._alpha(n=20, uniform=False), fraction=1.0)
+
+    def test_max_single_caps_and_reduces_sum(self):
+        """集中组合 + fraction=1: 单票 ≤ risk.max_single_position, 总和被截断(<1) 保守方向."""
+        from quant.config.constants import _require_cfg
+        w = self._call(self._alpha(n=20, uniform=False), fraction=1.0)
+        cap = float(_require_cfg("risk.max_single_position"))
+        assert w.max() <= cap + 1e-9
+        assert w.sum() < 1.0
+
+    def test_normalize_before_fraction_scale(self):
+        """fraction 缩放在归一化之后: 均匀 alpha 下 w10 = 2 × w05 (相对比例不变)."""
+        w05 = self._call(self._alpha(), fraction=0.5)
+        w10 = self._call(self._alpha(), fraction=1.0)
+        ratio = w10 / w05
+        assert (ratio - 2.0).abs().max() < 1e-9
+
+
 class TestTargetPortfolio:
     """TargetPortfolio 数据类."""
 

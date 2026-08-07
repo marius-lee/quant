@@ -3,8 +3,8 @@
   "display_name": "alpha035_range_mom",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.0101,
-  "icir_12m": -0.1089,
+  "ic_mean_12m": -0.0119,
+  "icir_12m": -0.1302,
   "last_evaluated": "auto",
   "n_obs": 130
 }

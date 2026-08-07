@@ -14,9 +14,10 @@ from datetime import datetime
 
 import pandas as pd
 from quant.utils.logger import get_logger
+from quant.config.paths import MARKET_DB
 
 logger = get_logger("data.analyst")
-DB_PATH = os.path.join(os.path.dirname(__file__), "market.db")
+DB_PATH = MARKET_DB
 
 # ── 动态 EPS 列 — 基于当前年份, 每年自动滚动 ──
 _CURRENT_YEAR = datetime.now().year

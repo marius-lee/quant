@@ -7,6 +7,13 @@ import sqlite3
 from quant.data import fund_flow
 
 
+import pytest
+@pytest.fixture(autouse=True)
+def reset_fund_flow_flag():
+    """v414: 每个测试前重置 API 不可用标志."""
+    fund_flow._UNAVAILABLE = False
+
+
 def _mk_conn(tmp_path, n_stocks=50):
     conn = sqlite3.connect(str(tmp_path / "m.db"))
     conn.execute("CREATE TABLE stocks (symbol TEXT, market TEXT, total_mv REAL)")
@@ -19,6 +26,7 @@ def _mk_conn(tmp_path, n_stocks=50):
 
 
 def test_breaker_aborts_after_30_consecutive_failures(tmp_path, monkeypatch):
+    """v414: 5连败+0成功 → API unavailable (早停), 跳过到30连败检查."""
     conn = _mk_conn(tmp_path, n_stocks=50)
     calls = []
 
@@ -31,7 +39,7 @@ def test_breaker_aborts_after_30_consecutive_failures(tmp_path, monkeypatch):
     monkeypatch.setattr(fund_flow, "_require_cfg", lambda k: 0)
 
     assert fund_flow.sync_all(max_stocks=50, conn=conn) == 0
-    assert len(calls) == 30  # 未打满 50 只
+    assert len(calls) == 5  # v414: 5连败+0成功 → API unavailable, 不再等到30
     conn.close()
 
 
@@ -41,7 +49,7 @@ def test_breaker_resets_on_success(tmp_path, monkeypatch):
 
     def fake_sync(*args, **kwargs):
         calls.append(1)
-        return 100 if len(calls) % 29 == 0 else 0  # 周期性成功 → 永不熔断
+        return 100 if len(calls) % 3 == 0 else 0  # v414: 每3次成功, ok>0 避免5连败断路器
 
     monkeypatch.setattr(fund_flow, "sync_single_stock", fake_sync)
     monkeypatch.setattr(fund_flow, "_ensure_table", lambda c: None)

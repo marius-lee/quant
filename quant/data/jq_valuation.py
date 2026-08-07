@@ -22,6 +22,7 @@ logger = logging.getLogger("jq_valuation")
 
 from quant.data.cache import get_backend, DataCache, RateLimiter
 from quant.utils.date import validate_date_format
+from quant.config.paths import MARKET_DB
 
 # ── Module-level cache (lazy init) ──
 _cache = None
@@ -41,7 +42,7 @@ def _init_cache():
     _tushare_limiter = RateLimiter("tushare_valuation", calls_per_minute=180, backend=backend)
     logger.debug("jq_valuation cache initialized (backend=%s)", type(backend).__name__)
 
-DB = os.path.join(os.path.dirname(__file__), "market.db")
+DB = MARKET_DB
 
 TRIAL_START = "2025-03-26"
 TRIAL_END = "2026-04-02"

@@ -41,15 +41,56 @@ class SimulatedBroker:
         if not open_prices:
             return {"executed": [], "wealth": self.engine.get_capital(strategy), "skipped": True}
 
+        # B8 (CODE-REVIEW): 回测涨跌停成交模拟 —
+        # 一字板 (open==high==low==涨/跌停价) 实际无法成交, 原回测按开盘价
+        # 100% 成交 → 过度乐观. ohlc 字典供 BacktestExecutionModel 阻断.
+        ohlc = self._day_ohlc(list(all_syms), date)
+
         result = execute_signals(
             targets, date, strategy=strategy,
             prices=open_prices,
             db_path=self.db_path,
             suppress_push=suppress_push,
+            ohlc=ohlc,
         )
         # B-06 fix: 净值按当日收盘价 MTM (原成本价 → 净值只在交易日变动, 指标失真)
         result["wealth"] = self.get_mtm_capital(strategy, date)
         return result
+
+    def _day_ohlc(self, symbols, date):
+        """构造执行日 OHLC + 前收盘 for 涨跌停判定 (B8).
+
+        前收盘取 data_full 中日期 < date 的最近 T-1 close;
+        无数据或缺失 → 返回 {sym: None...} 标注, 判定端安全跳过.
+        """
+        out = {}
+        if self.data_full is None:
+            return out
+        try:
+            if date not in self.data_full.index:
+                return {}
+            row = self.data_full.loc[date]
+            prev_dates = [d for d in self.data_full.index if d < date]
+            prev_close = self.data_full.loc[prev_dates[-1], "close"] if prev_dates else None
+            for sym in symbols:
+                for f in ("open", "high", "low"):
+                    try:
+                        v = float(row[f].get(sym, 0) or 0)
+                    except (KeyError, TypeError, AttributeError):
+                        v = 0.0
+                    out.setdefault(sym, {})[f] = v
+                pc = None
+                if prev_close is not None:
+                    try:
+                        pc = float(prev_close.get(sym, 0) or 0)
+                    except (KeyError, TypeError):
+                        pc = None
+                out[sym]["prev_close"] = pc
+        except Exception as _e:
+            from quant.utils.logger import get_logger
+            get_logger("backtest.broker").warning(
+                "B8: day_ohlc for %s failed (non-fatal): %s", date, _e)
+        return out
 
     def execute_risk_only(self, date, strategy="quant"):
         """非调仓日 (rebalance_freq=weekly): 只跑硬止损, 不做组合再平衡.

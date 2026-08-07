@@ -41,6 +41,53 @@ def test_backtest_buy_fill(engine):
     assert engine.get_cash("quant") < 100000.0
 
 
+def _ohlc(prev_close, open_, high, low):
+    """B8: 构造 {symbol: {open,high,low,prev_close}} 字典."""
+    return {"699999": {"prev_close": prev_close, "open": open_,
+                       "high": high, "low": low}}
+
+
+def _ctx_b8(engine, prices, prev_close, open_px, high, low):
+    """带 ohlc 的执行上下文 (一字板判定用)."""
+    return ExecutionContext(
+        engine=engine, strategy="quant", today=TODAY,
+        prices=pd.Series(prices), cost_model=CostModel.from_config(),
+        ohlc=_ohlc(prev_close, open_px, high, low),
+    )
+
+
+def test_b8_sealed_limit_up_blocks_buy(engine):
+    """B8: 一字涨停 (open==high==low==涨停价, 主板±10%) → 买单不成交."""
+    targets = [{"symbol": "699999", "shares": 100, "score": 9.0, "price": 11.0}]
+    res = BacktestExecutionModel().run(
+        targets, _ctx_b8(engine, {"699999": 11.0}, prev_close=10.0,
+                         open_px=11.0, high=11.0, low=11.0))
+    assert engine.get_positions("quant") == []  # 一字涨停买入被阻断
+
+
+def test_b8_sealed_limit_down_blocks_sell(engine):
+    """B8: 一字跌停 (open==high==low==跌停价) → 卖单阻断, 持仓保留."""
+    engine.execute([Order(symbol="699999", side="buy", shares=100, price=10.0, cost=0)],
+                   "2026-07-24", "quant")
+    targets = [{"symbol": "699999", "shares": 100, "score": 9.0, "price": 10.0}]
+    # prev_close=11.0 → 跌停价 9.90; 持仓成本 10 → drop -1.0% (不触发 -8% 硬止损)
+    res = BacktestExecutionModel().run(
+        targets, _ctx_b8(engine, {"699999": 9.9}, prev_close=11.0,
+                         open_px=9.9, high=9.9, low=9.9))
+    pos = engine.get_positions("quant")
+    assert len(pos) == 1 and pos[0]["symbol"] == "699999"  # 一字跌停卖不掉
+
+
+def test_b8_not_sealed_normal_fill(engine):
+    """B8: 非一字板 (high>open) → 正常成交."""
+    targets = [{"symbol": "699999", "shares": 100, "score": 9.0, "price": 10.0}]
+    res = BacktestExecutionModel().run(
+        targets, _ctx_b8(engine, {"699999": 10.0}, prev_close=10.0,
+                         open_px=10.0, high=10.5, low=9.8))
+    assert res.buys_mode == "filled"
+    assert len(engine.get_positions("quant")) == 1
+
+
 def test_backtest_hard_stop(engine):
     """回测: 硬止损触发, 卖出 + stopped_out + 当日从 targets 剔除 (不买回)."""
     # 先建仓 (成本 10.0) — 前一交易日买入, 避开 T+1 卖出限制

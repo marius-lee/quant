@@ -1,0 +1,10 @@
+{
+  "name": "qlib_vema",
+  "display_name": "qlib_vema",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.0213,
+  "icir_12m": 0.1489,
+  "last_evaluated": "auto",
+  "n_obs": 130
+}

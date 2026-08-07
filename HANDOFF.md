@@ -2,7 +2,92 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
-## 当前状态 (test-v414, 2026-08-07)
+## 当前状态 (test-v418, 2026-08-08)
+
+### CODE-REVIEW-2026-08-07 遗留 R1-R11 全量修复 (2026-08-08, v418)
+
+对照 `docs/reports/CODE-REVIEW-2026-08-07.md` ⚠️ 遗留项全部落地 (4 项判定已修/非 bug, 11 项完成)。**277 tests 全过 (263 + 14 新增)**。
+
+| # | 修复 | 文件 |
+|---|------|------|
+| R1 | **synth factor_count 计数 bug** — 每轮重置计数导致多因子共振 bonus 永远失效。删 `factor_count[sym]=...` 重置行, `sleeve_compose` 正确累加 | `quant/alpha/synth.py` + `test_codereview_r1_synth.py` |
+| R2 | **monitor/state_broker 吞错 → 可观测** — monitor var/liquidity/tradefreq 降级 debug→warning+metric; adapter fallback→critical; state_broker exec_notes/signals/regime/quote 线程告警 (`except: pass` 全清) | `quant/scheduler/monitor.py` `quant/core/state_broker.py` |
+| R3 | **HRP 中点切分 → linkage 树切分** — `_count_leaves` 递归+ `_bisect` 按子树; ⚠️ 陷阱: scipy 对全等距离产病态树 → 零相关退化守卫改走逆方差加权 (1/var, 与旧等权测试兼容) | `quant/optimizer/hrp.py` + `test_codereview_r3_hrp.py` |
+| R4 | **generate_signals 26→18 参数** — 14 个 preload 参数移入 BacktestContext (无 ctx 时默认 None), 保留 8 业务参数 + factor_store/primitives/regime | `quant/pipeline.py` + `test_codereview_r4_signature.py` |
+| R5 | **JSON 文件桥 → SQLite 消息表** — `/tmp/quant_state_bridge.json` → `trades.db:state_bridge` 单行原子 upsert, 读写失败→warning (非静默) | `quant/core/state_broker.py` |
+| R6 | **monitor 跨层 import 提模块级** — 原函数内 `from quant.X` (循环依赖假想) 全部为静态拓扑, 提顶 | `quant/scheduler/monitor.py` |
+| R7 | **VaR PSD 修正** — eigen-clip 非 PSD 协方差 (eigh 对称化→负特征值归零→重建), 三个 VaR 家族函数共用; update_daily_risk log_ret 加列级 dropna | `quant/risk/var.py` |
+| R8 | **删 regime sizing 资本乘数死角** — 删 `get_regime_sizing`(detector) + `_apply_regime_sizing`(portfolio) + config `regime.sizing` 块 (yaml.safe_dump 合规, 注释丢失已核对无误删键); 展示字段改 `regime_max_lots` (lot-based) | `quant/regime/detector.py` `quant/optimizer/portfolio.py` `quant/pipeline.py` `quant/core/state_broker.py` `quant/config/config.yaml` |
+| R9 | **detector.py:20 硬编码路径** — `_MARKET_DB` 无任何引用, 直接删 | `quant/regime/detector.py` |
+| R10 | **快照因子 60 天门控** — intraday 三因子 (intraday_reversal/open_volume_ratio/close_surge) 快照积累 < 60 日前显式返回 None (原来静默产出 NaN 因子); aux 路径零查询读 chunk 计数透传 (`intraday_snapshot_days`), DB 路径 per-进程 COUNT 缓存; Bug6 列名单位注释同步 (腾讯 volume=股非手) | `quant/factor/compute/intraday.py` `quant/factor/compute/_preload.py` `quant/scheduler/snapshot.py` + `test_codereview_r10_snapshot_gate.py` |
+| R11 | 全量回归 277 passed + VERSION bump (本条目) | — |
+
+**判定非 bug / 已修 (不落地)**: Bug1 monitor 缩进 ✅ 前序已修; Bug2/Bug3 非 bug (快照空值在 compute 端降级=设计); Debt7 benchmark ✅ v401 已修。⚠️ Gap2 (0-active-factors 反馈环) 为**业务问题非代码缺陷** — 独立排期。
+
+**验证**: `test_codereview_r1/r3/r4/r10_*.py` 新增 14 测试; 全量 `pytest test/` **277 passed**; 语法校验全过。config.yaml 注释在 R8 safe_dump 中丢失 (值不变, 规则仍强制 safe_dump)。
+
+### 周六周度评估调度断链修复 (2026-08-08, v417)
+
+**现象**: Web 调度页「因子评估(总)」从未启动; 96 因子全停留在 evaluating 状态、永远无法晋升 active。
+
+**根因 (三路触发源全断)**:
+1. **orchestrator 周六分支不可达** — `orchestrator.py` 主循环顶部 `if not is_trading_day(): continue`, 而周六非交易日 → 循环体永远被短路, v301 引入的 `weekly_eval` 触发块 (位于 continue 之后) **从未执行过**
+2. **独立 weekly 线程无人启动** — `scheduler/__init__.py::start_all()` 设计为双线程 (orchestrator + `_weekly_loop`), 但 `scripts/restart.sh` / `run_task.sh daemon` 均直接调 `orchestrator.start()` → `_weekly_loop` (正确实现, 不检查交易日) 是死代码
+3. **cron 兜底为空** — `scripts/setup_cron.sh` 声明了 `0 6 * * 6` weekly 行但实际 `crontab -l` 只有注释; `.cron_installed` 标记 (7月16日残留) 让 web 误显示"已配置"
+4. **附带**: 评估子进程无超时 (`_TIMEOUTS` 缺失) — 若卡死会永远占用 running 行, 后续调度永久阻塞
+
+**修复 (五处, 低侵入)**:
+1. `orchestrator.py` — 状态读取 + weekly_eval 触发块整体**前移到 `is_trading_day()` 短路之前**; 触发窗口由 `06:00-06:05` 放宽为 `06:00-12:00` (周六上午 restart 错过 06:00 窗口会漏掉整周评估; `_tk_start` dedup 保证三路触发不重复执行)
+2. `scripts/restart.sh` + `run_task.sh daemon` 入口 → `from quant.scheduler import start_all` (orchestrator + `_weekly_loop` 双线程, 单进程)
+3. **cron 重建** — `setup_cron.sh` 重写为仅装两条 (weekly 周六 06:00 + adj_factor 每小时); 并修 heredoc 变量未展开 bug (macOS bash 3.2 双引号 heredoc 不展开 `$PROJ`, 导致 crond 实际执行 `cd ` 空路径); 已实测 `crontab -l` 含完整路径
+4. **超时防御** — `_TIMEOUTS["weekly_eval"]=43200` (12h); `weekly.py` grace 7200→43200 对齐
+5. **可观测性** — web `/api/scheduler` 由于 `_next_scheduled_time` 已支持 "周六 HH:MM" 格式, 下周六 06:00 起正确显示 next_run; 周六日志含 weekly_eval window 诊断
+
+**验证**: `test/test_weekly_sat_trigger_v416.py` 6/6 (触发块位于 is_trading_day 之前 / 窗口覆盖 12:00 / start_all 双线程 / restart.sh 入口 / cron 条目); **263 tests 全过 (257 + 6 新增)**。下一周六 (2026-08-15) 06:00 为首次真实执行验证点。
+
+### CODE-REVIEW-VERIFICATION 全量 46 项修复 (2026-08-08, v416)
+
+对照 `docs/reports/CODE-REVIEW-VERIFICATION-2026-08-07.md` 逐项落地, 已全量修复 (除 A14 config 冻结记入排期)。**257 tests 全过**。
+
+**P0 修复 (3/3)**:
+- **P0-10 Kelly fraction 空操作** (`quant/optimizer/kelly.py`): v406 删权重归一化导致 fraction、但保留 clip(upper=max_single) → Small 层崩溃 + 熊市不缩仓。修复: 恢复 `max_single` 参数注入 + 语义化测试 (均匀 alpha 下 w10=2×w05; 集中 alpha+fraction=1.0 → 单票≤cap 且 sum<1), `test_portfolio.py` 48/48
+- **reconcile daily_equity 实际不写** — 去 `except Exception: pass` 吞错 + `engine.get_cash("quant", mode="live")` 的非法 mode 参数 (engine.get_cash/get_positions 无 mode 形参 → TypeError)。现在 `record_daily_equity` 真落库, 回撤告警恢复
+- **phase7 前视** — `screen_factors(prefilter_from_diagnostics=...)` 不存在的关键字 → TypeError → 圆滑失败后空集。修复: `eval_start/eval_end` 窗口经 `stats_cache.compute_factor_stats` → phase2/phase3 全程注入 (PIT); phase7 失败路径返 `[]` 不再混沌 dict; run_store 读 `passed|active|kept`。`test_eval_chain.py` 4/4
+
+**P1 修复 (10/10)**:
+- **B4/B5 xgb/qlib 掩码**: 4 处 `fillna(0)` 前置 `notna` mask (主链/ensemble/rolling CV/OOS test); xgb 移除分块续训 → 单次 fit
+- **B6/B8 执行链**: `_apply_cost` 缺 impact_bps 未初始化 (order 空时 UnboundLocal); 回测涨跌停封板 → `broker._day_ohlc` → `pipeline.execute_signals(ohlc=)` → `BacktestExecutionModel._sealed_orders` 阻断买/卖, 测试 28/28
+- **C4 stop_loss 边界**: TP1 一手全卖→卖半手; TP2 残留→卖完(不卖 0); trail_sl 需 peak≥cost+2ATR 才激活 (防微利噪音), 7 项回归
+- **C5 multi_tf 前视**: 周线取 ≤date 最近周五, 周一~周四只用上周五 (不用未来本周五), 3 项回归
+- **C11 0信号日**: execute 调仓日无 target → status="ok"(业务空转) 非 failed, 保留 no_targets metric
+- **C10 lgb_train skipped**: `_tk_finish` 契约落 skipped, web /api/scheduler 渲染"今日跳过"黄色徽标
+
+**A 系列 (13/13)**:
+- A3 backfill 补 amount 列 (baostock 'amount' 字段); A4 sync_fundamentals 读 `result['count']` (原 `pe_count` 必 KeyError); A5 DataCache `.put`→`.set` (无 put 方法必 AttributeError); A6 northbound 早退 close 连接 (try/finally); A8 删 compute_asset_growth 占位死码(未注册); A9 删 `_intermediates.py`(零引用); A10 `_huanfang._compute_turnover_accel` → `_turnover_accel_5_20` 消遮蔽, 华安版回归 _turnover.py; A11 _dispatch 日志 `cn`→`sym`; A12 fundamental 15 处直连统一 `_db_connect()`, 删 _shared_limit_conn 遮蔽; **A13 DB 硬编码 19 处 → `quant.config.paths` (15 data 文件 + state_broker + web/app.py + 新增/修复 import)**
+- **C14 Web**: 3 个 POST(`/api/trade /api/state /api/curator/submit`)统一 `_require_token()` (QUANT_API_TOKEN + hmac); XSS: app.js 加 `escapeHtml()` 全接口转义 (reason/exec_note/scan/heatmap/stress-test/scheduler), scheduler status_label(服务端可信 HTML) 保留; /api/risk /api/health 连接 try/finally close; backtest_history 错误 `str(e)` → 结构化 error
+
+**记录未修复 (排期)**: A14 config 常量 import 期冻结 — 属设计权衡 (config 静态校验), 待专项; C15-C18 已在 v412-414 完成。
+### 关键指标: 263 tests, Web test-v417 (11 个新测试文件/类)
+
+---
+
+## 当前状态 (test-v415, 2026-08-07)
+
+### 全量代码审查报告 (CODE-REVIEW-2026-08-07.md)
+
+完整 6 维度审查，详见 `docs/reports/CODE-REVIEW-2026-08-07.md`。
+
+**关键发现**:
+1. **0 active factors** — 全量 96 注册因子均为 evaluating/probation/archived，评估管线存在但无因子毕升 active。系统架构完整但无可用 alpha 交易
+2. **monitor.py 缩进错误** — `tp_key = f"{sym}:profit"` 应在 `if _is_profit:` 块内 (L275)
+3. **`generate_signals()` 参数爆炸** — 16+ kwargs + ctx 双接口, 迥滥用 lazy import (50+ 处) 掩盖真实依赖
+4. **JSON 文件桥跨进程 IPC** — `/tmp/quant_state_bridge.json` 无锁/无原子性, 存在竞态条件风险
+5. **过度吞错** — monitor/reconcile 多处 `except Exception: _log.debug()` 违反零 fallback 原则
+6. **HRP 二分不遵循树结构** — Naive `n//2` split 而非 linkage 树的合并点 (De Prado 2016 pp.68-72)
+7. **regime sizing 双存** — `regime.sizing` (capital-based, 已废弃) + `optimizer.{nano,micro}.regime_max_lots` (lot-based) 并存, 存在死代码路径
+8. **sleeve_compose 死代码** — L88 `factor_count[sym] = factor_count.get(sym, 0)` 被 L89 立即覆盖
+9. **VaR 参数方法假设正态** — A 股厚尾/波动聚集, parametric VaR 在市场压力下低估尾风险
+10. **技术选型缺口**: Redis (IPC), Airflow (调度), TimescaleDB (时序), Prometheus+Grafana (监控)
 
 ### §6 算法优化 3 项 (CODE-REVIEW-2026-08-07.md)
 

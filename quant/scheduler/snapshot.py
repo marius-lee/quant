@@ -35,7 +35,13 @@ def _symbol_to_tencent(s: str) -> str:
 
 def _fetch_batch(batch: list[str]) -> dict[str, dict]:
     """批量拉取实时价格+成交量+昨收. 返回 {symbol: {price, volume, prev_close}}.
-    v402: 新增 prev_close (fields[4]) — intraday_reversal 因子需要."""
+    v402: 新增 prev_close (fields[4]) — intraday_reversal 因子需要.
+    v418 (Bug 6): 列名单位注释 —
+      price      元 (fields[3])
+      volume     股 (fields[6], 腾讯原始单位=股, 非手; 因子端 _cs_zscore 按截面
+                  z-score, 单位恒正缩放不影响秩相关; 若未来需 手 需 ÷100)
+      prev_close 元 (fields[4])
+    """
     codes = ",".join(_symbol_to_tencent(s) for s in batch)
     req = urllib.request.Request(_TENCENT_URL + codes, headers=_TENCENT_HEADERS)
     try:
@@ -136,6 +142,10 @@ def _snapshot(today: str = None, mode: str = "open"):
                         "VALUES (?, ?, ?, ?, ?)",
                         (sym, today, data["price"], data["volume"], data["prev_close"]))
                 else:
+                    # v418 (Bug 6): close_5min/close_5min_vol 列名注释 —
+                    #   close_5min     尾盘5分钟价 (元)
+                    #   close_5min_vol 尾盘累计成交量 (股, 腾讯原始单位)
+                    # 与 open_30min/open_30min_vol 单位一致.
                     conn.execute(
                         "UPDATE intraday_snapshot SET close_5min=?, close_5min_vol=? "
                         "WHERE symbol=? AND date=?",

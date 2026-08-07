@@ -9,6 +9,7 @@ import json, os, sqlite3, time
 from quant.config.constants import _require_cfg
 import curl_cffi.requests as _req
 from quant.utils.logger import get_logger
+from quant.config.paths import MARKET_DB
 
 logger = get_logger("data.fund_flow")
 # ── 列名常量 (DDL 与查询共引) ──
@@ -27,7 +28,7 @@ FF_MID_NET_RATIO          = "mid_net_ratio"
 FF_SMALL_NET_INFLOW       = "small_net_inflow"
 FF_SMALL_NET_RATIO        = "small_net_ratio"
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "market.db")
+DB_PATH = MARKET_DB
 
 _FUND_FLOW_URL = (
     "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"
@@ -41,6 +42,9 @@ _FUND_FLOW_URL = (
 # requests 直连 RemoteDisconnected, 同参数 curl HTTP 200/0.47s。
 # 模块级探测: 首次 requests 失败 → 本会话后续全部走 curl 子进程。
 _CURL_MODE = None  # None=未探测, True=curl, False=requests
+# v414: API 不可用标志 — 连续 5 次全部失败则跳过后续调用
+_UNAVAILABLE = False
+_CONSECUTIVE_FAILS = 0
 
 
 def _http_get_json(url: str, headers: dict):
@@ -180,6 +184,10 @@ def _float(val: str):
 
 def sync_all(max_stocks: int = 500, conn=None):
     """同步市值最大的 N 只股票的资金流向数据。"""
+    global _UNAVAILABLE, _CONSECUTIVE_FAILS
+    if _UNAVAILABLE:
+        logger.info("fund_flow sync skipped: API marked unavailable")
+        return 0
     close_conn = False
     if conn is None:
         conn = sqlite3.connect(DB_PATH)
@@ -205,12 +213,17 @@ def sync_all(max_stocks: int = 500, conn=None):
         else:
             fail += 1
             consecutive_fail += 1
+            # v414: 连续 5 只全失败 → 标记 API 不可用, 跳过本会话
+            if consecutive_fail >= 5 and ok == 0:
+                _UNAVAILABLE = True
+                logger.warning(
+                    "fund_flow sync aborted: API unavailable after %d consecutive failures, "
+                    "skipping for this session", consecutive_fail)
+                break
+            # 连续 30 只失败 → 疑似封禁, 放弃本次
             if consecutive_fail >= 30:
                 logger.warning(
-                    "fund_flow sync aborted: 30 consecutive failures "
-                    "(likely source block/throttle), resume later")
-                print(f"ABORTED: 30 consecutive failures at {i+1}/{len(symbols)}, "
-                      f"ok={ok} fail={fail} total_rows={total} — 源疑似封禁, 稍后重跑")
+                    "fund_flow sync aborted: 30 consecutive failures (likely source block)")
                 if close_conn:
                     conn.close()
                 return total

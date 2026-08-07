@@ -32,6 +32,13 @@ const clsPnl = (v) => v >= 0 ? 'up' : 'down';
 function setText(id, text) { const el = document.getElementById(id); if (el) el.textContent = text; }
 function setHTML(id, html) { const el = document.getElementById(id); if (el) el.innerHTML = html; }
 
+// C14 (CODE-REVIEW): XSS 防护 — 所有从 API 进入 innerHTML 的字符串必须 escape.
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 // ── Build factor objects from parallel arrays (API returns [names] + [ics] separately)
 function buildFactorObjs(fd) {
   const keys = fd.factor_keys || [];
@@ -118,6 +125,7 @@ function renderTable(containerId, rows, cols, opts = {}) {
       let v = r[c.key];
       if (opts.fmtMap && opts.fmtMap[c.key]) v = opts.fmtMap[c.key](v, r);
       else if (v == null) v = '—';
+      else v = escapeHtml(v);  // C14: fmtMap 输出视为可信 HTML, 其余一律转义
       html += `<td>${v}</td>`;
     });
     html += '</tr>';
@@ -136,7 +144,7 @@ function renderScanLine(fd) {
   const bars = factors.map(f => {
     const pct = maxAbsIC > 0 ? Math.abs(f.ic) / maxAbsIC : 0;
     const color = f.ic >= 0 ? 'var(--up)' : 'var(--down)';
-    return `<span class="scan-bar" style="height:${(pct*100).toFixed(0)}%;background:${color}" title="${f.name}: IC=${fmtNum(f.ic,4)}"></span>`;
+    return `<span class="scan-bar" style="height:${(pct*100).toFixed(0)}%;background:${color}" title="${escapeHtml(f.name)}: IC=${fmtNum(f.ic,4)}"></span>`;
   }).join('');
   el.innerHTML = `<div class="scan-inner">${bars}</div>`;
 }
@@ -154,7 +162,7 @@ function renderHeatmap(fd) {
     const intensity = Math.abs(f.ic) / maxAbsIC;
     const hue = f.ic >= 0 ? 120 : 0;
     const color = `hsl(${hue},${(intensity*80).toFixed(0)}%,${(65-intensity*30).toFixed(0)}%)`;
-    return `<span class="heatmap-cell" style="background:${color}" title="${f.name}: |IC|=${fmtNum(f.ic,4)}"></span>`;
+    return `<span class="heatmap-cell" style="background:${color}" title="${escapeHtml(f.name)}: |IC|=${fmtNum(f.ic,4)}"></span>`;
   }).join('');
 }
 
@@ -214,15 +222,16 @@ function renderSignals(state) {
       score: v => fmtNum(v, 2),
       reason: v => {
         if (!v) return '—';
-        const parts = v.split(', ');
-        if (parts.length <= 2) return '<span title="' + v + '">' + v + '</span>';
+        const ev = escapeHtml(v);
+        const parts = ev.split(', ');
+        if (parts.length <= 2) return '<span title="' + ev + '">' + ev + '</span>';
         const shown = parts.slice(0, 2).join(', ');
-        return '<span title="' + v + '" class="trunc-reason">' + shown + ', <em>+' + (parts.length - 2) + ' more</em></span>';
+        return '<span title="' + ev + '" class="trunc-reason">' + shown + ', <em>+' + (parts.length - 2) + ' more</em></span>';
       },
       exec_note: v => {
         if (!v) return '<span class="badge badge-blue">待执行</span>';
         const map = { abandoned_sealed: '封死', abandoned_funds: '资金不足', filled: '已成交', engine_skip: '跳过' };
-        const label = map[v] || v;
+        const label = map[v] || escapeHtml(v);
         const cls = v === 'filled' ? 'badge-green' : 'badge-red';
         return '<span class="badge ' + cls + '">' + label + '</span>';
       }
@@ -473,14 +482,14 @@ function renderStressTest(data) {
     <div class="section-header"><h2>⚠ 压力测试</h2></div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px">
       <div class="kpi"><div class="label">资产</div><div class="value">¥${fmtNum(data.capital)}</div></div>
-      <div class="kpi"><div class="label">最严重</div><div class="value" style="color:#e74c3c">${worst} ${data.scenarios[worst].loss_pct}%</div></div>
+      <div class="kpi"><div class="label">最严重</div><div class="value" style="color:#e74c3c">${escapeHtml(worst)} ${data.scenarios[worst].loss_pct}%</div></div>
       <div class="kpi"><div class="label">预估损失</div><div class="value" style="color:#e74c3c">¥${fmtNum(data.scenarios[worst].portfolio_loss_est)}</div></div>
     </div>
     ${names.map(n => {
       const s = data.scenarios[n];
       const pct = s.loss_pct;
       const color = pct > 20 ? '#e74c3c' : pct > 10 ? '#eab308' : '#4caf50';
-      return '<div style="display:flex;justify-content:space-between;padding:6px 12px;margin:2px 0;background:var(--bg2);border-radius:4px"><span>'+n+'</span><span style="color:'+color+'">−'+pct+'%</span><span style="color:var(--text2);font-size:0.85rem">'+s.description+'</span></div>';
+      return '<div style="display:flex;justify-content:space-between;padding:6px 12px;margin:2px 0;background:var(--bg2);border-radius:4px"><span>'+escapeHtml(n)+'</span><span style="color:'+color+'">−'+pct+'%</span><span style="color:var(--text2);font-size:0.85rem">'+escapeHtml(s.description)+'</span></div>';
     }).join('')}
   `;
 }
@@ -541,7 +550,10 @@ async function loadScheduler() {
         { key: 'last_run', label: '上次运行' },
         { key: 'error_msg', label: '错误信息' },
         { key: 'desc', label: '说明' },
-      ], { rank: true });
+      ], {
+        rank: true,
+        fmtMap: { status_label: v => v },  // 服务端 _badge() 生成的可信 HTML, 不强转义
+      });
       document.getElementById('meta-scheduler').textContent = (data.tasks?.length || 0) + ' 任务';
     }
   } catch (e) { console.warn('scheduler error:', e.message); }

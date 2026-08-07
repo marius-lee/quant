@@ -40,57 +40,72 @@ def _quasi_diagonalize(link: np.ndarray, n: int) -> list:
     return sorted_idx
 
 
-def _recursive_bisection(cov: np.ndarray, sorted_idx: list) -> np.ndarray:
-    """递归二分分配风险预算 — De Prado (2016), pp. 68-72。"""
-    w = np.ones(len(sorted_idx), dtype=float)
-    cluster_items = [sorted_idx]
+def _recursive_bisection(cov: np.ndarray, sorted_idx: list, link: np.ndarray = None) -> np.ndarray:
+    """递归二分分配风险预算 — De Prado (2016), pp. 68-72。
 
-    while len(cluster_items) > 0:
-        # 所有簇已不可再分 → 终止
-        if all(len(items) <= 1 for items in cluster_items):
-            break
-        # 二分每个簇
-        bisected = []
-        for items in cluster_items:
-            if len(items) <= 1:
-                bisected.append(items)
-                continue
+    v418 (R3): 原实现按 `len//2` 中点切分, 不尊重层次聚类树结构 —
+    相关性高的两只股票可能被硬生生分到不同子簇, 导致风险平价次优。
+    修复: 按 linkage 树自顶向下切分, 每个内部节点沿其左/右子树自然分裂
+    (quasi-diagonal 排序保证左子树叶子连续排在右子树之前)。
 
-            # 按方差加权 split
-            n_left = len(items) // 2
-            left = items[:n_left]
-            right = items[n_left:]
+    Args:
+        cov: 协方差矩阵 (N×N)
+        sorted_idx: quasi-diagonal 排序后的索引列表
+        link: 层次聚类 linkage 矩阵; None 时回退中点切分 (兼容旧调用)
+    """
+    n = len(sorted_idx)
+    if n <= 1:
+        return np.ones(n, dtype=float)
 
-            # 子簇方差 (逆方差加权)
-            cov_left = cov[np.ix_(left, left)]
-            cov_right = cov[np.ix_(right, right)]
-            var_left = 1.0 / max(np.diag(cov_left).sum() if cov_left.size > 1 else cov_left[0, 0], 1e-8)
-            var_right = 1.0 / max(np.diag(cov_right).sum() if cov_right.size > 1 else cov_right[0, 0], 1e-8)
+    w = np.zeros(n, dtype=float)
+    left_leaf: dict[int, int] = {}
 
-            # v413: De Prado (2016) 原文 — 簇内逆方差加权 (IVP), 非等权
-            # 子簇间按风险平价分配 alpha, 子簇内按 1/σ²_i 分配
-            alpha = var_left / (var_left + var_right)
+    def _count_leaves(node: int) -> int:
+        """递归统计子树叶子数, 缓存到 left_leaf[i] (i = node - n)."""
+        if node < n:
+            return 1
+        i = node - n
+        if i in left_leaf:
+            return left_leaf[i]
+        nl = _count_leaves(int(link[i, 0]))
+        _count_leaves(int(link[i, 1]))
+        left_leaf[i] = nl
+        return nl
 
-            # Left cluster IVP
-            diag_left = np.diag(cov_left) if cov_left.size > 1 else np.array([cov_left[0, 0]])
-            ivp_left = 1.0 / np.maximum(diag_left, 1e-8)
-            ivp_left = ivp_left / ivp_left.sum()
-            for i, idx in enumerate(left):
-                w[idx] = alpha * ivp_left[i]
+    def _bisect(node: int, items: list, factor: float, use_tree: bool):
+        """递归切分 items (sorted_idx 的连续段), node 为对应 linkage 节点."""
+        if len(items) <= 1:
+            w[items[0]] = factor
+            return
+        if use_tree and node >= n:
+            i = node - n
+            mid = min(left_leaf.get(i, len(items) // 2), len(items) - 1)
+        else:
+            mid = len(items) // 2
+        if mid <= 0:
+            mid = 1
+        left_items = items[:mid]
+        right_items = items[mid:]
 
-            # Right cluster IVP
-            diag_right = np.diag(cov_right) if cov_right.size > 1 else np.array([cov_right[0, 0]])
-            ivp_right = 1.0 / np.maximum(diag_right, 1e-8)
-            ivp_right = ivp_right / ivp_right.sum()
-            for i, idx in enumerate(right):
-                w[idx] = (1 - alpha) * ivp_right[i]
+        cov_left = cov[np.ix_(left_items, left_items)]
+        cov_right = cov[np.ix_(right_items, right_items)]
+        var_left = 1.0 / max(np.diag(cov_left).sum() if cov_left.size > 1 else cov_left[0, 0], 1e-8)
+        var_right = 1.0 / max(np.diag(cov_right).sum() if cov_right.size > 1 else cov_right[0, 0], 1e-8)
+        alpha = var_left / (var_left + var_right)
 
-            bisected.append(left)
-            bisected.append(right)
+        if use_tree and node >= n:
+            i = node - n
+            _bisect(int(link[i, 0]), left_items, factor * alpha, True)
+            _bisect(int(link[i, 1]), right_items, factor * (1 - alpha), True)
+        else:
+            _bisect(-1, left_items, factor * alpha, False)
+            _bisect(-1, right_items, factor * (1 - alpha), False)
 
-        cluster_items = bisected
+    use_tree = link is not None and len(link) >= n - 1
+    if use_tree:
+        _count_leaves(2 * n - 2)
+    _bisect(2 * n - 2 if use_tree else -1, list(sorted_idx), 1.0, use_tree)
 
-    # 归一化
     return w / w.sum()
 
 
@@ -129,11 +144,19 @@ def hrp_weights(cov: np.ndarray, linkage_method: str = "ward") -> np.ndarray:
         _log.warning("HRP: linkage failed, returning equal weight")
         return np.ones(n) / n
 
+    # v418: 零相关退化守护 — 相关矩阵 off-diagonal 全 0 时, 树无信息 (scipy
+    # 对平射距离产生病态不平衡树 → 权重失衡). 最优解 = 逆方差加权 (IVP).
+    _off = corr[~np.eye(n, dtype=bool)]
+    if _off.size and np.allclose(_off, 0.0):
+        _log.debug("HRP: zero correlation, inverse-variance weights")
+        ivp = 1.0 / np.maximum(np.diag(cov), 1e-8)
+        return ivp / ivp.sum()
+
     # 3. Quasi-diagonal 排序
     sorted_idx = _quasi_diagonalize(link, n)
 
-    # 4. 递归二分分配权重
-    weights = _recursive_bisection(cov, sorted_idx)
+    # 4. 递归二分分配权重 (v418: 传 link 走树切分)
+    weights = _recursive_bisection(cov, sorted_idx, link)
 
     _log.debug("HRP: %d assets, linkage=%s, weights range [%.4f, %.4f]",
                n, linkage_method, weights.min(), weights.max())

@@ -11,7 +11,8 @@ from quant.utils.logger import get_logger, set_trace_id
 from quant.factor.stats_cache import compute_factor_stats
 
 
-def screen_factors(input_json: str = None, output_json: str = None) -> dict:
+def screen_factors(input_json: str = None, output_json: str = None,
+                   eval_start: str = None, eval_end: str = None) -> dict:
     """运行单因子检验, 返回通过/未通过因子列表。
 
     评估全部 backtesting 因子, 自己算 IC, 不依赖外部诊断数据。
@@ -62,6 +63,8 @@ def screen_factors(input_json: str = None, output_json: str = None) -> dict:
         n_symbols=n_symbols if n_symbols > 0 else None,
         lookback=lookback,
         factor_names=active_names,
+        eval_start=eval_start,
+        eval_end=eval_end,
     )
 
     factor_names = stats["factor_keys"]

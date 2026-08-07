@@ -292,16 +292,15 @@ def _run(today: str):
                    "breaks": result["breaks"],
                    "elapsed": round(_time.time() - t0, 1)}
         # v410: 写入 daily_equity 快照 (回撤告警 + Sharpe 计算依赖)
-        try:
-            from quant.execution.engine import ExecutionEngine
-            from quant.data.repos import TradeRepo
-            engine = ExecutionEngine()
-            cash = engine.get_cash("quant", mode="live")
-            positions = engine.get_positions("quant", mode="live")
-            pos_value = sum(p["shares"] * p.get("price", 0) for p in positions)
-            TradeRepo().record_daily_equity(today, cash, pos_value)
-        except Exception:
-            pass
+        # P0-2: get_cash/get_positions 无 mode 参数 (engine.py:77/203),
+        # 原 TypeError 被 except: pass 吞掉 → 快照天天缺失, 告警静默失效.
+        from quant.execution.engine import ExecutionEngine
+        from quant.data.repos import TradeRepo
+        engine = ExecutionEngine()
+        cash = engine.get_cash("quant")
+        positions = engine.get_positions("quant")
+        pos_value = sum(p["shares"] * p.get("price", 0) for p in positions)
+        TradeRepo().record_daily_equity(today, cash, pos_value)
         _log.info(f"[SCHEDULER] {today} | TASK=reconcile | STATUS=OK | "
                   f"recon={result['status']} breaks={result['breaks']} | "
                   f"elapsed={summary['elapsed']}s")

@@ -65,10 +65,13 @@ def _run_train_phase(train_start: str, train_end: str) -> list[str]:
     except Exception as e:
         _log.warning(f"  Phase 1 failed: {e}")
 
-    # Phase 2: single-factor screening (with diagnostics pre-filter)
+    # Phase 2: single-factor screening — P0-3: 注入训练窗口 (原 PIT 违规,
+    # 全折叠在全局窗口上评估 → 窗口参数形同虚设). 注意返回键是 `active`
+    # (v346 对齐), 且 screen_factors 无 prefilter_from_diagnostics 参数
+    # (原调用 TypeError → 每 fold 都空 → walk-forward 从未产出 fold).
     try:
-        p2 = screen_factors(prefilter_from_diagnostics=True)
-        passed_p2 = p2.get("passed", [])
+        p2 = screen_factors(eval_start=train_start, eval_end=train_end)
+        passed_p2 = p2.get("active") or p2.get("passed") or []
         _log.info(f"  Phase 2: {len(passed_p2)} passed")
     except Exception as e:
         _log.warning(f"  Phase 2 failed: {e}")
@@ -77,18 +80,18 @@ def _run_train_phase(train_start: str, train_end: str) -> list[str]:
     if not passed_p2:
         return []
 
-    # Phase 3: CPCV + PBO
+    # Phase 3: CPCV + PBO (窗口注入: 训练窗口内重算 IC 序列, PIT)
     try:
-        p3 = validate_oos()
+        p3 = validate_oos(eval_start=train_start, eval_end=train_end)
         kept_p3 = p3.get("kept", [])
         _log.info(f"  Phase 3: {len(kept_p3)} kept")
     except Exception as e:
         _log.error(f"  Phase 3 failed: {e} — aborting WF run (no fallback)")
-        return {"error": f"Phase 3 failed: {e}", "phase": "phase3"}
+        return []
 
     if not kept_p3:
         _log.error("  Phase 3: no factors passed CPCV+PBO — aborting WF run (no fallback)")
-        return {"error": "no factors passed Phase 3", "phase": "phase3"}
+        return []
 
     # Phase 4: cost verification
     try:
@@ -97,7 +100,7 @@ def _run_train_phase(train_start: str, train_end: str) -> list[str]:
         _log.info(f"  Phase 4: {len(final_factors)} final")
     except Exception as e:
         _log.error(f"  Phase 4 failed: {e} — aborting WF run (no fallback)")
-        return {"error": f"Phase 4 failed: {e}", "phase": "phase4"}
+        return []
 
     return final_factors if final_factors else kept_p3
 

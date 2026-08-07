@@ -8,10 +8,11 @@ from quant.config.constants import _require_cfg
 import pandas as pd
 import baostock as bs
 from quant.utils.date import validate_date_format
+from quant.config.paths import MARKET_DB
 
 logger = logging.getLogger("quant.data.daily_basic")
 
-DB = os.path.join(os.path.dirname(__file__), "market.db")
+DB = MARKET_DB
 
 def _get_symbols(conn):
     """Get all non-BJ stock codes, mapped to baostock format."""

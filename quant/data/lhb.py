@@ -17,10 +17,11 @@ from datetime import datetime, timedelta
 import pandas as pd
 from quant.utils.logger import get_logger
 from quant.utils.date import validate_date_format
+from quant.config.paths import MARKET_DB
 
 logger = get_logger("data.lhb")
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "market.db")
+DB_PATH = MARKET_DB
 
 
 def _ensure_table(conn):

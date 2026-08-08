@@ -1,42 +1,37 @@
-"""调度器 — 单线程编排器 + 独立周频因子评估。
+"""调度器 — 单一编排器 + manifest 任务清单 (v428 重构).
 
-日频: orchestrator 串行 signals(08:30) → execute(09:30) → monitor(09:35-11:30,13:00-14:55) → reconcile(15:05) → daily_data(19:00) → attribution(20:00) → factor_cache(21:00)
-周频: weekly 独立线程 (周六 06:00 force_refresh_cache)
+v428: 废弃"每任务独立 _loop 线程"时代架构 (signals/execute/monitor/attribution/
+weekly 各自的 _timed_loop/_weekly_loop 全部删除, _base.py 移除).
+全部调度由 orchestrator 单进程驱动:
+  - 日线任务: manifest._DAYLINE (时间窗+依赖+超时) → 主循环决策执行
+  - 周频评估: manifest._WEEKLY (周六 06:00-12:00) → orchestrator subprocess
+  - monitor: 长驻窗口任务 (09:30-15:00) → orchestrator 守护线程
+
+启动入口: restart.sh → start_all() (兼容旧); 幂等, 双进程防御由 PID 锁 + grace dedup.
 """
-import threading
 from quant.utils.logger import get_logger
-from quant.scheduler.orchestrator import start as _start_orch
-from quant.scheduler.weekly import _run as _run_weekly, _loop as _weekly_loop
+from quant.scheduler.orchestrator import start as _start_orch, _run as _run_orch
 
 _log = get_logger(__name__)
 
 
-def start_orchestrator():
-    _start_orch()
-    _log.info("orchestrator launched (08:30→09:30→monitor→15:05 recon→19:00→20:00→21:00)")
-
-
-def start_weekly():
-    t = threading.Thread(target=_weekly_loop, daemon=True, name="sch-weekly")
-    t.start()
-    _log.info("weekly factor eval scheduler launched (周六 06:00)")
-
-
 def start_all():
-    """启动编排器 + 周频因子评估 (2 线程)."""
-    start_orchestrator()
-    start_weekly()
-    _log.info("all schedulers launched: 1 orchestrator + 1 weekly")
+    """启动编排器 (v428: 单任务源 — weekly 由 manifest 窗口并入 orchestrator).
+
+    历史: v417 之前 start_all 另起 start_weekly 线程 — manifest 化后
+    weekly_eval 触发条件统一收编进 orchestrator, 删除重复路径 (双触发之源).
+    """
+    _start_orch()
+    _log.info("all schedulers launched (orchestrator only, manifest-driven)")
 
 
-# 兼容旧 API
 def start_scheduler():
     start_all()
 
 
-# 保留旧接口供其他模块直接引用 (向后兼容)
+# 兼容旧 API (无操作 — 全部并入 orchestrator)
 def start_signals():
-    _start_orch()
+    pass  # orchestrator handles this
 
 def start_execute():
     pass  # orchestrator handles this

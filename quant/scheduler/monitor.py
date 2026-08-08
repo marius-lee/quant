@@ -7,6 +7,9 @@ Grinold & Kahn 标准: 盘中独立风控 daemon, 与执行引擎解耦。
   3. P6: 单票+单行业集中度监控
   4. P6: VaR 实时估算 (parametric)
   5. P6: 流动性过滤器 (日均成交额)
+
+v428: 收尾时间 14:55 → 15:00 (覆盖收盘集合竞价 14:57-15:00; 与尾盘快照 15:00
+对齐 — 此前 14:55 退出, 尾盘 5 分钟无风控且快照在 14:55 错误触发).
 """
 import time as _time
 import os
@@ -39,7 +42,7 @@ QUOTE_THROTTLE_SEC = 5  # 行情 API 限频
 
 
 def _run_continuous_inner(today: str, stop_event=None):
-    """盘中持续风控循环 — 09:35-11:30, 13:00-14:55 每 30s 检查一次 (午休跳过).
+    """盘中持续风控循环 — 09:35-11:30, 13:00-15:00 每 30s 检查一次 (午休跳过).
     v368: 响应 stop_event 避免被 orchestrator 孤立后仍写 task_runs. """
     register("monitor", "09:35-11:30,13:00-14:55", has_multiprocess=False)
 
@@ -66,8 +69,9 @@ def _run_continuous_inner(today: str, stop_event=None):
             _time.sleep(_require_cfg("quant.scheduler.poll_interval"))
             continue
 
-        if hhmm >= time(14, 55):
-            _log.info(f"[{today}] monitor stopped — market closing")
+        if hhmm >= time(15, 0):
+            # v428: 15:00 收盘后退出 (此前 14:55 — 尾盘 5 分钟无风控)
+            _log.info(f"[{today}] monitor stopped — market closed (15:00)")
             break
 
         if hhmm < time(9, 35) or not is_market_open():
@@ -344,29 +348,6 @@ def _engine_sell(today: str, symbol: str, shares: int, price: float):
     )
 
 
-def _outer_loop():
-    """外层循环: 每天等待到 09:35 后启动 _run_continuous."""
-    today = None
-    started = False
-
-    while True:
-        now = datetime.now()
-        current_day = now.strftime("%Y-%m-%d")
-
-        if current_day != today:
-            today = current_day
-            started = False
-
-        if not started and is_trading_day():
-            hhmm = time(now.hour, now.minute)
-            if hhmm >= time(9, 35):
-                started = True
-                _run_continuous(today)
-
-        _time.sleep(_require_cfg("quant.scheduler.poll_interval"))
-
-
-
 def _run_continuous(today: str, stop_event=None):
     """盘中风控入口。v368: 接收 orchestrator 的 stop_event, 传给内循环."""
     rid = _tk_start("monitor", today, grace_seconds=21600)
@@ -397,13 +378,6 @@ def _set_monitor_stage(stage: str):
         c.close()
     except Exception as _e:
         _log.warning("monitor: _set_monitor_stage failed (non-fatal): %s", _e)
-
-def _loop():
-    """启动风控监控 daemon 线程."""
-    import threading
-    t = threading.Thread(target=_outer_loop, daemon=True, name="sch-monitor")
-    t.start()
-    _log.info("monitor scheduler launched (09:35-11:30,13:00-14:55)")
 
 
 def _get_market_conn():

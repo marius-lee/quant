@@ -2,6 +2,49 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+## 当前状态 (test-v428, 2026-08-08)
+
+### v428: 调度系统 manifest 化重构 — 单一真相源 (2026-08-08)
+
+**背景 (用户指令)**: 调度任务业务逻辑混乱 — 尾盘快照 14:55 触发语义错误 (尾盘区间 14:55-15:00, 应 15:00 收盘后拉收盘价+全日量); monitor 14:55 即退 (尾盘 5 分钟无风控); 部分任务靠埋点日志决定下一步启停; 需重新整理分析, 按方案 A+B 落地 (先细化 manifest Task 表, 再改码), 归档并写清来龙去脉.
+
+**分析发现 (已交付报告, 经用户确认)**: 4 重入口并存 (orchestrator 常驻循环 / cron 2 条 / run_task.sh 手动 / 死代码 `_loop()` × 5 处 — signals/execute/monitor/attribution/weekly, 自 v4 起无人调用); 5 个状态读取函数语义混叠 (`_get_today_status`/`last_status`/`any_ok`/`_stage_status`/`_tk_start` dedup); 双超时表 (orchestrator `_TIMEOUTS` vs 各模块 grace_s); 周六 weekly 三重触发; 状态机语义混杂 (running=执行中+僵尸+lunch hack).
+
+**方案**: A (止血) — 尾盘快照窗口改 15:00-15:05 (收盘后), monitor 延至 15:00 收尾, reconcile 加 monitor==ok 依赖, 删死代码. B (重构) — 声明式 manifest 任务表 + 单一编排器决策.
+
+**落地 — 新增 `quant/scheduler/manifest.py` (单一真相源)**:
+- `TaskSpec` dataclass: name/label/schedule/window (闭区间时间窗)/mode (inline|monitor|subprocess)/depends_ok (严格依赖, 全 ok 才触发)/depends_attempt (尝试过即放行)/grace_s/timeout_s/weekday/desc/group/has_multiprocess/subprocess_cmd
+- `ALL` 字典 + `spec(name)` (缺名即崩) + `_PLAN_ORDER` (执行顺序)
+- 任务定义一览:
+
+| task | window | mode | deps | 变更 |
+|---|---|---|---|---|
+| signals | 08:00-15:30 | inline | — | 窗口化 |
+| execute | 09:20-14:56 | inline | attempt[signals] | 窗口化 |
+| snapshot_open | 10:00-14:55 | inline | attempt[execute] | 窗口化 |
+| monitor | 09:30-15:00 | monitor (daemon) | — | 收尾 14:55→**15:00** |
+| snapshot_close | **15:00-15:05** | inline | — | **修正: 原 14:55** |
+| reconcile | 15:05-16:00 | inline | **ok[monitor]** | 新增真依赖 (原无) |
+| evening_chain | 19:00-23:59 | subprocess | — | 超时迁入 manifest |
+| weekly_eval | 周六 06:00-12:00 | subprocess | — | 窗口收编, 删除独立线程 |
+
+**改动 — 2. orchestrator 重写为 manifest 驱动**:
+- 新纯函数 `_should_run(spec, hhmm, weekday, status, aborted_cnt) -> bool`: 窗口+星期命中 → ok/failed/running 不触发 → depends_ok 全 ok → depends_attempt 在 status → aborted 次数 < 预算. 周频窗口判定在 is_trading_day 短路**前** (守 v416 教训).
+- 主循环: 启动时 register_all + 僵尸清理 → 30s 轮询 → 每轮读一次状态 → 按 `_PLAN_ORDER` 决策触发; monitor 窗口内启动守护线程保活, 窗口结束后自退 (15:00 后 monitor._run_continuous 写 ok)
+- `_dispatch`: inline=同步调用; subprocess=Popen 常驻字符串 (weekly/evening); snapshot 走 snapshot 模块直调
+- 删除 `_TIMEOUTS` 字典 → 统一读 manifest.timeout_s (evening.py 同步改用 spec)
+- 僵尸清理/超时检查沿用 v424-v427 逻辑 (波形对齐 manifest)
+
+**改动 — 3. 死代码清理**: 删除 `_base.py`; 五个模块的 `_loop()`/`_weekly_loop` 全部移除; `__init__.py` 重写 — 单一 `start_all()` (orchestrator only, weekly 线程删除 — 双触发之源); 兼容旧 API 空壳保留; `restart.sh`/`run_task.sh` 无需改动 (start_all 兼容)
+
+**改动 — 4. 界面元数据同步** (status.py): snapshot_close "15:00 (收盘)", monitor label "盘中风控" + "(窗口结束自退)" 描述
+
+**验证**: 新增 `test_manifest_schedule.py` (17 测试: 窗口/状态机/依赖/重试预算/monitor daemon / 周频窗口); 改写 v416 测试对齐 manifest (周六窗口 06:00-12:00 可达判定); smoke_verify.sh 引用改 manifest. 全量 **336 passed** (319+17). VERSION → test-v428.
+
+**部署**: 用户执行 `bash scripts/restart.sh` 重启服务; 重启后 orchestrator 以 manifest 驱动全天调度, 尾盘快照将在 15:00 后首轮触发.
+
+**历史遗留(已归档至本节)**: v420-v427 的门控遮蔽/双触发/僵尸 running/界面即时自愈 — 均收敛进 manifest 决策 (ok 终态不重跑 / aborted 可重试 ≤2 / pid 存活检测 / _TIMEOUTS 删除).
+
 ## 当前状态 (test-v427, 2026-08-08)
 
 ### v427: weekly 补跑门控遮蔽修复 + "运行中"真伪判定 (2026-08-08)

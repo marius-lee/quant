@@ -4,7 +4,6 @@ from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
 from datetime import time
 from quant.monitor.metrics import metrics as _m
 from quant.utils.logger import get_logger, set_trace_id
-from quant.scheduler._base import _timed_loop
 
 _log = get_logger(__name__)
 
@@ -67,6 +66,3 @@ def _run(today: str):
         raise
     finally:
         _tk_finish("signals", today, status, error=error_msg, summary=summary)
-
-def _loop():
-    _timed_loop("signals", time(8, 30), _run, has_multiprocess=True)

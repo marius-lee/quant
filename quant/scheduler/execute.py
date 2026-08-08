@@ -11,7 +11,6 @@ from quant.config.constants import _require_cfg
 from quant.execution.engine import ExecutionEngine
 from quant.execution.cost import CostModel
 from quant.optimizer.portfolio import PortfolioConstructor
-from quant.scheduler._base import _timed_loop
 
 _log = get_logger(__name__)
 
@@ -216,6 +215,3 @@ def _run(today: str):
         raise
     finally:
         _tk_finish("execute", today, status, error=error_msg, summary=summary)
-
-def _loop():
-    _timed_loop("execute", time(9, 30), _run, has_multiprocess=True)

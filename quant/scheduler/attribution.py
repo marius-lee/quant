@@ -16,7 +16,6 @@ import numpy as np
 from datetime import time
 from quant.monitor.metrics import metrics as _m
 from quant.utils.logger import get_logger, set_trace_id
-from quant.scheduler._base import _timed_loop
 from quant.factor.registry import _db_connect
 
 _log = get_logger(__name__)
@@ -564,5 +563,3 @@ def _run(today: str):
         compute_rolling_metrics(window=60, strategy="quant")
     except Exception:
         pass
-def _loop():
-    _timed_loop("attribution", time(15, 30), _run, skip_deadline=time(15, 45))

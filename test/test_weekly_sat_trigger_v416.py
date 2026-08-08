@@ -1,82 +1,51 @@
-"""v416 (2026-08-08): 周六周度评估调度断链回归测试.
+"""v416 (2026-08-08, v428 重构后修订): 周六周度评估调度断链回归测试.
 
 背景: weekly_eval 触发块放在 orchestrator 主循环 `if not is_trading_day(): continue`
 之后 — 周六不是交易日 → 循环体永远被短路, 周六 06:00 的周度因子评估自 v301
-引入以来从未触发 (三路触发源全断: orchestrator 分支不可达 + _weekly_loop 线程
-无人调用 + crontab 实际为空).
+引入以来从未触发.
 
-修复: ① 触发块前移到 is_trading_day 之前且窗口放宽 06:00-12:00; ② 启动脚本
-改走 scheduler.start_all() 拉起独立 weekly 线程; ③ cron 恢复; ④ 内部日志诊断.
+v416 修复: ① 触发块前移到 is_trading_day 之前且窗口放宽 06:00-12:00;
+② 启动脚本改走 scheduler.start_all() 拉起独立 weekly 线程; ③ cron 恢复.
 
-本测试: ① 控制流 — 读取 orchestrator 源码验证触发块位于非交易日短路之前;
-       ② 依赖 — 验证 start_all() 同时启动 orchestrator + weekly 线程;
-       ③ 窗口 — 触发窗口周六 06:00-12:00 覆盖早间 restart 场景.
+v428 重构: weekly 触发统一收编进 manifest (窗口 06:00-12:00, 周六) +
+orchestrator `_should_run` 决策 (前置于 is_trading_day 短路); 独立 weekly 线程
+删除 (双触发之源). 本测试: ① manifest 周六窗口在非交易日可达; ② 决策函数前置;
+③ start_all 单一编排器; ④ cron 兜底保留.
 """
-import re
 from datetime import time
 
 import quant.scheduler.orchestrator as orch_mod
 import quant.scheduler as sched_mod
-
-
-def _source(p):
-    return open(p, encoding="utf-8").read()
-
-
-def _strip_comments(s):
-    s = re.sub(r"#.*$", "", s, flags=re.M)
-    s = re.sub(r'"""(?:.|\n)*?"""', "", s, flags=re.M)
-    return s
-
-
-def _orch_source():
-    return _strip_comments(_source(orch_mod.__file__))
+from quant.scheduler.manifest import ALL
 
 
 class TestSaturdayControlFlow:
-    """v416-C1: weekly_eval 触发块必须位于 is_trading_day continue 之前."""
+    """v428: weekly_eval 由 manifest 窗口 + 决策函数前置保证周六可达."""
 
-    def test_saturday_branch_before_trading_day_gate(self):
-        src = _orch_source()
-        # 周六分支出现的位置 (去掉注释后直接查触发条件)
-        idx_branch = src.index("weekly_eval")
-        idx_gate = src.index("if not is_trading_day():")
-        assert idx_branch < idx_gate, (
-            "v416 修复要求 weekly_eval 触发块位于 is_trading_day continue 之前"
-        )
+    def test_weekly_window_saturday_0600_1200(self):
+        w = ALL["weekly_eval"]
+        assert w.weekday == 5
+        assert w.window[0] == time(6, 0)
+        assert w.window[1] == time(12, 0), "窗口应覆盖 06:00-12:00 (周六 restart 补跑)"
 
-    def test_branch_code_inside_loop(self):
-        src = _orch_source()
-        # 触发块在 `def _run` 的 while True 循环体内 (匹配更精确)
-        idx_fn = src.index("def _run(")
-        idx_while = src.index("while True:", idx_fn)
-        idx_branch = src.index("weekly_eval", idx_while)
-        assert idx_branch > idx_while
+    def test_weekly_trigger_decidable_on_non_trading_day(self):
+        """周六 (非交易日) 决策函数返回 True — 不再依赖循环体可达."""
+        assert orch_mod._should_run(ALL["weekly_eval"], time(9, 0), 5, {}, {}) is True
 
-    def test_window_covers_restart_after_0600(self):
-        src = _orch_source()
-        m = re.search(
-            r"now\.weekday\(\) == 5 and time\(6, 0\) <= hhmm < time\((\d+), 0\)",
-            src,
-        )
-        assert m, "周六触发窗口未找到"
-        assert int(m.group(1)) == 12, "窗口应覆盖 06:00-12:00 (周六 restart 补跑)"
+    def test_weekly_blocked_on_weekday(self):
+        assert orch_mod._should_run(ALL["weekly_eval"], time(9, 0), 4, {}, {}) is False
 
 
-def test_start_all_launches_both_threads(monkeypatch):
-    """v416-C2: scheduler.start_all() 必须同时启动 orchestrator + weekly 线程."""
+def test_start_all_single_orchestrator(monkeypatch):
+    """v428: start_all() 只启动 orchestrator (weekly 已并入 manifest, 无独立线程)."""
     started = []
 
     def _fake_orch():
         started.append("orchestrator")
 
-    def _fake_weekly():
-        started.append("weekly")
-
     monkeypatch.setattr(sched_mod, "_start_orch", _fake_orch)
-    monkeypatch.setattr(sched_mod, "_weekly_loop", _fake_weekly)
     sched_mod.start_all()
-    assert started == ["orchestrator", "weekly"]
+    assert started == ["orchestrator"]
 
 
 def test_restart_script_uses_start_all():

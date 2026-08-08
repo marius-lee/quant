@@ -108,9 +108,9 @@ class TestEveningChain:
 
 class TestChainConfig:
     def test_evening_chain_timeout_registered(self):
-        """orchestrator._TIMEOUTS 含 evening_chain (僵尸检测需要)."""
-        from quant.scheduler.orchestrator import _TIMEOUTS
-        assert _TIMEOUTS["evening_chain"] == 14400
+        """manifest.evening_chain 含超时 (僵尸检测需要, v428 替代 _TIMEOUTS)."""
+        from quant.scheduler.manifest import spec
+        assert spec("evening_chain").timeout_s == 14400
 
     def test_chain_order_is_data_then_cache_then_attribution(self):
         """依赖顺序守卫: attribution 必须在 factor_cache 之后 (防回归)."""

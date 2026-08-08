@@ -49,8 +49,8 @@ def _stage_status(today: str, name: str):
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
-    from quant.scheduler.orchestrator import _TIMEOUTS
-    rid = _tk_start("evening_chain", today, grace_seconds=_TIMEOUTS["evening_chain"])
+    from quant.scheduler.manifest import spec
+    rid = _tk_start("evening_chain", today, grace_seconds=spec("evening_chain").grace_s)
     if rid is None:
         _log.info(f"[{today}] evening_chain already running, skip duplicate trigger")
         return

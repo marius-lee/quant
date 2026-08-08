@@ -5,11 +5,9 @@
   eval_standard.sh 的 Phase 1-5 全部接入, 不再需要手动运行 (test-v300).
 """
 import time as _time, uuid as _uuid, traceback
-from datetime import time
 from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
 from quant.monitor.metrics import metrics as _m
 from quant.utils.logger import get_logger
-from quant.scheduler._base import _weekly_loop
 
 _log = get_logger(__name__)
 
@@ -134,8 +132,8 @@ def _run(today: str):
 
     elapsed = _time.time() - t0
     # v420: 收紧 ok 判定 — 任一阶段失败不得标 ok.
-    # 重启补跑门控 (_base._weekly_loop) 仅 'ok' 不重跑, 失败必须留 failed
-    # 才能让当天重跑补救 (如 phase5 状态裁决失败 → 重启后自动重试).
+    # 重启补跑门控 (manifest weekly 窗口 + _should_run) 仅 'ok' 不重跑,
+    # 失败必须留 failed 才能让当天重跑补救 (如 phase5 状态裁决失败 → 重启后自动重试).
     phases_ok = sum([curation_ok, p1_ok, p2_ok, p3_ok, p4_ok, p5_ok])
     ok = phases_ok == 6
     _log.info(f"[{today}] weekly evaluation done: {phases_ok}/6 phases OK, {n_factors} factors, "
@@ -146,8 +144,3 @@ def _run(today: str):
     _log.info(f"[SCHEDULER] {today} | TASK=weekly_eval | STATUS={'OK' if ok else 'FAILED'} | "
               f"phases={phases_ok}/6 factors={n_factors} | elapsed={elapsed:.1f}s")
     _m.inc("scheduler.weekly.ok")
-
-
-def _loop():
-    # 周六 06:00 (UTC+8), weekday=5
-    _weekly_loop("weekly_eval", target_weekday=5, target_time=time(6, 0), run_fn=_run)

@@ -46,10 +46,13 @@ def register_all():
              desc="读取信号、获取行情、执行调仓订单", has_multiprocess=True)
     register("snapshot_open",  "10:00 (execute后)", label="开盘快照",
              desc="快照所有A股开盘30分钟实时价+量, 供日内反转/量比因子")
-    register("snapshot_close", "14:55 (收盘前)", label="尾盘快照",
-             desc="快照所有A股尾盘5分钟实时价+量, 供尾盘异动因子")
-    register("monitor",      "09:35-11:30,13:00-14:55", label="盘中风控",
-             desc="每30s轮询止损/止盈/熔断，触发后立即卖出")
+    register("snapshot_close", "15:00 (收盘)", label="尾盘快照",
+             # v428: 原 14:55 (收盘前) — 尾盘区间 14:55-15:00, 快照应于收盘后触发,
+             # 拉收盘价+全日累计量; 14:55 拿到的是收盘前瞬间价 (语义错误)
+             desc="快照所有A股收盘价+全日量, 供尾盘异动因子 (收盘后触发)")
+    register("monitor",      "09:35-11:30,13:00-15:00", label="盘中风控",
+             # v428: 结束 14:55 → 15:00 (覆盖收盘集合竞价; 与尾盘快照对齐)
+             desc="每30s轮询止损/止盈/熔断，触发后立即卖出 (窗口结束自退)")
     register("reconcile",    "15:05",       label="日终对账",
              desc="OMS 对账闭环: 持仓/现金/订单三账核对, break 超阈值告警")
     register("daily_data",   "19:00",       label="数据拉取",

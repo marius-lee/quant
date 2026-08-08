@@ -1,11 +1,15 @@
-"""日频任务编排器 — 单线程串行执行 signals → execute → monitor → reconcile.
-晚间链 (daily_data→factor_cache→attribution→lgb_train) 由 orchestrator
-在 19:00 通过 subprocess 触发, 非阻塞轮询, 失败自动重试 (test-v288).
+"""日频任务编排器 — manifest 驱动 (v428 重构).
 
-monitor 是连续循环 (09:35-11:30,13:00-14:55, 午休跳过)，由编排器作为子线程启动和停止。
+任务声明见 quant/scheduler/manifest.py — 时间窗/依赖/运行模式/超时单一真相源.
+编排器每 30s 轮询, 对每个任务走 `_should_run` 决策 (窗口+星期+状态+依赖+重试预算):
 
-状态: task_runs (market.db) 为单一调度真相源。每 30s 轮询一次，
-已完成任务不重跑，失败任务不自动重试（需人工排查 bug 后手动触发）。
+  mode=inline     orchestrator 进程内同步执行 (signals/execute/snapshot/reconcile)
+  mode=monitor    盘中长驻窗口任务 (09:30-15:00 持续循环, 午休内部暂停, 窗口结束自退)
+  mode=subprocess 独立子进程 (晚间链 19:00 / 周度评估 周六 06:00)
+
+状态: task_runs (market.db) 为单一调度真相源. 每 30s 轮询一次,
+已完成 (ok) 不重跑; 真失败 (failed) 不自动重试 (需人工排查后手动触发);
+超时/僵尸 (aborted) 在重试预算内可重触发.
 """
 import os, time as _time, threading as _thr, sqlite3, subprocess
 from datetime import datetime, time
@@ -14,15 +18,22 @@ from quant.monitor.metrics import metrics as _m
 from quant.utils.logger import get_logger
 from quant.config.paths import MARKET_DB
 from quant.scheduler.task_log import _pid_alive  # v424: 僵尸清理
+from quant.scheduler.manifest import ALL, _PLAN_ORDER, TaskSpec  # v428
 
 _log = get_logger(__name__)
 
+# B-23 fix: 同一任务当日 aborted 最多重试次数 (2026-07-23 factor_cache 重试风暴)
+_MAX_TASK_RETRIES = 2
+
+# 晚间链子进程崩溃时标记 failed 的子任务 (v382)
+_EVENING_CHILDREN = ["daily_data", "factor_cache", "attribution", "lgb_train", "xgb_train", "adj_factor"]
+
 
 def _get_today_status(today: str) -> dict:
-    """查询 task_runs 中今天每个任务的最新状态。
+    """查询 task_runs 中今天每个任务的最新状态.
 
     返回: {"signals": "ok", "execute": "failed", ...}
-    无该任务记录则 key 不存在。
+    无该任务记录则 key 不存在.
     """
     conn = sqlite3.connect(MARKET_DB)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -33,7 +44,7 @@ def _get_today_status(today: str) -> dict:
     ).fetchall()
     conn.close()
     status = {}
-    for row in rows:
+    for row in rows:  # id DESC → 首见即最新
         if row[0] not in status:
             status[row[0]] = row[1]
     return status
@@ -53,8 +64,8 @@ def _get_today_aborted(today: str) -> dict:
 
 
 def _get_monitor_failures(today: str) -> int:
-    """统计今日 monitor 累计 failed 次数 (用于崩溃风暴保护).
-    v369: aborted (zombie cleanup 产生) 不计入重试预算, 仅 real crash (failed) 计入 (Bug D)."""
+    """今日 monitor 累计 failed 次数 (崩溃风暴保护).
+    v369: aborted (僵尸清理产生) 不计预算, 仅 real crash (failed) 计入."""
     conn = sqlite3.connect(MARKET_DB)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
@@ -66,34 +77,73 @@ def _get_monitor_failures(today: str) -> int:
     return count
 
 
+# ═════════════════════════════════════════════════════════════════════
+# v428: 调度决策 — manifest-driven 纯函数 (窗口/依赖/状态/预算)
+# ═════════════════════════════════════════════════════════════════════
+
+def _should_run(s: TaskSpec, hhmm: time, weekday: int,
+                status: dict, aborted: dict) -> bool:
+    """是否在当下应触发/保持任务 s.
+
+    通过全部条件 → True:
+      1. 时间窗 (manifest.window) 内且星期匹配
+      2. 状态允许: 无记录 / running(由 grace 挡重入, 编排器不再触发) /
+         aborted(预算内重试) — ok/failed 均不再触发
+      3. 依赖: depends_ok 全部 == "ok";  depends_attempt 全部今日尝试过
+      4. aborted 次数 < _MAX_TASK_RETRIES
+    """
+    if s.weekday is not None and weekday != s.weekday:
+        return False
+    cur = status.get(s.name)
+    if cur == "ok" or cur == "failed":
+        return False
+    if cur == "running":
+        # 已有 running 行 (可能是本进程启动的) — 不重复触发,
+        # 由 _tk_start 的 grace/pid 检测兜底僵尸清理
+        return False
+    if not s.in_window(hhmm, weekday):
+        return False
+    for dep in s.depends_ok:
+        if status.get(dep) != "ok":
+            return False
+    for dep in s.depends_attempt:
+        if dep not in status:
+            return False
+    if aborted.get(s.name, 0) >= _MAX_TASK_RETRIES:
+        return False
+    return True
+
+
 def _run():
-    """编排器主循环 — 单线程，按时间顺序串行执行日频任务。"""
+    """编排器主循环 — manifest 驱动."""
     from quant.scheduler.status import register_all
     from quant.execution.calendar import is_trading_day
 
     register_all()
 
-    # 启动时清理今天剩下的僵尸 running 行 (上次进程被 kill 残留)
+    # 启动时清理今天残留的僵尸 running 行 (上次进程被 SIGKILL 残留)
     _cleanup_zombie_tasks()
 
-    _log.info("orchestrator started — daily sequence: 08:30 signals → 09:30 execute → "
-              "09:35-11:30,13:00-14:55 monitor → 15:05 reconcile "
-              "(晚间链由 cron 19:00 触发)")
+    _log.info("orchestrator started — manifest: "
+              "08:30 signals → 09:30 execute → 10:00 snapshot_open → "
+              "09:30-15:00 monitor → 15:00 snapshot_close → 15:05 reconcile → "
+              "19:00 evening_chain → 周六 06:00 weekly_eval")
 
     POLL = _require_cfg("quant.scheduler.poll_interval")
     today = None
     _monitor_thread = None
     _monitor_stop = _thr.Event()
 
-    # ── 晚间链 subprocess 状态 (test-v288) ──
-    _evening_proc = None     # subprocess.Popen handle
-    _evening_retries = 0     # 失败重试计数
-    _evening_done = False    # 今天已完成/放弃
+    # ── 晚间链 subprocess 状态 (v288) ──
+    _evening_proc = None
+    _evening_retries = 0
+    _evening_done = False
 
     def _monitor_daemon(current_day):
+        """monitor 长驻窗口 daemon (继续模式): 由 manifest.monitor 窗口管控."""
         try:
             from quant.scheduler.monitor import _run_continuous
-            _log.info(f"[{current_day}] monitor daemon started (09:35-11:30,13:00-14:55)")
+            _log.info(f"[{current_day}] monitor daemon started (09:30-15:00, 午休跳过)")
             _run_continuous(current_day, stop_event=_monitor_stop)
             _log.info(f"[{current_day}] monitor daemon stopped")
         except Exception as _e:
@@ -104,9 +154,7 @@ def _run():
         try:
             fn(task_today)
             elapsed = _time.time() - t0
-            # test-v400: 回读 task_runs 确认真实状态, 不看异常
-            # (execute._run 在 no-signals 分支 early-return 不抛异常,
-            #  但 finally 写 status=failed → orchestrator 之前误报 OK)
+            # v400: 回读 task_runs 确认真实状态, 不看返回异常
             _db_status = _get_today_status(task_today).get(name)
             if _db_status == "ok":
                 _log.info(f"[SCHEDULER] {task_today} | TASK={name} | STATUS=OK | elapsed={elapsed:.1f}s")
@@ -121,6 +169,29 @@ def _run():
             elapsed = _time.time() - t0
             _log.error(f"[SCHEDULER] {task_today} | TASK={name} | STATUS=FAILED | elapsed={elapsed:.1f}s | error={e}")
             # _tk_finish("failed") handled by task's own finally block
+
+    def _dispatch(spec_: TaskSpec, task_today):
+        """按 spec.mode 分发执行."""
+        if spec_.mode == "subprocess":
+            _log.info(f"[{task_today}] spawning {spec_.name} subprocess")
+            subprocess.Popen(
+                [".venv/bin/python3", "-c", spec_.subprocess_cmd + f"_run('{task_today}')"],
+                cwd=os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                env={**os.environ, "PYTHONPATH": "."},
+            )
+            return
+        # inline: manifest 上挂载的模块解析
+        if spec_.name == "snapshot_open" or spec_.name == "snapshot_close":
+            from quant.scheduler.snapshot import snapshot_open, snapshot_close
+            fn = snapshot_open if spec_.name == "snapshot_open" else snapshot_close
+            _run_task(spec_.name, fn, task_today)
+            return
+        try:
+            mod = __import__(f"quant.scheduler.{spec_.name}", fromlist=["_run"])
+        except ImportError as e:
+            _log.error(f"[{task_today}] task module import failed: {spec_.name}: {e}")
+            return
+        _run_task(spec_.name, mod._run, task_today)
 
     while True:
         now = datetime.now()
@@ -140,138 +211,74 @@ def _run():
             _evening_done = False
             _log.info(f"[{today}] new day, orchestrator ready")
 
-        # ═══════════════════════════════════════════
-        # v416 (CODE-REVIEW 调度修复): 状态读取提前 — 周度评估在非交易日
-        # (周六) 也必须运行, 因此 status/_retry_ok 与触发块必须位于
-        # `if not is_trading_day(): continue` 之前, 否则周六永远不可达.
-        # ═══════════════════════════════════════════
-
-        # ── 读取 DB 权威状态 ──
+        # ── 读取 DB 权威状态 (每轮一次, 供全部任务决策) ──
         status = _get_today_status(today)
         aborted = _get_today_aborted(today)
 
-        def _retry_ok(name: str) -> bool:
-            """B-23: aborted 重试次数未超限才允许再次触发."""
-            return aborted.get(name, 0) < _MAX_TASK_RETRIES
+        # ═══════════════════════════════════════════════════════
+        # 首轮: 周度评估 (周六 06:00-12:00) — 在非交易日短路之前,
+        # 周六 must be reachable (v416 教训).
+        # ═══════════════════════════════════════════════════════
+        _weekly = ALL.get("weekly_eval")
+        if _should_run(_weekly, hhmm, now.weekday(), status, aborted):
+            _log.info(f"[{today}] 06:00-12:00 — spawning weekly eval subprocess")
+            _dispatch(_weekly, today)
 
-        # ═══════════════════════════════════════════
-        # 0. 周六 06:00 — 周度因子评估 subprocess
-        # (test-v301 引入时放在 is_trading_day continue 之后 → 永不可达;
-        #  test-v416 修复: 前移到非交易日短路之前, 周六照常触发,
-        #  窗口放宽至 06:00-12:00 — 周六早间 restart 错过 06:00-06:05
-        #  会漏掉整周评估; _tk_start dedup 保证三路触发不重复执行)
-        # ═══════════════════════════════════════════
-        if now.weekday() == 5 and time(6, 0) <= hhmm < time(12, 0):
-            s = status.get("weekly_eval")
-            if s not in ("ok", "failed") and _retry_ok("weekly_eval"):
-                _log.info(f"[{today}] 06:00-12:00 — spawning weekly eval subprocess")
-                subprocess.Popen(
-                    [".venv/bin/python3", "-c",
-                     "from quant.utils.excepthook import setup; setup();"
-                     "from quant.scheduler.weekly import _run;"
-                     f"_run('{today}')"],
-                    cwd=os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                    env={**os.environ, "PYTHONPATH": "."},
-                )
-            elif s != "ok":
-                _log.debug(f"[{today}] weekly_eval window: status={s} (waiting for retry/stuck check)")
-
-        # ── 非交易日 ──
+        # ── 非交易日: 仅保留周度评估 (周六) + 超时检测, 例程任务全部跳过 ──
         if not is_trading_day():
             _check_timeouts(today)
             _time.sleep(POLL)
             continue
 
-        # ═══════════════════════════════════════════
-        # 1. 08:30-15:30 — 信号生成
-        # ═══════════════════════════════════════════
-        s = status.get("signals")
-        if s not in ("ok", "failed") and _retry_ok("signals"):
-            if time(8, 30) <= hhmm < time(15, 30):
-                from quant.scheduler.signals import _run as _signals_run
-                _run_task("signals", _signals_run, today)
+        # ═══════════════════════════════════════════════════════
+        # 日线任务: 按 manifest 清单顺序决策
+        # ═══════════════════════════════════════════════════════
+        for name in _PLAN_ORDER:
+            s = ALL.get(name)
+            if s is None or s.mode == "subprocess":
+                continue  # weekly 已单独处理; evening_chain 晚环节单独处理
+            do = _should_run(s, hhmm, now.weekday(), status, aborted)
+            if not do:
+                continue
 
-        # ═══════════════════════════════════════════
-        # 2. 09:30-14:57 — 交易执行 (依赖 signals 尝试过)
-        # ═══════════════════════════════════════════
-        if "signals" in status:  # signals 已尝试（不管成败）
-            s = status.get("execute")
-            if s not in ("ok", "failed") and _retry_ok("execute"):
-                if time(9, 30) <= hhmm < time(14, 57):
-                    from quant.scheduler.execute import _run as _execute_run
-                    _run_task("execute", _execute_run, today)
+            # monitor: 长驻窗口任务 — 窗口内保活 daemon 线程 (模式状态机)
+            if s.mode == "monitor":
+                monitor_done = status.get("monitor") == "ok"
+                monitor_exhausted = _get_monitor_failures(today) >= _MAX_TASK_RETRIES
+                if not monitor_done and not monitor_exhausted:
+                    if _monitor_thread is None or not _monitor_thread.is_alive():
+                        _monitor_stop.clear()
+                        _monitor_thread = _thr.Thread(
+                            target=_monitor_daemon, args=(today,),
+                            daemon=True, name="monitor-daemon"
+                        )
+                        _monitor_thread.start()
+                elif monitor_done and _monitor_thread is not None:
+                    _monitor_stop.set()
+                    _monitor_thread.join(timeout=5)
+                    _monitor_thread = None
+                continue
 
-        # ═══════════════════════════════════════════
-        # 2.5 10:00 — 开盘30分钟价格快照 (test-v402: 09:30→10:00 修正)
-        # 原 v324 在 09:30 触发，实际拉到的是开盘价而非开盘30分钟后价格，
-        # 导致 intraday_reversal 因子退化为隔夜缺口因子。
-        # 详见 HANDOFF.md §test-v402.
-        # ═══════════════════════════════════════════
-        s = status.get("snapshot_open")
-        if s not in ("ok", "failed") and _retry_ok("snapshot_open"):
-            if hhmm >= time(10, 0) and "execute" in status:
-                from quant.scheduler.snapshot import snapshot_open
-                _run_task("snapshot_open", snapshot_open, today)
+            # inline 单发任务
+            _dispatch(s, today)
 
-        # ═══════════════════════════════════════════
-        # 3. 09:35-11:30,13:00-14:55 — 盘中风控 (daemon 线程)
-        # ═══════════════════════════════════════════
-        in_monitor_window = time(9, 30) <= hhmm <= time(14, 55)
-        monitor_state = status.get("monitor")
-        # monitor 是持续 daemon: 仅 "ok" 表示自然结束, "failed"/"aborted" 应重启
-        monitor_done = monitor_state == "ok"
-        # 防崩溃风暴: 当日累计失败次数 (failed+aborted) 达上限则放弃
-        monitor_exhausted = _get_monitor_failures(today) >= _MAX_TASK_RETRIES
-
-        if in_monitor_window and not monitor_done and not monitor_exhausted:
-            if _monitor_thread is None or not _monitor_thread.is_alive():
-                _monitor_stop.clear()
-                _monitor_thread = _thr.Thread(
-                    target=_monitor_daemon, args=(today,),
-                    daemon=True, name="monitor-daemon"
-                )
-                _monitor_thread.start()
-        elif not in_monitor_window and _monitor_thread is not None:
+        # ── monitor 窗口关闭后清理线程 ──
+        if not ALL["monitor"].in_window(hhmm, now.weekday()) and _monitor_thread is not None:
             _monitor_stop.set()
             _monitor_thread.join(timeout=5)
             _monitor_thread = None
 
-        # ═══════════════════════════════════════════
-        # 3.5 14:55 — 尾盘快照 (test-v328: 尾盘5分钟价格+成交量)
-        # ═══════════════════════════════════════════
-        s = status.get("snapshot_close")
-        if s not in ("ok", "failed") and _retry_ok("snapshot_close"):
-            if hhmm >= time(14, 55):
-                from quant.scheduler.snapshot import snapshot_close
-                _run_task("snapshot_close", snapshot_close, today)
-
-        # ═══════════════════════════════════════════
-        # 4. 15:05-15:30 — OMS 日终对账 (monitor 收盘后)
-        # ═══════════════════════════════════════════
-        s = status.get("reconcile")
-        if s not in ("ok", "failed") and _retry_ok("reconcile"):
-            if time(15, 5) <= hhmm < time(15, 30):
-                from quant.scheduler.reconcile import _run as _recon_run
-                _run_task("reconcile", _recon_run, today)
-
-        # ═══════════════════════════════════════════
-        # 6. 19:00+ — 晚间链 subprocess (test-v288)
-        # 非阻塞 Popen, 每 30s poll, 失败重试, 不 import sklearn/scipy
-        # ═══════════════════════════════════════════
-        if hhmm >= time(19, 0) and not _evening_done:
+        # ══════════════════════════════════════════════════════
+        # 19:00+ — 晚间链 subprocess (非阻塞轮询 + 失败重试)
+        # ═══════════════════════════════════════════════════════
+        _even = ALL.get("evening_chain")
+        if _even is not None and _even.in_window(hhmm, now.weekday()) and not _evening_done:
             if _evening_proc is None:
-                s = status.get("evening_chain")
-                if s == "ok":
-                    _log.info(f"[{today}] evening_chain already ok, skip")
-                    _evening_done = True
-                else:
+                if _should_run(_even, hhmm, now.weekday(), status, aborted):
                     _log.info(f"[{today}] 19:00 — spawning evening chain subprocess "
                               f"(retry={_evening_retries}/{_MAX_TASK_RETRIES})")
                     _evening_proc = subprocess.Popen(
-                        [".venv/bin/python3", "-c",
-                         "from quant.utils.excepthook import setup; setup();"
-                         "from quant.scheduler.evening import _run;"
-                         f"_run('{today}')"],
+                        [".venv/bin/python3", "-c", _even.subprocess_cmd + f"_run('{today}')"],
                         cwd=os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
                         env={**os.environ, "PYTHONPATH": ".", "_EVENING_SUBPROCESS": "1"},
                     )
@@ -280,8 +287,8 @@ def _run():
                 if ret is not None:
                     _evening_proc = None
                     if ret == 0:
-                        _log.info(f"[{today}] evening chain subprocess exited OK")
                         _evening_done = True
+                        _log.info(f"[{today}] evening chain subprocess exited OK")
                     else:
                         # v382: 子进程崩溃 → 清理其残留的 running 子任务行
                         # (信号杀死进程时 Python finally 不执行, task_runs 留 running 僵尸)
@@ -291,10 +298,10 @@ def _run():
                             _log.warning(f"[{today}] evening chain failed (rc={ret}), "
                                          f"retry {_evening_retries}/{_MAX_TASK_RETRIES}")
                         else:
-                            _log.error(f"[{today}] evening chain exhausted retries, giving up")
                             _evening_done = True
+                            _log.error(f"[{today}] evening chain exhausted retries, giving up")
 
-        # ── 主动超时检测 ──
+        # ── 主动超时检测 (running 超时 → aborted) ──
         _check_timeouts(today)
 
         _time.sleep(POLL)
@@ -306,13 +313,12 @@ def _cleanup_evening_children(today: str):
     try:
         conn = sqlite3.connect(MARKET_DB)
         conn.execute("PRAGMA journal_mode=WAL")
-        children = ["daily_data", "factor_cache", "attribution", "lgb_train", "xgb_train", "adj_factor"]
-        ph = ",".join("?" * len(children))
+        ph = ",".join("?" * len(_EVENING_CHILDREN))
         n = conn.execute(
             f"UPDATE task_runs SET status='failed', finished_at=datetime('now','localtime'), "
             f"error='晚间链子进程崩溃(信号终止)' "
             f"WHERE date=? AND status='running' AND task_name IN ({ph})",
-            [today] + children
+            [today] + _EVENING_CHILDREN
         ).rowcount
         conn.commit()
         conn.close()
@@ -321,20 +327,6 @@ def _cleanup_evening_children(today: str):
     except Exception as _e:
         _log.debug("cleanup_evening_children failed (non-fatal): %s", _e)
 
-
-# ── 超时阈值 (秒) — test-v287: 晚间任务移出, 只保留白天任务.
-_TIMEOUTS = {
-    "signals": 1800,
-    "execute": 1800,
-    "monitor": None,
-    "reconcile": 600,
-    "evening_chain": 14400,  # test-v288: evening.py 引用, subprocess 超时
-    "weekly_eval": 43200,    # v416: 周度评估 subprocess 超时 (12h, 评估 5 阶段可能数小时)
-}
-
-# B-23 fix: 同一任务当日最多重试次数 (aborted 后 orchestrator 会重新触发,
-# 无上限导致 2026-07-23 factor_cache 一夜重跑 4 次的重试风暴)
-_MAX_TASK_RETRIES = 2
 
 def _cleanup_zombie_tasks():
     """启动时清理今天旧进程残留的非 ok 行 (restart.sh kill 旧 orchestrator → 新启动).
@@ -349,35 +341,31 @@ def _cleanup_zombie_tasks():
         today = datetime.now().strftime("%Y-%m-%d")
         conn = sqlite3.connect(MARKET_DB)
         conn.execute("PRAGMA journal_mode=WAL")
-        # 取今天所有非 ok 行
         rows = conn.execute(
             "SELECT id, task_name, status, pid FROM task_runs "
             "WHERE date=? AND status!='ok'",
             (today,)
         ).fetchall()
         deleted = 0
-        for rid, task_name, status, pid in rows:
+        for rid, task_name, status_row, pid in rows:
             if pid is None:
-                # 无 pid → 旧记录, 保守删除 (无法验证是否存活)
                 conn.execute("DELETE FROM task_runs WHERE id=?", (rid,))
                 deleted += 1
                 continue
             if pid == my_pid:
-                # 当前进程自己的行 → 保留 (可能是在 restart 前瞬间创建的)
                 continue
             try:
                 _os.kill(pid, 0)
             except (OSError, ProcessLookupError):
-                # 进程已死 → 直接删除, 不标 aborted
                 conn.execute("DELETE FROM task_runs WHERE id=?", (rid,))
                 deleted += 1
-            # else: 进程存活 → 保留 (异常情况: 两个 orchestrator 同时跑? 保留让 start() dedup 处理)
         conn.commit()
         conn.close()
         if deleted:
             _log.info("orchestrator startup: cleaned %d stale rows for %s (fresh start)", deleted, today)
     except Exception as _e:
         _log.warning("startup zombie cleanup failed (non-fatal): %s", _e)
+
 
 def _check_timeouts(today: str):
     """扫描 task_runs 中 status='running' 的行, 超时则标为 aborted."""
@@ -397,41 +385,35 @@ def _check_timeouts(today: str):
             if not started_at:
                 continue
             if pid and not _pid_alive(pid):
-                # v424: 记录进程已死 → 立即 aborted, 不等超时 (与 task_log.start 一致)
-                # v426: 不限定 today — 历史日期 (回放/迁移) 的僵尸同样自愈
+                # v424: 进程已死 → 立即 aborted (不等超时)
                 conn.execute(
                     "UPDATE task_runs SET status='aborted', finished_at=?, "
                     "error='进程已死 (pid=' || ? || ') — auto-abort' WHERE id=?",
                     (now.isoformat(), str(pid), rid)
                 )
-                _log.warning(
-                    f"[{today}] {task_name} (date={run_date}) pid={pid} dead → aborted (zombie cleanup)"
-                )
+                _log.warning(f"[{today}] {task_name} (date={run_date}) pid={pid} dead → aborted (zombie cleanup)")
                 _m.inc(f"alerts.task_aborted.{task_name}")
                 continue
-            # v426: 超时判定仅限今日行 — 历史日期 (回放) 的 started_at 跨日, 不适用
+            # v426: 超时判定仅限今日行 (历史回放行 started_at 跨日不适用)
             if run_date != today:
                 continue
-            dt = datetime.fromisoformat(started_at)
-            elapsed = (now - dt).total_seconds()
-            limit = _TIMEOUTS.get(task_name)
-            if task_name == "monitor":
-                if now.hour >= 14 and now.minute >= 55:
-                    # v368: 与 _tk_start grace_seconds=21600 对齐 (全天交易窗口 ~5h20m)
-                    limit = 21600
-                else:
-                    continue
+            from quant.scheduler.manifest import ALL as _ALL
+            s = _ALL.get(task_name)
+            limit = s.timeout_s if s else None
             if limit is None:
                 continue
+            try:
+                dt = datetime.fromisoformat(started_at)
+            except ValueError:
+                continue
+            elapsed = (now - dt).total_seconds()
             if elapsed > limit:
                 conn.execute(
                     "UPDATE task_runs SET status='aborted', finished_at=?, "
                     "error='任务异常终止: 运行超时 (' || ? || 's)' WHERE id=?",
                     (now.isoformat(), int(elapsed), rid)
                 )
-                _log.warning(
-                    f"[{today}] {task_name} running for {elapsed:.0f}s > {limit}s → aborted (zombie)"
-                )
+                _log.warning(f"[{today}] {task_name} running {elapsed:.0f}s > {limit}s → aborted (zombie)")
                 _m.inc(f"alerts.task_aborted.{task_name}")
         # v408: 告警 — 回撤检查 + 数据滞后检查
         try:
@@ -453,8 +435,7 @@ def _check_timeouts(today: str):
             pass
         try:
             from quant.data.freshness import check_freshness
-            fresh = check_freshness(today)
-            stale = [r for r in fresh if r["stale"]]
+            stale = [r for r in check_freshness(today) if r.get("stale")]
             for r in stale:
                 _log.critical(f"[{today}] ALERT: DATA STALE {r['table']} lag={r['lag_days']}d")
                 _m.inc(f"alerts.data_stale.{r['table']}")
@@ -470,6 +451,7 @@ def _pid_path():
     import tempfile
     return os.path.join(tempfile.gettempdir(), "quant-orchestrator.pid")
 
+
 def _run_safe():
     """重启保护：_run() 任何未捕获异常 → 记录 + 3s后重启."""
     while True:
@@ -478,6 +460,7 @@ def _run_safe():
         except Exception as _e:
             _log.exception(f"orchestrator crashed, restarting in 3s: {_e}")
             _time.sleep(3)
+
 
 def start():
     """启动编排器 daemon 线程（PID 锁防重复启动）."""

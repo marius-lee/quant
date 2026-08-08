@@ -13,11 +13,13 @@ PYTHONPATH=. .venv/bin/python3 -c "
 from quant.backtest.loop import BacktestEngine, run_backtest
 from quant.scheduler.attribution import _require_cfg
 from quant.pipeline import generate_signals, execute_signals
-from quant.scheduler.orchestrator import _TIMEOUTS, _MAX_TASK_RETRIES
+from quant.pipeline import generate_signals, execute_signals
+from quant.scheduler.orchestrator import _MAX_TASK_RETRIES
+from quant.scheduler.manifest import ALL as _MANIFEST_ALL
 from quant.execution.stop_loss import RiskManager, _compute_atr
 from quant.backtest.broker import SimulatedBroker
 import web.state_broker, web.app
-print('imports OK | timeouts:', _TIMEOUTS, '| retries:', _MAX_TASK_RETRIES)
+print('imports OK | task manifest:', sorted(_MANIFEST_ALL), '| retries:', _MAX_TASK_RETRIES)
 " 2>&1 | grep -v WARNING
 
 echo ""

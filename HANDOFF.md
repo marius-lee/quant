@@ -2,6 +2,16 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+## 当前状态 (test-v426, 2026-08-08)
+
+### v426: 自愈扫描扩大至全部日期 (历史回放僵尸同清)
+
+**背景**: v424/v425 的 `_check_timeouts` 只扫 `date = today` 行, 历史日期 (回放/迁移, 如 daily_data '2019-12-31' id 74653) 的僵尸 running 永远漏网 — 8/8 手动清 74653 后发现.
+
+**改动**: `orchestrator._check_timeouts` — SELECT 去掉 date 过滤 (扫全部 running 行), 但**超时判定仅限今日行** (历史行 started_at 跨日, 不适用); pid 存活检测对所有日期生效. 历史日期 + 死 pid → 也 auto-abort.
+
+**验证**: 新增 2 测试 (历史行 dead-pid 自愈 / 历史行 live-pid 不误杀), 全量 **314 passed** (312+2). VERSION → test-v426.
+
 ## 当前状态 (test-v425, 2026-08-08)
 
 ### v425: 调度界面即时展示僵尸自愈 (v424 遗留补全)

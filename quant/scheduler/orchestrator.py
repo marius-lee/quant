@@ -386,28 +386,31 @@ def _check_timeouts(today: str):
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
         rows = conn.execute(
-            "SELECT id, task_name, started_at, pid FROM task_runs "
-            "WHERE date=? AND status='running' AND finished_at IS NULL",
-            (today,)
+            "SELECT id, task_name, started_at, pid, date FROM task_runs "
+            "WHERE status='running' AND finished_at IS NULL",
         ).fetchall()
         if not rows:
             conn.close()
             return
         now = datetime.now()
-        for rid, task_name, started_at, pid in rows:
+        for rid, task_name, started_at, pid, run_date in rows:
             if not started_at:
                 continue
             if pid and not _pid_alive(pid):
                 # v424: 记录进程已死 → 立即 aborted, 不等超时 (与 task_log.start 一致)
+                # v426: 不限定 today — 历史日期 (回放/迁移) 的僵尸同样自愈
                 conn.execute(
                     "UPDATE task_runs SET status='aborted', finished_at=?, "
                     "error='进程已死 (pid=' || ? || ') — auto-abort' WHERE id=?",
                     (now.isoformat(), str(pid), rid)
                 )
                 _log.warning(
-                    f"[{today}] {task_name} pid={pid} dead → aborted (zombie cleanup)"
+                    f"[{today}] {task_name} (date={run_date}) pid={pid} dead → aborted (zombie cleanup)"
                 )
                 _m.inc(f"alerts.task_aborted.{task_name}")
+                continue
+            # v426: 超时判定仅限今日行 — 历史日期 (回放) 的 started_at 跨日, 不适用
+            if run_date != today:
                 continue
             dt = datetime.fromisoformat(started_at)
             elapsed = (now - dt).total_seconds()

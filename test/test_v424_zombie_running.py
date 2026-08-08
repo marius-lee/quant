@@ -113,6 +113,30 @@ class TestCheckTimeoutsZombie:
         assert row[0] == "aborted"
         assert "进程已死 (pid=123)" in row[1]
 
+    def test_check_timeouts_aborts_old_date_dead_pid(self, fake_db, monkeypatch):
+        """v426: 历史日期 (回放) running + pid 死 → 也自愈 (不限定今日)."""
+        import quant.scheduler.orchestrator as orch
+        monkeypatch.setattr(orch, "_pid_alive", lambda pid: False)
+        _seed(fake_db, "daily_data", "2019-12-31", "running", pid=123)
+        orch._check_timeouts("2026-08-08")
+        row = fake_db().execute(
+            "SELECT status, error FROM task_runs WHERE task_name='daily_data' AND date='2019-12-31'"
+        ).fetchone()
+        assert row[0] == "aborted"
+        assert "进程已死 (pid=123)" in row[1]
+
+    def test_check_timeouts_keeps_historical_live(self, fake_db, monkeypatch):
+        """v426: 历史日期行 pid 存活 → 不误杀 (超时判定只限今日)."""
+        import quant.scheduler.orchestrator as orch
+        monkeypatch.setattr(orch, "_pid_alive", lambda pid: True)
+        _seed(fake_db, "signals", "2019-12-31", "running",
+              pid=os.getpid(), started=datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
+        orch._check_timeouts("2026-08-08")
+        row = fake_db().execute(
+            "SELECT status FROM task_runs WHERE task_name='signals' AND date='2019-12-31'"
+        ).fetchone()
+        assert row[0] == "running"
+
     def test_check_timeouts_keeps_live(self, fake_db, monkeypatch):
         """pid 存活且未超时 → 不误杀."""
         from quant.scheduler import orchestrator as orch

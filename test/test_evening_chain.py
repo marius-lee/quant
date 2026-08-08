@@ -41,8 +41,9 @@ class TestEveningChain:
     def _setup(self, monkeypatch):
         """v378: silence evening logger (测试错误路径不打ERROR到生产日志) + mock慢速外部调用."""
         logging.getLogger("quant.scheduler.evening").setLevel(logging.CRITICAL + 1)
-        chain_no_lgb = [(n, m) for n, m in evening._CHAIN if n != "lgb_train"]
-        monkeypatch.setattr(evening, "_CHAIN", chain_no_lgb)
+        # v421: ML 训练阶段 (lgb/xgb) 从链测试中剔除 — 训练重且与数据链无关
+        chain_no_ml = [(n, m) for n, m in evening._CHAIN if n not in ("lgb_train", "xgb_train")]
+        monkeypatch.setattr(evening, "_CHAIN", chain_no_ml)
         monkeypatch.setattr("quant.data.quality.check_daily_quality",
                            lambda date: {"date": date, "overall": "ok", "checks": {}})
         monkeypatch.setattr("quant.data.store.DataStore.sync_adj_factor",

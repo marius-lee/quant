@@ -76,6 +76,8 @@ def register_all():
              desc="全自动五阶段评估: 策展→数据→IC→CPCV→成本→状态同步")
     register("lgb_train",    "周一/周四 factor_cache完成后", label="模型训练",
              desc="LightGBM 模型重训 (仅周一/周四)")
+    register("xgb_train",    "周一/周四 factor_cache完成后", label="模型训练 (XGB)",
+             desc="XGBoost 模型重训 (仅周一/周四)")
 
 
 def _next_scheduled_time(schedule: str) -> str:

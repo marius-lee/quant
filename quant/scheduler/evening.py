@@ -31,6 +31,7 @@ _CHAIN = [
     ("factor_cache", "quant.scheduler.factor_cache"),
     ("attribution", "quant.scheduler.attribution"),
     ("lgb_train", "quant.scheduler.lgb_train"),    # 仅周一/周四
+    ("xgb_train", "quant.scheduler.xgb_train"),    # v421: XGBoost 接入, 仅周一/周四 (与 lgb 对称)
 ]
 
 
@@ -73,8 +74,8 @@ def _run(today: str):
                         break
                 except Exception as _qe:
                     _log.warning(f"[{today}] data quality check failed (non-fatal): {_qe}")
-            # lgb_train: 仅周一/周四执行
-            if name == "lgb_train":
+            # lgb_train / xgb_train: 仅周一/周四执行
+            if name in ("lgb_train", "xgb_train"):
                 wd = datetime.now().weekday()
                 if wd not in (0, 3):  # 0=周一, 3=周四
                     _log.info(f"[{today}] evening chain: {name} skipped (not Mon/Thu, wd={wd})")

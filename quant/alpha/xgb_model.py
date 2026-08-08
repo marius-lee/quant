@@ -183,14 +183,25 @@ class XgbAlphaModel:
         # B5 (CODE-REVIEW): 原分块训练把同一批数据用 xgb_model=
         # 续训 n 次 → 树数 ×chunks 超配 (4M 分块时 2000+ 树过拟合);
         # 全量矩阵已在内存中, 单次 fit 即可且收敛语义正确
+        # v421: config.xgb.params 含 early_stopping_rounds, 无 eval_set 必崩
+        # (ValueError: Must have at least 1 validation dataset) →
+        # 留尾部 10% 样本时段作为验证集 (时间顺序, 不随机).
         self._xgb = xgb.XGBRegressor(**xgb_params)
-        self._xgb.fit(X, y, verbose=False)
+        n_eval = max(int(len(y) * 0.1), 1)
+        self._xgb.fit(
+            X[:-n_eval], y[:-n_eval],
+            eval_set=[(X[-n_eval:], y[-n_eval:])],
+            verbose=False,
+        )
 
         # 训练集 IC
         y_pred = self._xgb.predict(X)
         ic = np.corrcoef(y_pred, y)[0, 1] if len(y) > 1 else 0.0
         ic_std = round(float(np.std(y_pred - y)), 6)
 
+        # v421: 释放前保存元数据需要量 (原 n_total 未定义 + del X,y 后引用 → 崩)
+        n_samples = len(y)
+        n_features = X.shape[1]
         del X, y, y_pred
 
         # 保存模型
@@ -206,8 +217,8 @@ class XgbAlphaModel:
             train_date=train_date,
             train_start=fwd_dates[0].strftime("%Y-%m-%d") if fwd_dates else "",
             train_end=fwd_dates[-1].strftime("%Y-%m-%d") if fwd_dates else "",
-            n_samples=n_total,
-            n_features=X.shape[1] if 'X' in dir() else len(feature_names),
+            n_samples=n_samples,
+            n_features=n_features,
             feature_names=list(feature_names),
             ic_mean=round(float(ic), 4),
             ic_std=ic_std,
@@ -221,7 +232,7 @@ class XgbAlphaModel:
                       f, indent=2, default=str)
 
         _log.info("xgb model saved: %s (IC=%.4f, %d features, %d samples)",
-                  model_path, ic, len(feature_names), n_total)
+                  model_path, ic, len(feature_names), n_samples)
         return self._metadata
 
     # ── 预测 ──

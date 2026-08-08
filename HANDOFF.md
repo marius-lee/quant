@@ -2,6 +2,33 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+## 当前状态 (test-v421, 2026-08-08)
+
+### v421: XGBoost 全面接入 — 与 LightGBM 对称 (2026-08-08)
+
+**背景**: XGBoost 此前是"代码已写、调度未接"的半成品 — `xgb_model.py` (471 行) 完整但:
+- 训练必崩: metadata 用 `n_total` 未定义 → NameError;
+- config.yaml `alpha.xgb.params` 配了 `early_stopping_rounds: 20` 但 fit 无 eval_set → ValueError;
+- 无训练调度任务 / 无 web 端点 / 无任何模型文件, 生产 combine_mode 恒回退 ic_weighted.
+
+**接入清单** (与 lgb_train 完全对称):
+| # | 接入点 | 内容 |
+|---|--------|------|
+| 1 | `quant/alpha/xgb_model.py` | 修 `n_total` NameError + `del X,y` 后引用; fit 提供尾部 10% 验证集 (时序, 非随机) 启用 early_stopping |
+| 2 | `quant/scheduler/xgb_train.py` (新) | 对称 lgb_train.py: task_name=`xgb_train`, 无 xgboost→skipped, 训练 `factor_status_filter=backtesting` |
+| 3 | `quant/scheduler/evening.py` | `_CHAIN` 加 `("xgb_train", ...)`; 周一/周四过滤扩展到 `name in ("lgb_train","xgb_train")` |
+| 4 | `quant/scheduler/status.py` | `register("xgb_train", ...)` 调度页展示 |
+| 5 | `quant/scheduler/orchestrator.py:308` | `_cleanup_evening_children` 白名单加 `xgb_train` |
+| 6 | `web/app.py` | `/api/xgb` 对称 `/api/lgb` (模型状态+最新 metadata) |
+| 7 | `test/test_v421_xgb_integration.py` (新) | 6 tests: skipped/ok/链内顺序/非MonThu跳过/端到端 train metadata |
+| 8 | 测试适配 | `test_evening_chain.py` 过滤 `chain_no_lgb` → `chain_no_ml` (排除 xgb_train) |
+
+**首次端到端训练** (08-08 08:11): 8,243,021 samples × 5 features, **IC=0.1061**, 模型 `quant/data/models/xgb_model_2026-08-08.json`; 验证 get_xgb_model(auto_load) + AlphaModel(combine_mode="xgb") 均走真实模型预测.
+
+**验证**: `test_v421_xgb_integration.py` 6/6; 全量 `pytest test/` **290 passed** (284+6). VERSION → test-v421.
+
+**效果**: `combine_mode='xgb'` 从"永远回退"变为可用; 周一/周四晚间链 lgb→xgb 依次重训 (xgb 约秒级 fit, 加载主导)。
+
 ## 当前状态 (test-v420, 2026-08-08)
 
 ### v420: 周末评估重启补跑门控 — 「失败重试」语义闭环 (2026-08-08)

@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v420"
+VERSION = "test-v421"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 
@@ -191,6 +191,39 @@ def api_lgb():
 
         return _api_response(data={
             "available": lgb_available,
+            "trained": is_trained,
+            "models": models[-5:],  # last 5 models
+            "metadata": metadata,
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@app.route("/api/xgb")
+def api_xgb():
+    """XGBoost 模型状态与最新预测 (v421: XGBoost 接入)."""
+    try:
+        from quant.alpha.xgb_model import get_xgb_model, _check_xgboost
+        xgb_available = _check_xgboost()
+        models = []
+        is_trained = False
+        metadata = None
+
+        if xgb_available:
+            model = get_xgb_model(auto_load=True)
+            is_trained = model.is_trained
+            models = model.list_models()
+            if model.metadata:
+                metadata = {
+                    "ic_mean": model.metadata.ic_mean,
+                    "n_samples": model.metadata.n_samples,
+                    "n_features": model.metadata.n_features,
+                    "train_date": model.metadata.train_date,
+                    "feature_names": model.metadata.feature_names[:10],
+                }
+
+        return _api_response(data={
+            "available": xgb_available,
             "trained": is_trained,
             "models": models[-5:],  # last 5 models
             "metadata": metadata,

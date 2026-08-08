@@ -305,7 +305,7 @@ def _cleanup_evening_children(today: str):
     try:
         conn = sqlite3.connect(MARKET_DB)
         conn.execute("PRAGMA journal_mode=WAL")
-        children = ["daily_data", "factor_cache", "attribution", "lgb_train", "adj_factor"]
+        children = ["daily_data", "factor_cache", "attribution", "lgb_train", "xgb_train", "adj_factor"]
         ph = ",".join("?" * len(children))
         n = conn.execute(
             f"UPDATE task_runs SET status='failed', finished_at=datetime('now','localtime'), "

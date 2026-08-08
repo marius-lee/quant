@@ -2,6 +2,18 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+## 当前状态 (test-v422, 2026-08-08)
+
+### v422: XGBoost 主界面展示 (v421 收尾)
+
+**背景**: v421 接入模型后端与调度, 但主界面仅 LightGBM 有展示区块 (`web/templates/index.html` L155 + `web/static/app.js` renderLGB), XGB 无展示 → 用户无法在界面确认模型状态.
+
+**改动** (与 LGB 完全对称):
+- `web/templates/index.html`: 总览 tab 「🤖 XGBoost 模型」区块 — 状态/训练 IC/样本数/特征数 4 KPI + `meta-xgb`
+- `web/static/app.js`: `pollOverview` 并行拉 `/api/xgb` (catch 容错), 新增 `renderXGB()` 三分支 (未安装/未训练/就绪+trained 日期)
+
+**验证**: `node --check app.js` ok; `/api/xgb` 返回 `{available:true, trained:true, metadata:{ic_mean:0.1061, train_date:2026-08-08, ...}}`. VERSION → test-v422.
+
 ## 当前状态 (test-v421, 2026-08-08)
 
 ### v421: XGBoost 全面接入 — 与 LightGBM 对称 (2026-08-08)

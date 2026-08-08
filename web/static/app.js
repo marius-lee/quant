@@ -171,10 +171,11 @@ function renderHeatmap(fd) {
 // ═══════════════════════════════════════════
 async function pollOverview() {
   try {
-    const [state, perf, lgb] = await Promise.all([
+    const [state, perf, lgb, xgb] = await Promise.all([
       fetchJSON(API + '/state'),
       fetchJSON(API + '/performance'),
       fetchJSON(API + '/lgb').catch(() => null),
+      fetchJSON(API + '/xgb').catch(() => null),
     ]);
     window._stateData = state;
     window._perfData = perf;
@@ -182,6 +183,7 @@ async function pollOverview() {
     renderSignals(state);
     updateStatusBar(state);
     if (lgb) renderLGB(lgb);
+    if (xgb) renderXGB(xgb);
   } catch (e) { console.warn('poll error:', e.message); }
 }
 
@@ -675,6 +677,29 @@ function renderLGB(d) {
     setText('lgb-samples', fmtNum(d.metadata.n_samples || 0));
     setText('lgb-features', d.metadata.n_features || 0);
     setText('meta-lgb', 'trained ' + (d.metadata.train_date || '?'));
+  }
+}
+
+// v421: XGBoost 模型状态 (与 LGB 对称)
+function renderXGB(d) {
+  const statusEl = document.getElementById('xgb-status');
+  if (!statusEl) return;
+  if (!d.available) {
+    setText('xgb-status', '未安装');
+    setText('meta-xgb', 'pip install xgboost');
+    return;
+  }
+  if (!d.trained) {
+    setText('xgb-status', '未训练');
+    setText('meta-xgb', (d.models || []).length ? d.models.length + ' model(s) on disk' : 'run train_xgb_model()');
+    return;
+  }
+  setHTML('xgb-status', '<span style="color:var(--down)">● 就绪</span>');
+  if (d.metadata) {
+    setText('xgb-ic', (d.metadata.ic_mean || 0).toFixed(4));
+    setText('xgb-samples', fmtNum(d.metadata.n_samples || 0));
+    setText('xgb-features', d.metadata.n_features || 0);
+    setText('meta-xgb', 'trained ' + (d.metadata.train_date || '?'));
   }
 }
 

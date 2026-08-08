@@ -95,8 +95,10 @@ def _weekly_loop(name: str, target_weekday: int, target_time: time, run_fn):
             # v420: 重启后进程内 ran 标志丢失 → 当天会重复触发整周评估.
             # 以 task_runs 当日最后状态为准: 已 'ok' 则跳过 (重试语义),
             # failed/aborted/None 允许重跑 (修复部署后补跑验证).
-            from quant.scheduler.task_log import last_status
-            if last_status(name, today) == "ok":
+            # v427: last_status 取"最新一条"会被僵尸 aborted 行遮蔽 ok 行 —
+            # 改为"当日存在过 ok 行"即不重跑 (75354 aborted 遮蔽 75335 ok 实测案例).
+            from quant.scheduler.task_log import any_ok
+            if any_ok(name, today):
                 log.info(f"[{today}] {name} already done 'ok' earlier — skip rerun after restart")
                 ran = True
             else:

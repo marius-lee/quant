@@ -225,6 +225,25 @@ def last_status(task_name: str, date: str) -> str | None:
         conn.close()
 
 
+def any_ok(task_name: str, date: str) -> bool:
+    """v427: 当日是否存在过 ok 行.
+
+    与 last_status 的区别: last_status 取最新一条, 僵尸 aborted 行 (v424 手动
+    清理产生) 会遮蔽更早的 ok 行 → 门控误判"未完成" → 整周评估重复跑.
+    any_ok 只看"这一天成功过没有", 稳定性优先.
+    """
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM task_runs WHERE task_name=? AND date=? AND status='ok' "
+            "LIMIT 1",
+            (task_name, date)
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
 # ═══════════════════════════════════════════════════════════
 # P1a: 任务装饰器 — 消除 start/try/finish 样板代码
 # ═══════════════════════════════════════════════════════════

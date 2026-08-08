@@ -2,6 +2,21 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+## 当前状态 (test-v427, 2026-08-08)
+
+### v427: weekly 补跑门控遮蔽修复 + "运行中"真伪判定 (2026-08-08)
+
+**用户报告**: 重启后「评估-单因子检验」/「因子评估(总)」又显示运行中, 质疑逻辑对错.
+
+**实证 (全链路)**:  
+1. 真实时序: 07:05 一轮完成 ok (75335) → 07:45 重启产生 75354 (running, 被 pkill 杀) → 手动标 aborted → 09:53 再重启.  
+2. 新 orchestrator (pid 32782) 启动 — `start_all` 实为双 daemon 线程 (orchestrator + weekly), 两线并发. **weekly 线程先读 `last_status` → 最新一条是 75354 (aborted) 遮蔽了 75335 (ok)** → 判定"未完成" → 触发重跑. orchestrator 线程随后 spawn subprocess → 被 `weekly_eval already running` dedup 拦下.  
+3. **界面"运行中"是真的** — pid 32782 存活且每周评估 Phase 2 真在跑 (75397/75398/75399/75400 全是 32782 pid), 不是僵尸. 显示逻辑正确; 错的是**重复执行** (当天 ok 后又整跑第二遍, 浪费数小时).
+
+**修复**: `task_log._last_status` (最新一条) 语义不适配门控 → 新增 **`any_ok(task, date)`** (当日存在过 ok 即不补跑); `_base._weekly_loop` 改用 `any_ok`. 遮蔽场景 (ok 后又 aborted) 不再重跑.
+
+**验证**: 5 新测试 (`test/test_v427_weekly_gate.py`), 全量 **319 passed** (314+5). VERSION → test-v427.
+
 ## 当前状态 (test-v426, 2026-08-08)
 
 ### v426: 自愈扫描扩大至全部日期 (历史回放僵尸同清)

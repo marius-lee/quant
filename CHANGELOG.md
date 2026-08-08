@@ -1,3 +1,17 @@
+## [test-v428] — 2026-08-08
+
+### 调度系统 manifest 化重构 (Critical)
+
+- **新增 `quant/scheduler/manifest.py`**: `TaskSpec` 声明式任务表 (时间窗/依赖/超时/mode) — 调度单一真相源
+- **orchestrator 重写**: `_should_run` 纯函数决策 + 30s 主循环 + `_dispatch`; 删除 `_TIMEOUTS` 双表
+- **尾盘快照修正**: 窗口 14:55 → **15:00-15:05** (收盘后拉收盘价+全日量, 原触发拿到收盘前瞬间价)
+- **monitor 收尾**: 14:55 → 15:00 (覆盖收盘集合竞价, 尾盘 5 分钟风控缺口堵上)
+- **reconcile 依赖**: 无 → `depends_ok=[monitor]` (严格依赖 monitor 当日完成)
+- **死代码清理**: 删除 `_base.py` + signals/execute/monitor/attribution/weekly 五处无人调用的 `_loop()` 线程; `__init__.py` 收敛为单一 `start_all()`
+- **纪律**: weekly_eval 触发检查置于 `is_trading_day` 短路之前 (v416 教训保留)
+- 测试: 新增 `test_manifest_schedule.py` (17) + v416 改写, 全量 **336 passed**
+- 详见 HANDOFF.md v428 / docs/architecture/ARCHITECTURE.md 调度系统章节
+
 ## [test-v399] — 2026-08-05
 
 ### 因子归因阈值对齐业界标准 (Critical)

@@ -29,18 +29,18 @@
  # Install
  pip install -e ".[dev]"
 
- # Web service (includes scheduler thread)
- PYTHONPATH=. python3 web/app.py
+ # Web service + scheduler (recommended; port 8521)
+ bash scripts/restart.sh
  # → http://localhost:8521
 
- # Manual full pipeline
- PYTHONPATH=. python3 pipeline.py
+ # Manual single-task run (orchestrator bypass)
+ bash scripts/run_task.sh <task> [date]
 
  # Factor evaluation
  bash scripts/eval_standard.sh
 
- # Run tests
- pytest -v
+ # Run tests (must use .venv — optuna/hmmlearn live there)
+ PYTHONPATH=. .venv/bin/python3 -m pytest test/ -v
  ```
 
  ## Directory
@@ -61,11 +61,11 @@
  │   └── compute/    Compute functions (price + fundamental)
  ├── monitor/        Layer 7: Attribution + reports + ATR stop-loss
  ├── optimizer/      Layer 5: Portfolio construction
- ├── quant/scheduler/ Scheduler (orchestrator + weekly)
+ ├── quant/scheduler/  Scheduler — manifest 任务声明 + 单一 orchestrator 主循环
  ├── regime/         Market regime detection
  ├── risk/           Layer 4: Risk management
  ├── scripts/        Operational scripts
- ├── test/           Test suite (221 tests)
+ ├── test/           Test suite (336 tests)
  ├── utils/          Utilities (date, logger)
  ├── web/            Flask dashboard
  ├── docs/           Documentation
@@ -87,18 +87,22 @@
 
  ## Data flow
 
- ```
- Trading day → quant/scheduler/ → pipeline.py (two-phase)
-   Phase 1 (盘前): generate_signals()
-     Step 1: DataStore.update_daily()
-     Step 2: UniverseRepo + risk pre-filters → investable universe
-     Step 3: FactorStore.load() → AlphaModel.combine() → AlphaModel.rank()
-     Step 4: neutralize() + covariance_matrix(Ledoit-Wolf) + VaR check
-     Step 5: PortfolioConstructor.construct() → target_positions
-   Phase 2 (开盘): execute_signals()
-     Step 6: ExecutionModel.run() → ExecutionEngine.execute() → trades.db
-     Step 7: Monitor.generate_report() → push_to_web()
- ```
+```
+Trading day → quant/scheduler/ (manifest 声明式任务表 + 单一 orchestrator 主循环, v428)
+   主循环每 30s 轮询: 窗口命中 + 依赖满足 → _dispatch 执行 (非交易日休眠)
+   ├─ 盘前 signals (08:00-15:30): pipeline.generate_signals()
+   │    Step 1: DataStore.update_daily() → Step 2: universe 预筛
+   │    Step 3: FactorStore.load() → AlphaModel.combine()/rank()
+   │    Step 4: neutralize + Ledoit-Wolf covariance + VaR
+   │    Step 5: PortfolioConstructor.construct() → target_positions
+   ├─ 盘中 execute (09:20-14:56, 依赖 signals 尝试过): pipeline.execute_signals()
+   │    Step 6: ExecutionModel.run() → ExecutionEngine.execute() → trades.db
+   │    Step 7: Monitor.generate_report() → push_to_web()
+   ├─ 盘中 monitor (09:35-15:00): 实时风控守护线程 (ATR止损/止盈/熔断)
+   ├─ 收盘 snapshot_close (15:00-15:05, 原 14:55 收盘前修正) → reconcile (15:05)
+   ├─ 晚间 evening_chain (19:00-23:59, subprocess): daily_data → factor_cache → attribution
+   └─ 周六 weekly_eval (06:00-12:00, subprocess): 周度因子评估
+```
 
  ## Key decisions
 
@@ -111,8 +115,9 @@
  | Covariance | Ledoit-Wolf | Better than sample for high dim |
  | Portfolio | Capital-adaptive 3-tier | Nano/Micro/Small auto-upgrade |
  | Execution | Template Method (backtest/live) | Shared chain; broker adapter (ADR-036) |
- | Cost model | Unified CostModel | Commission+stamp(0.05%)+Almgren-Chriss impact |
- | Parameter mgmt | YAML + hot-reload | Zero-downtime tuning |
+| Cost model | Unified CostModel | Commission+stamp(0.05%)+Almgren-Chriss impact |
+| Parameter mgmt | YAML + hot-reload | Zero-downtime tuning |
+| Scheduling | Manifest 声明式 + 单一 orchestrator 主循环 | 窗口/依赖/超时单一真相源 (v428, ADR 见 HANDOFF) |
 
  ## Documentation
 

@@ -57,10 +57,11 @@ quant/
 ├── backtest/      walk-forward 回测引擎
 ├── evaluation/    8 阶段因子评估 (CPCV+DSR)
 ├── regime/        HMM 市场状态检测
-└── scheduler/     日频任务编排 (evening chain: daily_data→factor_cache→attribution)
+└── scheduler/     manifest 声明式调度 (单一真相源) + 单一 orchestrator 主循环
+                   时间窗/依赖/超时统一在 manifest.py; 晚间链 subprocess (daily_data→factor_cache→attribution)
 ```
 
-数据流: `scheduler/ → pipeline.py.generate_signals() → FactorStore.load() → AlphaModel → neutralize → PortfolioConstructor → ExecutionModel`
+数据流: `scheduler/ (manifest 窗口+依赖) → pipeline.py.generate_signals() → FactorStore.load() → AlphaModel → neutralize → PortfolioConstructor → ExecutionModel`
 
 ## Key Docs
 

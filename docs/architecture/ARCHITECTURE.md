@@ -107,7 +107,7 @@ class TradeRepo:
 
 ## Layer 2: 因子层 (factor/)
 
-**职责**: 计算时序/横截面因子，评估因子的预测能力（IC/IR/相关性/衰减），合成复合因子。因子状态由 factor_registry 管理：active 参与实盘交易 (P1: using=active only), monitoring 仅 15:30 归因观察不交易, retired 永不再用。因子上报 Alpha 层。
+**职责**: 计算时序/横截面因子，评估因子的预测能力（IC/IR/相关性/衰减），合成复合因子。因子状态由 factor_registry 管理：active 参与实盘交易 (P1: using=active only), monitoring 仅归因观察不交易 (归因在晚间链 attribution.py 运行), retired 永不再用。因子上报 Alpha 层。
 
 
 
@@ -424,40 +424,25 @@ def generate_report(date: str, repo: TradeRepo) -> dict:
 ## 数据流
 
 ```
-quant/scheduler/ (日频 orchestrator + 周频 weekly)
-  │
-  └─ pipeline.py.run(date)
-      │
-      ├─ [Step 1] DataStore.update_daily()          → data/store.py
-      │   增量同步今日日线
-      │
-      ├─ [Step 2] FactorEvaluator.run()             → factor/
-      │   ├─ 遍历 Factor 列表 → compute()
-      │   ├─ 截面 Rank IC（滞后 1d/5d/20d）
-      │   └─ 产生 factor_quality_report
-      │
-      ├─ [Step 3] AlphaModel.calibrate() → predict() → alpha/model.py
-      │   ├─ 用历史 IC 校准因子权重
-      │   ├─ 合成 alpha 得分向量
-      │   └─ cross_sectional_rank() → Top 30% 候选池
-      │
-      ├─ [Step 4] RiskManager.apply()               → risk/
-      │   ├─ industry_neutralize(alpha, industries)
-      │   └─ RiskLimits.filter(candidates)
-      │
-      ├─ [Step 5] PortfolioConstructor.construct()  → optimizer/portfolio.py
-      │   ├─ 资本自适应: <2万等权 / 2-10万得分倾斜 / >10万均值-方差
-      │   ├─ 整数手约束分配
-      │   └─ → TargetPortfolio
-      │
-      ├─ [Step 6] ExecutionEngine.execute()         → execution/engine.py
-      │   ├─ compute_trades(target, current) → orders
-      │   ├─ 执行模拟交易 → trades.db
-      │   └─ 更新 capital_after
-      │
-      └─ [Step 7] Monitor.generate_report()         → monitor/report.py
-          ├─ attribution → 绩效归因
-          └─ push → web/shared.py
+quant/scheduler/ (orchestrator 主循环, manifest 驱动 — v428)
+  │  30s 轮询 → _should_run(spec,...) 窗口内+依赖满足 → _dispatch
+  ├─ signals   (08:00-15:30, inline)     → pipeline.generate_signals()
+  │     ├─ [Step 1] DataStore.update_daily()      → data/repos/daily_repo.py
+  │     ├─ [Step 2] UniverseRepo + 风险预筛        → investable universe
+  │     ├─ [Step 3] FactorStore.load() → AlphaModel.combine()/rank()
+  │     ├─ [Step 4] neutralize + covariance(Ledoit-Wolf) + VaR
+  │     └─ [Step 5] PortfolioConstructor.construct() → target_positions
+  ├─ execute   (09:20-14:56, inline, 依赖 signals 尝试过)
+  │     └─ [Step 6] pipeline.execute_signals()
+  │           ├─ ExecutionModel.run() → ExecutionEngine.execute() → trades.db
+  │           └─ [Step 7] Monitor.generate_report() → push web
+  ├─ snapshot_open  (10:00-14:55)  开盘30分钟快照
+  ├─ monitor        (09:30-15:00)  盘中风控守护线程 (ATR止损/止盈/熔断)
+  ├─ snapshot_close (15:00-15:05)  收盘快照 ← v428: 原14:55(收盘前)修正
+  ├─ reconcile      (15:05-16:00, 依赖 monitor==ok)
+  ├─ evening_chain  (19:00-23:59, subprocess)
+  │     └─ daily_data → factor_cache → attribution
+  └─ weekly_eval    (周六 06:00-12:00, subprocess, 在 is_trading_day 短路前检查)
 ```
 
 ## 数据 Schema
@@ -480,33 +465,63 @@ strategy_config (strategy PK, initial_capital)   -- 新增
 
 ## 调度系统
 
+> v428 (2026-08-08) 重构：任务声明表 (manifest) 单一真相源 + 单一编排器。
+> 历史版本 (v2-v427) 的多线程直驱 (每任务独立 `_loop()` / `_weekly_loop` 线程、
+> orchestrator `_TIMEOUTS` 超时表) 已全部删除 (`quant/scheduler/_base.py` 移除)。
+
 ### quant/scheduler/（调度器包）
 
-管理 pipeline 的执行时机。非交易时间休眠，交易日 15:30 自动运行。
+```
+quant/scheduler/
+├── manifest.py        # ★ v428 单一真相源: TaskSpec 声明表 + ALL + spec() + _PLAN_ORDER
+├── orchestrator.py    # 主循环: 30s 轮询 → _should_run(spec,...) 纯函数决策 → _dispatch
+├── task_log.py        # 任务状态机 (running→ok|failed|aborted|skipped) + pid 记录
+├── status.py          # 注册表/状态快照 (供 Web /api/scheduler)
+├── signals.py         # 盘前信号 (Metrics+IC 门控) → pipeline.generate_signals()
+├── execute.py         # 盘中执行 → pipeline.execute_signals()
+├── snapshot.py        # 开盘/收盘快照 (实盘 min-bar 落库)
+├── monitor.py         # 盘中风控 09:35-15:00 实时监控
+├── reconcile.py       # 日终对账
+├── evening.py         # 晚间链 subprocess (daily_data→factor_cache→attribution)
+├── weekly.py          # 周六周度评估 (评估部并行 5 阶段)
+├── daily_data.py      # 日线增量同步
+├── factor_cache.py    # 因子缓存物化
+└── attribution.py     # 归因 (晚间链内运行)
+```
 
-### pipeline.py（新建）
+调度入口只有一条：**orchestrator 主循环**（独占进程，`scripts/restart.sh` 拉起）。
+所有任务的时间窗口、依赖关系、超时统一声明在 `manifest.py`：
 
-串联 7 层，每层独立错误处理。任何一层异常不中断后续层。
+| 任务 | 时间窗 | 依赖 | 模式 |
+|------|--------|------|------|
+| signals | 08:00-15:30 | — | inline |
+| execute | 09:20-14:56 | attempt[signals] | inline |
+| snapshot_open | 10:00-14:55 | attempt[execute] | inline |
+| monitor | 09:30-15:00（窗口期常驻） | — | daemon 线程 |
+| snapshot_close | **15:00-15:05**（收盘后） | — | inline |
+| reconcile | 15:05-16:00 | **ok[monitor]** | inline |
+| evening_chain | 19:00-23:59 | — | subprocess |
+| weekly_eval | 周六 06:00-12:00 | — | subprocess |
+
+- 每天 30 秒轮询，`is_trading_day` 短路非交易日；**weekly_eval 触发检查置于该短路之前**（周六非交易日也能触发周度评估，v416 教训）。
+- 依赖语义：`depends_attempt` = 今日尝试过即放行（如 execute 需 signals 尝试）；`depends_ok` = 今日完成 ok 才放行（如 reconcile 需 monitor ok）。
+- 周期状态语义：`running` = 执行中；`ok` = 完成（绝不自动重跑）；`failed` = 异常（当日不自动重试）；`aborted` = 中断（可重试，预算 2 次）。
+- 守卫：pid 存活检测（僵尸 running 自愈，v424+）、进程级 `start()` dedup（`_tk_start` grace）、DB 幂等（`check_today_ran`）。
+
+### 调度触发（多重冗余，幂等由状态机保证）
+
+1. **orchestrator**（主）：主循环，30s 轮询决策。
+2. **cron**（兜底）：`scripts/setup_cron.sh` — 周六 06:00 weekly 兜底 + 每小时 adj_factor（因子复权基准）。
+3. **手动**：`bash scripts/run_task.sh <task> [date]`，单任务重跑（如 factor_cache 补物化）。
+
+### pipeline.py（两阶段，被 signals/execute 调用）
 
 ```python
-def run(date: str):
-    store = DataStore()
-    repo = TradeRepo()
-    try: store.update_daily()
-    except: pass
-    try: factors = factor_pipeline.run(date, store)
-    except: pass
-    try: alpha = alpha_model.predict(date, store)
-    except: pass
-    try: alpha = risk_neutralize(alpha, store)
-    except: pass
-    try: target = optimizer.construct(alpha, limits, capital)
-    except: pass
-    try: engine.execute(compute_trades(target, current), date)
-    except: pass
-    try: shared.update_state(monitor.generate_report(date, repo))
-    except: pass
-    store.close()
+# Phase 1 (盘前, signals 任务内): generate_signals()
+# 1) DataStore.update_daily() → 2) UniverseRepo+risk 预筛 → 3) FactorStore.load()
+# → AlphaModel.combine()/rank() → 4) 中性化+Ledoit-Wolf+VaR → 5) PortfolioConstructor
+# Phase 2 (开盘, execute 任务内): execute_signals()
+# 6) ExecutionEngine.execute() → trades.db → 7) Monitor report → push web
 ```
 
 ## 迁移计划

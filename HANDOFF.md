@@ -2,6 +2,29 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+## 当前状态 (test-v424, 2026-08-08)
+
+### v424: 僵尸 running 任务自动清理 — 界面"运行中"永不结束修复 (2026-08-08)
+
+**背景**: 用户报告调度页「因子评估(总)」状态始终"运行中"。现场还原:
+- 早晨 07:45:14 第 2 轮 weekly_eval (task_runs id 75354, pid 15578) 被 08:02:44 的 `bash scripts/restart.sh` 强杀 (`pkill -f "from quant.scheduler import start_all"` → SIGKILL, 且 pkill 模式只匹配 start_all 一代入口, 旧 orchestrator 进程杀不死)
+- 进程死前 `_tk_finish` 永不执行 → DB 记录 `status='running'` 永久悬挂
+- 界面直接读 task_runs 最新一条 → 永远显示"运行中"
+- 且 `task_log.start()` 的僵尸回收只靠 grace_seconds 超时 (weekly_eval=43200s=12h), 不落地
+
+**改动**:
+| # | 文件 | 内容 |
+|---|------|------|
+| 1 | `quant/scheduler/task_log.py` | 新增 `_pid_alive(pid)` (POSIX kill(0)); `start()` SELECT 含 pid, 检测已有 running 记录进程已死 → **立即标 aborted** (不等 grace) |
+| 2 | `quant/scheduler/orchestrator.py` | `_check_timeouts` 扫描含 pid, 进程已死 → auto-abort (启动即清理, 不等超时) |
+| 3 | `scripts/restart.sh` | 优雅停机: TERM → sleep 5 → KILL 兜底; 覆盖两代入口 `start_all` + `orchestrator start` (修复旧进程杀不死问题) |
+| 4 | `quant/config/config.yaml` | (无参数改动, 沿用现有) |
+| 5 | `test/test_v424_zombie_running.py` (新) | 8 项: _pid_alive 语义 / start() 死进程立即 abort+建新行 / 存活进程 skip / 超时仍旧 abort / _check_timeouts 死pid清理 |
+
+**验证**: 手动将 id=75354 标为 aborted (界面恢复); 全量 **312 passed** (基线 304 + 8 新增); restart.sh `bash -n` ok; ast 两文件通过. VERSION → test-v424.
+
+**遗留**: 界面状态恢复靠 DB 修正或下次任务 start() 触发自愈; 若需即时界面刷新, 可在 `/api/v1/scheduler` 查询时调用一次 `_check_timeouts` (未做, 等后续)。
+
 ## 当前状态 (test-v423, 2026-08-08)
 
 ### v423: LGB/XGB 真正生效 — 训练特征对齐 + OOS 验证 + 展示诚实化 (2026-08-08)

@@ -13,6 +13,7 @@ from quant.config.constants import _require_cfg
 from quant.monitor.metrics import metrics as _m
 from quant.utils.logger import get_logger
 from quant.config.paths import MARKET_DB
+from quant.scheduler.task_log import _pid_alive  # v424: 僵尸清理
 
 _log = get_logger(__name__)
 
@@ -385,7 +386,7 @@ def _check_timeouts(today: str):
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
         rows = conn.execute(
-            "SELECT id, task_name, started_at FROM task_runs "
+            "SELECT id, task_name, started_at, pid FROM task_runs "
             "WHERE date=? AND status='running' AND finished_at IS NULL",
             (today,)
         ).fetchall()
@@ -393,8 +394,20 @@ def _check_timeouts(today: str):
             conn.close()
             return
         now = datetime.now()
-        for rid, task_name, started_at in rows:
+        for rid, task_name, started_at, pid in rows:
             if not started_at:
+                continue
+            if pid and not _pid_alive(pid):
+                # v424: 记录进程已死 → 立即 aborted, 不等超时 (与 task_log.start 一致)
+                conn.execute(
+                    "UPDATE task_runs SET status='aborted', finished_at=?, "
+                    "error='进程已死 (pid=' || ? || ') — auto-abort' WHERE id=?",
+                    (now.isoformat(), str(pid), rid)
+                )
+                _log.warning(
+                    f"[{today}] {task_name} pid={pid} dead → aborted (zombie cleanup)"
+                )
+                _m.inc(f"alerts.task_aborted.{task_name}")
                 continue
             dt = datetime.fromisoformat(started_at)
             elapsed = (now - dt).total_seconds()

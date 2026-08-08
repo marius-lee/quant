@@ -65,6 +65,22 @@ def _ensure_table():
 _ensure_table()
 
 
+def _pid_alive(pid: int) -> bool:
+    """v424: 检查 pid 对应进程是否存活 (POSIX kill(0) 探测).
+
+    None (旧数据无 pid) → 视为存活, 不误杀 (走超时逻辑兜底).
+    """
+    if pid is None:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def start(task_name: str, date: str, dedup: bool = False, grace_seconds: int = 120) -> int | None:
     """任务启动时调用。返回 row id, 若已运行则返回 None 表示跳过。
 
@@ -85,17 +101,25 @@ def start(task_name: str, date: str, dedup: bool = False, grace_seconds: int = 1
 
         # 检查是否已有 running 行 (test-v204: 防止双 orchestractor 重复触发)
         existing = conn.execute(
-            "SELECT id, started_at FROM task_runs "
+            "SELECT id, started_at, pid FROM task_runs "
             "WHERE task_name=? AND date=? AND status='running' "
             "ORDER BY id DESC LIMIT 1",
             (task_name, date)
         ).fetchone()
 
         if existing:
-            rid, started = existing
+            rid, started, pid = existing
             dt = datetime.fromisoformat(started)
             elapsed = (datetime.now() - dt).total_seconds()
-            if elapsed < grace_seconds:
+            if pid and not _pid_alive(pid):
+                # v424: 记录进程已死 (pkill/崩溃) → 立即标 aborted, 不等 grace
+                # (原逻辑等 grace_seconds 超时才 auto-abort, 期间界面一直"运行中")
+                conn.execute(
+                    "UPDATE task_runs SET status='aborted', finished_at=?, "
+                    "error='进程已死 (pid=' || ? || ') — auto-abort' WHERE id=?",
+                    (now, str(pid), rid)
+                )
+            elif elapsed < grace_seconds:
                 # 近期已有运行中任务 → 跳过, 不创建重复行
                 conn.close()
                 return None

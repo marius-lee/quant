@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v422"
+VERSION = "test-v423"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 
@@ -186,12 +186,21 @@ def api_lgb():
                     "n_samples": model.metadata.n_samples,
                     "n_features": model.metadata.n_features,
                     "train_date": model.metadata.train_date,
+                    "train_start": model.metadata.train_start,
+                    "train_end": model.metadata.train_end,
+                    "oos_ic_mean": model.metadata.oos_ic_mean,
+                    "oos_ic_std": model.metadata.oos_ic_std,
+                    "oos_icir": model.metadata.oos_icir,
+                    "oos_n_days": model.metadata.oos_n_days,
                     "feature_names": model.metadata.feature_names[:10],
                 }
 
+        combine_mode = cfg("alpha.combine_mode", default="sleeve")
         return _api_response(data={
             "available": lgb_available,
             "trained": is_trained,
+            "enabled": combine_mode == "lgb",
+            "combine_mode": combine_mode,
             "models": models[-5:],  # last 5 models
             "metadata": metadata,
         })
@@ -219,12 +228,21 @@ def api_xgb():
                     "n_samples": model.metadata.n_samples,
                     "n_features": model.metadata.n_features,
                     "train_date": model.metadata.train_date,
+                    "train_start": model.metadata.train_start,
+                    "train_end": model.metadata.train_end,
+                    "oos_ic_mean": model.metadata.oos_ic_mean,
+                    "oos_ic_std": model.metadata.oos_ic_std,
+                    "oos_icir": model.metadata.oos_icir,
+                    "oos_n_days": model.metadata.oos_n_days,
                     "feature_names": model.metadata.feature_names[:10],
                 }
 
+        combine_mode = cfg("alpha.combine_mode", default="sleeve")
         return _api_response(data={
             "available": xgb_available,
             "trained": is_trained,
+            "enabled": combine_mode == "xgb",
+            "combine_mode": combine_mode,
             "models": models[-5:],  # last 5 models
             "metadata": metadata,
         })

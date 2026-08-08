@@ -1,4 +1,5 @@
 alpha:
+  oos_frac: 0.15
   lgb:
     train:
       start_date: '2015-01-01'

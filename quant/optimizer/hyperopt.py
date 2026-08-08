@@ -72,7 +72,7 @@ def objective(trial):
         "atr_sl": trial.suggest_float("atr_sl", 1.5, 3.0, step=0.25),
         "atr_tp1": trial.suggest_float("atr_tp1", 1.5, 3.0, step=0.25),
         "atr_tp2": trial.suggest_float("atr_tp2", 2.5, 4.0, step=0.25),
-        "combine_mode": trial.suggest_categorical("combine_mode", ["sleeve", "ic_weighted"]),
+        "combine_mode": trial.suggest_categorical("combine_mode", ["sleeve", "ic_weighted", "lgb", "xgb"]),
         "rebalance_freq": trial.suggest_categorical("rebalance_freq", ["daily", "weekly"]),
     }
 

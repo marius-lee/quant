@@ -671,12 +671,21 @@ function renderLGB(d) {
     setText('meta-lgb', (d.models || []).length ? d.models.length + ' model(s) on disk' : 'run train_lgb_model()');
     return;
   }
-  setHTML('lgb-status', '<span style="color:var(--down)">● 就绪</span>');
+  const enabled = !!d.enabled;
+  setHTML('lgb-status', enabled
+    ? '<span style="color:var(--up)">● 已启用</span>'
+    : '<span style="color:var(--down)">● 就绪 · 未启用</span>');
   if (d.metadata) {
     setText('lgb-ic', (d.metadata.ic_mean || 0).toFixed(4));
+    setText('lgb-oos-ic', (d.metadata.oos_ic_mean || 0).toFixed(4));
+    setText('lgb-icir', (d.metadata.oos_icir || 0).toFixed(2));
     setText('lgb-samples', fmtNum(d.metadata.n_samples || 0));
     setText('lgb-features', d.metadata.n_features || 0);
-    setText('meta-lgb', 'trained ' + (d.metadata.train_date || '?'));
+    const win = d.metadata.train_start && d.metadata.train_end
+      ? ' ' + d.metadata.train_start.slice(0, 10) + ' ~ ' + d.metadata.train_end.slice(0, 10)
+      : '';
+    setText('meta-lgb', 'trained ' + (d.metadata.train_date || '?') + win
+      + ' · OOS ' + (d.metadata.oos_n_days || 0) + '天 · combine_mode=' + (d.combine_mode || '?'));
   }
 }
 
@@ -694,12 +703,21 @@ function renderXGB(d) {
     setText('meta-xgb', (d.models || []).length ? d.models.length + ' model(s) on disk' : 'run train_xgb_model()');
     return;
   }
-  setHTML('xgb-status', '<span style="color:var(--down)">● 就绪</span>');
+  const enabled = !!d.enabled;
+  setHTML('xgb-status', enabled
+    ? '<span style="color:var(--up)">● 已启用</span>'
+    : '<span style="color:var(--down)">● 就绪 · 未启用</span>');
   if (d.metadata) {
     setText('xgb-ic', (d.metadata.ic_mean || 0).toFixed(4));
+    setText('xgb-oos-ic', (d.metadata.oos_ic_mean || 0).toFixed(4));
+    setText('xgb-icir', (d.metadata.oos_icir || 0).toFixed(2));
     setText('xgb-samples', fmtNum(d.metadata.n_samples || 0));
     setText('xgb-features', d.metadata.n_features || 0);
-    setText('meta-xgb', 'trained ' + (d.metadata.train_date || '?'));
+    const win = d.metadata.train_start && d.metadata.train_end
+      ? ' ' + d.metadata.train_start.slice(0, 10) + ' ~ ' + d.metadata.train_end.slice(0, 10)
+      : '';
+    setText('meta-xgb', 'trained ' + (d.metadata.train_date || '?') + win
+      + ' · OOS ' + (d.metadata.oos_n_days || 0) + '天 · combine_mode=' + (d.combine_mode || '?'));
   }
 }
 

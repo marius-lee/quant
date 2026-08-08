@@ -2,6 +2,36 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+## 当前状态 (test-v423, 2026-08-08)
+
+### v423: LGB/XGB 真正生效 — 训练特征对齐 + OOS 验证 + 展示诚实化 (2026-08-08)
+
+**背景**: 审计发现两模型"存在但不生效" — 训练端直读原始因子值, 生产端 pipeline (`pipeline.py:402-416` neutralize_factors_batch 行业中性化+z-score) 喂的是中性化后特征 → 训练/推理特征分布漂移, 模型不可能生效; 且 `ic_mean` 是样本内回放相关 (非预测力), `ic_std` 实为残差 std 命名误导, 无 OOS/ICIR/训练窗口展示, `combine_mode` 未纳入 hyperopt 搜索空间 (文档 report: "无真正的机器学习因子").
+
+**改动**:
+| # | 文件 | 内容 |
+|---|------|------|
+| 1 | `quant/alpha/ml_common.py` (新) | 共享构件: `build_cross_sectional_factors` (逐日截面 rank→norm.ppf z-score, NaN 保留, scipy 缺失线性近似)、`split_train_oos` (时间顺序 85/15, 统一按 str 日期比较 — 关键: 切分集合存 str, 面板索引也是 str, fwd 是 Timestamp)、`daily_ic_series` (逐日截面 IC 序列 → ic_mean/ic_std/icir/n_days, 每日不足 20 只剔除)、`build_train_matrices` (缺失因子零填充, 缺失日期跳过) |
+| 2 | `quant/alpha/qlib_model.py` + `xgb_model.py` | `ModelMetadata` 加 `oos_ic_mean/oos_ic_std/oos_icir/oos_n_days/train_start/train_end` (默认 0/"" — 旧元数据 JSON 兼容); train() 改共享矩阵构建, winsorize 99%, lgb 单次 fit; xgb eval_set 用时间切分 OOS 尾部 (非随机 10%) |
+| 3 | `quant/config/config.yaml` | `alpha.oos_frac: 0.15` (切分参数统一入口, 不硬编码) |
+| 4 | `quant/optimizer/hyperopt.py` L75 | `combine_mode` 搜索空间 ["sleeve","ic_weighted"] → 加 "lgb","xgb" |
+| 5 | `web/app.py` + `static/app.js` + `templates/index.html` | `/api/lgb` `/api/xgb` (旧 /api/lgb 未变) 增 oos_icir/oos_n_days/train_start/train_end/enabled/combine_mode; 前端 KPI 4→6 列 (状态/训练IC→样本内IC/OOS IC/ICIR/样本数/特征数), 状态文案区分「已启用/就绪·未启用」; meta 行含训练窗口 + OOS 天数 |
+
+**重训结果** (2026-08-08, 窗口 2019-01-02 → 2025-06-13 训练, OOS 尾部 274-276 交易日, 681 万样本×5特征):
+| 模型 | 训练集 IC (in-sample) | OOS IC 均值 | ICIR | OOS 天数 |
+|------|----------------------|------------|------|---------|
+| LightGBM | 0.2691 | 0.030 | 0.511 | 276 |
+| XGBoost | 0.1269 | 0.036 | 0.940 | 274 |
+
+**要点**: OOS ICIR < 1 → 两模型暂达不到「业界强信号」标准 (>1), 诚实展示; 生产 `combine_mode: sleeve` 不变, hyperopt 已可搜索 lgb/xgb 是否被真正选用 (默认仍 sleeve). 旧训练包 IC=0.36/0.10 是样本内回放, 非预测力 — 已废弃.
+
+**修复的 bug (调试中发现)**:
+- `build_train_matrices` 原版 `ds in tr_set` 用字符串查 set, 但 fwd 日期是 Timestamp → 恒 False 全部跳过 "No valid training samples" — 统一按 `str(ts)[:10]` 比较
+- 面板索引是 str 而 `.loc[ds]` 对 df index str 可行, 但 `_zs[fn].loc[ds]` 在某个因子缺失该日终时报 KeyError — 缺失因子零填充 (与零口号一致)
+- `split_train_ooogen` 对 DatetimeIndex 的 `if not dates` 报 ValueError (ambiguous truth) — 改 `len(dates)==0`
+
+**验证**: `python3 ast.parse` 4 文件通过; 重训 XGB 8:17 (6.8M×5, OOS eval), LGB 9:21 (同); API: `/api/lgb` 返回 {enabled:false, metadata.oos_icir:0.511, train_start:2019-01-02,...}; 新测试 `test/test_v423_ml_oos.py` 14 项; 全量 **304 passed** (基线 290 + 14). VERSION → test-v423.
+
 ## 当前状态 (test-v422, 2026-08-08)
 
 ### v422: XGBoost 主界面展示 (v421 收尾)

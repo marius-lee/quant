@@ -45,8 +45,6 @@ _MODEL_DIR = os.path.join(
 class ModelMetadata:
     """模型元数据 — 记录训练信息，用于版本追踪和审计。"""
     train_date: str
-    train_start: str
-    train_end: str
     n_samples: int
     n_features: int
     feature_names: list[str]
@@ -54,6 +52,13 @@ class ModelMetadata:
     ic_std: float          # 训练集截面 IC 标准差
     model_hash: str         # 模型文件 SHA256
     lgb_params: dict = field(default_factory=dict)
+    # v423: OOS 验证指标 (业界标准 ICIR = IC_mean / IC_std)
+    oos_ic_mean: float = 0.0      # OOS 逐日截面 IC 均值
+    oos_ic_std: float = 0.0       # OOS 逐日截面 IC 标准差
+    oos_icir: float = 0.0         # OOS ICIR (显著性: >0.3 可用, >1 强)
+    oos_n_days: int = 0           # OOS 有效日数
+    train_start: str = ""     # v423: 训练窗口起 (旧模型 JSON 无此字段 → 默认)
+    train_end: str = ""       # v423: 训练窗口止
 
 
 # ═══════════════════════════════════════════════════════════
@@ -143,89 +148,30 @@ class LgbAlphaModel:
 
         _log.info("train: %d factors, building matrix...", len(feature_names))
 
-        # ── 流式构建训练矩阵 (不 vstack) ──
-        fwd_dates = sorted(set(forward_returns.index.get_level_values(0)))
-        min_factors = max(1, int(len(feature_names) * 0.6))
-        _log.info("train: %d fwd_dates, need ≥%d/%d factors per date",
-                  len(fwd_dates), min_factors, len(feature_names))
+        # ── v423: 共享矩阵构建 (z-score 特征 + 时间切分 OOS) ──
+        from quant.alpha.ml_common import build_train_matrices, daily_ic_series
+        mats = build_train_matrices(
+            factor_values, forward_returns, feature_names,
+            oos_frac=_require_cfg("alpha.oos_frac"),
+        )
 
-        n_skipped = {"date": 0, "syms": 0, "mask": 0}
-        total_samples = 0
-        dates_used = []
-
-        X_chunks = []
-        y_chunks = []
-
-        for ts in fwd_dates:
-            date_str = ts.strftime("%Y-%m-%d")
-            syms = set()
-            n_avail = 0
-            for fn in feature_names:
-                fv = factor_values.get(fn)
-                if fv is not None and date_str in fv.index:
-                    row = fv.loc[date_str].dropna()
-                    syms.update(row.index)
-                    n_avail += 1
-            if n_avail < min_factors:
-                n_skipped["date"] += 1
-                continue
-            syms = list(syms)
-            if len(syms) < 30:
-                n_skipped["syms"] += 1
-                continue
-
-            X_day = np.column_stack([
-                factor_values[fn].loc[date_str].reindex(syms).values
-                if fn in factor_values and date_str in factor_values[fn].index
-                else np.full(len(syms), np.nan)
-                for fn in feature_names
-            ]).astype(np.float32)
-            y_day = forward_returns.loc[ts].reindex(syms).values.astype(np.float32)
-
-            mask = ~np.isnan(y_day)
-            if mask.sum() < 20:
-                n_skipped["mask"] += 1
-                continue
-
-            # v406: fillna(0) 必须在 mask 之后 — 原在 mask 前 fillna,
-            # 无收益股票 (y=NaN) 被填为 0 标签进入训练集
-            X_day = np.nan_to_num(X_day[mask], nan=0.0)
-            y_day = y_day[mask]  # y 无 NaN (已由 mask 过滤)
-
-            X_chunks.append(X_day)
-            y_chunks.append(y_day)
-            total_samples += mask.sum()
-            dates_used.append(ts)
-
-            # 每 50 天 flush 一次, 释放中间内存
-            if len(X_chunks) >= 50:
-                import gc
-                _log.info("train: flushing %d days → %d samples",
-                          len(X_chunks), sum(len(c) for c in X_chunks))
-                gc.collect()
-
-        _log.info("train: %d dates, %d samples, skipped=%s",
-                  len(X_chunks), total_samples, n_skipped)
-        if not X_chunks:
-            raise ValueError(
-                "No valid training samples — check factor_values and forward_returns alignment"
-            )
-
-        # 合并并降精度 (float32 减半内存, 21.8M×75×4B ≈ 6.5GB)
-        X = np.vstack(X_chunks).astype(np.float32)
-        y = np.concatenate(y_chunks).astype(np.float32)
-
-        # 释放中间列表
-        del X_chunks, y_chunks
+        X = mats["X_tr"]
+        y = mats["y_tr"]
+        X_oos = mats["X_oo"]
+        y_oos = mats["y_oo"]
+        oos_dates = mats["oos_dates"]
+        stops = mats["skipped"]
+        _log.info("train: skipped=%s", stops)
 
         # 过滤极端值 (winsorize 99%)
-        y_upper = np.percentile(y, 99)
-        y_lower = np.percentile(y, 1)
-        y = np.clip(y, y_lower, y_upper)
+        if len(y) > 2:
+            y_upper = np.percentile(y, 99)
+            y_lower = np.percentile(y, 1)
+            y = np.clip(y, y_lower, y_upper)
 
         _log.info(
-            "lgb train: %d samples × %d features over %d dates",
-            len(y), X.shape[1], len(dates_used),
+            "lgb train: %d samples × %d features (OOS holdout %d samples)",
+            len(y), X.shape[1], len(y_oos),
         )
 
         # v407: 单次全量训练 — v275 时的 OOM (21.8M样本×75特征>25GB)
@@ -235,12 +181,23 @@ class LgbAlphaModel:
         _log.info("lgb train: %d samples × %d features, single fit", len(y), X.shape[1])
         self._lgb.fit(X, y)
 
-        # ── 评估训练集 IC ──
+        # ── 评估训练集 IC (语音语义: 拟合优度, 不用于声明预测力) ──
         y_pred = self._lgb.predict(X)
         ic = np.corrcoef(y_pred, y)[0, 1] if len(y) > 1 else 0.0
         ic_std = round(float(np.std(y_pred - y)), 6)
         n_samples_val = len(y)
         n_features_val = X.shape[1]
+
+        # ── v423: OOS 验证 — 逐日截面 IC → ICIR (业界标准) ──
+        oos_meta = {"ic_mean": 0.0, "ic_std": 0.0, "icir": 0.0, "n_days": 0}
+        if len(y_oos) >= 20:
+            y_pred_oos = self._lgb.predict(X_oos)
+            oos_meta = daily_ic_series(y_pred_oos, y_oos, oos_dates)
+            _log.info("lgb OOS: IC=%.4f (std=%.5f) ICIR=%.3f (%d days)",
+                      oos_meta["ic_mean"], oos_meta["ic_std"],
+                      oos_meta["icir"], oos_meta["n_days"])
+        else:
+            oos_meta["n_days"] = 0
 
         # 释放 X/y (后续只保留 booster + metadata)
         del X, y, y_pred
@@ -256,8 +213,9 @@ class LgbAlphaModel:
 
         self._metadata = ModelMetadata(
             train_date=train_date,
-            train_start=dates_used[0] if dates_used else "",
-            train_end=dates_used[-1] if dates_used else "",
+            train_start=mats["train_dates"][0].strftime("%Y-%m-%d") if mats["train_dates"] else "",
+            train_end=(mats["train_dates"][-1].strftime("%Y-%m-%d") if mats["train_dates"]
+                       else fwd_dates[-1].strftime("%Y-%m-%d") if fwd_dates else ""),
             n_samples=n_samples_val,
             n_features=n_features_val,
             feature_names=list(feature_names),
@@ -265,6 +223,10 @@ class LgbAlphaModel:
             ic_std=ic_std,
             model_hash=model_hash,
             lgb_params=lgb_params,
+            oos_ic_mean=oos_meta["ic_mean"],
+            oos_ic_std=oos_meta["ic_std"],
+            oos_icir=oos_meta["icir"],
+            oos_n_days=oos_meta["n_days"],
         )
 
         meta_path = os.path.join(_MODEL_DIR, f"lgb_metadata_{train_date}.json")
@@ -274,8 +236,9 @@ class LgbAlphaModel:
             }, f, indent=2, default=str)
 
         _log.info(
-            "lgb model saved: %s (IC=%.4f, %d features, %d samples)",
-            model_path, ic, len(feature_names), n_samples_val,
+            "lgb model saved: %s (IC=%.4f, OOS_IC=%.4f ICIR=%.3f, %d features, %d samples)",
+            model_path, ic, oos_meta["ic_mean"], oos_meta["icir"],
+            len(feature_names), n_samples_val,
         )
         return self._metadata
 

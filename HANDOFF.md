@@ -2,6 +2,22 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+## 当前状态 (test-v429, 2026-08-08)
+
+### v429: 遗留问题盘点归档 (2026-08-08)
+全量扫描代码/文档遗留, 逐项判定 (详见文末「待完成」区扩展):
+
+**判定已过时/已实现 (无需修复, 注释归档)**
+1. `fundamental.py` TODO#3 (close_latest 从 daily 补) — 已落地: store.get_fundamentals() 注入 daily.close + high_52w 244日窗口计算
+2. `_momentum.py` TODO(ADR-035) 反转方向 — reversal_5d 已评估退役 (|t|=0.15, DSR=0.0035), 方向问题闭合; -cum 变体见 ADR-042
+3. `_event.py` post_5d 注释"未实现" — 实际已实现 (lhb.py 写入, market.db post_5d 113K+ 行), 更正注释
+4. `datasource_retry.py` jitter (审计 B-19 声称未实现) — 实际已传 jitter=(0,1)
+5. CODE-REVIEW-2026-08-07 R1-R11 — v418 已全量修复; Bug2/Bug3 判定非 bug
+6. reconcile pnl_cross — v429 判定不实现: equity_cross 流水推演 + filled 订单交叉核对已覆盖 → reconciliation.md 已标注
+7. 尾盘 5 分钟增量量能 — 无因子消费者, 零冗余原则不实现 (manifest 注释归档)
+
+**涉及文件**: `quant/factor/compute/fundamental.py`, `price/_momentum.py`, `price/_event.py`, `quant/scheduler/manifest.py`, `docs/architecture/reconciliation.md`, `HANDOFF.md`
+
 ## 当前状态 (test-v428, 2026-08-08)
 
 ### v428: 调度系统 manifest 化重构 — 单一真相源 (2026-08-08)
@@ -1006,7 +1022,19 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
 - ADR-041: 因子状态机简化
 - 见 docs/adr/ 完整列表
 
-### 待完成
-- [ ] 全量回测 (2019-2026)
-- [ ] 快照数据积累 (60 天后激活日内反转因子)
-- [ ] paper trading 桥接验证
+### 待完成 — v429 判定
+- [ ] 全量回测 (2019-2026) — 运行级任务 (backtest.walk-forward 已就绪), 非代码缺口; 用户按需执行
+- [x] 快照数据积累 (60 天后激活日内反转因子) — 已展开 (intraday_snapshot 08-03 起日累计), 门控 v418 R10; 日内三因子当前评估中 (IC/ICIR 低于阈值 retry=1/3), 数据积累为评估前置条件
+- [x] paper trading 桥接验证 — 已过期: SimulatedAdapter 即纸面执行 (ADR-036), bridge.py 只读评估结果, 无需另建桥
+
+### v429: 遗留问题盘点归档 (2026-08-08)
+全量扫描代码/文档遗留, 逐项判定:
+
+**判定已过时/已实现 (无需修复, 注释归档)**
+1. `fundamental.py` TODO#3 (close_latest 从 daily 补) — 已落地: store.get_fundamentals() 注入 daily.close + high_52w 244日窗口计算
+2. `_momentum.py` TODO(ADR-035) 反转方向 — reversal_5d 已评估退役 (|t|=0.15, DSR=0.0035), 方向问题闭合;  -cum 变体见 ADR-042
+3. `_event.py` post_5d 注释"未实现" — 实际已实现 (lhb.py 写入, market.db post_5d 113K+ 行), 更正注释
+4. `datasource_retry.py` jitter (审计 B-19 声称未实现) — 实际已传 jitter=(0,1) (datasource_retry.py:52)
+5. CODE-REVIEW-2026-08-07 R1-R11 — v418 已全量修复; Bug2/Bug3 判定非 bug
+6. reconcile pnl_cross (reconciliation.md 标"未实现") — v429 判定不实现: equity_cross 流水推演 + filled 订单交叉核对已覆盖, 独立实现零增益 → reconciliation.md 已标注
+7. 尾盘 5 分钟增量量能 (manifest 注释) — 无因子消费者, 零冗余原则不实现

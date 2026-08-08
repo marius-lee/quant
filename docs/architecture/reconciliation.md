@@ -25,7 +25,7 @@ daily_recon 表 (market.db)，每日 reconcile 任务落库。
 |--------|---------|---------|
 | `invariant` | 现金余额 ≥ 0 | cash < 0 → 记账或裁剪逻辑 bug |
 | `equity_cross` | 现金 × 总权益一致性 | 差异 > `recon.cash_drift_tolerance` |
-| `pnl_cross` | 日盈亏 vs 交易记录 | 未实现 |
+| `pnl_cross` | 日盈亏 vs 交易记录 | v429 判定: 已由 equity_cross (流水推演) + order/filled 账本交叉核对覆盖, 不再独立实现 |
 
 ### order (订单检查)
 pending_orders 状态 vs sim_trades 成交记录。

@@ -69,10 +69,11 @@ from quant.factor.compute.high_priority import compute_cf_roa  # v358
 
 def compute_high52w_dist(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
     """接近52周高点→高分。dist = 1 - close_latest/high_52w, 取负号。
-    数据字段: stocks.high_52w, stocks.close_latest(当日收盘)"""
-    # TODO(#5): close_latest 需要从 daily 表补, fundamentals 里只有 stocks 静态字段。
-    # 当前使用 stocks 表字段, 在两次 sync_stock_list() 之间可能过期。
-    # 建议: 在 data/store.py get_fundamentals() 中增加 daily.close 的 LEFT JOIN。
+    数据字段: stocks.high_52w, stocks.close_latest(当日收盘)
+    v429: 原 TODO(#3) 已落地 — store.get_fundamentals() 已从 daily 表按 date
+    LEFT JOIN close 补 close_latest, high_52w 由 daily 244 日 MAX(close) 计算:
+    close_latest 不再依赖 stocks 静态表 (store.py 2401-2421 行确认)。
+    """
     dist = 1.0 - fundamentals["close_latest"] / fundamentals["high_52w"]
     dist = dist.replace([np.inf, -np.inf], np.nan).clip(-2, 2)
     return _cs_zscore(-dist, sparse=True).rename("high52w_dist")

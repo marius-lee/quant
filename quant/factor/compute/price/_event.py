@@ -221,7 +221,7 @@ def compute_lhb_post_quality(data: "pd.DataFrame", date: str, window: int = 90, 
     """LHB 上榜后质量因子: 历史上榜后 post_5d 平均收益。
 
     算法:
-      - 从 lhb_detail 读取过去 window 天上榜记录 (排除最近5天, post_5d未实现)
+      - 从 lhb_detail 读取过去 window 天上榜记录 (排除最近5天, 因子预测期)
       - 每只股票: AVG(post_5d) — 历史上榜后平均收益
       - 截面 z-score 标准化
       - 从未上榜股票: 0 (中性)
@@ -231,6 +231,7 @@ def compute_lhb_post_quality(data: "pd.DataFrame", date: str, window: int = 90, 
           上榜后持续跌的是散户接盘 (A股实证: 上榜后平均跌0.87%).
 
     添加: 2026-07-03 — lhb_detail 表补齐后, post_5d 字段已有 24,386 行.
+    v429: post_5d 已落地 (lhb.py 同步写入, market.db 113K+ 行非空), 注释由"未实现"更正.
     """
     symbols = list(data["close"].columns)
 
@@ -241,7 +242,7 @@ def compute_lhb_post_quality(data: "pd.DataFrame", date: str, window: int = 90, 
 
     idx = all_dates.index(date_str)
     start_idx = max(0, idx - window)
-    end_idx = max(0, idx - 5)  # 排除最近5天 (post_5d 尚未实现)
+    end_idx = max(0, idx - 5)  # 排除最近5天 (post_5d 预测期尚未走完)
     if end_idx <= start_idx:
         return pd.Series(0.0, index=symbols, name="lhb_post_quality")
 

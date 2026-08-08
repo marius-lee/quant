@@ -84,10 +84,11 @@ def compute_reversal(data: pd.DataFrame, date: str, window: int = 5) -> pd.Serie
     A 股市场短期反转通常比动量更强 (retail-dominated turnover)。
 
     方向 (P0-4 审计 2026-07-28):
-      - 当前使用 +cum (正向累计收益) — 与 momentum_5d 高度相关。
-      - 经 IC 检验 A 股近期反转效应减弱，暂时沿用正向。
-      - 待下一轮因子评估时重新检验反转方向，若仍不成立则退役。
-      - TODO(ADR-035): 尝试 -cum/(1+cum²) 仅在极端收益区给反转信号。
+       - 当前使用 +cum (正向累计收益) — 与 momentum_5d 高度相关。
+       - 经 IC 检验 A 股近期反转效应减弱，暂时沿用正向。
+       - v429 归档: reversal_5d 已于评估管线退役 ([LIVE] 持续衰减 |t|=0.15<1.0,
+         DSR=0.0035), 方向问题随因子退役闭合; 若未来重启该因子按 IC 重定方向。
+       - (原 TODO(ADR-035): -cum/(1+cum²) 仅在极端收益区给反转信号 — 弃用, 见 ADR-042)
     """
     close = data["close"]
     log_ret = _log_returns(close)

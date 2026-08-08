@@ -15,7 +15,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v424"
+VERSION = "test-v425"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 
@@ -893,6 +893,12 @@ def api_scheduler():
 
     # ── 2. DB 查询 (统一入口: market.db → task_runs 表) ──
     from quant.config.paths import MARKET_DB
+    # v425: 查询前先清理僵尸 running (孤儿 pid 已在 v424 自愈, 此处保界面即时恢复)
+    try:
+        from quant.scheduler.orchestrator import _check_timeouts
+        _check_timeouts(today_str)
+    except Exception:
+        pass  # 清理失败不阻塞查询
     db_runs = {}  # task_name → {status, finished_at, error, summary}
     try:
         conn = sqlite3.connect(MARKET_DB)

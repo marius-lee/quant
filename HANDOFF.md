@@ -2,6 +2,16 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+## 当前状态 (test-v425, 2026-08-08)
+
+### v425: 调度界面即时展示僵尸自愈 (v424 遗留补全)
+
+**背景**: v424 遗留 — 僵尸 running 自愈 (pid 存活检测) 只在任务 `start()` 或 orchestrator 启动扫描时触发; 界面刷新若催一次 `/api/scheduler` 仍显示旧僵尸状态, 需等下次任务触发.
+
+**改动**: `web/app.py` `/api/scheduler` — DB 查询前先调一次 `orchestrator._check_timeouts(today)` (try/except 兜底, 清理失败不阻塞查询). 界面每次轮询 (POLL_MS) 都先清僵尸再读状态 → 即时恢复.
+
+**验证**: API 实测 weekly_eval 显示 "异常终止" + error_msg 保留清理原因; 全量 **312 passed** (无新增测试, 逻辑复用 v424 测试覆盖). VERSION → test-v425.
+
 ## 当前状态 (test-v424, 2026-08-08)
 
 ### v424: 僵尸 running 任务自动清理 — 界面"运行中"永不结束修复 (2026-08-08)
@@ -23,7 +33,7 @@
 
 **验证**: 手动将 id=75354 标为 aborted (界面恢复); 全量 **312 passed** (基线 304 + 8 新增); restart.sh `bash -n` ok; ast 两文件通过. VERSION → test-v424.
 
-**遗留**: 界面状态恢复靠 DB 修正或下次任务 start() 触发自愈; 若需即时界面刷新, 可在 `/api/v1/scheduler` 查询时调用一次 `_check_timeouts` (未做, 等后续)。
+**遗留**: 界面状态恢复靠 DB 修正或下次任务 start() 触发自愈 — 已于 v425 完成 (查询前调 `_check_timeouts`).
 
 ## 当前状态 (test-v423, 2026-08-08)
 

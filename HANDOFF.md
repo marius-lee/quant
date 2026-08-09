@@ -2,6 +2,34 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+## 当前状态 (test-v430, 2026-08-09)
+
+### v430: 数据完整性审计落地 — margin commit 丢失 / fund_flow 冷却 / 链超时预算 / 跌停池接通 (2026-08-09)
+
+**背景 (用户指令)**: 数据完整性审计发现 market.db 与因子缓存缺口, 逐项根因溯源后按方案落地修改并归档.
+
+**实锤根因**:
+1. **margin 每日写入静默丢失** — v414/50f4a3e executemany 重构删掉 `conn.commit()` (margin.py:90-98, 149-157), sync_range 尾部无 commit → sqlite3 close() 回滚, 报告成功实际全丢 (08-06/07 两日 0 行; 08-07 13:51 backfill 67830 行也全部蒸发 → 2025-12 整月 17 日缺口)
+2. **fund_flow 东财 API 封锁** (08-07 起 curl 56 Connection closed) — 外部源问题; 代码缺陷: `_UNAVAILABLE` 模块级内存标志每进程重置, 晚间链 subprocess 每次重新探测撞限流; 每日全量历史重拉 (lmt=0) 拖长夜间预算
+3. **evening_chain 连续 4 天 aborted 误报** — manifest timeout_s=14400 (4h) < 实测夜链最长 25862.7s (7.2h); 23:00 被打 aborted 但 subprocess 继续跑完; 窗口 23:59 未关时可能重放 (08-03 双跑实证: orchestrator 20:13 重启后当天重放链)
+4. **limit_down_pool 空表** — `net_limit_ratio` 情绪因子读 df_down 恒空失真; akshare `stock_zt_pool_dtgc_em` 可用
+5. **news 因子数据源不可用** — `ak.stock_news_em()` 在本环境必然崩溃 (pyarrow ArrowInvalid: \u 正则), 判定不接入
+
+**修改**:
+1. `quant/data/margin.py`: `_sync_sse_raw` / `_sync_szse_wrapper` executemany 后补 `conn.commit()`; `_get_synced_dates` 改双市场 (SH+SZ) 齐备才算 synced — 修 SZSE 单独发布延迟被永久跳过的隐藏缺陷
+2. `quant/data/fund_flow.py`: 冷却跨进程持久化 — 5/30 连败写 `quant/data/.fund_flow_cooldown` 时间戳文件, 30 分钟窗口内各进程跳过; sync_all/sync_single_stock 加 `days` 增量窗口 (None=全量 backfill)
+3. `quant/scheduler/manifest.py`: evening_chain grace_s/timeout_s 14400 → 27000 (7.5h, 含注释实证)
+4. `quant/data/limit_up.py`: 新增 `sync_down_date` / `sync_down_range` (akshare 跌停池, 对齐既有 DDL)
+5. `quant/scheduler/daily_data.py`: fund_flow 传 days=100; 晚间链新增 limit_down 同步; news 判定不接入 (注释归档)
+6. `test/test_evening_chain.py`: 超时断言 14400→27000; `test_v306_fund_flow_breaker.py`: 冷却文件隔离 tmp_path
+
+**数据补回 (已执行)**:
+- margin 2026-08-06/07 补齐 (SSE 已 1994, SZSE 08-07 源端待发布, 每日 sync 自愈窗口自动补)
+- margin 2025-12 整月 17 日缺口 backfill 补齐 (43913 行), 2019~2026-08-07 全量闭环验证 0 缺口
+- fund_flow 08-08 13 只成功 (1300 行), 08-09 600519 增量 10 行验证 OK (东财限流解除中, 冷却机制接管)
+
+**测试**: 336 passed (test-evening_chain manifest 断言 + fund_flow breaker 隔离已更新)
+
 ## 当前状态 (test-v429, 2026-08-08)
 
 ### v429: 遗留问题盘点归档 (2026-08-08)

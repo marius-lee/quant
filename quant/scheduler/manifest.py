@@ -110,7 +110,10 @@ _DAYLINE: list[TaskSpec] = [
     TaskSpec(
         name="evening_chain", label="晚间链", schedule="19:00 (daily_data起)",
         window=(time(19, 0), time(23, 59)),
-        grace_s=14400, timeout_s=14400,
+        # v430: 超时预算 4h → 7.5h — 实测夜链最长 25862.7s (2026-08-05, 6→7.2h,
+        #   fund_flow 东财限流重试占大头). 原 14400s 每晚 23:00 被 _check_timeouts
+        #   误标 aborted, 且窗口 23:59 未关时可能重复触发 (重放风险).
+        grace_s=27000, timeout_s=27000,
         mode="subprocess", group="盘后", has_multiprocess=True,
         subprocess_cmd=(
             "from quant.utils.excepthook import setup; setup();"

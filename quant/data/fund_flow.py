@@ -43,8 +43,38 @@ _FUND_FLOW_URL = (
 # 模块级探测: 首次 requests 失败 → 本会话后续全部走 curl 子进程。
 _CURL_MODE = None  # None=未探测, True=curl, False=requests
 # v414: API 不可用标志 — 连续 5 次全部失败则跳过后续调用
+# v430: 冷却升级为跨进程持久化 — 30 连败/5 连败写冷却戳文件,
+#       evening_chain 每次 subprocess 重新探测时先查冷却, 避免反复撞限流
 _UNAVAILABLE = False
 _CONSECUTIVE_FAILS = 0
+_COOLDOWN_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), ".fund_flow_cooldown")
+_COOLDOWN_SECONDS = 1800  # 30 分钟冷却窗口
+
+
+def _read_cooldown() -> float:
+    """读取冷却时间戳 (文件不存在 → 0, 不视为降级)."""
+    try:
+        with open(_COOLDOWN_FILE) as f:
+            return float(f.read().strip())
+    except FileNotFoundError:
+        return 0.0
+    except (ValueError, OSError) as e:
+        logger.warning(f"fund_flow cooldown file unreadable, ignore: {e}")
+        return 0.0
+
+
+def _write_cooldown():
+    try:
+        with open(_COOLDOWN_FILE, "w") as f:
+            f.write(str(time.time()))
+    except OSError as e:
+        logger.warning(f"fund_flow cooldown write failed (non-blocking): {e}")
+
+
+def _cooldown_active() -> bool:
+    ts = _read_cooldown()
+    return ts > 0 and (time.time() - ts) < _COOLDOWN_SECONDS
 
 
 def _http_get_json(url: str, headers: dict):
@@ -89,8 +119,14 @@ def _market_code(symbol: str) -> str:
     return f"0.{symbol}"
 
 
-def sync_single_stock(symbol: str, market: str = None, conn=None) -> int:
-    """同步单只股票的资金流向历史数据。返回新增行数。"""
+def sync_single_stock(symbol: str, market: str = None, conn=None, days: int = None) -> int:
+    """同步单只股票的资金流向历史数据。返回新增行数。
+
+    Args:
+        days: 只保留最近 N 个交易日 (增量窗口, None=全量历史, 供 backfill)。
+              东财接口返回全历史 klines, 晚间链每日全量重写开销大且拖长
+              evening_chain 预算 — v430 起晚间链传 days=100 (覆盖 3m 因子窗口)。
+    """
     close_conn = False
     if conn is None:
         conn = sqlite3.connect(DB_PATH)
@@ -127,6 +163,8 @@ def sync_single_stock(symbol: str, market: str = None, conn=None) -> int:
         if close_conn:
             conn.close()
         return 0
+    if days is not None:
+        klines = klines[-days:]
 
     n = 0
     for line in klines:
@@ -182,11 +220,15 @@ def _float(val: str):
         return None
 
 
-def sync_all(max_stocks: int = 500, conn=None):
-    """同步市值最大的 N 只股票的资金流向数据。"""
+def sync_all(max_stocks: int = 500, conn=None, days: int = None):
+    """同步市值最大的 N 只股票的资金流向数据。返回总行数。
+
+    v430: 冷却跨进程持久化 — 5 连败/30 连败写冷却戳, 冷却窗口内跳过;
+          days=None 全量历史 (backfill), 晚间链传有限窗口减载。
+    """
     global _UNAVAILABLE, _CONSECUTIVE_FAILS
-    if _UNAVAILABLE:
-        logger.info("fund_flow sync skipped: API marked unavailable")
+    if _UNAVAILABLE or _cooldown_active():
+        logger.info(f"fund_flow sync skipped: API cooldown (active={_cooldown_active()})")
         return 0
     close_conn = False
     if conn is None:
@@ -205,7 +247,7 @@ def sync_all(max_stocks: int = 500, conn=None):
     total = ok = fail = 0
     consecutive_fail = 0
     for i, sym in enumerate(symbols):
-        n = sync_single_stock(sym, conn=conn)
+        n = sync_single_stock(sym, conn=conn, days=days)
         total += n
         if n > 0:
             ok += 1
@@ -216,14 +258,17 @@ def sync_all(max_stocks: int = 500, conn=None):
             # v414: 连续 5 只全失败 → 标记 API 不可用, 跳过本会话
             if consecutive_fail >= 5 and ok == 0:
                 _UNAVAILABLE = True
+                _write_cooldown()
                 logger.warning(
                     "fund_flow sync aborted: API unavailable after %d consecutive failures, "
-                    "skipping for this session", consecutive_fail)
+                    "cooldown written (30min), skipping this session", consecutive_fail)
                 break
             # 连续 30 只失败 → 疑似封禁, 放弃本次
             if consecutive_fail >= 30:
+                _write_cooldown()
                 logger.warning(
-                    "fund_flow sync aborted: 30 consecutive failures (likely source block)")
+                    "fund_flow sync aborted: 30 consecutive failures (likely source block), "
+                    "cooldown written (30min)")
                 if close_conn:
                     conn.close()
                 return total

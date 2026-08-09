@@ -9,9 +9,11 @@ from quant.data import fund_flow
 
 import pytest
 @pytest.fixture(autouse=True)
-def reset_fund_flow_flag():
-    """v414: 每个测试前重置 API 不可用标志."""
+def reset_fund_flow_flag(tmp_path, monkeypatch):
+    """v414: 每个测试前重置 API 不可用标志; v430: 冷却文件隔离到 tmp, 防跨测试污染."""
     fund_flow._UNAVAILABLE = False
+    fund_flow._CONSECUTIVE_FAILS = 0
+    monkeypatch.setattr(fund_flow, "_COOLDOWN_FILE", str(tmp_path / "cooldown"))
 
 
 def _mk_conn(tmp_path, n_stocks=50):

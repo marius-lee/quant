@@ -149,6 +149,117 @@ def sync_range(start_date: str, end_date: str = None, conn=None) -> int:
     return total
 
 
+def sync_down_date(date_str: str, conn=None) -> int:
+    """同步单日跌停池 (akshare stock_zt_pool_dtgc_em)。
+
+    v430 补齐: limit_down_pool 此前空表 — net_limit_ratio (市场情绪代理)
+    读 df_down, 无数据时净涨停占比恒为正偏, 因子失真.
+    """
+    import akshare as ak
+    from quant.data.datasource_retry import datasource_retry
+
+    close_conn = False
+    if conn is None:
+        conn = sqlite3.connect(DB_PATH)
+        close_conn = True
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS limit_down_pool (
+            date TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            name TEXT,
+            change_pct REAL,
+            close REAL,
+            amount REAL,
+            circ_mv REAL,
+            total_mv REAL,
+            turnover_rate REAL,
+            lock_capital REAL,
+            first_time TEXT,
+            last_time TEXT,
+            open_times INTEGER,
+            zt_stat TEXT,
+            limit_down_times INTEGER,
+            industry TEXT,
+            PRIMARY KEY (date, symbol)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ld_date ON limit_down_pool(date)")
+
+    @datasource_retry
+    def _fetch_dt(date_compact):
+        return ak.stock_zt_pool_dtgc_em(date=date_compact)
+
+    df = _fetch_dt(date_str.replace('-', ''))
+    if df is None or df.empty:
+        logger.info(f"limit_down: {date_str} — empty pool (no trading day / no data)")
+        if close_conn:
+            conn.close()
+        return 0
+
+    col_map = {
+        '代码': 'symbol', '名称': 'name', '涨跌幅': 'change_pct',
+        '最新价': 'close', '成交额': 'amount', '流通市值': 'circ_mv',
+        '总市值': 'total_mv', '换手率': 'turnover_rate',
+        '封单资金': 'lock_capital', '最后封板时间': 'last_time',
+        '连续跌停': 'limit_down_times', '开板次数': 'open_times',
+        '所属行业': 'industry',
+    }
+    df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+    df['date'] = date_str
+    df['symbol'] = df['symbol'].astype(str).str.zfill(6)
+
+    n = 0
+    for _, row in df.iterrows():
+        conn.execute("""
+            INSERT OR REPLACE INTO limit_down_pool
+            (date, symbol, name, change_pct, close, amount, circ_mv, total_mv,
+             turnover_rate, lock_capital, last_time, open_times, limit_down_times,
+             industry)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (date_str, row.get('symbol'), row.get('name'),
+              row.get('change_pct'), row.get('close'), row.get('amount'),
+              row.get('circ_mv'), row.get('total_mv'), row.get('turnover_rate'),
+              row.get('lock_capital'), row.get('last_time'), row.get('open_times'),
+              row.get('limit_down_times'), row.get('industry')))
+        n += 1
+    conn.commit()
+    if close_conn:
+        conn.close()
+    logger.info(f"limit_down: {date_str} — {n} stocks")
+    return n
+
+
+def sync_down_range(start_date: str, end_date: str = None, conn=None) -> int:
+    """同步区间内每个交易日的跌停池。"""
+    if end_date is None:
+        end_date = datetime.today().strftime("%Y-%m-%d")
+
+    close_conn = False
+    if conn is None:
+        conn = sqlite3.connect(DB_PATH)
+        close_conn = True
+
+    dates = [r[0] for r in conn.execute(
+        "SELECT DISTINCT date FROM daily WHERE date >= ? AND date <= ? ORDER BY date",
+        (start_date, end_date)
+    ).fetchall()]
+
+    total = 0
+    for i, d in enumerate(dates):
+        n = sync_down_date(d, conn=conn)
+        total += n
+        if (i + 1) % 10 == 0:
+            logger.info(f"limit_down sync: {i+1}/{len(dates)} dates, {total} stocks")
+        time.sleep(_require_cfg("data.api_delay.limit_up"))
+
+    logger.info(f"limit_down sync done: {total} rows for {len(dates)} dates")
+
+    if close_conn:
+        conn.close()
+    return total
+
+
 if __name__ == "__main__":
     import sys
     s = sys.argv[1] if len(sys.argv) > 1 else "2026-01-01"

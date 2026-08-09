@@ -110,7 +110,9 @@ class TestChainConfig:
     def test_evening_chain_timeout_registered(self):
         """manifest.evening_chain 含超时 (僵尸检测需要, v428 替代 _TIMEOUTS)."""
         from quant.scheduler.manifest import spec
-        assert spec("evening_chain").timeout_s == 14400
+        # v430: 4h → 7.5h — 实测夜链最长 25862.7s, 原值每晚误标 aborted
+        assert spec("evening_chain").timeout_s == 27000
+        assert spec("evening_chain").grace_s == 27000
 
     def test_chain_order_is_data_then_cache_then_attribution(self):
         """依赖顺序守卫: attribution 必须在 factor_cache 之后 (防回归)."""

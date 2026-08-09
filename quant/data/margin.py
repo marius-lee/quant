@@ -94,15 +94,21 @@ def _sync_sse_raw(date_str: str, conn) -> int:
              short_sell_vol, short_balance, margin_total)
             VALUES (?, ?, 'SH', ?, ?, ?, ?, ?, ?)
         """, batch)
+        conn.commit()
         n = len(batch)
     return n
 
 
 
 def _get_synced_dates(conn):
-    """获取已同步的日期列表。"""
+    """获取已同步日期 — SH 与 SZ 双市场均已写入才算 synced。
+
+    v430: 原实现按整日粒度 — SZSE 发布延迟 (独立日期) 时该日被永久跳过,
+          sync_range 后续运行永不再补. 现按 market 存在性判定, 半同步日保留可补.
+    """
     rows = conn.execute(
-        "SELECT DISTINCT date FROM margin_detail ORDER BY date"
+        "SELECT date, COUNT(DISTINCT market) AS n FROM margin_detail"
+        " WHERE market IN ('SH','SZ') GROUP BY date HAVING n = 2"
     ).fetchall()
     return {r[0] for r in rows}
 
@@ -153,6 +159,7 @@ def _sync_szse_wrapper(date_str: str, conn) -> int:
              short_sell_vol, short_balance, margin_total)
             VALUES (?, ?, 'SZ', ?, ?, ?, ?, ?, ?)
         """, batch)
+        conn.commit()
         n = len(batch)
     return n
 

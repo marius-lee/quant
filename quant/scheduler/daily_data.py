@@ -51,7 +51,7 @@ def _run(today: str):
     # ── fund_flow ──
     try:
         from quant.data.fund_flow import sync_all as _ff_sync
-        n_ff = _ff_sync()
+        n_ff = _ff_sync(days=100)  # v430: 增量窗口, 覆盖 3m 因子; 全量回填走 backfill
         _log.info(f"[{today}] fund_flow sync: {n_ff} rows")
     except Exception:
         _log.warning(f"[{today}] fund_flow sync failed: {traceback.format_exc()}")
@@ -96,6 +96,16 @@ def _run(today: str):
     except Exception:
         _log.warning(f"[{today}] limit_up sync failed: {traceback.format_exc()}")
 
+    # ── limit_down_pool (跌停池) ──
+    # v430: 此前空表 — net_limit_ratio 读 df_down 恒空, 情绪因子失真.
+    # 同 akshare 东财源 (stock_zt_pool_dtgc_em), 失败不阻断 (fallback 由 retry 层)
+    try:
+        from quant.data.limit_up import sync_down_date as _ld_sync
+        _ld_n = _ld_sync(today)
+        _log.info(f"[{today}] limit_down sync: {_ld_n} rows")
+    except Exception:
+        _log.warning(f"[{today}] limit_down sync failed: {traceback.format_exc()}")
+
     # ── lhb_detail (龙虎榜) ──
     # test-v404: 此前未纳入晚间链, lhb_reversal_5d 因子因 post_5d 缺失而静默失败
     try:
@@ -104,6 +114,10 @@ def _run(today: str):
         _log.info(f"[{today}] lhb sync: {_lhb_n} rows")
     except Exception:
         _log.warning(f"[{today}] lhb sync failed: {traceback.format_exc()}")
+
+    # ── news_sentiment (个股新闻情绪) ──
+    # v430 判定: 不接入 — akshare stock_news_em 在本环境 (pyarrow 14) 必然崩溃
+    # (Invalid regular expression: \\u), 接入只会每晚打 warning; 待数据源修复再启
 
     status = "ok"
     summary = {"rows": n, "elapsed": round(elapsed, 1)}

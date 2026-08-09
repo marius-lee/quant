@@ -9,13 +9,14 @@ from quant.config.constants import _require_cfg
 
 from quant.utils.excepthook import setup; setup()
 from quant.config.paths import TRADE_DB, MARKET_DB, BACKTEST_DB  # crash → app.log
+from web.services import PositionService, BacktestService, StockService, SignalService  # P2-5
 from quant.config.loader import get as cfg, validate; validate()  # 启动时校验 config.yaml 类型
 from quant.data.store import market_conn  # P69: 统一连接层
 from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v430"
+VERSION = "test-v438"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 
@@ -97,37 +98,16 @@ from web.shared import get_state, update_state  # deprecated, kept for compat
 
 @app.route("/")
 def index():
-    """首页 — 传递 perf 数据供服务端渲染仪表盘."""
+    """首页 — 传递 perf 数据供服务端渲染仪表盘。"""
     try:
         from quant.data.repos import TradeRepo
         repo = TradeRepo()
-        base = repo.get_initial_capital("quant")
-        capital = repo.get_cash("quant") or base
-        position_cost = repo.get_open_position_cost("quant")  # (2026-07-21 audit M3)
-        # 优先用最新收盘价估值, 与绩效页面口径一致 (test-v201)
-        position_value = position_cost
-        try:
-            mc = sqlite3.connect(MARKET_DB)
-            _tr = sqlite3.connect(TRADE_DB)
-            pos_rows = _tr.execute(
-                "SELECT symbol, SUM(CASE WHEN side='buy' THEN shares ELSE -shares END) AS net_shares"
-                " FROM sim_trades WHERE strategy='quant' AND mode='live'"
-                " GROUP BY symbol HAVING SUM(CASE WHEN side='buy' THEN shares ELSE -shares END) > 0"
-            ).fetchall()
-            if pos_rows:
-                close_mv = 0.0
-                for sym, shares in pos_rows:
-                    cr = mc.execute(
-                        "SELECT close FROM daily WHERE symbol=? ORDER BY date DESC LIMIT 1", (sym,)
-                    ).fetchone()
-                    if cr and cr[0] and cr[0] > 0:
-                        close_mv += cr[0] * shares
-                if close_mv > 0:
-                    position_value = round(close_mv, 2)
-            mc.close()
-            _tr.close()
-        except Exception:
-            pass  # fall through to position_cost
+        _strategy = _require_cfg("strategy.name")
+        base = repo.get_initial_capital(_strategy)
+        capital = repo.get_cash(_strategy) or base
+        position_cost = repo.get_open_position_cost(_strategy)
+        # P2-5 fix: SQL 封装到 PositionService, 使用 config strategy.name 替代硬码 "quant"
+        position_value = PositionService.estimate_position_value(_strategy) or position_cost
         total_asset = round(capital + position_value, 2)
         total_pnl = round(total_asset - base, 2)
         perf = {"total_pnl": total_pnl, "total_asset": total_asset, "initial_capital": base}
@@ -261,17 +241,14 @@ def api_signals_quality():
         today_targets = sig_today.get("targets", []) if sig_today else []
         today_date = sig_today.get("date", "") if sig_today else ""
 
-        # Historical stats (last 20 signal days)
-        conn = repo._conn()
-        rows = conn.execute(
-            "SELECT date, signals_json FROM daily_signals ORDER BY date DESC LIMIT 20"
-        ).fetchall()
-        conn.close()
+        # P2-5 fix: SQL 封装到 SignalService
+        rows = SignalService.get_recent_signals(limit=20)
 
         import json
         hist_counts = []
         hist_scores = []
-        for d, js in rows:
+        for row in rows:
+            d, js = row["date"], row["signals"]
             try:
                 targets = json.loads(js) if isinstance(js, str) else js
                 hist_counts.append(len(targets))
@@ -310,29 +287,9 @@ def api_signals_quality():
 
 @app.route("/api/backtest/history")
 def api_backtest_history():
-    """回测历史记录 — backtest_runs 表最近 20 条。"""
+    """回测历史记录 — backtest_runs 表 (P2-5: SQL 封装到 BacktestService)."""
     try:
-        import sqlite3, json
-        db = BACKTEST_DB
-        conn = sqlite3.connect(db)
-        rows = conn.execute('''
-            SELECT strategy, start_date, end_date, initial_capital,
-                   sharpe, cagr_pct, max_dd_pct, sortino, calmar, win_rate,
-                   dsr, alpha, info_ratio, beta,
-                   final_equity, total_return_pct, n_days, errors, elapsed_sec, started_at
-            FROM backtest_runs ORDER BY id DESC LIMIT 20
-        ''').fetchall()
-        conn.close()
-        result = []
-        for r in rows:
-            result.append({
-                "strategy": r[0], "start": r[1], "end": r[2], "capital": r[3],
-                "sharpe": r[4], "cagr": r[5], "mdd": r[6],
-                "sortino": r[7], "calmar": r[8], "win_rate": r[9],
-                "dsr": r[10], "alpha": r[11], "ir": r[12], "beta": r[13],
-                "equity": r[14], "return_pct": r[15],
-                "days": r[16], "errors": r[17], "elapsed": r[18], "at": r[19],
-            })
+        result = BacktestService.get_history(limit=20)
         return _api_response(data=result)
     except Exception as e:
         logger.warning(f"backtest history failed: {e}")
@@ -419,20 +376,11 @@ def api_trades():
         else:
             raw_trades = repo.get_trades(None, limit=10000)  # 前端展示上限, 防止浏览器卡死, 非业务参数
             raw_positions = repo.get_positions(None)
-        # enrich with stock names from market.db
+        # enrich with stock names via StockService (P2-5: SQL 封装)
         _names = {}
         try:
-            import sqlite3, os
-            _mdb = MARKET_DB
-            _mc = sqlite3.connect(_mdb)
-            _mc.execute("PRAGMA busy_timeout=3000")
             _syms = list(set(t["symbol"] for t in (raw_trades or [])))
-            if _syms:
-                _ph = ",".join("?" * len(_syms))
-                _names = {r[0]: r[1] for r in _mc.execute(
-                    f"SELECT symbol, name FROM stocks WHERE symbol IN ({_ph})", _syms
-                ).fetchall()}
-            _mc.close()
+            _names = StockService.get_names(_syms)
         except Exception as _e:
             logger.warning(f"api_trades: stock name lookup failed (non-fatal): {_e}")
 

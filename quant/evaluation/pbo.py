@@ -12,6 +12,10 @@ High PBO -> overfitting.
 import numpy as np
 from scipy.special import logit as _logit
 from quant.utils.logger import get_logger
+from quant.config.constants import _require_cfg
+
+# P1-10 fix: 門檻値從 config.yaml 讀取 (pbo_max), 而非硬碼 0.3
+_PBO_MAX = _require_cfg("factor.evaluation.pbo_max")
 
 
 def compute_pbo(fold_results: list[dict], factor_names: list[str]) -> dict:
@@ -95,12 +99,15 @@ def compute_pbo(fold_results: list[dict], factor_names: list[str]) -> dict:
                           (oos_vals.std() / max(abs(oos_vals.mean()), 0.01)) < 2.0)
         }
 
+    # P1-10 fix: logit threshold from config (pbo_max) instead of hardcoded -0.847
+    _logit_thresh = float(np.log(_PBO_MAX / (1 - _PBO_MAX)))
+
     logger.info(f"PBO={pbo:.3f} (best_IS<median_OOS in {n_below_median}/{valid_folds} folds), "
-                f"logit={logit_pbo:+.3f}, IS-OOS corr={is_oos_corr:+.3f}, passed={logit_pbo < -0.847}")
+                f"logit={logit_pbo:+.3f}, IS-OOS corr={is_oos_corr:+.3f}, passed={logit_pbo < _logit_thresh}")
     return {
         "pbo": float(pbo),
         "logit_pbo": logit_pbo,
-        "passed": bool(logit_pbo < -0.847),  # PBO < 0.3
+        "passed": bool(logit_pbo < _logit_thresh),  # P1-10: config-driven threshold
         "is_oos_corr": is_oos_corr,
         "per_factor": per_factor,
     }

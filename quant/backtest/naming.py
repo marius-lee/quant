@@ -10,19 +10,22 @@ Queries strategy_config table to find the next available number.
 import os, sqlite3
 
 from quant.config.paths import TRADE_DB as _TRADES_DB
+from quant.config.paths import BACKTEST_DB as _BACKTEST_DB
 
 
-def next_name(prefix: str) -> str:
+def next_name(prefix: str, db_path: str = None) -> str:
     """Return the next available name for the given prefix.
 
     Queries strategy_config for names matching {prefix}_% and returns
     {prefix}_{max_N + 1}. Returns {prefix}_1 if no matches exist.
 
-    Example:
-        next_name("backtest")  → "backtest_3"  (if backtest_1, backtest_2 exist)
-        next_name("smoke")     → "smoke_1"     (if no smoke_* exists)
+    Args:
+        prefix: strategy name prefix (e.g. "backtest", "smoke")
+        db_path: database to query (TRADE_DB or BACKTEST_DB). Required.
     """
-    conn = sqlite3.connect(_TRADES_DB)
+    if db_path is None:
+        raise ValueError("db_path is required — use BACKTEST_DB for backtests, TRADE_DB for live")
+    conn = sqlite3.connect(db_path)
     try:
         rows = conn.execute(
             "SELECT strategy FROM strategy_config WHERE strategy LIKE ?",
@@ -41,10 +44,10 @@ def next_name(prefix: str) -> str:
 
 
 def next_backtest_name() -> str:
-    """Next backtest strategy name."""
-    return next_name("backtest")
+    """Next backtest strategy name. Queries BACKTEST_DB to avoid clobbering live strategy names."""
+    return next_name("backtest", _BACKTEST_DB)
 
 
 def next_smoke_name() -> str:
     """Next smoke test strategy name."""
-    return next_name("smoke")
+    return next_name("smoke", _BACKTEST_DB)

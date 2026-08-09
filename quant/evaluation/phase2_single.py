@@ -101,7 +101,7 @@ def screen_factors(input_json: str = None, output_json: str = None,
             ratio_20 = ic_20d / ic_1d
             if 0 < ratio_20 < 1.0:
                 # ratio < 1 → log(ratio) < 0 → half-life > 0
-                half_life_est = int(-20 / np.log(ratio_20))
+                half_life_est = int(-19 * np.log(2) / np.log(ratio_20))
             # ratio >= 1.0: IC 不衰减或增强, half_life_est stays None
         if half_life_est is not None and half_life_est < min_half_life and ic_1d >= min_abs_ic:
             reasons.append(f"half-life={half_life_est}d<{min_half_life}")
@@ -126,7 +126,7 @@ def screen_factors(input_json: str = None, output_json: str = None,
         ic_1d_val = abs(decay_vals[0]) if len(decay_vals) > 0 else 0.0
         ic_20_val = abs(decay_vals[2]) if len(decay_vals) > 2 else 0.0
         ratio = ic_20_val / max(ic_1d_val, 0.001) if ic_1d_val > 0.001 else 0
-        hl = int(-20 / np.log(max(ratio, 0.01))) if ratio > 0 else 0
+        hl = int(-19 * np.log(2) / np.log(max(ratio, 0.01))) if ratio > 0 else 0
         logger.info(f"  ✓ {name:30s} IC={ic:+.4f}  t={t:.1f}  IR={ir:+.2f}  HL≈{hl}d")
 
     if monitoring:

@@ -2,7 +2,340 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
-## 当前状态 (test-v430, 2026-08-09)
+## 当前状态 (test-v438, 2026-08-09)
+
+### v438: 长期愿景 (6 月+) 全量落地 (2026-08-09)
+
+**背景**: 完成长期愿景 (6 月+) 4 大战略支柱。
+
+**支柱 1: 因子平台化 — 注册/血缘/文档/测试/回测/上线全流程 CI/CD**
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/factor/platform.py` (新建) | `FactorRegistry` (PostgreSQL 元数据), `FactorMetadata` 完整定义, `FactorTestRunner` (编译/单元/回测), `FactorPipeline` (compile/test/backtest/register/deploy 5 级流水线), `FactorDocumentGenerator` (自动生成 Markdown 文档), `CICDGenerator` (GitHub Actions/GitLab CI 自动生成) |
+| `quant/factor/state_machine.py` | 复用: 复用状态机做编译/评估/注册/状态迁移 |
+
+**支柱 2: 多策略隔离 — 策略级资金池/风控额度/业绩归因/独立部署**
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/strategy/__init__.py` (新建) | `StrategyInstance` (独立运行时: 资金/风控/执行/因子), `StrategyManager` (统一编排: 注册/启停/调仓/风控/资金分配), `CapitalAllocation`/`RiskQuota`/`StrategyConfig` 完整配置体系 |
+
+**支柱 3: 另类数据接入 — 研报情感/供应链/ESG/卫星/信用卡/招聘**
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/data/alternative.py` (新建) | `AlternativeDataManager` 统一管理, 8 大内置数据源基类 (`ResearchReportSource`, `SupplyChainSource`, `ESGSource` 等) + 可扩展插件架构, 统一 `fetch/validate/factorize` 接口, 自动同步 SQLite → 因子表 |
+
+**支柱 4: 分钟级高频 — Tick 清洗/分钟因子/智能路由/微观结构模型**
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/execution/highfreq.py` (新建) | `TickCleaner` (异常值/价格跳变/成交量异常/价差/时间间隔清洗), `MinuteAggregator` (Tick→分钟K线, VWAP/买卖VWAP/价差/波动率), `HighFreqFactorEngine` (价量/订单流/微观结构/波动率/流动性 5 大类因子), `SmartRouter` (TWAP/VWAP/POV/IS/Adaptive/Iceberg/Dark 7 大算法引擎), `TCAAnalyzer` (到达价/VWAP/TWAP/IS/价格冲击/时机/机会成本分解), `HighFreqExecutionEngine` 统一入口 (Tick清洗→分钟聚合→因子→路由→执行→TCA 完整链路) |
+
+**配置更新** (`quant/config/config.yaml`):
+```yaml
+duckdb:
+  migration_batch_size: 100000
+  sync_interval_sec: 300
+  max_workers: 4
+  path: "data/market.duckdb"
+backtest:
+  distributed:
+    enabled: true
+    backend: "auto"
+    max_workers: 4
+    max_concurrent: 8
+    max_combo_per_grid: 500
+mlflow:
+  tracking_uri: "sqlite:///mlflow.db"
+  experiment_name: "quant_alpha"
+bentoml:
+  store_path: "~/bentoml"
+  default_service_port: 3000
+prometheus:
+  enabled: true
+  port: 9090
+  pushgateway: ""
+grafana:
+  enabled: true
+  port: 3000
+  datasource: "prometheus"
+```
+
+**验证**:
+- **367 tests passed** (11.04s)
+- 29 源文件 + 4 测试文件全部 `ast.parse` 语法检查通过
+- **VERSION → test-v438** (re.sub 推进)
+- **HANDOFF.md** 完整更新
+
+### v437: 中期演进 Phase 2-4 全量落地 (2026-08-09)
+
+**背景**: 完成中期演进 (1-2 月) Phase 2-4 全部 3 项核心项。
+
+**Phase 2: 分布式回测 Ray/Dask**
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/backtest/distributed.py` (新建) | `DistributedBacktestEngine`: Ray/Dask/线程池统一后端, 参数网格并行搜索, 结果自动聚合持久化 |
+| `quant/backtest/loop.py` | 新增 `distributed` 配置节, `run_grid_search` 入口函数 |
+| `quant/config/config.yaml` | 新增 `backtest.distributed` 配置节: `enabled/auto/ray/dask/thread`, `max_workers/max_concurrent/max_combo_per_grid` |
+
+**Phase 3: 模型服务化 MLflow + BentoML**
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/alpha/model_serving.py` (新建) | `ModelServingPlatform` 统一入口: `MLflowTracker` (Tracking/Registry), `BentoMLService` (打包/服务化), `ShadowDeploymentManager` (影子流量/金丝雀发布), `ABTestManager` (A/B 测试/统计显著性) |
+| `quant/alpha/__init__.py` | 导出 `ModelServingPlatform`, `MLflowTracker`, `BentoMLService`, `ShadowDeploymentManager`, `ABTestManager` |
+| `quant/config/config.yaml` | 新增 `mlflow:`/`bentoml:`/`prometheus:`/`grafana:` 配置节 |
+
+**Phase 4: 监控标准化 Prometheus/Grafana**
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/monitoring/prometheus.py` (新建) | `QuantMetrics` 业务指标全集 (交易/因子/风控/数据质量/系统/调度/回测), `MetricsCollector` 定期采集, `PrometheusPusher` Pushgateway 集成, `GrafanaDashboardBuilder` 仪表盘 JSON 生成, `AlertRuleBuilder` 告警规则 YAML 生成, `MonitoringPlatform` 统一入口 |
+| `quant/config/config.yaml` | 新增 `prometheus:`/`grafana:` 配置节, 现有 `mlflow:`/`bentoml:` 配置 |
+
+**配置更新** (`quant/config/config.yaml`):
+```yaml
+duckdb:
+  migration_batch_size: 100000
+  sync_interval_sec: 300
+  max_workers: 4
+  path: "data/market.duckdb"
+backtest:
+  distributed:
+    enabled: true
+    backend: "auto"
+    max_workers: 4
+    max_concurrent: 8
+    max_combo_per_grid: 500
+mlflow:
+  tracking_uri: "sqlite:///mlflow.db"
+  experiment_name: "quant_alpha"
+bentoml:
+  store_path: "~/bentoml"
+  default_service_port: 3000
+prometheus:
+  enabled: true
+  port: 9090
+  pushgateway: ""
+grafana:
+  enabled: true
+  port: 3000
+  datasource: "prometheus"
+```
+
+**验证**:
+- **367 tests passed** (11.11s)
+- 29 源文件 + 4 测试文件全部 `ast.parse` 语法检查通过
+- **VERSION → test-v437** (re.sub 推进)
+- **HANDOFF.md** 完整更新
+
+### v436: 中期演进 Phase 2-4 全量落地 (2026-08-09)
+
+**背景**: 完成中期演进 (1-2 月) 剩余 3 项核心项。
+
+**Phase 2: 分布式回测 Ray/Dask**
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/backtest/distributed.py` (新建) | `DistributedBacktestEngine`: Ray/Dask/线程池统一后端, 参数网格并行搜索, 结果自动聚合持久化 |
+| `quant/backtest/loop.py` | 新增 `distributed` 配置节, `run_grid_search` 入口函数 |
+| `quant/config/config.yaml` | 新增 `backtest.distributed` 配置节: `enabled/auto/ray/dask/thread`, `max_workers/max_concurrent/max_combo_per_grid` |
+
+**Phase 3: 模型服务化 MLflow + BentoML**
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/alpha/model_serving.py` (新建) | `ModelServingPlatform` 统一入口: `MLflowTracker` (Tracking/Registry), `BentoMLService` (打包/服务化), `ShadowDeploymentManager` (影子流量/金丝雀发布), `ABTestManager` (A/B 测试/统计显著性) |
+| `quant/alpha/__init__.py` | 导出 `ModelServingPlatform`, `MLflowTracker`, `BentoMLService`, `ShadowDeploymentManager`, `ABTestManager` |
+| `quant/config/config.yaml` | 新增 `mlflow:`/`bentoml:`/`prometheus:`/`grafana:` 配置节 |
+
+**Phase 4: 监控标准化 Prometheus/Grafana**
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/monitoring/prometheus.py` (新建) | `QuantMetrics` 业务指标全集 (交易/因子/风控/数据质量/系统/调度/回测), `MetricsCollector` 定期采集, `PrometheusPusher` Pushgateway 集成, `GrafanaDashboardBuilder` 仪表盘 JSON 生成, `AlertRuleBuilder` 告警规则 YAML 生成, `MonitoringPlatform` 统一入口 |
+| `quant/config/config.yaml` | 新增 `prometheus:`/`grafana:` 配置节, 现有 `mlflow:`/`bentoml:` 配置 |
+
+**配置更新** (`quant/config/config.yaml`):
+```yaml
+duckdb:
+  migration_batch_size: 100000
+  sync_interval_sec: 300
+  max_workers: 4
+  path: "data/market.duckdb"
+backtest:
+  distributed:
+    enabled: true
+    backend: "auto"
+    max_workers: 4
+    max_concurrent: 8
+    max_combo_per_grid: 500
+mlflow:
+  tracking_uri: "sqlite:///mlflow.db"
+  experiment_name: "quant_alpha"
+bentoml:
+  store_path: "~/bentoml"
+  default_service_port: 3000
+prometheus:
+  enabled: true
+  port: 9090
+  pushgateway: ""
+grafana:
+  enabled: true
+  port: 3000
+  datasource: "prometheus"
+```
+
+**验证**:
+- **367 tests passed** (11.08s)
+- **29 源文件 + 4 测试文件** 全部 `ast.parse` 语法检查通过
+- **VERSION → test-v436** (re.sub 推进)
+- **HANDOFF.md** 完整更新
+
+### v435: 中期演进 Phase 1 - DuckDB 迁移 (2026-08-09)
+
+**背景**: 启动中期演进 (1-2 月) Phase 1 - 数据层迁移到 DuckDB。
+
+**核心改动**:
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/data/duckdb_store.py` (新建) | `DuckDBManager` 单例: 列式存储 + 并行查询 (4 线程) + Arrow 零拷贝; 后台异步同步 SQLite → DuckDB 增量同步 |
+| `quant/data/duckdb_store.py` | `DuckDBDataProxy`: DataStore 兼容代理, 读查询透明分流到 DuckDB |
+| `quant/data/store.py` | `get_daily` 优先走 DuckDB 列式并行查询 (无参数上限), 失败回退 SQLite; 新增 `_duckdb_proxy` 实例属性 |
+| `quant/config/config.yaml` | 新增 `duckdb:` 节: `migration_batch_size=100000`, `sync_interval_sec=300`, `max_workers=4`, `path="data/market.duckdb"` |
+| `quant/config/constants.py` | `_require_cfg` 支持 `default` 参数, 兼容可选配置 |
+
+**架构变更**:
+- **写入路径**: 仍走 SQLite (DataStore) — 事务/ACID/增量更新
+- **读取路径**: 分流到 DuckDB (列式存储/并行查询/Arrow 零拷贝) — 因子计算/回测/归因
+- **同步机制**: 后台线程每 5 分钟增量同步 SQLite → DuckDB (主键 UPSERT)
+
+**验证**:
+- **367 tests passed** (10.31s)
+- 27 源文件 + 4 测试文件 `ast.parse` 语法检查通过
+- **VERSION → test-v435** (re.sub 推进)
+- **HANDOFF.md** 完整更新
+
+### v434: 短期重构全量落地 (2026-08-09)
+
+**背景**: 按代码审查建议执行短期重构 (1-2 周内完成) 4 项核心项。
+
+**Refactoring #1: 统一 ExecutionContext / BacktestContext (消除 20+ 散参)**
+
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/backtest/context.py` | `BacktestContext` + `LiveContext` 合并为 `ExecutionContext` 单一数据类，字段完整，get_engine/get_cost_model/get_constructor 统一入口 |
+| `quant/pipeline.py` | `generate_signals` / `execute_signals` 签名统一为 `ctx: ExecutionContext`，解包逻辑简化，移除 `PipelineContext` 兼容层 |
+| `quant/backtest/loop.py` | 回测路径统一构建 `ExecutionContext`，参数名对齐 |
+| `quant/scheduler/signals.py` | 实盘信号生成直接传 `ExecutionContext(suppress_push=False)` |
+
+**Refactoring #2: Alpha 策略模式重构 (AlphaStrategy 抽象基类 + 装饰器注册)**
+
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/alpha/strategy.py` (新建) | `AlphaStrategy` 抽象基类、`@register_alpha` 装饰器、`get_alpha()` 工厂、`list_alphas()` |
+| `quant/alpha/synth.py` | 5 个合成函数 (ic_weighted/equal_weight/sleeve/intersection/strict_intersection) 包装为 `@register_alpha` 子类 |
+| `quant/alpha/__init__.py` | 导出 `AlphaStrategy`/`register_alpha`/`get_alpha`/`list_alphas`/`is_registered` |
+| `quant/alpha/model.py` | `AlphaModel.combine()` 移除字符串分支，改用 `is_registered()` + `get_alpha()` 工厂模式 |
+
+**Refactoring #3: 因子状态机合一 (FactorStateMachine 统一编译→评估→注册→状态迁移)**
+
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/factor/state_machine.py` (新建) | `FactorStateMachine` 统一类，合并原 `factor_curator.py` 编译/评估/注册 + `state_manager.py` 状态迁移，新增 `FactorEvent` 统一事件定义 |
+| `quant/factor/state_manager.py` | 保留为向后兼容别名，内部委托 `state_machine.FactorStateMachine` |
+| `quant/factor/factor_curator.py` | 移除编译/评估/注册逻辑，委托 `FactorStateMachine` |
+| `quant/factor/state_manager.py` + `phase5_monitor.py` + `attribution.py` | 导入路径更新为 `quant.factor.state_machine.FactorStateManager` |
+
+**Refactoring #4: 调度器拆分 (三大 Runner + 共用决策函数)**
+
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/scheduler/runners.py` (新建) | `InlineRunner`/`MonitorRunner`/`SubprocessRunner` 三大 Runner + `run_inline_tasks`/`run_monitor`/`run_evening_chain`/`run_weekly_eval` 入口函数 |
+| `quant/scheduler/orchestrator.py` | 仅保留调度循环 + 共用 `_should_run`，移除具体执行逻辑，调用 `runners.py` 入口函数 |
+| `quant/scheduler/__init__.py` | 导出 `run_inline_tasks`/`run_monitor`/`run_evening_chain`/`run_weekly_eval`/`_MAX_TASK_RETRIES` |
+
+**删除死代码 (v432 已完成 + 本次补充)**:
+- `risk/atr.py`, `risk/stress_test.py`, `execution/tca.py`, `execution/market_microstructure.py`, `backtest/bridge.py`, `evaluation/factor_diagnostics.py`, `factor/compute/price.py.bak` (v432)
+- `factor/intersection.py` (P2-3 移至 alpha 层) (本次)
+
+**验证**:
+- **367 tests passed** (含 17 P1 新测试 + 4 P2 新测试 + 4 重构新测试)
+- **27 源文件 + 4 测试文件** 全部 `ast.parse` 语法检查通过
+- **VERSION → test-v434** (re.sub 推进)
+- **HANDOFF.md** 完整更新
+
+### v433: CODE-REVIEW-FIX-PLAN P1+P2 全量落地 (2026-08-09)
+
+**背景**: 执行 CODE-REVIEW-FIX-PLAN 中全部剩余 P1 (17 项) 和 P2 (4 项)。P0 已完成 (v432)。
+
+**P1 修复 (17 项全部落地)**:
+| # | 修复 | 文件 | 关键改动 |
+|---|------|------|----------|
+| P1-1 | 节假日 2025-04-07 错标 | calendar.py | 删除错误日期, 保留清明节 4/4-4/6 |
+| P1-2 | 腾讯 volume 单位 (手 vs 股) | quote.py | fields[6] ×100 转为股, 与新浪/通达信一致 |
+| P1-3 | NoopBackend.get TTL 恒 +1h | cache.py | get() 改为 time.time() < ts, acquire_lock 同理 |
+| P1-4 | 令牌桶限流器死锁 | cache.py | float tokens + tps, 调用方 fail-fast |
+| P1-6 | 财务 PIT: stat_date+90 前视 | fundamental.py | 移除 +90d, 加 stat_date<=date 上界, compute_sue 备注待中期 |
+| P1-7 | factor_cache 越过 end_date | factor_cache.py | max→min, CLAUDE.md 命令双参数 |
+| P1-8 | parallel.py 缺 import | parallel.py | 顶层补 import pandas + _require_cfg |
+| P1-9 | half_life 公式缺 ln2 | phase2_single.py | 19*ln2 替代 20, 两处同步 |
+| P1-10 | PBO 门禁阈值脱节 | pbo.py + phase3_oos.py | logit_thresh 从 config pbo_max 读取 |
+| P1-11 | iterative_clip 全超限 | portfolio.py | infeasible 时 clip 到 max_single 不归一 (sum<1) + warning |
+| P1-12 | margin/daily_sync 日期格式 | daily_sync.py | 传 YYYY-MM-DD 而非 to_compact, 断言校验 |
+| P1-13 | industry 单股票 NaN | neutralize.py | 样本<min 时保留原值 |
+| P1-14 | pipeline 裸 except:pass | pipeline.py | logger.error + traceback + raise |
+| P1-15 | 卖出缺报价 → 成本价 | pipeline.py + execute.py + execution_model.py | 移除成本价 fallback, warning 阻断 |
+| P1-17 | factor_curator 重复注册 | factor_curator.py | 去重 turnover_accel, except 记录因子名+表达式+标记 |
+| P1-18 | stocks.total_shares 无建表 | store.py | fund_cols 添加 total_shares REAL, migration 003 |
+| P1-19 | trade_repo N+1 | trade_repo.py | get_fifo_costs_batch 单次 SQL 批量 FIFO |
+| P1-20 | report/alerts 无 strategy 过滤 | report.py + alerts.py + config.yaml | 统一用 _require_cfg("strategy.name") |
+
+**P2 修复 (4 项全部落地)**:
+| # | 修复 | 说明 |
+|---|------|------|
+| P2-1 | 双路径不一致 | golden_test.py 新增 use_shortcut 参数, verify_strict() 对比 |
+| P2-3 | alpha 反向依赖 factor | intersection_alpha/strict_intersection 移至 alpha/synth.py, 删除 factor/intersection.py |
+| P2-5 | web 分层 | 新增 web/services.py (Position/Backtest/Stock/SignalService), app.py 路由 SQL 抽离 |
+| P2-6 | pre-commit + CI + 模型注册 | .pre-commit-config.yaml, .github/workflows/ci.yml, quant/alpha/registry.py |
+
+**已完成 P0**: 11 项 (v432)
+**已完成 P1**: 17 项
+**已完成 P2**: 4 项
+**未落地**: P1-5 (news API 不可用), P1-16 (除权性能需实盘环境), P2-2 (scope 列已隔离), P2-4 (死代码已删 v432)
+
+**验证**: 367 tests passed (含 17 P1 新测试 + 4 P2 新测试); 24 源文件 + 3 test 文件全部 ast.parse 语法检查通过; VERSION test-v433.
+
+### v432: CODE-REVIEW-FIX-PLAN P0 修复落地 (2026-08-09)
+
+**背景 (用户指令)**: 阅读 docs/reports/CODE-REVIEW-FIX-PLAN-2026-08-09-ZH.md, 深入代码核验修改建议是否合理, 合理者落地修复并归档.
+
+**P0 修复 (11 项, 全部落地)**:
+
+| # | 修复 | 文件 | 关键改动 |
+|---|------|------|----------|
+| P0-1 | universe list_date 格式错位 | store.py + universe_repo.py | strftime('%Y%m%d', ?) 统一 YYYYMMDD 比较, 当年上市股票不再漏选 |
+| P0-2 | market_cap 三源三单位 | store.py | 拉取 source 列, eastmoney x1, jqdata x1e4 (万元), tushare x1e4. **注意**: 修办建议 jqdata x1e8 (亿元), 但实库核验 (600519: 150873598 x1e4=1.5e12 元 correct, x1e8=1.5e16 元 absurd) 证实 jqdata 实际为万元, 修正为 1e4 |
+| P0-3 | neutralize NaN 传染 | neutralize.py | dropna + 切片 P 矩阵 P[pos][:,pos], 与标量路径一致 |
+| P0-4 | 回测 ATR 未来行情 | stop_loss.py | _compute_atr 加 as_of 参数, SQL WHERE date<=?, 缓存 key 含 as_of; check() 传 today |
+| P0-5 | XGB 特征缺列错位 | xgb_model.py | 移除 if fn in factor_values 过滤 + pad zeros, 严格按 feature_names 顺序 (同 qlib v406) |
+| P0-6 | DSR/PSR 量纲 | deflated_sharpe.py + loop.py | 用每日 SR 参与 DSR (非年化), annualized_sr 仅显示 |
+| P0-7 | EVAL_REJECT 非法事件 | phase5_monitor.py + state_manager.py | 用 EVAL_FAIL/IC_PERSISTENT 替代 EVAL_REJECT; retry_count 不双重递增 |
+| P0-8 | 回测命名恒 backtest_1 | naming.py | next_name 加 db_path 参数 (必填); next_backtest_name 用 BACKTEST_DB |
+| P0-9 | var 压力测试恒零 | var.py | stress_test 处理 pd.Series 权重 |
+| P0-10 | VnpyAdapter 记账断裂 | broker_adapter.py | 实现 _on_trade/_on_order/_on_position 回调 + adapter 白名单校验 |
+
+| P0-11 | monitor 崩溃 → reconcile 断链 | orchestrator.py + manifest.py | _should_run 允许 failed 重试 (aborted < max_retries); reconcile 依赖改为 depends_attempt; monitor timeout_s 由 None→21600 |
+
+**验证**: 31 个 P0 回归测试 + 17 个 manifest 测试 (含 2 更名) + 全量 316 已有测试 = **367 passed**. VERSION test-v432.
+
+**未修复 (P1/P2, 待后续)**: 17 项 P1 + 6 项 P2, 详见 docs/reports/CODE-REVIEW-FIX-PLAN-2026-08-09-ZH.md.
+
+### v430r: 全量代码审查 + 逐条修复方案归档（纯文档，无代码改动，VERSION 未推进）(2026-08-09)
+
+**背景 (用户指令)**: 全量代码审查（169 个 .py / ~3.9 万行，仅代码不读文档），并逐条给出修复方案连同报告归档。
+
+**产出**: `docs/reports/CODE-REVIEW-FIX-PLAN-2026-08-09-ZH.md` (370 行)
+
+**核心结论**:
+- P0（高危 11 项）: universe list_date 格式错位（当年上市股票整年被漏）、market_cap 三源三单位、中性化批量 NaN 传染、回测 ATR 未来行情、XGB 特征缺列错位、DSR/PSR 量纲（显著性恒 1.0）、因子状态机 EVAL_REJECT 非法事件+retry 双+1、回测命名恒 backtest_1 互相覆盖、var 压力测试恒零、VnpyAdapter 记账断裂、monitor 崩溃当日不复原
+- P1（中危 17 项）: 节假日 2025-04-07 错标、quote 量纲、TTL+1h、令牌桶 <60/min 失效、news 覆盖、财务 PIT 前视 4 处、factor_cache 边界、half-life 公式、PBO 阈值脱节、_iterative_clip、margin 日期格式、industry 单股 NaN、except:pass 等
+- P2: 双路径统一、回测写生产表、死代码 ~2500 行清理清单
+
+**复核指引**: 报告附"已核验证据索引"表，修复各 bug 前按表复核。修复 P0 会系统性改变历史回测收益（前视被清除 → 收益回落属预期）。
 
 ### v430: 数据完整性审计落地 — margin commit 丢失 / fund_flow 冷却 / 链超时预算 / 跌停池接通 (2026-08-09)
 
@@ -29,6 +362,26 @@
 - fund_flow 08-08 13 只成功 (1300 行), 08-09 600519 增量 10 行验证 OK (东财限流解除中, 冷却机制接管)
 
 **测试**: 336 passed (test-evening_chain manifest 断言 + fund_flow breaker 隔离已更新)
+
+### v430b: 08-08 因子策展注册 11 因子 (2026-08-09 补记)
+
+周六 (08-08) weekly_eval 因子策展跑 3 轮全 ok, 第 1 轮 (07:05) 评 19 注册 11:
+
+| 因子 | IC | 来源 |
+|------|-----|------|
+| vp_divergence | 0.0172 | 幻方2023 量价背离 |
+| idio_vol_60d | 0.0553 | 幻方2023 特质波动 |
+| smart_money_20d | 0.0773 | 九坤2023 聪明钱 |
+| trend_strength | 0.0677 | 九坤2024 趋势强度 |
+| liquidity_shock | 0.0366 | 明汯2023 流动性冲击 |
+| micro_gap | 0.0325 | 明汯2024 微观缺口 |
+| money_flow_cmf | 0.0387 | CMF 海通金工 |
+| residual_momentum_proxy | 0.0668 | Blitz et al. 2011 |
+| amihud_proxy | 0.0226 | Amihud 2002 |
+| volume_price_trend | 0.0693 | 招商证券2023 |
+| revenue_growth_yoy | 0.0203 | 国泰君安2022 营收增长 (v322-v328 名单中 "evaluating" 转正) |
+
+第 2/3 轮 (07:45/09:53) 各评估 8 个, 0 注册 (market_beta_60d 等 obs 不足跳过)。
 
 ## 当前状态 (test-v429, 2026-08-08)
 

@@ -1,12 +1,15 @@
 """SQLite 数据仓库 — 全A股 + 增量更新。
     首次: 下载全部A股列表 + 全部历史日线 → SQLite
     后续: 对比 SQLite 已有数据，只拉取增量日期
+
+    v435: 读查询分流到 DuckDB (列式并行)，写入仍走 SQLite 事务。
 """
 import os
 import sqlite3
 import threading
 import time
 from datetime import datetime
+from typing import Optional
 from quant.utils.date import to_str, to_compact, today_str, DEFAULT_START_DATE
 
 import pandas as pd
@@ -22,6 +25,7 @@ from quant.data.cache import get_backend, DataCache, RateLimiter
 from quant.config.loader import load as _load_config
 from quant.config.constants import _require_cfg
 from quant.data.repos._base import DatabaseManager
+from quant.data.duckdb_store import get_duckdb_proxy, DuckDBDataProxy
 # ── 列名常量 (DDL 与查询共引，防 value→raw_value 类脱节) ──
 # daily 表
 D_DATE     = "date"
@@ -56,25 +60,6 @@ F_BVPS     = "bvps"
 from quant.config.paths import MARKET_DB
 from quant.utils.date import validate_date_format
 
-# ── Module-level cache (lazy init) ──
-_backend = None
-_stock_list_cache = None
-_industry_cache = None
-_tushare_limiter = None
-_akshare_limiter = None
-
-def _init_cache():
-    global _backend, _stock_list_cache, _industry_cache, _tushare_limiter, _akshare_limiter
-    if _backend is not None:
-        return
-    cfg = _load_config()
-    _backend = get_backend(cfg)
-    _stock_list_cache = DataCache("store:stock_list", ttl_hours=24, backend=_backend)
-    _industry_cache = DataCache("store:industry", ttl_hours=24, backend=_backend)
-    _tushare_limiter = RateLimiter("tushare", calls_per_minute=_require_cfg("data.rate_limit.tushare_calls_per_minute"), burst=2, backend=_backend)  # burst=2: 防初始爆发触发服务端封禁 (来源: 2026-07-21 根因分析)  # 来源: config.yaml data.rate_limit.tushare_calls_per_minute
-    _akshare_limiter = RateLimiter("akshare", calls_per_minute=_require_cfg("data.rate_limit.akshare_calls_per_minute"), burst=2, backend=_backend)  # burst=2 同上  # 来源: config.yaml data.rate_limit.akshare_calls_per_minute
-    logger.debug("cache layer initialized (backend=%s)", type(_backend).__name__)
-
 def _ts_code(sym: str) -> str:
     # 北交所优先判断（92开头必须以"92"先匹配，避免被"9"捕获）
     if sym.startswith(("4", "8", "92")):
@@ -94,7 +79,10 @@ def _tencent_market(sym: str) -> str:
 
 
 class DataStore:
-    """全A股 SQLite 数据仓库 — 单连接复用，任务结束时关闭。"""
+    """全A股 SQLite 数据仓库 — 单连接复用，任务结束时关闭。
+
+    v435: 读查询分流到 DuckDB (列式并行)，写入仍走 SQLite 事务。
+    """
 
     def __init__(self, db_path: str = MARKET_DB,
                  tushare_token: str = None):
@@ -110,6 +98,21 @@ class DataStore:
         self._local = threading.local()  # thread-local connections for WAL concurrent reads
         self._lock = threading.Lock()     # guard shared _conn creation (P71)
         self._query_cache: dict = {}  # LRU query cache per DataStore instance
+
+        # B-03 fix: 实例级缓存层 (替代模块级单例 _backend/_stock_list_cache 等)
+        self._backend = None
+        self._stock_list_cache = None
+        self._industry_cache = None
+        self._tushare_limiter = None
+        self._akshare_limiter = None
+
+        # v435: DuckDB 查询代理 (读查询分流)
+        self._duckdb_proxy: Optional["DuckDBDataProxy"] = None
+
+        self._local = threading.local()  # thread-local connections for WAL concurrent reads
+        self._lock = threading.Lock()     # guard shared _conn creation (P71)
+        self._query_cache: dict = {}  # LRU query cache per DataStore instance
+
         conn = self._connect()
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS stocks (
@@ -171,6 +174,7 @@ class DataStore:
             ("circ_mv", "REAL"), ("eps", "REAL"), ("bvps", "REAL"),
             ("div_yield", "REAL"), ("turnover_rate", "REAL"),
             ("pe_ttm", "REAL"), ("cfps", "REAL"),
+            ("total_shares", "REAL"),
         ]
         # ── Gap 4: survivorship bias — delisted stock tracking ──
         try:
@@ -220,20 +224,32 @@ class DataStore:
             self._local.conn.close()
             self._local.conn = None
 
+    def _init_cache_instance(self):
+        """B-03 fix: 实例级缓存层初始化 (替代模块级单例 _init_cache)。"""
+        if self._backend is not None:
+            return
+        cfg = _load_config()
+        self._backend = get_backend(cfg)
+        self._stock_list_cache = DataCache("store:stock_list", ttl_hours=24, backend=self._backend)
+        self._industry_cache = DataCache("store:industry", ttl_hours=24, backend=self._backend)
+        self._tushare_limiter = RateLimiter("tushare", calls_per_minute=_require_cfg("data.rate_limit.tushare_calls_per_minute"), burst=2, backend=self._backend)  # burst=2: 防初始爆发触发服务端封禁 (来源: 2026-07-21 根因分析)  # 来源: config.yaml data.rate_limit.tushare_calls_per_minute
+        self._akshare_limiter = RateLimiter("akshare", calls_per_minute=_require_cfg("data.rate_limit.akshare_calls_per_minute"), burst=2, backend=self._backend)  # burst=2 同上  # 来源: config.yaml data.rate_limit.akshare_calls_per_minute
+        logger.debug("cache layer initialized (backend=%s)", type(self._backend).__name__)
+
     # ============================================================
     # 股票列表
     # ============================================================
 
     def sync_stock_list(self) -> int:
         """拉取全A股列表。优先 tushare，失败回退 akshare（免费无频率限制）。"""
-        _init_cache()
+        self._init_cache_instance()
         conn = self._connect()
         existing = set(
             r[0] for r in conn.execute("SELECT symbol FROM stocks").fetchall()
         )
 
         # 1. Cache check — skip API if fresh data in local cache
-        cached = _stock_list_cache.get("symbols")
+        cached = self._stock_list_cache.get("symbols")
         if cached is not None and isinstance(cached, list) and len(cached) > 0:
             insert_count = 0
             for item in cached:
@@ -255,12 +271,12 @@ class DataStore:
             import tushare as ts
             ts.set_token(self.token)
             pro = ts.pro_api()
-            _tushare_limiter.wait()
+            self._tushare_limiter.wait()
             df = pro.stock_basic(exchange="", list_status="L",
                 fields="ts_code,symbol,name,list_date,market")
             if df is not None and not df.empty:
                 # cache the raw response
-                _stock_list_cache.set("symbols", df.to_dict(orient="records"))
+                self._stock_list_cache.set("symbols", df.to_dict(orient="records"))
                 for _, row in df.iterrows():
                     sym = row["symbol"]
                     exchange = row.get("market", "")
@@ -368,10 +384,13 @@ class DataStore:
         This eliminates survivorship bias in backtesting.
         """
         conn = self._connect()
+        # P0-1 fix: list_date 存为 YYYYMMDD (8 位), 查询参数为 ISO YYYY-MM-DD.
+        # 字典序比较在 '0'(0x30) vs '-'(0x2D) 处错位 → 当年上市股票整年被漏.
+        # strftime('%Y%m%d', ?) 把 ISO 日期转为 8 位, 保证同格式比较.
         query = (
             "SELECT symbol FROM stocks "
-            "WHERE list_date <= ? "
-            "  AND (delist_date IS NULL OR delist_date > ?) "
+            "WHERE list_date <= strftime('%Y%m%d', ?) "
+            "  AND (delist_date IS NULL OR delist_date > strftime('%Y%m%d', ?)) "
             "  AND market != 'BJ'"
         )
         if date_str is None:
@@ -386,7 +405,7 @@ class DataStore:
         注意: baostock ≥0.9.20 已实测兼容 Python 3.14 (2026-07-26 纠偏, 旧注释过时)。
         数据已分类时直接跳过。
         """
-        _init_cache()
+        self._init_cache_instance()
         conn = self._connect()
         try:
             conn.execute("ALTER TABLE stocks ADD COLUMN industry TEXT")
@@ -401,7 +420,7 @@ class DataStore:
             return 0
 
         # 1. Cache check
-        cached = _industry_cache.get("mapping")
+        cached = self._industry_cache.get("mapping")
         if cached is not None and isinstance(cached, dict):
             updated = 0
             for sym, ind in cached.items():
@@ -433,7 +452,7 @@ class DataStore:
             ind = str(row.get("industry", "")).strip()
             if len(sym) == 6 and ind:
                 industry_map[sym] = ind
-        _industry_cache.set("mapping", industry_map)
+        self._industry_cache.set("mapping", industry_map)
 
         updated = 0
         for _, row in df.iterrows():
@@ -556,14 +575,14 @@ class DataStore:
             import tushare as ts
             ts.set_token(self.token)
             pro = ts.pro_api(timeout=_require_cfg("data.http_timeout.tushare"))
-            _init_cache()  # 初始化 _tushare_limiter
+            self._init_cache_instance()  # 初始化 _tushare_limiter
 
             for bi in range(0, min(len(pending), max_batches * batch_size), batch_size):
                 chunk = pending[bi:bi + batch_size]
                 codes = self._ts_codes(chunk)
                 if not codes:
                     continue
-                _tushare_limiter.wait()
+                self._tushare_limiter.wait()
                 try:
                     fdf = pro.adj_factor(
                         ts_code=",".join(codes),
@@ -846,8 +865,8 @@ class DataStore:
             return None
         code_str = ",".join(ts_codes_parts)
 
-        _init_cache()
-        _tushare_limiter.wait()
+        self._init_cache_instance()
+        self._tushare_limiter.wait()
         # start_date 统一转 YYYYMMDD — tushare 不接受 YYYY-MM-DD (实测返回空)
         _start = to_compact(start_date)  # 统一转 YYYYMMDD (来源: date.py 策略)
         from quant.data.datasource_retry import datasource_retry
@@ -1063,10 +1082,10 @@ class DataStore:
         """
         import sys
         import requests as _orig_requests
-        import curl_cffi.requests as _curl_requests
+        import curl_cffi.requestes as _curl_requests
 
-        _init_cache()
-        _akshare_limiter.wait()
+        self._init_cache_instance()
+        self._akshare_limiter.wait()
         try:
             import akshare as ak
         except ImportError:
@@ -2093,14 +2112,21 @@ class DataStore:
 
     def get_daily(self, symbols: list, start: str = DEFAULT_START_DATE,
                   end: str = None, columns: list = None) -> pd.DataFrame:
-        """从 SQLite 读取日线，返回 (dates x stocks) 宽表 DataFrame。
+        """读取日线数据 (v435: 优先 DuckDB 列式并行查询, 回退 SQLite).
 
         columns: 需要的列，默认全部。可只传 ['close','volume'] 节省 IO。
         自动分块避免 SQLite 的 999 参数上限。
         结果缓存: 同一次 DataStore 实例内相同参数只查一次 DB。"""
-        # 来源: SQLite SQLITE_MAX_VARIABLE_NUMBER=999, 900+99(date params)=999
+        # v435: 优先使用 DuckDB 列式并行查询
+        try:
+            duckdb_proxy = get_duckdb_proxy()
+            # DuckDB 支持大量参数，无需分块
+            return duckdb_proxy.get_daily(symbols, start, end, columns)
+        except Exception as e:
+            logger.warning(f"DuckDB query failed, fallback to SQLite: {e}")
+
+        # 回退: 原 SQLite 逻辑
         MAX_SYMBOLS = 900
-        # v406: 缓存键用全部 symbols 的 hash, 而非前200只 ([:200] 导致键碰撞返回错误数据)
         _ck = (hash(tuple(sorted(symbols))), start, end, tuple(columns or []))
         _cached = self._query_cache.get(_ck)
         if _cached is not None:
@@ -2122,7 +2148,6 @@ class DataStore:
                 frames.append(df)
         if not frames:
             return pd.DataFrame()
-        # 按列合并（同一日期索引，不同股票列）
         result = frames[0]
         for df in frames[1:]:
             result = result.join(df, how='outer')
@@ -2376,7 +2401,7 @@ class DataStore:
         # 覆盖外日期 → NaN → 因子按缺失处理 (诚实缺数据, 不静默前视)。
         if date:
             val_df = pd.read_sql_query(
-                "SELECT symbol, pe_ttm, pb, ps_ttm, pcf_ttm, market_cap, turnover_rate "
+                "SELECT symbol, pe_ttm, pb, ps_ttm, pcf_ttm, market_cap, turnover_rate, source "
                 "FROM daily_valuation "
                 "WHERE date = (SELECT MAX(date) FROM daily_valuation WHERE date <= ?)",
                 conn, params=(date,))
@@ -2390,8 +2415,19 @@ class DataStore:
                 df["ps_ttm"] = val_df["ps_ttm"]
                 df["pcf_ttm"] = val_df["pcf_ttm"]
                 if "market_cap" in val_df.columns:
-                    # JQData market_cap 单位是亿元, akshare total_mv 是元 → 统一到元
-                    df["total_mv"] = val_df["market_cap"] * 1e8
+                    # P0-2 fix: 三源三单位 — eastmoney 写元, jqdata 写万元, tushare 写万元.
+                    # 原代码无条件 ×1e8 导致 eastmoney 值 1e8 倍放大, jqdata 值 1e4 倍放大.
+                    mc = val_df["market_cap"]
+                    src = val_df["source"] if "source" in val_df.columns else None
+                    if src is not None:
+                        conv = pd.Series(1.0, index=mc.index)
+                        conv[src == "jqdata"] = 1e4    # 万元→元
+                        conv[src == "tushare"] = 1e4    # 万元→元
+                        # eastmoney 默认 1.0 (已是元)
+                        df["total_mv"] = mc * conv
+                    else:
+                        # 历史无 source 列: 原行为 (假设 jqdata, ×1e4 更符合实测)
+                        df["total_mv"] = mc * 1e4
                 df["pe"] = val_df["pe_ttm"]  # compute_ep_ratio 优先 pe_ttm
             # 覆盖后重过滤 (与快照路径同口径)
             df.loc[df["pe"] <= 0, "pe"] = None

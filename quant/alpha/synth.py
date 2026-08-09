@@ -16,7 +16,9 @@
 
 import numpy as np
 import pandas as pd
-from quant.factor.intersection import intersection_alpha, strict_intersection  # kept in factor/
+from quant.utils.logger import get_logger
+
+logger = get_logger("alpha.synth")
 
 
 def equal_weight(factor_values: dict) -> pd.Series:
@@ -206,4 +208,116 @@ def factor_attribution(factor_values: dict, target_symbols: list,
             result[sym] = ", ".join(parts)
         else:
             result[sym] = "-"
+    return result
+
+
+# ── P2-3 fix: intersection_alpha / strict_intersection 由 factor/intersection.py 移至 alpha/ ──
+
+def intersection_alpha(
+    factor_values: dict,
+    top_fraction: float = 0.20,
+    primary_factor: str = "gap_5d",
+) -> pd.Series:
+    """交集筛选 Alpha 合成。
+
+    factor_values: {name: Series(index=symbol, value=factor_zscore)}
+    top_fraction: 每个因子保留前多少比例的股票 (default 0.20 = top 20%)
+    primary_factor: 最终排序因子
+
+    返回: Series(index=symbol, value=alpha_score), 未通过交集的股票 alpha=NaN
+    来源: 实战经验 — A 股小资金单仓策略, IC 加权把多个中等质量因子稀释。
+    """
+    if not factor_values:
+        return pd.Series(dtype=float)
+
+    names = list(factor_values.keys())
+    if len(names) == 0:
+        return pd.Series(dtype=float)
+
+    percentiles = {}
+    threshold = 1.0 - top_fraction
+
+    for name in names:
+        fv = factor_values[name].dropna()
+        if len(fv) < 30:
+            continue
+        pct = fv.rank(pct=True)
+        percentiles[name] = pct
+
+    if not percentiles:
+        return pd.Series(dtype=float)
+
+    pct_df = pd.DataFrame(percentiles)
+    passes = (pct_df >= threshold).all(axis=1)
+    candidates = pct_df[passes].index
+
+    if len(candidates) < 5 and top_fraction < 0.50:
+        logger.info(f"intersection: only {len(candidates)} candidates at top {top_fraction:.0%}, "
+                    f"relaxing to top {top_fraction*2:.0%}")
+        return intersection_alpha(factor_values, top_fraction * 2, primary_factor)
+
+    if len(candidates) < 3:
+        logger.info(f"intersection: falling back to single-factor ({primary_factor})")
+        if primary_factor in factor_values:
+            fv = factor_values[primary_factor].dropna()
+            return fv.rank(ascending=False)
+        return pd.Series(dtype=float)
+
+    if primary_factor in factor_values:
+        primary = factor_values[primary_factor].reindex(candidates).dropna()
+        if len(primary) < 3:
+            primary = pd.Series(1.0, index=candidates)
+    else:
+        primary = pd.Series(1.0, index=candidates)
+
+    result = (primary - primary.mean()) / primary.std(ddof=1)
+    result = result.reindex(pct_df.index)
+
+    n_total = len(pct_df)
+    logger.info(f"intersection: {len(candidates)}/{n_total} candidates ({len(candidates)/n_total*100:.1f}%) "
+                f"from top {top_fraction:.0%} on {len(names)} factors")
+
+    return result
+
+
+def strict_intersection(
+    factor_values: dict,
+    top_n_per_factor: int = 100,
+    primary_factor: str = "gap_5d",
+) -> pd.Series:
+    """严格交集: 每个因子取 top N 只股票, 必须同时出现在 ALL 因子的 top N 中。"""
+    if not factor_values:
+        return pd.Series(dtype=float)
+
+    names = list(factor_values.keys())
+    if len(names) == 0:
+        return pd.Series(dtype=float)
+
+    top_sets = []
+    for name in names:
+        fv = factor_values[name].dropna()
+        if len(fv) < top_n_per_factor:
+            top_sets.append(set(fv.index))
+        else:
+            top_sets.append(set(fv.nlargest(top_n_per_factor).index))
+
+    candidates = top_sets[0]
+    for s in top_sets[1:]:
+        candidates = candidates & s
+
+    if len(candidates) < 3:
+        logger.info(f"strict_intersection: only {len(candidates)} candidates, "
+                    f"relaxing to union of top {top_n_per_factor}")
+        candidates = set()
+        for s in top_sets:
+            candidates = candidates | s
+
+    if primary_factor in factor_values:
+        primary = factor_values[primary_factor].reindex(list(candidates)).dropna()
+    else:
+        primary = pd.Series(1.0, index=list(candidates))
+
+    result = (primary - primary.mean()) / primary.std(ddof=1)
+    logger.info(f"strict_intersection: {len(candidates)} candidates from "
+                f"top {top_n_per_factor} × {len(names)} factors")
     return result

@@ -373,11 +373,14 @@ class TradeRepo:
             sell_map = {r[0]: r[1] for r in sells}
             # B-20: 持仓成本价改用 FIFO (与 get_average_cost/卖出 pnl 同口径),
             # 原 SQL 是全历史买入加权平均
+            # B-20 fix: FIFO 成本计算改用批量查询 (P1-19: 消除 N+1 per-symbol SQL)
+            _all_syms = [r[0] for r in buys if r[1] > sell_map.get(r[0], 0)]
+            _fifo_costs = self.get_fifo_costs_batch(strategy, _all_syms, mode)
             result = []
             for r in buys:
                 if r[1] <= sell_map.get(r[0], 0):
                     continue
-                fifo_cost = self.get_average_cost(strategy, r[0], mode)
+                fifo_cost = _fifo_costs.get(r[0], 0.0)
                 result.append({
                     "symbol": r[0],
                     "price": round(fifo_cost, 4) if fifo_cost else (round(r[2], 4) if r[2] else 0),
@@ -502,7 +505,31 @@ class TradeRepo:
             "SELECT side, price, shares FROM sim_trades "
             "WHERE symbol=? AND strategy=? AND mode=? ORDER BY id",
             (symbol, strategy, mode))
-        lots: list[list] = []  # [price, remaining_shares] 按时间先后
+        return self._fifo_cost_from_rows(rows)
+
+    def get_fifo_costs_batch(self, strategy: str, symbols: list[str], mode: str = "live") -> dict[str, float]:
+        """P1-19 fix: 批量 FIFO 成本 — 单次 SQL 查询 (IN clause) 替代 N+1 per-symbol 查询.
+
+        返回 dict[symbol] = fifo_cost (0.0 if flat).
+        """
+        if not symbols:
+            return {}
+        placeholders = ", ".join("?" * len(symbols))
+        rows = self._query(
+            f"SELECT symbol, side, price, shares FROM sim_trades "
+            f"WHERE symbol IN ({placeholders}) AND strategy=? AND mode=? ORDER BY symbol, id",
+            (*symbols, strategy, mode))
+        # 按 symbol 分组
+        grouped: dict[str, list] = {}
+        for row in rows:
+            sym = row[0]
+            grouped.setdefault(sym, []).append(row[1:])
+        return {sym: self._fifo_cost_from_rows(grouped.get(sym, [])) for sym in symbols}
+
+    @staticmethod
+    def _fifo_cost_from_rows(rows: list) -> float:
+        """Static FIFO: rows = [(side, price, shares), ...] ordered by id."""
+        lots: list[list] = []  # [price, remaining_shares]
         for side, price, shares in rows:
             if side == "buy":
                 lots.append([float(price), int(shares)])

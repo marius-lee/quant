@@ -26,7 +26,7 @@ logger = get_logger("daily_sync")
 
 def step1_ohlcv(date_str: str):
     """日线增量更新: 自动检测缺口, 只拉缺失的。"""
-    from data.store import DataStore
+    from quant.data.store import DataStore
     store = DataStore()
     n = store.update_daily(start=date_str)
     logger.info(f"[1] daily: {n} new rows")
@@ -34,14 +34,20 @@ def step1_ohlcv(date_str: str):
 
 
 def step2_margin(date_str: str):
-    """融资融券: SSE 直接JSON + SZSE akshare wrapper。"""
-    from data.margin import _sync_sse_raw, _sync_szse_wrapper
+    """融资融券: SSE 直接JSON + SZSE akshare wrapper。
+
+    P1-12 fix: 传递 YYYY-MM-DD 格式 (而非 to_compact YYYYMMDD), 内部函数自行转换 API 格式.
+    数据库统一使用 ISO 格式 (YYYY-MM-DD), 与 daily 表一致.
+    """
+    from quant.data.margin import _sync_sse_raw, _sync_szse_wrapper
     import sqlite3
-    from data.repos._base import DatabaseManager
     conn = sqlite3.connect(MARKET_DB, timeout=_require_cfg("data.sqlite.timeout"))
-    n_sse = _sync_sse_raw(to_compact(date_str), conn)
+    # 断言: date_str 必须是 ISO 格式 (YYYY-MM-DD), 防止 YYYYMMDD 混入
+    assert len(date_str) == 10 and date_str[4] == '-' and date_str[7] == '-', \
+        f"P1-12: date_str must be YYYY-MM-DD, got {date_str}"
+    n_sse = _sync_sse_raw(date_str, conn)
     time.sleep(_require_cfg("sync.daily_interval"))
-    n_szse = _sync_szse_wrapper(to_compact(date_str), conn)
+    n_szse = _sync_szse_wrapper(date_str, conn)
     conn.close()
     logger.info(f"[2] margin: SSE={n_sse}, SZSE={n_szse}")
     return n_sse + n_szse
@@ -49,7 +55,7 @@ def step2_margin(date_str: str):
 
 def step3_limit_up(date_str: str):
     """涨停池: 单日同步。"""
-    from data.limit_up import sync_date
+    from quant.data.limit_up import sync_date
     n = sync_date(date_str)
     logger.info(f"[3] limit_up: {n} rows")
     return n
@@ -57,7 +63,7 @@ def step3_limit_up(date_str: str):
 
 def step4_lhb(date_str: str):
     """龙虎榜: 单日同步。"""
-    from data.lhb import sync_date
+    from quant.data.lhb import sync_date
     n = sync_date(date_str)
     logger.info(f"[4] lhb: {n} rows")
     return n
@@ -70,9 +76,9 @@ def step5_fundamentals(date_str: str):
         logger.info("[5] fundamentals: skipped (not Monday)")
         return 0
     import sqlite3
-    from data.repos._base import DatabaseManager
+    from quant.data.repos._base import DatabaseManager
     conn = sqlite3.connect(MARKET_DB, timeout=_require_cfg("data.sqlite.timeout"))
-    from data.fundamental import sync_all
+    from quant.data.fundamental import sync_all
     n = sync_all(conn, max_fetch=500)
     conn.close()
     logger.info(f"[5] fundamentals: {n} stocks updated")

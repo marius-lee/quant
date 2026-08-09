@@ -103,7 +103,7 @@ def _parse_tencent_line(line: str, include_ask_bid: bool = False) -> dict | None
             "high": round(float(fields[33]) if len(fields) > 33 and fields[33] else price, 2),
             "low": round(float(fields[34]) if len(fields) > 34 and fields[34] else price, 2),
             "open": round(float(fields[5]) if len(fields) > 5 and fields[5] else price, 2),
-            "volume": int(float(fields[6])) if len(fields) > 6 and fields[6] else 0,
+            "volume": int(float(fields[6])) * 100 if len(fields) > 6 and fields[6] else 0,  # 腾讯: 手→股 (×100), 与新浪/通达信一致
         }
         # 五档盘口数据: 腾讯API field 9-10=买一价/量(手), 19-20=卖一价/量(手)
         # 来源: ADR-033 限价单执行, 用于检测涨停封板(ask_volume==0 → 无人卖出)

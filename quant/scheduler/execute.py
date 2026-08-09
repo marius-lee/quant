@@ -98,10 +98,13 @@ def _run(today: str):
             open_px = q.get("open", 0)
             if open_px > 0:
                 prices[sym] = open_px
-        # 未覆盖持仓用成本价
-        for p in current_positions:
-            if p["symbol"] not in prices:
-                prices[p["symbol"]] = p.get("price", 0)
+        # P1-15 fix: 缺报价持仓不使用成本价 (阻断卖单)
+        _uncovered = [p["symbol"] for p in current_positions if p["symbol"] not in prices]
+        if _uncovered:
+            _log.warning(
+                f"P1-15: {len(_uncovered)} positions without quotes, blocking sells: "
+                f"{', '.join(_uncovered[:10])}"
+            )
         for tp in targets:
             if tp["symbol"] not in prices:
                 q = quotes.get(tp["symbol"], {})

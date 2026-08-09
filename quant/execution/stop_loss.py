@@ -27,22 +27,23 @@ from quant.config.paths import MARKET_DB as _DB
 _CACHE = {}  # symbol -> (atr, ts)
 
 
-def _compute_atr(symbol: str, period: int = 20) -> float:
-    """从 market.db daily 表实时计算 ATR(20). 缓存120秒."""
+def _compute_atr(symbol: str, period: int = 20, as_of: str = None) -> float:
+    """从 market.db daily 表计算 ATR(period), PIT 截止到 as_of 日期. 缓存 120 秒."""
+    if as_of is None:
+        raise ValueError("as_of is required — 回测必须传入当天日期, 防止未来行情前视")
     now = __import__('time').time()
-    key = (symbol, period)
+    key = (symbol, period, as_of)
     if key in _CACHE:
         val, ts = _CACHE[key]
         if now - ts < 120:
             return val
 
-    # B-01 fix: 行情日线在 market.db, 不在 trades.db (trades.db 的 daily 表为空,
-    # 导致 ATR 恒为 0, 盘中止盈止损全部静默失效)
+    # P0-4 fix: WHERE date <= ? 确保回测不会读取未来行情
     conn = DatabaseManager.market()
     rows = conn.execute(
-        "SELECT high, low, close FROM daily WHERE symbol=? "
+        "SELECT high, low, close FROM daily WHERE symbol=? AND date <= ? "
         "ORDER BY date DESC LIMIT ?",
-        (symbol, period + 1)
+        (symbol, as_of, period + 1)
     ).fetchall()
     conn.close()
 
@@ -189,7 +190,7 @@ class RiskManager:
             if cur <= 0:
                 continue
 
-            atr = _compute_atr(sym, self.atr_period)
+            atr = _compute_atr(sym, self.atr_period, today)
             if atr <= 0:
                 continue
 

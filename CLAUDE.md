@@ -11,7 +11,7 @@ cd /Users/mariusto/project/quant
 bash scripts/restart.sh
 
 # 因子缓存物化 (手动指定日期)
-PYTHONPATH=. .venv/bin/python -c "from quant.scheduler.factor_cache import _run; _run('2020-01-01')"
+PYTHONPATH=. .venv/bin/python -c "from quant.scheduler.factor_cache import _run; _run('2020-01-01','2020-01-01')"
 
 # LightGBM 训练
 PYTHONPATH=. .venv/bin/python -c "from quant.alpha.qlib_model import train_lgb_model; train_lgb_model()"

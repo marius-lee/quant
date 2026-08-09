@@ -38,8 +38,8 @@ def generate():
                                end=date_str)
         fundamentals = store.get_fundamentals(_SAMPLE_SYMBOLS, date=date_str)
         fv = compute_all_factors(data, date_str, fundamentals=fundamentals,
-                                 factor_fail_fast=False, quiet=True)
-        date_results = {}
+                                 factor_fail_fast=False, quiet=True, use_shortcut=True,
+                                 financials_cache={})
         for name, series in fv.items():
             if series is not None and series.dropna().count() >= 2:
                 date_results[name] = {s: round(float(v), 6) for s, v in series.dropna().items()}
@@ -78,8 +78,8 @@ def verify(tolerance: float = 1e-4):
                                end=date_str)
         fundamentals = store.get_fundamentals(_SAMPLE_SYMBOLS, date=date_str)
         fv = compute_all_factors(data, date_str, fundamentals=fundamentals,
-                                 factor_fail_fast=False, quiet=True)
-
+                                 factor_fail_fast=False, quiet=True, use_shortcut=True,
+                                 financials_cache={})
         expected = golden.get(date_str, {})
         for name in sorted(set(expected.keys()) | set(fv.keys())):
             if name not in expected:
@@ -123,9 +123,62 @@ def verify(tolerance: float = 1e-4):
         print(f"\nNew factors detected ({len(new_factors)}), run 'generate' to update golden.")
 
 
+def verify_strict(tolerance: float = 1e-6):
+    """P2-1 fix: dual-path consistency — compare FACTOR_SHORTCUT (cached) vs raw fn paths."""
+    from quant.data.store import DataStore
+    from quant.factor.store import FactorStore
+    from quant.factor.compute._dispatch import compute_all_factors
+
+    store = DataStore()
+    mismatches = []
+
+    for date_str in _SAMPLE_DATES:
+        print(f"  dual-path verify {date_str}...")
+        data = store.get_daily(_SAMPLE_SYMBOLS,
+                               start=(pd.Timestamp(date_str) - pd.Timedelta(days=400)).strftime("%Y-%m-%d"),
+                               end=date_str)
+        fundamentals = store.get_fundamentals(_SAMPLE_SYMBOLS, date=date_str)
+
+        # Path A: shortcut (cached primitives)
+        fv_shortcut = compute_all_factors(data, date_str, fundamentals=fundamentals,
+                                          factor_fail_fast=False, quiet=True, use_shortcut=True)
+
+        # Path B: raw functions (no shortcut)
+        fv_raw = compute_all_factors(data, date_str, fundamentals=fundamentals,
+                                     factor_fail_fast=False, quiet=True, use_shortcut=False)
+
+        all_names = sorted(set(fv_shortcut.keys()) | set(fv_raw.keys()))
+        for name in all_names:
+            sc = fv_shortcut.get(name)
+            rw = fv_raw.get(name)
+            if sc is None or rw is None:
+                mismatches.append(f"{date_str}/{name}: one path missing")
+                continue
+            common = sc.dropna().index.intersection(rw.dropna().index)
+            for sym in common:
+                diff = abs(float(sc[sym]) - float(rw[sym]))
+                if diff > tolerance:
+                    mismatches.append(f"{date_str}/{name}/{sym}: shortcut={sc[sym]:.6f} raw={rw[sym]:.6f} diff={diff:.8f}")
+
+    store.close()
+
+    print(f"\nDual-path results:")
+    print(f"  Mismatches: {len(mismatches)}")
+    if mismatches:
+        print("\nMISMATCH DETAILS (first 20):")
+        for m in mismatches[:20]:
+            print(f"  {m}")
+        print("\nFAIL: shortcut vs raw path diverge!")
+        sys.exit(1)
+    else:
+        print("OK: all factor values match between shortcut and raw paths.")
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "verify"
     if cmd == "generate":
         generate()
+    elif cmd == "verify_strict":
+        verify_strict()
     else:
         verify()

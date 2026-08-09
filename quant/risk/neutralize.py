@@ -51,6 +51,8 @@ def industry_neutralize(
     for industry, group in ind_aligned.groupby(ind_aligned):
         syms = group.index.intersection(common)
         if len(syms) < min_stocks_per_industry:
+            # P1-13 fix: 单股票行业 (std=NaN) → 跳过中性化, 保留原分值
+            neutralized.loc[syms] = scores.loc[syms]
             continue
         # 行业内 z-score
         vals = scores.loc[syms]
@@ -306,11 +308,16 @@ def _apply_neutralize_batch(
     返回: 中性化后的 z-score Series
     """
     aligned = scores.reindex(common_index)
-    if aligned.dropna().empty:
+    valid = aligned.dropna()
+    if len(valid) < 2:
         return scores
-    y = aligned.values.astype(np.float64)
-    residuals = P @ y
-    result = pd.Series(residuals, index=common_index)
+    # P0-3 fix: NaN values in aligned → P @ y 传染全矩阵 NaN.
+    # 丢弃 NaN 后按位置切片 P, 与标量路径 (_joint_neutralize dropna) 语义一致.
+    pos = common_index.get_indexer(valid.index)
+    y = valid.values.astype(np.float64)
+    Pv = P[pos][:, pos]
+    residuals = Pv @ y
+    result = pd.Series(residuals, index=valid.index)
     result = (result - result.mean()) / result.std(ddof=1)
     return result.reindex(scores.index)
 

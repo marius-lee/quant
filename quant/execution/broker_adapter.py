@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 from quant.utils.logger import get_logger
 from quant.config.loader import get as _cfg_get
+from quant.config.constants import _require_cfg
 
 _log = get_logger("execution.broker_adapter")
 
@@ -299,6 +300,9 @@ class VnpyAdapter(BrokerAdapter):
 
     name = "vnpy"
 
+    # P0-10 fix: 白名单 — 禁止非法 adapter 名称
+    _VALID_ADAPTERS = frozenset({"simulated", "vnpy"})
+
     def __init__(self, gateway_name: str = None, settings: dict = None,
                  strategy: str = "quant"):
         self._gateway_name = gateway_name or _cfg_get("execution.broker.vnpy.gateway")
@@ -309,6 +313,7 @@ class VnpyAdapter(BrokerAdapter):
         self._gateway = None
         self._event_engine = None
         self._main_engine = None
+        self._pending_orders = {}  # order_id → 状态 dict (P0-10 fix)
 
         # 检测 vnpy 可用性
         self._vnpy_available = _check_vnpy()
@@ -319,11 +324,19 @@ class VnpyAdapter(BrokerAdapter):
             )
 
     def connect(self) -> bool:
+        # P0-10 fix: 白名单校验 — 只有配置为 vnpy 时才允许连接
+        configured = _cfg_get("execution.broker.adapter")
+        if configured not in self._VALID_ADAPTERS:
+            raise ValueError(
+                f"execution.broker.adapter={configured!r} 不在白名单 {self._VALID_ADAPTERS} — "
+                f"VnpyAdapter 拒绝连接"
+            )
         if not self._vnpy_available:
             raise RuntimeError(
                 "vnpy not installed. Install: pip install vnpy vnpy_ctp vnpy_xtp. "
                 "Use SimulatedAdapter for paper trading."
             )
+        _log.info("vnpy adapter connect: whitelist OK (adapter=%s)", configured)
         try:
             self._init_vnpy_engine()
             self._connected = True
@@ -378,16 +391,71 @@ class VnpyAdapter(BrokerAdapter):
         _log.info("vnpy engine initialized (gateway=%s)", self._gateway_name)
 
     def _on_order(self, event):
-        """订单回报回调 — 子类可覆盖以同步到 trades.db。"""
-        pass
+        """订单回报回调 — 同步订单状态到内存表 (P0-10 fix)。"""
+        t0 = __import__('time').monotonic()
+        try:
+            order = event.dict.get("order") if hasattr(event, "dict") else None
+            if order is None:
+                return
+            self._pending_orders[order.orderid] = {
+                "symbol": order.symbol,
+                "price": float(order.price),
+                "volume": int(order.volume),
+                "traded": int(order.traded),
+                "status": order.status.name,
+            }
+            _log.info("vnpy order update: %s status=%s traded=%d/%d", order.orderid, order.status.name, order.traded, order.volume)
+        except Exception as e:
+            _log.error("vnpy _on_order failed: %s", e)
+            raise
+        finally:
+            _log.debug("vnpy _on_order took %.3fs", __import__('time').monotonic() - t0)
 
     def _on_trade(self, event):
-        """成交回报回调 — 子类可覆盖以同步到 trades.db。"""
-        pass
+        """成交回报回调 — 记录到 sim_trades 表 (P0-10 fix)。
+
+        与 SimulatedAdapter 同架构: 通过 TradeRepo.record_trade 写入 sim_trades(mode='live')
+        — 此前空实现导致实盘成交永远不入库, 持仓/现金/T+1/止损全基于陈旧 SQLite。
+        """
+        t0 = __import__('time').monotonic()
+        try:
+            trade = event.dict.get("trade") if hasattr(event, "dict") else None
+            if trade is None:
+                return
+            from quant.data.repos import TradeRepo
+            from datetime import datetime as _dt
+            today = trade.datetime.strftime("%Y-%m-%d") if trade.datetime else _dt.now().strftime("%Y-%m-%d")
+            symbol = trade.symbol
+            side = "sell" if trade.direction.name == "SHORT" else "buy"
+            shares = int(trade.volume)
+            price = float(trade.price)
+            commission_rate = _require_cfg("execution.commission")
+            TradeRepo().record_trade(
+                strategy=self._strategy, date=today, symbol=symbol,
+                side=side, price=price, shares=shares,
+                cost=price * shares * commission_rate,
+                mode="live",
+            )
+            _log.info("vnpy trade recorded: %s %s %d股 @\xa5%.2f (strategy=%s)", today, symbol, shares, price, self._strategy)
+        except Exception as e:
+            _log.error("vnpy _on_trade failed: %s", e)
+            raise
+        finally:
+            _log.debug("vnpy _on_trade took %.3fs", __import__('time').monotonic() - t0)
 
     def _on_position(self, event):
-        """持仓回报回调。"""
-        pass
+        """持仓回报回调 — 记录到日志用于对账 (P0-10 fix)。"""
+        t0 = __import__('time').monotonic()
+        try:
+            pos = event.dict.get("position") if hasattr(event, "dict") else None
+            if pos is None:
+                return
+            _log.info("vnpy position update: %s direction=%s vol=%d", pos.symbol, pos.direction.name, pos.volume)
+        except Exception as e:
+            _log.error("vnpy _on_position failed: %s", e)
+            raise
+        finally:
+            _log.debug("vnpy _on_position took %.3fs", __import__('time').monotonic() - t0)
 
     # ── 下单方法 ──
 

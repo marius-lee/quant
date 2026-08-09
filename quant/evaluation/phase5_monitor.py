@@ -172,8 +172,8 @@ def sync_factor_status() -> dict:
             retry_map[fname] = 0  # 恢复, 重置计数
             _log.info(f"[EVAL] {fname}: retry_count reset to 0 (recovered)")
 
-    # ── 数据库写入 (通过 FactorStateManager 单一入口, ADR-026) ──
-    from quant.factor.state_manager import FactorStateManager
+    # ── 数据库写入 (通过 FactorStateMachine 单一入口, ADR-026) ──
+    from quant.factor.state_machine import FactorStateManager
     fsm = FactorStateManager()
 
     current_active = set(r[0] for r in conn.execute(
@@ -217,12 +217,20 @@ def sync_factor_status() -> dict:
             _log.warning("sync_factor_status: %s %s failed: %s", name, event, e)
     rejected_ok = 0
     for name in rejected_to_update:
-        new_retry = retry_map.get(name, 0) + 1
+        # P0-7 fix: EVAL_REJECT 非法事件 → 用状态机合法事件 (EVAL_FAIL/IC_PERSISTENT)
+        # 且 retry_count 不重加 (retired loop 已 increment, 这里只读)
+        current_row = conn.execute(
+            "SELECT status FROM factor_registry WHERE name=?", (name,)
+        ).fetchone()
+        current_status = current_row[0] if current_row else "evaluating"
+        event = "EVAL_FAIL" if current_status == "evaluating" else "IC_PERSISTENT"
+        existing_retry = retry_map.get(name, 0)
         try:
-            fsm.transition(name, "EVAL_REJECT", reasons[name], retry_count=new_retry)
+            fsm.transition(name, event, reasons[name], retry_count=existing_retry)
             rejected_ok += 1
+            _log.info("sync_factor_status: %s %s → archived (retry=%d)", name, event, existing_retry)
         except Exception as e:
-            _log.warning("sync_factor_status: %s EVAL_REJECT failed: %s", name, e)
+            _log.warning("sync_factor_status: %s %s failed: %s", name, event, e)
 
     _log.info(f"sync_factor_status: {active_ok}/{len(active_to_update)} active, "
               f"{monitoring_ok}/{len(monitoring_to_update)} monitoring, "

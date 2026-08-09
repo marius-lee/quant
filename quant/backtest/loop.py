@@ -155,7 +155,10 @@ def _compute_dsr(returns: pd.Series) -> float | None:
         ann_days = _require_cfg("market.annual_trading_days")
         daily_rf = _require_cfg("benchmark.risk_free_rate") / ann_days
         excess = vals - daily_rf
-        sr = float(np.mean(excess) / np.std(excess) * np.sqrt(ann_days)) if np.std(excess) > 0 else 0.0
+        # P0-6 fix: PSR 公式要求 SR 与 n_obs 同周期 (日频).
+        # 年化 SR + 日频 n_obs → 方差放大 ~252 倍 → DSR 恒 1.0 (虚假显著).
+        # 用每日 SR 参与 DSR 计算 (De Prado 2018 Eq.7.2, 与 cpcv_dsr 口径统一).
+        sr = float(np.mean(excess) / np.std(excess)) if np.std(excess) > 0 else 0.0
         n_factors = _require_cfg("factor.evaluation.n_symbols")
         result = deflated_sharpe_ratio(
             observed_sr=sr,
@@ -522,9 +525,9 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             except Exception as _re:
                 _log.warning("backtest: regime detection skipped (non-fatal): %s", _re)
 
-        # ── test-v398 (perf): BacktestContext — 收敛 16+ 参数为单一上下文 ──
-        from quant.backtest.context import BacktestContext
-        _ctx = BacktestContext(
+        # ── 统一上下文: ExecutionContext — 收敛 16+ 参数为单一上下文 ──
+        from quant.backtest.context import ExecutionContext
+        _ctx = ExecutionContext(
             data_full=data_full, all_symbols=_all_symbols,
             fund_stocks_df=_stocks_df, fund_val_piv=_val_piv,
             fund_close_piv=_close_piv_fund, fund_high_52w=_high_52w_fund,

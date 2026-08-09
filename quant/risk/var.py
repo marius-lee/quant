@@ -160,7 +160,12 @@ def stress_test(positions, weights):
         for sym, min_c, max_c in rows:
             if max_c and max_c > 0:
                 pct = (min_c - max_c) / max_c
-                position_val = weights.get(sym, 0) if isinstance(weights, dict) else 0
+                if isinstance(weights, dict):
+                    position_val = weights.get(sym, 0)
+                elif isinstance(weights, pd.Series):
+                    position_val = float(weights.get(sym, 0))
+                else:
+                    position_val = 0
                 total_loss += position_val * abs(pct) if pct < 0 else 0
         results[name] = {"label": label, "loss_est": round(total_loss, 2)}
     conn.close()

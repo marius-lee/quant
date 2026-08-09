@@ -160,13 +160,17 @@ def compute_dsr_for_strategy(
         return {"dsr": 0.0, "min_trl_years": float("inf"), "annualized_sr": 0.0, "n_obs": len(daily_returns)}
 
     rets = np.array(daily_returns)
-    annualized_sr = float(np.mean(rets) / max(np.std(rets, ddof=1), 1e-10) * np.sqrt(annual_factor))
     n_obs = len(rets)
+    # P0-6 fix: PSR 公式方差项要求 SR 与 n_obs 同周期 (De Prado 2018 Eq.7.2).
+    # 年化 SR × 日频 n_obs → 方差被放大 ~252 倍 → DSR 恒 1.0 (虚假显著).
+    # 修正: 用每期 (日频) SR 参与 DSR/MinTRL, annualized_sr 仅用于显示.
+    daily_sr = float(np.mean(rets) / max(np.std(rets, ddof=1), 1e-10))
+    annualized_sr = daily_sr * np.sqrt(annual_factor)  # 仅用于显示/日志
 
     n_trials = max(1, n_factors * 2)
 
-    dsr_result = deflated_sharpe_ratio(annualized_sr, n_trials, n_obs, skewness, kurtosis)
-    min_trl_days = min_track_record_length(annualized_sr, 0, skewness, kurtosis)
+    dsr_result = deflated_sharpe_ratio(daily_sr, n_trials, n_obs, skewness, kurtosis)
+    min_trl_days = min_track_record_length(daily_sr, 0, skewness, kurtosis)
     min_trl_years = round(min_trl_days / annual_factor, 2)
 
     return {

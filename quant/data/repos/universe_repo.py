@@ -114,16 +114,17 @@ class UniverseRepo:
                     "WHERE date = ? AND amount >= ?)")
             params.extend([_ref_amount, min_daily_amount])
 
-        # ── 回测日期范围过滤 ──
+        # P0-1 fix: list_date/delist_date 存为 YYYYMMDD, 查询参数为 ISO YYYY-MM-DD.
+        # strftime('%Y%m%d', ?) 保证同格式比较, 避免 '0'(0x30) vs '-'(0x2D) 错位.
         if end_date:
-            sql += " AND (s.list_date IS NULL OR s.list_date <= ?)"
+            sql += " AND (s.list_date IS NULL OR s.list_date <= strftime('%Y%m%d', ?))"
             params.append(end_date)
 
         if start_date:
-            sql += " AND (s.delist_date IS NULL OR s.delist_date > ?)"
+            sql += " AND (s.delist_date IS NULL OR s.delist_date > strftime('%Y%m%d', ?))"
             params.append(start_date)
         elif end_date:
-            sql += " AND (s.delist_date IS NULL OR s.delist_date > ?)"
+            sql += " AND (s.delist_date IS NULL OR s.delist_date > strftime('%Y%m%d', ?))"
             params.append(end_date)
 
         rows = query_all(conn, sql, tuple(params))

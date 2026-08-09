@@ -6,6 +6,7 @@
 import sys
 import os
 import time
+import traceback
 from datetime import date, datetime
 
 import numpy as np
@@ -42,12 +43,12 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
                      suppress_push: bool = False, universe_size: int = None,
                      db_path: str = TRADE_DB, exclude_symbols: list = None, ic_map: dict = None, combine_mode: str = None, primitives: dict = None, factor_store=None,
                      regime_label: str = None, regime_probs: dict = None,
-                     ctx: "BacktestContext | None" = None,  # v418 (R4): preload 依赖收敛进 BacktestContext
+                     ctx: "ExecutionContext | None" = None,  # 统一上下文: 回测/实盘共用
                      ) -> dict:
     """Pipeline 阶段一: 盘前信号生成 (Steps 0-5, 不执行交易)。
 
-    test-v398: 新增 ctx (BacktestContext) 参数 - 回测传预加载上下文, 实盘传 None。
-    优先级: ctx > 显式 kwargs > PipelineContext (旧 ctx 参数)。
+    统一上下文 ctx (ExecutionContext) — 回测传预加载上下文, 实盘传 None/空实例。
+    优先级: ctx > 显式 kwargs > 默认值。
 
     用 T-1 收盘数据计算因子 -> alpha -> 风险过滤 -> 组合优化 -> 输出目标持仓。
     status_filter: 控制因子计算池 ('using'=active+probation, 'backtesting'=evaluating+probation)
@@ -62,16 +63,16 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     if date_str is None:
         date_str = datetime.today().strftime("%Y-%m-%d")
 
-    # ── v418 (R4): preload 依赖已收敛进 ctx; 无 ctx 时全部为 None (不预加载) ──
+    # ── preload 依赖已收敛进 ctx; 无 ctx 时全部为 None (不预加载) ──
     preloaded_data = factor_cache = turnover_amount_roll = bm_returns = None
     stock_names = preloaded_seal_ratios = None
     prebuilt_engine = prebuilt_cost_model = prebuilt_constructor = None
     fund_stocks_df = fund_val_piv = fund_close_piv = fund_high_52w = None
     all_symbols = None
 
-    # ── test-v398: BacktestContext 解包 — 覆盖所有兼容参数 ──
-    from quant.backtest.context import BacktestContext
-    if isinstance(ctx, BacktestContext):
+    # ── ExecutionContext 解包 — 覆盖所有兼容参数 ──
+    from quant.backtest.context import ExecutionContext
+    if isinstance(ctx, ExecutionContext):
         suppress_push = ctx.suppress_push
         universe_size = ctx.universe_size if ctx.universe_size is not None else universe_size
         db_path = ctx.db_path or db_path
@@ -94,25 +95,6 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         combine_mode = ctx.combine_mode if ctx.combine_mode is not None else combine_mode
         regime_label = ctx.regime_label if ctx.regime_label is not None else regime_label
         regime_probs = ctx.regime_probs if ctx.regime_probs is not None else regime_probs
-
-    from quant.utils.logger import get_trace_id, set_trace_id as _set_tid
-    tid = get_trace_id() or _uuid.uuid4().hex[:12]
-    _set_tid(tid)
-    from quant.monitor.metrics import metrics as _m
-    _m.inc("pipeline.runs")
-    # A3: resolve dependencies from PipelineContext if provided (not BacktestContext)
-    from quant.backtest.context import BacktestContext as _BTCtx
-    if ctx is not None and not isinstance(ctx, _BTCtx):
-        store = store or ctx.store
-        factor_store = factor_store or ctx.factor_store
-        db_path = db_path or ctx.db_path
-        suppress_push = suppress_push or ctx.suppress_push
-        if ctx.preloaded_data is not None:
-            preloaded_data = preloaded_data or ctx.preloaded_data
-        if ctx.primitives:
-            primitives = primitives or ctx.primitives
-        if ctx.ic_map is not None:
-            ic_map = ic_map if ic_map is not None else ctx.ic_map
 
     t0 = time.time()
     results = {"date": date_str, "steps": {}}
@@ -391,9 +373,8 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
             logger.info("probation decay: %d factors halved: %s", len(_probation_names),
                       ", ".join(sorted(_probation_names)))
     except Exception:
-        pass
-
-    # v390: Bayesian收缩仅对 live scope (factor_registry ic_mean), 回测 OOS-IR 已鲁棒
+        logger.error("probation decay halving failed: %s", traceback.format_exc(), exc_info=True)
+        raise
     if scope == "live":
         ic_map = _bayesian_shrink_ic_map(ic_map)
 
@@ -592,7 +573,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
 
 def execute_signals(target_positions: list[dict], date_str: str, strategy: str = "quant",
                     prices: dict = None, db_path: str = TRADE_DB,
-                    suppress_push: bool = False, ctx = None,
+                    suppress_push: bool = False, ctx: "ExecutionContext | None" = None,
                     risk_only: bool = False, ohlc: dict = None) -> dict:
     """Pipeline 阶段二: 开盘执行 (Step 6)。
 
@@ -608,16 +589,17 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
     _set_tid(tid)
     from quant.monitor.metrics import metrics as _m
     _m.inc("pipeline.runs")
-    # A3: resolve dependencies from PipelineContext/BacktestContext if provided
-    from quant.backtest.context import BacktestContext as _BTCtx2
-    if isinstance(ctx, _BTCtx2):
+    # 统一上下文解包
+    from quant.backtest.context import ExecutionContext
+    if isinstance(ctx, ExecutionContext):
         db_path = ctx.db_path or db_path
         suppress_push = ctx.suppress_push
         engine = ctx.get_engine()
         cost_model = ctx.get_cost_model()
     elif ctx is not None:
-        db_path = db_path or ctx.db_path
-        suppress_push = suppress_push or ctx.suppress_push
+        # 兼容旧 PipelineContext (dict-like)
+        db_path = db_path or getattr(ctx, 'db_path', db_path)
+        suppress_push = suppress_push or getattr(ctx, 'suppress_push', False)
         engine = ExecutionEngine(db_path=db_path)
         cost_model = CostModel.from_config()
     else:
@@ -669,10 +651,13 @@ def execute_signals(target_positions: list[dict], date_str: str, strategy: str =
             open_px = q.get("open", 0)
             if open_px > 0:
                 prices[sym] = open_px
-        # 报价未覆盖的持仓保留成本价 (仅用于估值, 不用于新买入)
-        for p in current_positions:
-            if p["symbol"] not in prices:
-                prices[p["symbol"]] = p.get("price", 0)
+        # P1-15 fix: 缺报价持仓不使用成本价 (阻断卖单, 宁可缺仓不可错价)
+        _uncovered = [p["symbol"] for p in current_positions if p["symbol"] not in prices]
+        if _uncovered:
+            logger.warning(
+                f"P1-15: {len(_uncovered)} positions without quotes, blocking sells: "
+                f"{', '.join(_uncovered[:10])}"
+            )
         # 报价未覆盖的目标 (极罕见) 使用 sina price 而非昨日 close
         for tp in target_positions:
             if tp["symbol"] not in prices:

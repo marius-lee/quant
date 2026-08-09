@@ -12,10 +12,12 @@ from typing import Any
 # 内部工具
 # ═══════════════════════════════════════════════════════════
 
-def _require_cfg(key: str) -> Any:
-    """Return config value for key. Raise if missing — no silent defaults."""
+def _require_cfg(key: str, default: Any = None) -> Any:
+    """Return config value for key. Raise if missing and no default provided — no silent defaults."""
     import quant.config.loader as _loader; val = _loader.get(key)
     if val is None:
+        if default is not None:
+            return default
         raise KeyError(f"config.yaml missing required key: {key}")
     return val
 

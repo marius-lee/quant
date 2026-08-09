@@ -570,6 +570,7 @@ class FactorStore:
             status_filter=None,
             factor_fail_fast=False,
             quiet=True,
+            financials_cache={},
         )
 
         lines = []

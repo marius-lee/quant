@@ -38,7 +38,7 @@ def _run(start_date: str, end_date: str):
         store = DataStore()
         _latest = store._connect().execute(
             'SELECT MAX(date) FROM daily').fetchone()[0]
-        actual_end = max(end_date, _latest) if _latest else end_date
+        actual_end = min(end_date, _latest) if _latest else end_date
         dates = [r[0] for r in store._connect().execute(
             'SELECT DISTINCT date FROM daily WHERE date >= ? AND date <= ? ORDER BY date',
             (start_date, actual_end)).fetchall()]

@@ -112,7 +112,18 @@ backtest:
     start: '2026-06-24'
     end: '2026-07-24'
   factor_cache_start: '2019-01-01'
+  distributed:
+    enabled: true
+    backend: "auto"
+    max_workers: 4
+    max_concurrent: 8
+    max_combo_per_grid: 500
 cache: null
+duckdb:
+  migration_batch_size: 100000
+  sync_interval_sec: 300
+  max_workers: 4
+  path: "data/market.duckdb"
 calendar:
   max_lookup_days: 30
 benchmark:
@@ -247,6 +258,8 @@ factor:
     max_workers: 4
     worker_timeout_sec: 300
     min_abs_ic: 0.02
+    ic_threshold: 0.02
+    icir_threshold: 0.25
     min_half_life: 20
     min_icir: 0.25
     monitoring_min_icir: 0.2
@@ -368,6 +381,9 @@ screening:
   backtest_end: '2026-06-30'
   backtest_start: '2025-06-30'
   timeout: 600
+# P1-20 fix: 统一的策略名称 (用于 daily_equity / alerts 多策略过滤)
+strategy:
+  name: "quant"
 monitor:
   telegram_bot_token: ''
   telegram_chat_id: ''
@@ -392,6 +408,23 @@ web:
   port: 8521
   sse:
     queue_timeout: 30
+market:
+  annual_trading_days: 244
+mlflow:
+  tracking_uri: "sqlite:///mlflow.db"
+  experiment_name: "quant_alpha"
+  registry_uri: ""
+bentoml:
+  store_path: "~/bentoml"
+  default_service_port: 3000
+prometheus:
+  enabled: true
+  port: 9090
+  pushgateway: ""
+grafana:
+  enabled: true
+  port: 3000
+  datasource: "prometheus"
 live:
   default_capital: 5000
 universe:

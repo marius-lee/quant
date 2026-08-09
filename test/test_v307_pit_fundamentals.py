@@ -52,7 +52,8 @@ def test_pit_uses_latest_valuation_le_date(tmp_path):
     row = df.loc["000001"]
     assert row["pe_ttm"] == 11.0 and row["pe"] == 11.0
     assert row["pb"] == 1.1
-    assert abs(row["total_mv"] - 110.0 * 1e8) < 1  # 亿元→元
+    # P0-2 fix: jqdata market_cap 实测为万元 (1e4 转换), 非亿元 (1e8) as 旧码
+    assert abs(row["total_mv"] - 110.0 * 1e4) < 1  # 万元→元
     assert row["roe"] is None or pd.isna(row["roe"]) or 0 < row["roe"] < 1
     ds.close()
 

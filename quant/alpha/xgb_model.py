@@ -234,19 +234,19 @@ class XgbAlphaModel:
         if not symbols:
             return pd.Series(dtype=float)
 
+        # P0-5 fix: 按训练列序对齐特征 — 严格按 self._feature_names 顺序构造列.
+        # 原 `if fn in factor_values` 过滤跳过缺失特征, pad 在末尾导致列序错位 → 预测乱序.
+        # (同 qlib_model.py v406 fix, xgb 端未同步)
+        missing = [fn for fn in self._feature_names if fn not in factor_values]
+        if missing:
+            _log.warning("xgb predict: %d/%d features available (missing: %s), filling zeros",
+                         len(self._feature_names) - len(missing), len(self._feature_names),
+                         ", ".join(sorted(missing)[:5]))
         X = np.column_stack([
-            factor_values.get(fn, pd.Series(0, index=symbols))
-            .reindex(symbols).fillna(0).values
-            for fn in self._feature_names
-            if fn in factor_values
+            factor_values.get(fn, pd.Series(0.0, index=symbols))
+            .reindex(symbols).fillna(0.0).values
+            for fn in self._feature_names  # 严格按训练列序, 不过滤
         ])
-
-        if X.shape[1] < len(self._feature_names):
-            missing = set(self._feature_names) - set(factor_values.keys())
-            _log.warning("xgb predict: %d/%d features available (missing: %s), padding zeros",
-                         X.shape[1], len(self._feature_names), ", ".join(sorted(missing)[:5]))
-            pad = np.zeros((X.shape[0], len(self._feature_names) - X.shape[1]))
-            X = np.column_stack([X, pad])
 
         preds = self._xgb.predict(X)
         return pd.Series(preds, index=symbols, name="alpha_xgb").dropna()

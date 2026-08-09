@@ -14,7 +14,9 @@ from quant.factor.compute._registry import load_active_price_factors, load_activ
 import inspect
 
 # 方案 C: signature 缓存 — 避免每因子每日期重复解析
-_sig_cache: dict = {}
+# B-01 fix: 使用 WeakKeyDictionary 避免函数对象强引用泄漏，且作为模块级常量不可变
+from weakref import WeakKeyDictionary
+_sig_cache: WeakKeyDictionary = WeakKeyDictionary()
 
 
 def _cached_sig(fn) -> inspect.Signature:
@@ -32,7 +34,9 @@ def compute_all_factors(data: pd.DataFrame, date: str,
                       preloaded_fundamentals: pd.DataFrame = None,
                       preloaded_aux_chunk: dict = None,
                       factor_fail_fast: bool = True,
-                      quiet: bool = False) -> dict:
+                      quiet: bool = False,
+                      use_shortcut: bool = True,
+                      financials_cache: dict = None) -> dict:
     """批量计算所有已注册因子 -> {factor_name: Series(index=symbol)}。
 
     quiet=True: 抑制逐因子日志 (批量物化场景, 减少 I/O)。
@@ -85,9 +89,10 @@ def compute_all_factors(data: pd.DataFrame, date: str,
         if not quiet:
             _plog.info(f"  computing {name}...")
         # 优先使用预计算算子 — 零 fallback: shortcut 必须成功
+        # P2-1 fix: use_shortcut 控制是否走 FACTOR_SHORTCUT 缓存路径 (双路径一致性校验)
         from quant.factor.compute._primitives import FACTOR_SHORTCUT
         fn_name = getattr(fn, '__name__', '')
-        if primitives is not None and fn_name in FACTOR_SHORTCUT:
+        if use_shortcut and primitives is not None and fn_name in FACTOR_SHORTCUT:
             shortcut_result = FACTOR_SHORTCUT[fn_name](primitives, date, win)
             if shortcut_result is None:
                 raise ValueError(
@@ -128,16 +133,17 @@ def compute_all_factors(data: pd.DataFrame, date: str,
                 financials = preloaded_financials.get(date)
             else:
                 # 方案 D: 缓存 financials (季度数据 chunk 内不变, 避免逐日开 DB)
-                if not hasattr(compute_all_factors, '_fin_cache'):
-                    compute_all_factors._fin_cache = {}
+                # B-01 fix: 使用传入的 financials_cache 参数而非模块级可变属性
+                if financials_cache is None:
+                    financials_cache = {}
                 cache_key = (tuple(sorted(fundamentals.index.tolist())), str(date)[:7])
-                if cache_key not in compute_all_factors._fin_cache:
+                if cache_key not in financials_cache:
                     from quant.data.store import DataStore
                     store = DataStore()
-                    compute_all_factors._fin_cache[cache_key] = store.get_financials(
+                    financials_cache[cache_key] = store.get_financials(
                         fundamentals.index.tolist(), date=date)
                     store.close()
-                financials = compute_all_factors._fin_cache[cache_key]
+                financials = financials_cache[cache_key]
         total_ff = len(fund_factors)
         done_ff = 0
         import time as _time2

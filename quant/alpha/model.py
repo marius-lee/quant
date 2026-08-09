@@ -84,83 +84,31 @@ class AlphaModel:
 
         返回: Series(index=symbol), 合成得分
         """
-        from quant.alpha.synth import sleeve_compose, ic_weighted, equal_weight, intersection_alpha
+        from quant.alpha.strategy import get_alpha, list_alphas, is_registered
+        from quant.alpha.synth import ic_weighted, equal_weight
 
+        # ── P2-2 fix: 使用 AlphaStrategy 注册表替代字符串分支 ──
+        if not is_registered(self.combine_mode):
+            _log.warning(f"AlphaModel: unknown combine_mode '{self.combine_mode}', falling back to ic_weighted")
+            return ic_weighted(factor_values, ic_map) if ic_map else equal_weight(factor_values)
+
+        # 实例化策略并执行
+        strategy_cls = get_alpha(self.combine_mode)
+        strategy = strategy_cls()
+
+        # 准备策略参数
+        params = {}
         if self.combine_mode == "sleeve":
-            # v390: IC>0 过滤, 负IC因子不参与sleeve (nlargest会选错方向)
-            if ic_map:
-                def _ic_ok(name):
-                    v = ic_map.get(name, {})
-                    if isinstance(v, dict):
-                        return v.get("ic_mean", 0) > 0
-                    return v > 0  # plain float
-                keep = {k: v for k, v in factor_values.items() if _ic_ok(k)}
-                if len(keep) >= self.min_factors:
-                    factor_values = keep
-                else:
-                    # v390: 不及min_factors→不交易, 不再保留全因子(负IC因子nlargest选错方向)
-                    _log.info("sleeve: only %d factors survive IC filter (< %d), skip trading today",
-                              len(keep), self.min_factors)
-                    return pd.Series(dtype=float)
+            params.update(positions_per_factor=self.positions_per_factor, min_factors=self.min_factors)
+        elif self.combine_mode == "intersection":
+            params.update(top_fraction=self.intersection_top_fraction, primary_factor=self.intersection_primary)
 
-            alpha_raw = sleeve_compose(
-                factor_values,
-                positions_per_factor=self.positions_per_factor,
-                min_factors=self.min_factors,
-            )
-            _log.info("sleeve: %d factors -> %d stocks (filtered=%s)", len(factor_values), alpha_raw.notna().sum(), bool(ic_map))
-            return alpha_raw
+        # 执行合成
+        alpha_raw = strategy.combine(factor_values, ic_map, **params)
 
-        # ── ML model modes (lgb / xgb) ──
-        # ADR-035 Phase 2: LightGBM / XGBoost 非线性 alpha 预测。
-        # 用已训练的 ML 模型将因子截面值映射为预期收益。
-        # 未训练/未安装时自动回退到 ic_weighted。
-        if self.combine_mode in ("lgb", "xgb"):
-            try:
-                if self.combine_mode == "lgb":
-                    from quant.alpha.qlib_model import get_lgb_model
-                    ml_model = get_lgb_model(auto_load=True)
-                    ml_name = "lgb"
-                else:
-                    from quant.alpha.xgb_model import get_xgb_model
-                    ml_model = get_xgb_model(auto_load=True)
-                    ml_name = "xgb"
-
-                if ml_model.is_trained:
-                    alpha_raw = ml_model.predict(factor_values)
-                    _log.info(
-                        "%s: %d features → %d stocks (IC=%.4f)",
-                        ml_name,
-                        len(ml_model.feature_names),
-                        alpha_raw.notna().sum(),
-                        ml_model.metadata.ic_mean if ml_model.metadata else 0,
-                    )
-                    return alpha_raw
-                else:
-                    _log.info("%s: model not trained, falling back to ic_weighted", ml_name)
-                    return ic_weighted(factor_values, ic_map) if ic_map else equal_weight(factor_values)
-            except ImportError:
-                _log.info("%s: package not installed, falling back to ic_weighted", self.combine_mode)
-                return ic_weighted(factor_values, ic_map) if ic_map else equal_weight(factor_values)
-            except Exception as _ml_err:
-                _log.warning("%s: predict failed (%s), falling back to ic_weighted",
-                             self.combine_mode, _ml_err)
-                return ic_weighted(factor_values, ic_map) if ic_map else equal_weight(factor_values)
-
-        # composite mode
-        method = self._method
-        if method == "intersection":
-            return intersection_alpha(
-                factor_values,
-                top_fraction=self.intersection_top_fraction,
-                primary_factor=self.intersection_primary,
-            )
-        elif method == "ic_weighted" and ic_map:
-            return ic_weighted(factor_values, ic_map)
-        else:
-            if method == "ic_weighted" and not ic_map:
-                _log.info("IC cache unavailable, falling back to equal_weight")
-            return equal_weight(factor_values)
+        # 记录日志
+        _log.info(f"alpha: {self.combine_mode} -> {alpha_raw.notna().sum()} stocks (IC filter={ic_map is not None})")
+        return alpha_raw
 
 
     def combine_regime(self, factor_values, ic_map=None, regime_label=None, regime_probs=None):

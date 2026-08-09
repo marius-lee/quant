@@ -1,0 +1,42 @@
+# .pre-commit-config.yaml
+# P2-6 fix: pre-commit hooks for code quality
+# 安装: pre-commit install
+# 运行: pre-commit run --all-files
+
+repos:
+  # ruff: 快速 linting + 格式化 (替代 flake8 + black + isort)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.0
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  # mypy: 静态类型检查
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.10.0
+    hooks:
+      - id: mypy
+        args: [--strict, --show-error-codes, --ignore-missing-imports, quant/]
+        additional_dependencies: [types-requests, types-psycopg2]
+
+  # pytest: 跑测试 (fast subset for pre-commit, full in CI)
+  - repo: local
+    hooks:
+      - id: pytest-fast
+        name: pytest (fast subset)
+        entry: bash -c 'PYTHONPATH=. .venv/bin/python -m pytest test/ -q --tb=no -x -k "not slow"'
+        language: system
+        pass_filenames: false
+        stages: [commit]
+
+  # trailing whitespace / end-of-file
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: debug-logic

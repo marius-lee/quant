@@ -14,7 +14,9 @@ _root = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, _root)
 
 import multiprocessing as mp
+import pandas as pd
 from quant.utils.logger import get_logger
+from quant.config.constants import _require_cfg
 
 _log = get_logger("evaluation.parallel")
 
@@ -93,7 +95,6 @@ def parallel_evaluate(n_workers=None, n_symbols=500, lookback=None, date_str=Non
     Returns:
         dict[factor_name] = stats_dict
     """
-    import pandas as pd
     from quant.factor.compute import _PRICE_FN_MAP, _FUNDAMENTAL_FN_MAP
 
     all_factor_names = list(_PRICE_FN_MAP.keys()) + list(_FUNDAMENTAL_FN_MAP.keys())

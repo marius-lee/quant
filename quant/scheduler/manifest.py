@@ -84,7 +84,7 @@ _DAYLINE: list[TaskSpec] = [
     TaskSpec(
         name="monitor", label="盘中风控", schedule="09:35-15:00",
         window=(time(9, 30), time(15, 0)),
-        grace_s=21600, timeout_s=None,   # 长驻窗口任务, 随窗口自然结束
+        grace_s=21600, timeout_s=21600,   # P0-11 fix: 原 None, 导致_check_timeouts 无法检测守护线程死锁
         mode="monitor", group="盘中",
         desc="每30s轮询 止损/止盈/熔断, 触发后立即卖出 (窗口结束自退)",
     ),
@@ -102,7 +102,7 @@ _DAYLINE: list[TaskSpec] = [
     TaskSpec(
         name="reconcile", label="日终对账", schedule="15:05",
         window=(time(15, 5), time(16, 0)),
-        depends_ok=("monitor",),   # v428: monitor 自然结束 (ok) 才对账
+        depends_attempt=("monitor",),   # P0-11 fix: monitor failed 也执行对账 (原 depends_ok 需 monitor==ok)
         grace_s=600, timeout_s=600,
         mode="inline", group="盘后",
         desc="OMS 对账闭环: 持仓/现金/订单三账核对, break 超阈值告警",

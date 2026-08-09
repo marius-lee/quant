@@ -12,7 +12,7 @@ from quant.execution.stop_loss import RiskManager
 _ATR = 8.0
 
 
-def _atr(sym, period=20):
+def _atr(sym, period=20, as_of=None):
     return _ATR
 
 

@@ -183,8 +183,20 @@ def _iterative_clip(w, max_single, max_iter=20):
         over = w > max_single
         if not over.any():
             break
-        if over.all():  # 全超限 → 等权 (避免死循环)
-            return np.ones(len(w)) / len(w)
+        if over.all():  # P1-11 fix: 全超限, clip 到 max_single 后判断可行性
+            w = np.full(len(w), max_single)
+            total = w.sum()
+            if total >= 1.0:
+                w = w / total  # 可行: 归一后仍 ≤ max_single
+                break
+            # 不可行: max_single * n < 1, 无法同时满足 sum=1 和 ≤ max_single
+            logger = get_logger("optimizer.portfolio")
+            logger.warning(
+                "iterative_clip: infeasible constraint max_single=%.4f for %d stocks "
+                "(max_single*n=%.4f < 1), returning clipped weights (sum=%.4f < 1)",
+                max_single, len(w), total, total
+            )
+            return w
         w[over] = max_single
         s = w.sum()
         if s <= 0:

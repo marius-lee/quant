@@ -28,10 +28,10 @@ def _run(today: str):
         from quant.pipeline import generate_signals
         from quant.factor.store import FactorStore
         from quant.config.paths import FACTOR_CACHE_DB
-        from quant.backtest.context import LiveContext
+        from quant.backtest.context import ExecutionContext
 
-        # test-v398: 实盘复用 LiveContext — engine/cost_model/constructor 只建一次
-        _live_ctx = LiveContext()
+        # 实盘复用 ExecutionContext — engine/cost_model/constructor 只建一次
+        _ctx = ExecutionContext(suppress_push=False)
 
         # ADR-037: 冷却期过滤提前到信号生成阶段
         # 此前冷却过滤只在 ExecutionModel.run() 执行阶段，冷却标的仍出现在
@@ -46,7 +46,7 @@ def _run(today: str):
         result = generate_signals(
             date_str=today, skip_pull=True, factor_store=fs,
             exclude_symbols=cooloff,
-            ctx=_live_ctx.to_backtest_context(),
+            ctx=_ctx,
         )
         fs.close()
         targets = result.get("target_positions", [])

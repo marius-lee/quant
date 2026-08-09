@@ -49,7 +49,7 @@ class NoopBackend(CacheBackend):
         val = self._cache.get(key)
         if val:
             ts, data = val
-            if time.time() - ts < 3600:
+            if time.time() < ts:
                 return data
             del self._cache[key]
         return None
@@ -75,9 +75,11 @@ class NoopBackend(CacheBackend):
             return True
         tokens, last = bucket
         elapsed = now - last
-        tokens = min(cap, tokens + int(elapsed / window_sec * max_calls))
-        if tokens > 0:
-            self._buckets[namespace] = (tokens - 1, now)
+        # P1-4 fix: float tokens (支持小数 refil 速率), 而非 int() 截断导致永不补充
+        tps = max_calls / window_sec
+        tokens = min(cap, tokens + elapsed * tps)
+        if tokens >= 1.0:
+            self._buckets[namespace] = (tokens - 1.0, now)
             return True
         # 被拒绝时依然更新 last — 防止 last 冻结导致 elapsed 不增加，tokens 永不 refill。
         # 来源: 2026-07-21 tushare 超限全链路根因分析
@@ -87,7 +89,7 @@ class NoopBackend(CacheBackend):
     def acquire_lock(self, lock_name: str, ttl: int) -> bool:
         if lock_name in self._cache:
             ts, _ = self._cache[lock_name]
-            if time.time() - ts < ttl:
+            if time.time() < ts:
                 return False
         self._cache[lock_name] = (time.time() + ttl, True)
         return True

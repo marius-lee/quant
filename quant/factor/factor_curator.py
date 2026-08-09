@@ -115,14 +115,6 @@ _CURATED_FACTORS: list[dict] = [
         "direction": "negative",
         "category": "波动率",
     },
-    # ── 华安证券金工 2024 ──
-    {
-        "name": "turnover_accel",
-        "expression": "(volume/ts_mean(volume, 5))/(ts_mean(volume, 5)/ts_mean(volume, 10)) - 1",
-        "source": "华安金工 2024 — 换手率加速度因子, IC=-10.5%, IR=4.29",
-        "direction": "negative",
-        "category": "量价",
-    },
     # ── 东方证券金工 2015 (Chordia et al. 2007) ──
     {
         "name": "abn_turnover_resid",
@@ -401,7 +393,10 @@ class FactorCurator:
                 else:
                     fn = compile_factor(expr)
             except Exception as e:
-                _log.warning(f"curator: compile failed for {cf['name']}: {e}")
+                _log.error(f"curator: compile failed for {cf['name']} (expr={cf['expression']}): {e}", exc_info=True)
+                _log.info(f"curator: marking {cf['name']} as compilation_failed")
+                results.append({**cf, "mean_ic": 0, "icir": 0, "n_obs": 0,
+                                "verdict": "compilation_failed"})
                 continue
 
             # 逐日计算 IC
@@ -418,7 +413,8 @@ class FactorCurator:
                     ic, _ = spearmanr(fv[common], fr[common])
                     if not np.isnan(ic):
                         ic_vals.append(ic)
-                except Exception:
+                except Exception as _daily_err:
+                    _log.debug(f"curator: daily eval failed for {cf['name']} on {d}: {_daily_err}")
                     continue
 
             if len(ic_vals) < 10:

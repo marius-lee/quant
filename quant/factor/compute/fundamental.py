@@ -180,11 +180,11 @@ def compute_analyst_consensus(fundamentals: "pd.DataFrame", date: str, aux=None)
 _ALLOWED_FINANCIAL_TABLES = {"financial_income", "financial_balance", "financial_cashflow"}
 
 
-def _get_financial_historical(table: str, date: str, forward_days: int = 90) -> "pd.DataFrame":
-    """Query quarterly financial data up to date (+forward_days for late filings).
+def _get_financial_historical(table: str, date: str, forward_days: int = 0) -> "pd.DataFrame":
+    """Query quarterly financial data up to date (PIT-safe, no forward-looking).
 
-    季报公布有延迟 (Q1 在 4月底, Q2 在 8月底, Q3 在 10月底, 年报在次年 4月底),
-    所以用 anunciate_date <= 实际日期 + 90天 来包含已公布但尚未到报告期的季报.
+    P1-6 fix: 移除 +90d forward_days (前视偏差). 仅查询 stat_date <= date 的已发布数据.
+    季报公告日延迟需另行处理 (中期: anunciate_date <= date).
 
     安全: 表名白名单校验，防止 SQL 注入。
     """
@@ -680,8 +680,9 @@ def compute_asset_growth(fundamentals, date, financials=None):
         SELECT symbol, stat_date, total_assets
         FROM financial_balance
         WHERE symbol IN ({_ph})
+          AND stat_date <= ?
         ORDER BY stat_date DESC
-    """, _syms).fetchall()
+    """, (*_syms, date)).fetchall()
 
     # 按 symbol 分组, 取最新和去年同期
     df_hist = pd.DataFrame(rows, columns=['symbol', 'stat_date', 'total_assets'])
@@ -1023,9 +1024,10 @@ def compute_ocfp(fundamentals, date, financials=None):
         f"""SELECT symbol, stat_date, net_operate_cash_flow
             FROM financial_cash_flow
             WHERE stat_date >= date(?, '-1 year')
+              AND stat_date <= ?
               AND symbol IN ({placeholders})
             ORDER BY symbol, stat_date""",
-        _conn, params=[date] + valid_syms
+        _conn, params=[date, date] + valid_syms
     )
     if not cf_df.empty:
         for sym in valid_syms:

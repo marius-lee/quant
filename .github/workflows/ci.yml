@@ -1,0 +1,77 @@
+# .github/workflows/ci.yml
+# P2-6 fix: Complete CI pipeline with lint + type check + full test suite
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  lint-and-typecheck:
+    name: Lint + Type Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install ruff mypy pytest pytest-cov
+
+      - name: Run ruff (lint + format)
+        run: ruff check quant/ test/ && ruff format --check quant/ test/
+
+      - name: Run mypy (strict mode)
+        run: mypy --strict --show-error-codes --ignore-missing-imports quant/
+
+  test:
+    name: Full Test Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-cov pytest-benchmark
+
+      - name: Run full test suite
+        run: PYTHONPATH=. python -m pytest test/ -q --tb=short --cov=quant --cov-report=term-missing --cov-fail-under=80
+
+  # 额外: 性能基准测试 (仅 main 分支, 不阻塞 PR)
+  benchmark:
+    name: Performance Benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run benchmarks
+        run: PYTHONPATH=. python -m pytest test/ -v --benchmark-only --benchmark-sort=mean --benchmark-columns=min,max,mean,stddev

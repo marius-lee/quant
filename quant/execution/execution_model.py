@@ -182,9 +182,12 @@ class ExecutionModel(ABC):
         cash = ctx.engine.get_cash(ctx.strategy)
         position_value = 0.0
         for p in positions:
-            px = ctx.prices.get(p["symbol"], p.get("price", 0))
+            px = ctx.prices.get(p["symbol"])
             if px is None or pd.isna(px) or px <= 0:
-                px = p.get("price", 0)
+                # P1-15 fix: 缺报价 → 阻断交易, 估值视为 0 (不使用成本价)
+                logger = get_logger("execution.model")
+                logger.warning(f"P1-15: no market price for {p['symbol']}, excluding from valuation")
+                continue
             position_value += p["shares"] * float(px)
         total_capital = round(cash + position_value, 2)
 

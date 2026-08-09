@@ -45,8 +45,11 @@ def generate_report(
         # B-15 fix: TradeRepo 只有 _conn() (此前调不存在的 get_connection()
         # → AttributeError 被裸 except 吞掉, daily_equity Sharpe 路径永远走 fallback)
         _conn = repo._conn()
+        from quant.config.constants import _require_cfg
+        _strategy = _require_cfg("strategy.name")
         eq_rows = _conn.execute(
-            "SELECT date, total_equity FROM daily_equity ORDER BY date"
+            "SELECT date, total_equity FROM daily_equity WHERE strategy=? ORDER BY date",
+            (_strategy,)
         ).fetchall()
         _conn.close()
         if len(eq_rows) >= 20:

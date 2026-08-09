@@ -236,7 +236,7 @@ def _run(today: str):
 
     # ── Step A.6: 因子冗余检测 (P1-1, IC-rank 相关性去重) ──
     # 用 factor_ic_daily 序列计算 pairwise Spearman ρ; |ρ| > 阈值 → IC 低的因子降级
-    from quant.factor.state_manager import FactorStateManager
+    from quant.factor.state_machine import FactorStateManager
     fsm = FactorStateManager()
     CORR_REDUNDANT_THRESHOLD = _require_cfg("attribution.corr_redundant_threshold")
     _ap = f_repo.get_all_by_status(("active", "probation"))

@@ -492,15 +492,17 @@ class TestMicroRegimeLotCaps:
         })
 
     def test_micro_sideways_cap_limits_concentration(self):
-        """震荡市 max_lots=5: 2 只等权股, 每只最多分配 5 手."""
+        """震荡市 max_lots=5: 2 只等权股, max_single=30% 限制 → 每只 3 手 (30%*2=60% capital allocated, 40% 现金保留)."""
         pc = self._pc_micro()
         alpha = pd.Series([1.0, 1.0], index=["A", "B"])
         prices = pd.Series([10.0, 10.0], index=["A", "B"])
         pf = pc.construct(alpha, prices, 10000, regime_label="sideways")
         assert pf.method == "score_weighted"
         assert pf.positions == 2
-        assert pf.lots["A"] == 5
-        assert pf.lots["B"] == 5
+        # P1-11 fix: max_single=0.30, n=2 → n*max_single=0.6<1, infeasible → 30% each, sum=0.6
+        assert pf.lots["A"] == 3
+        assert pf.lots["B"] == 3
+        assert pf.invested == 6000
 
     def test_micro_bear_cap_limits_concentration(self):
         """熊市 max_lots=2: 2 只等权股, 每只最多 2 手, 剩余现金保留."""

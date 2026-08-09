@@ -40,10 +40,15 @@ class TestStateMachine:
         assert orch._should_run(ALL["signals"], time(9, 0), 0,
                                 _st(signals="ok"), {}) is False
 
-    def test_failed_blocks_rerun(self):
-        """真失败不自动重试 (需人工排查) — v428 保持."""
+    def test_failed_allows_rerun_within_budget(self):
+        """P0-11 fix: failed 允许在 max_retries 预算内重试 (原: 永不重试).
+        _MAX_TASK_RETRIES=2: aborted<2 可重试, aborted>=2 阻塞."""
         assert orch._should_run(ALL["signals"], time(9, 0), 0,
-                                _st(signals="failed"), {}) is False
+                                _st(signals="failed"), {}) is True
+        assert orch._should_run(ALL["signals"], time(9, 0), 0,
+                                _st(signals="failed"), _st(signals=1)) is True
+        assert orch._should_run(ALL["signals"], time(9, 0), 0,
+                                _st(signals="failed"), _st(signals=2)) is False
 
     def test_running_blocks_retrigger(self):
         assert orch._should_run(ALL["signals"], time(9, 0), 0,
@@ -63,14 +68,15 @@ class TestDependencies:
         assert orch._should_run(ALL["execute"], time(9, 30), 0,
                                 _st(signals="aborted"), {}) is True
 
-    def test_reconcile_requires_monitor_ok(self):
-        """v428: reconcile 严格依赖 monitor==ok (原: 无依赖, 注释声称后续)."""
+    def test_reconcile_runs_after_monitor_attempt(self):
+        """P0-11 fix: reconcile 依赖 attempt[monitor] — monitor 完成(ok/failed)即可,
+        运行中(running)或未尝试时等待."""
         assert orch._should_run(ALL["reconcile"], time(15, 5), 0,
                                 _st(monitor="running"), {}) is False
         assert orch._should_run(ALL["reconcile"], time(15, 5), 0,
                                 _st(monitor="ok"), {}) is True
         assert orch._should_run(ALL["reconcile"], time(15, 5), 0,
-                                _st(monitor="failed"), {}) is False
+                                _st(monitor="failed"), {}) is True
 
 
 class TestRetryBudget:

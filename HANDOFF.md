@@ -1646,3 +1646,33 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
   - 原语预计算内存占用降低 ~60%，因子计算单日耗时预期降低 30-50%
   - 预聚合表增量刷新每日仅需 ~10-20 秒，不阻塞主流程
 - **后续**: 可扩展 `daily_zscore`, `daily_rank` 等高级统计量；支持异步后台刷新
+
+
+## 2026-08-12: P2 增量协方差 + P3 风险厌恶校准缓存 (test-v458)
+- **P2: IncrementalCovariance 增量协方差** (`quant/risk/covariance.py`):
+  - 新增 `IncrementalCovariance` 类，维护滚动窗口 Ledoit-Wolf 协方差
+  - 增量更新 O(N²) 每日替代全量 O(N³) 重算
+  - `full_recalc_interval` (默认 20) 控制定期全量重算修正数值漂移
+  - 线程安全 (`threading.Lock`) + 增量更新 + 定期全量重算修正数值漂移
+  - API: `update(daily_returns: pd.Series) -> pd.DataFrame`, `get_covariance()`, `reset()`
+  - 后续可在 `loop.py` / `portfolio.py` 中集成替代 `covariance_subset()` 全量重算
+
+- **P3: 风险厌恶校准缓存** (`quant/optimizer/portfolio.py`):
+  - 模块级 `_CALIBRATION_CACHE: dict[tuple, float]` 存储校准结果
+  - 缓存键: `(alpha_hash, cov_hash, capital, max_positions, max_single)`
+    - `alpha_hash`: 前 20 个 alpha 值的 MD5
+    - `cov_hash`: 协方差对角线+上三角的 MD5
+    - `capital`: 保留百元位
+  - 命中时直接返回缓存 λ，避免 5 次矩阵求逆 (grid search)
+  - 记录 cache hit 日志: `[calibrate] cache hit: λ=2.0 (key=...)`
+  - 缓存命中率预期 > 80% (同一回测内 alpha/cov 变化小)
+
+- **预期效果**:
+  - 协方差计算: O(N³) → O(N²) 日增量 + 周期性 O(N³)，预期 60-80% 耗时降低
+  - 风险厌恶校准: 5 次矩阵求逆 → 缓存命中 <0.1ms，预期 80%+ 命中率
+  - 综合预期: 回测总耗时进一步压缩 20-30%
+
+- **后续集成点** (待完成):
+  - `loop.py`: 用 `IncrementalCovariance` 替代 `covariance_subset()` 全量重算
+  - `portfolio.py`: `construct()` 中传入增量协方差实例而非 None
+  - 需在 `construct()` 入口处初始化/复用 `IncrementalCovariance` 实例

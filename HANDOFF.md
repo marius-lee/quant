@@ -1739,3 +1739,30 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
   - DB round-trip 从 O(N) 降为 O(1)，N=买单数量
   - 买单 100 单时，DB 查询从 100 次 → 1 次，预期执行阶段加速 50%+
   - 兼容性: 保留原 `_check_ex_dividend` 单查版本供兼容
+
+
+## 2026-08-12: P5 批量 DB 操作 (test-v462) + P7 并行因子计算确认已实现 (test-v465)
+- **P5: 批量 DB 操作** (test-v462):
+  - `quant/execution/engine.py`: 新增 `_check_ex_dividend_batch()` 批量查询
+  - 单次 SQL 查询所有 symbol 的前收盘价，内存中批量判定除权
+  - DB round-trip 从 O(N) 降为 O(1)，预期执行阶段加速 50%+
+
+- **P7: 并行因子计算** (test-v458, test-v465):
+  - 确认已在 `quant/factor/store.py` 的 `materialize()` 中实现
+  - 使用 `multiprocessing.Pool` 并行按日期分片计算因子
+  - 共享数据通过临时 Parquet 传递，支持 `workers` 参数控制并行度
+  - 默认 `workers = min(cpu_count() // 2, 4)` (M1 推荐 2)
+  - 已在 `quant/scheduler/factor_cache.py` 的 `_run()` 中调用
+
+- **整体优化完成度**:
+  | 优化项 | 版本 | 状态 | 预期收益 |
+  |--------|------|------|----------|
+  | P1 持久化缓存 | v461 | ✅ | 30-50% |
+  | P2 增量协方差 | v458 | ✅ | 60-80% |
+  | P3 风险厌恶缓存 | v458 | ✅ | 80%+ 命中率 |
+  | P4 增量 IC | v460 | ✅ | 50%+ |
+  | P5 批量 DB | v462 | ✅ | 50%+ |
+  | P6 统一上下文 | v457 | ✅ | 架构清理 |
+  | P7 并行因子 | v458 | ✅ | 2-3x |
+
+- **综合预期**: 回测总耗时从 ~180s → **~25-35s** (5-7x 加速)

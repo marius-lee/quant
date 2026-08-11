@@ -53,9 +53,9 @@ def compute_turnover_vol(data: pd.DataFrame, date: str,
 # ═══════════════════════════════════════════════════════════
 
 def compute_mif(data: pd.DataFrame, date: str,
-                window: int = None) -> pd.Series:
+                window: int = None, win: int = None) -> pd.Series:
     """MIF: |隔夜收益| × |换手率偏离|/σ (标准化偏离替代相关性, test-v340: Fix文档)."""
-    w = window or HF_MIF_WINDOW
+    w = window or win or HF_MIF_WINDOW
     close, open_, t = data["close"], data["open"], data["turnover"]
     if date not in close.index:
         return pd.Series(np.nan, index=close.columns, name="mif")
@@ -87,9 +87,9 @@ def compute_mif(data: pd.DataFrame, date: str,
 # ═══════════════════════════════════════════════════════════
 
 def compute_idio_turnover_vol(data: pd.DataFrame, date: str,
-                              window: int = None) -> pd.Series:
+                              window: int = None, win: int = None) -> pd.Series:
     """特质换手率波动: 截面去均值 turnover 的时序 std."""
-    w = window or HF_IDIO_VOL_WINDOW
+    w = window or win or HF_IDIO_VOL_WINDOW
     t = data["turnover"]
     if date not in t.index:
         return pd.Series(np.nan, index=t.columns, name="idio_turnover_vol")
@@ -148,9 +148,9 @@ def compute_turnover_accel_5_20(data: pd.DataFrame, date: str,
 # ═══════════════════════════════════════════════════════════
 
 def compute_vp_divergence(data: pd.DataFrame, date: str,
-                          window: int = None) -> pd.Series:
+                          window: int = None, win: int = None) -> pd.Series:
     """量价背离度: -corr(close.pct_change(), volume.pct_change(), window) 的变化率."""
-    w = window or HF_VP_DIV_WINDOW
+    w = window or win or HF_VP_DIV_WINDOW
     close, volume = data["close"], data["volume"]
     if date not in close.index:
         return pd.Series(np.nan, index=close.columns, name="vp_divergence")

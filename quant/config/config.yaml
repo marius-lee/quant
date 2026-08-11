@@ -240,6 +240,9 @@ factor:
     cache_compresslevel: 1
     cache_worker_threshold: 50
     cache_checkpoint_ttl_sec: 86400
+    # 内存 LRU 缓存条目上限 (M1 8GB 硬约束)
+    # 来源: 每条目 ~20-50MB (5000 symbols × 2000 days × 滚动统计量), 8 条目 = 160-400MB 峰值
+    cache_max_memory_entries: 8
     redundancy_corr_threshold: 0.7
   debt_ratio:
     max: 2
@@ -325,6 +328,9 @@ factor:
     window: 20
     width_multiplier: 2.0
     squeeze_lookback: 125
+  registry:
+    dsn: "sqlite://./quant/data/factor_registry.db"
+
 optimizer:
   method: hrp
   rebalance_freq: daily

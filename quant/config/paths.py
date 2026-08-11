@@ -34,3 +34,11 @@ OPTUNA_DIR     = DATA_DIR
 # ── 便捷：判断存在 ──
 def exists(path: str) -> bool:
     return _os.path.exists(path)
+
+# ── MLflow / BentoML 路径 (v436 Phase 3) ──
+MLFLOW_TRACKING_URI = _os.environ.get("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
+BENTOML_STORE_PATH = _os.path.join(DATA_DIR, "bentoml")
+
+# ── MLflow / BentoML 路径 (v436 Phase 3) ──
+MLFLOW_TRACKING_URI = _os.environ.get("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
+BENTOML_STORE_PATH = _os.path.join(DATA_DIR, "bentoml")

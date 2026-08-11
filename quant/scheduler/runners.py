@@ -43,14 +43,13 @@ def _get_today_status(today: str) -> dict:
     返回: {"signals": "ok", "execute": "failed", ...}
     无该任务记录则 key 不存在.
     """
-    conn = sqlite3.connect(MARKET_DB)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
-    rows = conn.execute(
-        "SELECT task_name, status FROM task_runs WHERE date=? ORDER BY id DESC",
-        (today,)
-    ).fetchall()
-    conn.close()
+    with sqlite3.connect(MARKET_DB) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
+        rows = conn.execute(
+            "SELECT task_name, status FROM task_runs WHERE date=? ORDER BY id DESC",
+            (today,)
+        ).fetchall()
     status = {}
     for row in rows:
         if row[0] not in status:
@@ -60,28 +59,26 @@ def _get_today_status(today: str) -> dict:
 
 def _get_today_aborted(today: str) -> dict:
     """查询今日各任务 aborted 次数 (B-23: 重试风暴抑制)."""
-    conn = sqlite3.connect(MARKET_DB)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
-    rows = conn.execute(
-        "SELECT task_name, COUNT(*) FROM task_runs WHERE date=? AND status='aborted' GROUP BY task_name",
-        (today,)
-    ).fetchall()
-    conn.close()
+    with sqlite3.connect(MARKET_DB) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
+        rows = conn.execute(
+            "SELECT task_name, COUNT(*) FROM task_runs WHERE date=? AND status='aborted' GROUP BY task_name",
+            (today,)
+        ).fetchall()
     return dict(rows)
 
 
 def _get_monitor_failures(today: str) -> int:
     """今日 monitor 累计 failed 次数 (崩溃风暴保护).
     v369: aborted (僵尸清理产生) 不计预算, 仅 real crash (failed) 计入."""
-    conn = sqlite3.connect(MARKET_DB)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
-    count = conn.execute(
-        "SELECT COUNT(*) FROM task_runs WHERE date=? AND task_name='monitor' AND status='failed'",
-        (today,)
-    ).fetchone()[0]
-    conn.close()
+    with sqlite3.connect(MARKET_DB) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
+        count = conn.execute(
+            "SELECT COUNT(*) FROM task_runs WHERE date=? AND task_name='monitor' AND status='failed'",
+            (today,)
+        ).fetchone()[0]
     return count
 
 
@@ -130,17 +127,16 @@ def _cleanup_evening_children(today: str):
     """晚间链子进程崩溃时, 将其残留的 running 子任务标为 failed.
     v382: 信号杀死进程 → Python finally 不执行 → task_runs 留 running 僵尸 → 后续调度永久阻塞."""
     try:
-        conn = sqlite3.connect(MARKET_DB)
-        conn.execute("PRAGMA journal_mode=WAL")
-        ph = ",".join("?" * len(_EVENING_CHILDREN))
-        n = conn.execute(
-            f"UPDATE task_runs SET status='failed', finished_at=datetime('now','localtime'), "
-            f"error='晚间链子进程崩溃(信号终止)' "
-            f"WHERE date=? AND status='running' AND task_name IN ({ph})",
-            [today] + _EVENING_CHILDREN
-        ).rowcount
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(MARKET_DB) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            ph = ",".join("?" * len(_EVENING_CHILDREN))
+            n = conn.execute(
+                f"UPDATE task_runs SET status='failed', finished_at=datetime('now','localtime'), "
+                f"error='晚间链子进程崩溃(信号终止)' "
+                f"WHERE date=? AND status='running' AND task_name IN ({ph})",
+                [today] + _EVENING_CHILDREN
+            ).rowcount
+            conn.commit()
         if n:
             _log.warning(f"[{today}] cleaned {n} stuck child tasks after evening chain crash")
     except Exception as _e:
@@ -158,31 +154,30 @@ def _cleanup_zombie_tasks():
     my_pid = os.getpid()
     today = datetime.now().strftime("%Y-%m-%d")
 
-    conn = sqlite3.connect(MARKET_DB)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
+    with sqlite3.connect(MARKET_DB) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
 
-    rows = conn.execute(
-        "SELECT id, task_name, pid FROM task_runs WHERE date=? AND status='running'",
-        (today,)
-    ).fetchall()
+        rows = conn.execute(
+            "SELECT id, task_name, pid FROM task_runs WHERE date=? AND status='running'",
+            (today,)
+        ).fetchall()
 
-    for row in rows:
-        rid, task_name, pid = row
-        if pid is None or pid == 0:
-            # 无 PID 行 → 直接删 (可能是历史脏数据)
-            _log.warning(f"cleanup: deleting task_runs#{rid} ({task_name}) no pid")
-            conn.execute("DELETE FROM task_runs WHERE id=?", (rid,))
-            continue
-        if pid == os.getpid():
-            # 自己进程的任务 → 保留
-            continue
-        if not _pid_alive(pid):
-            _log.warning(f"cleanup: dead pid={pid} task={task_name} → delete task_runs#{rid}")
-            conn.execute("DELETE FROM task_runs WHERE id=?", (rid,))
+        for row in rows:
+            rid, task_name, pid = row
+            if pid is None or pid == 0:
+                # 无 PID 行 → 直接删 (可能是历史脏数据)
+                _log.warning(f"cleanup: deleting task_runs#{rid} ({task_name}) no pid")
+                conn.execute("DELETE FROM task_runs WHERE id=?", (rid,))
+                continue
+            if pid == os.getpid():
+                # 自己进程的任务 → 保留
+                continue
+            if not _pid_alive(pid):
+                _log.warning(f"cleanup: dead pid={pid} task={task_name} → delete task_runs#{rid}")
+                conn.execute("DELETE FROM task_runs WHERE id=?", (rid,))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
     _log.info("zombie task cleanup done")
 
 
@@ -214,14 +209,24 @@ class BaseRunner:
             _log.info(f"[{s.name}] already running, skip")
             return
         try:
-            import importlib as _importlib
-            mod = _importlib.import_module(s.subprocess_cmd)
-            mod._run()
+            if s.mode == "subprocess":
+                import importlib as _importlib
+                mod = _importlib.import_module(s.subprocess_cmd)
+            elif s.name in ("snapshot_open", "snapshot_close"):
+                from quant.scheduler.snapshot import snapshot_open, snapshot_close
+                fn = snapshot_open if s.name == "snapshot_open" else snapshot_close
+                fn(self.today)
+                _tk_finish(s.name, self.today, "ok")
+                return
+            else:
+                # inline: quant.scheduler.{task_name}
+                mod = __import__(f"quant.scheduler.{s.name}", fromlist=["_run"])
+            mod._run(self.today)
+            _tk_finish(s.name, self.today, "ok")
         except Exception as e:
             _log.exception(f"[{self.today}] {s.name} crashed: {e}")
+            _tk_finish(s.name, self.today, "failed", error=str(e))
             raise
-        finally:
-            _tk_finish(s.name, self.today, "ok")
 
 
 class InlineRunner(BaseRunner):
@@ -258,8 +263,8 @@ class MonitorRunner(BaseRunner):
 
     def __init__(self, today: str):
         super().__init__(today)
-        self._monitor_thread: Optional[threading.Thread] = None
-        self._monitor_stop = threading.Event()
+        self._monitor_thread: Optional[_thr.Thread] = None
+        self._monitor_stop = _thr.Event()
 
     def run(self) -> None:
         """启动 monitor daemon，阻塞至窗口结束."""
@@ -273,7 +278,7 @@ class MonitorRunner(BaseRunner):
             return
 
         self._monitor_stop.clear()
-        self._monitor_thread = threading.Thread(
+        self._monitor_thread = _thr.Thread(
             target=self._monitor_daemon, args=(self.today,),
             daemon=True, name="monitor-daemon"
         )
@@ -293,10 +298,10 @@ class MonitorRunner(BaseRunner):
 
     def _monitor_daemon(self, today: str):
         """盘中循环: 每 30s 轮询 止损/止盈/熔断."""
-        from quant.scheduler.monitor import monitor_loop
+        from quant.scheduler.monitor import _run_continuous_inner
         _log.info(f"[{today}] monitor_loop started")
         try:
-            monitor_loop(today, self._monitor_stop)
+            _run_continuous_inner(today, self._monitor_stop)
         except Exception as e:
             _log.exception(f"[{today}] monitor_loop crashed: {e}")
         finally:

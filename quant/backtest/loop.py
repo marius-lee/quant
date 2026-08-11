@@ -770,6 +770,10 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             except Exception as _e:
                 _log.warning("backtest: reconcile final skipped (non-fatal): %s", _e)
 
+        # P1: 回测完成 → 释放 ztd 预计算缓存 (~80MB)
+        from quant.factor.compute.price._alternative import clear_ztd_cache
+        clear_ztd_cache()
+
         return {
             "equity_curve": equity_curve,        "diagnosis": diag,
 

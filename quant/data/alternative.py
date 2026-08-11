@@ -24,6 +24,7 @@ import json
 import hashlib
 import time
 import threading
+import sqlite3
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Any, Iterator, Union
@@ -551,6 +552,7 @@ def get_alternative_manager() -> AlternativeDataManager:
     with _alt_lock:
         if _alt_manager is None:
             _alt_manager = AlternativeDataManager()
+            register_builtin_sources()
         return _alt_manager
 
 
@@ -558,9 +560,13 @@ def get_alternative_manager() -> AlternativeDataManager:
 
 def register_builtin_sources():
     """注册内置数据源."""
-    mgr = get_alternative_manager()
+    _log.info("register_builtin_sources: starting")
+    global _alt_manager
+    mgr = _alt_manager  # 直接用已创建的实例，避免死锁
+    _log.info("register_builtin_sources: got manager")
     
     # 研报
+    _log.info("register_builtin_sources: registering research_report")
     mgr.register_source(ResearchReportSource(DataSourceConfig(
         name="research_report",
         source_type=DataSourceType.RESEARCH_REPORT,
@@ -568,8 +574,10 @@ def register_builtin_sources():
         table_name="alt_research_report",
         factor_prefix="alt_rpt_",
     )))
+    _log.info("register_builtin_sources: research_report registered")
     
     # 供应链
+    _log.info("register_builtin_sources: registering supply_chain")
     mgr.register_source(SupplyChainSource(DataSourceConfig(
         name="supply_chain",
         source_type=DataSourceType.SUPPLY_CHAIN,
@@ -577,8 +585,10 @@ def register_builtin_sources():
         table_name="alt_supply_chain",
         factor_prefix="alt_sc_",
     )))
+    _log.info("register_builtin_sources: supply_chain registered")
     
     # ESG
+    _log.info("register_builtin_sources: registering esg")
     mgr.register_source(ESGSource(DataSourceConfig(
         name="esg",
         source_type=DataSourceType.ESG,
@@ -586,6 +596,7 @@ def register_builtin_sources():
         table_name="alt_esg",
         factor_prefix="alt_esg_",
     )))
+    _log.info("register_builtin_sources: esg registered")
 
     _log.info("Built-in alternative data sources registered")
 

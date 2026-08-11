@@ -360,7 +360,7 @@ def compile_factor(expr: str) -> Callable:
     ast = Parser(tokens).parse()
     _log.debug("compiled: %s → %s", expr, ast)
 
-    def factor_fn(data: pd.DataFrame, date_str: str) -> pd.Series:
+    def factor_fn(data: pd.DataFrame, date_str: str, win: int = None) -> pd.Series:
         idx = data.columns.get_level_values(1).unique() if isinstance(data.columns, pd.MultiIndex) else data.columns
         if date_str not in data.index:
             return pd.Series(np.nan, index=idx, dtype=float)

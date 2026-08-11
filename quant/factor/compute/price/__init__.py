@@ -56,7 +56,22 @@ from quant.factor.compute.price._turnover import (
     compute_turnover_accel,
 )
 
-from quant.factor.compute.price._huanfang import compute_turnover_vol, compute_mif, compute_idio_turnover_vol, compute_turnover_accel_5_20, compute_vp_divergence
+from quant.factor.compute.price._huanfang import (
+    compute_turnover_vol,
+    compute_mif,
+    compute_idio_turnover_vol,
+    compute_turnover_accel_5_20,
+    compute_vp_divergence,
+)
+
+from quant.factor.compute.expr_compiler import compile_factor
+
+# 5 evaluating factors (from factor_curator) - compiled expressions
+_vp_divergence_fn = compile_factor("rank(close/ts_delay(close,1)-1) - rank(volume/ts_mean(volume, 20)-1)")
+_idio_vol_60d_fn = compile_factor("-ts_std(close/ts_delay(close,1)-1 - ts_mean(close/ts_delay(close,1)-1, 20), 60)")
+_smart_money_20d_fn = compile_factor("ts_mean((close-ts_delay(close,1))/ts_delay(close,1) * (volume/ts_mean(volume,5)), 20)")
+_trend_strength_fn = compile_factor("ts_mean(close/ts_delay(close,1)-1, 20) / ts_std(close/ts_delay(close,1)-1, 60)")
+_liquidity_shock_fn = compile_factor("-(volume/ts_mean(volume, 60) - 1) * abs(close/ts_delay(close,1)-1)")
 from quant.factor.compute.price._bb import compute_bb_pct_b, compute_bb_width, compute_bb_squeeze
 from quant.factor.compute.price._alternative import (  # noqa: F401
     _get_limit_pool,
@@ -180,6 +195,12 @@ _PRICE_FN_MAP = {
     "price_channel_position": (compute_price_channel_position, 20),
     "qlib_vema":              (compute_qlib_vema, 20),
     "wq_alpha_006":           (compute_wq_alpha_006, 10),
+    # 5 evaluating 因子 (从 factor_curator 迁移)
+    "vp_divergence":          (_vp_divergence_fn,          20),
+    "idio_vol_60d":           (_idio_vol_60d_fn,           60),
+    "smart_money_20d":        (_smart_money_20d_fn,        20),
+    "trend_strength":         (_trend_strength_fn,         60),
+    "liquidity_shock":        (_liquidity_shock_fn,        60),
 }
 
 

@@ -90,10 +90,12 @@ def compute_all_factors(data: pd.DataFrame, date: str,
             _plog.info(f"  computing {name}...")
         # 优先使用预计算算子 — 零 fallback: shortcut 必须成功
         # P2-1 fix: use_shortcut 控制是否走 FACTOR_SHORTCUT 缓存路径 (双路径一致性校验)
+        # Fix: check shortcut by factor name first (for compiled factors), then by function name
         from quant.factor.compute._primitives import FACTOR_SHORTCUT
         fn_name = getattr(fn, '__name__', '')
-        if use_shortcut and primitives is not None and fn_name in FACTOR_SHORTCUT:
-            shortcut_result = FACTOR_SHORTCUT[fn_name](primitives, date, win)
+        shortcut_key = name if name in FACTOR_SHORTCUT else (fn_name if fn_name in FACTOR_SHORTCUT else None)
+        if use_shortcut and primitives is not None and shortcut_key:
+            shortcut_result = FACTOR_SHORTCUT[shortcut_key](primitives, date, win)
             if shortcut_result is None:
                 raise ValueError(
                     f"factor {name}: shortcut returned None — "

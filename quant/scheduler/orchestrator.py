@@ -22,7 +22,7 @@ from quant.config.constants import _require_cfg
 from quant.monitor.metrics import metrics as _m
 from quant.utils.logger import get_logger
 from quant.config.paths import MARKET_DB
-from quant.scheduler.task_log import _pid_alive  # v424: 僵尸清理
+from quant.scheduler.task_log import _pid_alive, start as _tk_start, finish as _tk_finish  # v424: 僵尸清理
 from quant.scheduler.manifest import ALL, _PLAN_ORDER, TaskSpec
 from quant.scheduler.runners import (
     run_inline_tasks, run_monitor, run_evening_chain, run_weekly_eval,
@@ -43,14 +43,13 @@ def _get_today_status(today: str) -> dict:
     返回: {"signals": "ok", "execute": "failed", ...}
     无该任务记录则 key 不存在.
     """
-    conn = sqlite3.connect(MARKET_DB)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
-    rows = conn.execute(
-        "SELECT task_name, status FROM task_runs WHERE date=? ORDER BY id DESC",
-        (today,)
-    ).fetchall()
-    conn.close()
+    with sqlite3.connect(MARKET_DB) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
+        rows = conn.execute(
+            "SELECT task_name, status FROM task_runs WHERE date=? ORDER BY id DESC",
+            (today,)
+        ).fetchall()
     status = {}
     for row in rows:
         if row[0] not in status:
@@ -60,28 +59,26 @@ def _get_today_status(today: str) -> dict:
 
 def _get_today_aborted(today: str) -> dict:
     """查询今日各任务 aborted 次数 (B-23: 重试风暴抑制)."""
-    conn = sqlite3.connect(MARKET_DB)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
-    rows = conn.execute(
-        "SELECT task_name, COUNT(*) FROM task_runs WHERE date=? AND status='aborted' GROUP BY task_name",
-        (today,)
-    ).fetchall()
-    conn.close()
+    with sqlite3.connect(MARKET_DB) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
+        rows = conn.execute(
+            "SELECT task_name, COUNT(*) FROM task_runs WHERE date=? AND status='aborted' GROUP BY task_name",
+            (today,)
+        ).fetchall()
     return dict(rows)
 
 
 def _get_monitor_failures(today: str) -> int:
     """今日 monitor 累计 failed 次数 (崩溃风暴保护).
     v369: aborted (僵尸清理产生) 不计预算, 仅 real crash (failed) 计入."""
-    conn = sqlite3.connect(MARKET_DB)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
-    count = conn.execute(
-        "SELECT COUNT(*) FROM task_runs WHERE date=? AND task_name='monitor' AND status='failed'",
-        (today,)
-    ).fetchone()[0]
-    conn.close()
+    with sqlite3.connect(MARKET_DB) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
+        count = conn.execute(
+            "SELECT COUNT(*) FROM task_runs WHERE date=? AND task_name='monitor' AND status='failed'",
+            (today,)
+        ).fetchone()[0]
     return count
 
 
@@ -130,17 +127,16 @@ def _cleanup_evening_children(today: str):
     """晚间链子进程崩溃时, 将其残留的 running 子任务标为 failed.
     v382: 信号杀死进程 → Python finally 不执行 → task_runs 留 running 僵尸 → 后续调度永久阻塞."""
     try:
-        conn = sqlite3.connect(MARKET_DB)
-        conn.execute("PRAGMA journal_mode=WAL")
-        ph = ",".join("?" * len(_EVENING_CHILDREN))
-        n = conn.execute(
-            f"UPDATE task_runs SET status='failed', finished_at=datetime('now','localtime'), "
-            f"error='晚间链子进程崩溃(信号终止)' "
-            f"WHERE date=? AND status='running' AND task_name IN ({ph})",
-            [today] + _EVENING_CHILDREN
-        ).rowcount
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(MARKET_DB) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            ph = ",".join("?" * len(_EVENING_CHILDREN))
+            n = conn.execute(
+                f"UPDATE task_runs SET status='failed', finished_at=datetime('now','localtime'), "
+                f"error='晚间链子进程崩溃(信号终止)' "
+                f"WHERE date=? AND status='running' AND task_name IN ({ph})",
+                [today] + _EVENING_CHILDREN
+            ).rowcount
+            conn.commit()
         if n:
             _log.warning(f"[{today}] cleaned {n} stuck child tasks after evening chain crash")
     except Exception as _e:
@@ -158,31 +154,30 @@ def _cleanup_zombie_tasks():
     my_pid = _os.getpid()
     today = datetime.now().strftime("%Y-%m-%d")
 
-    conn = sqlite3.connect(MARKET_DB)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
+    with sqlite3.connect(MARKET_DB) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
 
-    rows = conn.execute(
-        "SELECT id, task_name, pid FROM task_runs WHERE date=? AND status='running'",
-        (today,)
-    ).fetchall()
+        rows = conn.execute(
+            "SELECT id, task_name, pid FROM task_runs WHERE date=? AND status='running'",
+            (today,)
+        ).fetchall()
 
-    for row in rows:
-        rid, task_name, pid = row
-        if pid is None or pid == 0:
-            # 无 PID 行 → 直接删 (可能是历史脏数据)
-            _log.warning(f"cleanup: deleting task_runs#{rid} ({task_name}) no pid")
-            conn.execute("DELETE FROM task_runs WHERE id=?", (rid,))
-            continue
-        if pid == os.getpid():
-            # 自己进程的任务 → 保留
-            continue
-        if not _pid_alive(pid):
-            _log.warning(f"cleanup: dead pid={pid} task={task_name} → delete task_runs#{rid}")
-            conn.execute("DELETE FROM task_runs WHERE id=?", (rid,))
+        for row in rows:
+            rid, task_name, pid = row
+            if pid is None or pid == 0:
+                # 无 PID 行 → 直接删 (可能是历史脏数据)
+                _log.warning(f"cleanup: deleting task_runs#{rid} ({task_name}) no pid")
+                conn.execute("DELETE FROM task_runs WHERE id=?", (rid,))
+                continue
+            if pid == os.getpid():
+                # 自己进程的任务 → 保留
+                continue
+            if not _pid_alive(pid):
+                _log.warning(f"cleanup: dead pid={pid} task={task_name} → delete task_runs#{rid}")
+                conn.execute("DELETE FROM task_runs WHERE id=?", (rid,))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
     _log.info("zombie task cleanup done")
 
 
@@ -196,17 +191,15 @@ def _check_timeouts(today: str):
     v426: 任何日期 running + pid 死 → 也自愈 (不限定今日).
     """
     from quant.scheduler.manifest import ALL
-    conn = sqlite3.connect(MARKET_DB)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
+    with sqlite3.connect(MARKET_DB) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
 
-    # 1. 所有 running 任务 (包括今日和历史)
-    all_running = conn.execute(
-        "SELECT id, task_name, started_at, date, pid FROM task_runs "
-        "WHERE status='running'",
-    ).fetchall()
-
-    conn.close()
+        # 1. 所有 running 任务 (包括今日和历史)
+        all_running = conn.execute(
+            "SELECT id, task_name, started_at, date, pid FROM task_runs "
+            "WHERE status='running'",
+        ).fetchall()
 
     for row in all_running:
         rid, task_name, started_at, task_date, pid = row
@@ -217,13 +210,12 @@ def _check_timeouts(today: str):
         if pid is not None:
             import quant.scheduler.orchestrator as _orch
             if not _orch._pid_alive(pid):
-                conn2 = sqlite3.connect(MARKET_DB)
-                conn2.execute(
-                    "UPDATE task_runs SET status='aborted', finished_at=datetime('now','localtime'), "
-                    "error='进程已死 (pid={})' WHERE id=?".format(pid),
-                    (rid,))
-                conn2.commit()
-                conn2.close()
+                with sqlite3.connect(MARKET_DB) as conn2:
+                    conn2.execute(
+                        "UPDATE task_runs SET status='aborted', finished_at=datetime('now','localtime'), "
+                        "error='进程已死 (pid={})' WHERE id=?".format(pid),
+                        (rid,))
+                    conn2.commit()
                 _log.warning(f"task {task_name} pid={pid} dead → aborted")
                 continue
 
@@ -241,21 +233,152 @@ def _check_timeouts(today: str):
             grace_s = s.grace_s if s else 300
             elapsed = (datetime.now() - start).total_seconds()
             if elapsed > grace_s:
-                conn = sqlite3.connect(MARKET_DB)
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute(
-                    "UPDATE task_runs SET status='aborted', finished_at=datetime('now','localtime'), "
-                    "error='timeout' WHERE id=?",
-                    (rid,))
-                conn.commit()
-                conn.close()
+                with sqlite3.connect(MARKET_DB) as conn3:
+                    conn3.execute("PRAGMA journal_mode=WAL")
+                    conn3.execute(
+                        "UPDATE task_runs SET status='aborted', finished_at=datetime('now','localtime'), "
+                        "error='timeout' WHERE id=?",
+                        (rid,))
+                    conn3.commit()
                 _log.warning(f"[{today}] task {task_name} timeout ({elapsed:.0f}s > {grace_s}s) → aborted")
 
 
 def _run():
-    """编排器主入口 — 供 scheduler.__init__.py 的 start_all() 调用."""
-    # 实际逻辑在全局 _run() 函数中
-    pass
+    """编排器主循环 — manifest 驱动 (v433: 复用 Runner 类)."""
+    from quant.scheduler.status import register_all
+    from quant.execution.calendar import is_trading_day
+    from quant.scheduler.runners import (
+        InlineRunner, MonitorRunner, SubprocessRunner,
+        _get_today_status, _get_today_aborted, _get_monitor_failures,
+        _cleanup_zombie_tasks, _cleanup_evening_children,
+        _MAX_TASK_RETRIES, POLL,
+    )
+    from quant.scheduler.manifest import ALL, _PLAN_ORDER
+    import os as _os, time as _time, threading as _thr, subprocess
+    from datetime import datetime, time
+
+    register_all()
+    _cleanup_zombie_tasks()
+
+    _log.info("orchestrator started — manifest: "
+              "08:30 signals → 09:30 execute → 10:00 snapshot_open → "
+              "09:30-15:00 monitor → 15:00 snapshot_close → 15:05 reconcile → "
+              "19:00 evening_chain → 周六 06:00 weekly_eval")
+
+    today = None
+    _monitor_runner: MonitorRunner | None = None
+    _monitor_thread: _thr.Thread | None = None
+    _evening_runner: SubprocessRunner | None = None
+    _evening_retries = 0
+    _evening_done = False
+    _weekly_done = False
+
+    while True:
+        now = datetime.now()
+        current_day = now.strftime("%Y-%m-%d")
+        hhmm = time(now.hour, now.minute)
+
+        # —— 新的一天: 重置状态 ——
+        if current_day != today:
+            if _monitor_runner is not None:
+                _monitor_runner.stop()
+                _tk_finish("monitor", today, "ok")
+            if _monitor_thread is not None:
+                _monitor_thread.join(timeout=5)
+            _monitor_runner = None
+            _monitor_thread = None
+            today = current_day
+            _evening_runner = None
+            _evening_retries = 0
+            _evening_done = False
+            _weekly_done = False
+            _log.info(f"[{today}] new day, orchestrator ready")
+
+        # —— 读取 DB 权威状态 ——
+        status = _get_today_status(today)
+        aborted = _get_today_aborted(today)
+
+        # —— 周度评估 (周六 06:00-12:00) ——
+        _weekly = ALL.get("weekly_eval")
+        if _weekly and not _weekly_done:
+            if _should_run(_weekly, hhmm, now.weekday(), status, aborted):
+                _log.info(f"[{today}] 06:00-12:00 — spawning weekly eval subprocess")
+                if _evening_runner is None:
+                    _evening_runner = SubprocessRunner(today)
+                _evening_runner.run_weekly_eval()
+                _weekly_done = True
+
+        # —— 非交易日: 仅周度评估 + 超时检测 ——
+        if not is_trading_day():
+            from quant.scheduler.orchestrator import _check_timeouts
+            _check_timeouts(today)
+            _time.sleep(POLL)
+            continue
+
+        # —— 日线任务: 按 manifest 顺序决策 ——
+        for name in _PLAN_ORDER:
+            s = ALL.get(name)
+            if s is None or s.mode == "subprocess":
+                continue
+            if not _should_run(s, hhmm, now.weekday(), status, aborted):
+                continue
+
+            # monitor: 长驻窗口任务
+            if s.mode == "monitor":
+                monitor_done = status.get("monitor") == "ok"
+                monitor_exhausted = _get_monitor_failures(today) >= _MAX_TASK_RETRIES
+                if not monitor_done and not monitor_exhausted:
+                    if _monitor_runner is None:
+                        _monitor_runner = MonitorRunner(today)
+                        # 记录 monitor 任务启动状态
+                        _tk_start("monitor", today, grace_seconds=21600)
+                        _monitor_thread = _thr.Thread(
+                            target=_monitor_runner.run, daemon=True, name="monitor-daemon"
+                        )
+                        _monitor_thread.start()
+                elif monitor_done and _monitor_runner is not None:
+                    _monitor_runner.stop()
+                    _tk_finish("monitor", today, "ok")
+                    if _monitor_thread is not None:
+                        _monitor_thread.join(timeout=5)
+                    _monitor_runner = None
+                    _monitor_thread = None
+                continue
+
+            # inline 单发任务
+            runner = InlineRunner(today)
+            runner.run_once(s.name)
+
+        # —— monitor 窗口关闭后清理 ——
+        if not ALL["monitor"].in_window(hhmm, now.weekday()) and _monitor_runner is not None:
+            _monitor_runner.stop()
+            _tk_finish("monitor", today, "ok")
+            if _monitor_thread is not None:
+                _monitor_thread.join(timeout=5)
+            _monitor_runner = None
+            _monitor_thread = None
+
+        # —— 19:00+ — 晚间链 subprocess ——
+        _even = ALL.get("evening_chain")
+        if _even and _even.in_window(hhmm, now.weekday()) and not _evening_done:
+            if _evening_runner is None:
+                if _should_run(_even, hhmm, now.weekday(), status, aborted):
+                    _log.info(f"[{today}] 19:00 — spawning evening chain subprocess "
+                              f"(retry={_evening_retries}/{_MAX_TASK_RETRIES})")
+                    _evening_runner = SubprocessRunner(today)
+                    _evening_runner.run_evening_chain()
+                    _evening_retries += 1
+                    # run_evening_chain 内部轮询，完成后继续
+                    if _evening_runner._proc is None:  # 已完成
+                        _log.info(f"[{today}] evening chain subprocess exited OK")
+                        _evening_done = True
+                        _evening_runner = None
+                    elif _evening_retries >= _MAX_TASK_RETRIES:
+                        _log.error(f"[{today}] evening chain max retries exhausted")
+                        _evening_done = True
+                        _evening_runner = None
+
+        _time.sleep(POLL)
 
 
 if __name__ == "__main__":

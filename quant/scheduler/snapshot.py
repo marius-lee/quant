@@ -1,17 +1,20 @@
-"""开盘30分钟价格快照 (test-v324, 修正于 test-v402).
+"""开盘30分钟/尾盘5分钟价格快照 (test-v324, 修正于 test-v402).
 
-每日 10:00 执行, 快照所有A股的开盘30分钟后实时价, 供 intraday_reversal 因子使用.
+每日 10:00 执行 snapshot_open, 15:00 执行 snapshot_close,
+快照所有A股的实时价+量, 供 intraday_reversal / 尾盘异动因子使用.
+
 test-v402: 触发时间从 09:30 修正为 10:00 — 09:30 拉到的是开盘价,
 不是开盘30分钟后的价格, 导致因子退化为隔夜缺口因子.
 60天积累后激活日内反转因子 (IC_IR≈0.8+, A股最强因子之一).
 
 数据源: 腾讯财经实时行情 (qt.gtimg.cn), 批量拉取.
+
+注意: task_log 由 Runner 统一管理，任务模块不再调用 _tk_start/_tk_finish。
 """
 import urllib.request, re, time as _time
 from datetime import datetime
 from quant.data.repos._base import DatabaseManager
 from quant.utils.logger import get_logger
-from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish, task
 
 _log = get_logger("snapshot.intraday")
 
@@ -74,45 +77,12 @@ def _fetch_batch(batch: list[str]) -> dict[str, dict]:
 
 def snapshot_open(today: str = None):
     """快照开盘30分钟价格+成交量."""
-    return _snapshot_with_log(today, mode="open", task_name="snapshot_open")
-
-
-@task("snapshot_open", grace_seconds=300)
-def _snapshot_open_task(today: str):
     return _snapshot(today, mode="open")
 
 
 def snapshot_close(today: str = None):
     """快照尾盘5分钟价格+成交量."""
-    return _snapshot_with_log(today, mode="close", task_name="snapshot_close")
-
-
-@task("snapshot_close", grace_seconds=300)
-def _snapshot_close_task(today: str):
     return _snapshot(today, mode="close")
-
-
-def _snapshot_with_log(today: str = None, mode: str = "open", task_name: str = "snapshot"):
-    """快照 + task_runs 状态写入, 防止 orchestrator 重复触发."""
-    if today is None:
-        today = datetime.now().strftime("%Y-%m-%d")
-    t0 = _time.monotonic()
-    _log.info(f"_snapshot_with_log start: task={task_name} date={today} mode={mode}")
-    rid = _tk_start(task_name, today, grace_seconds=300)
-    if rid is None:
-        _log.info(f"[{today}] {task_name} already running, skip duplicate trigger")
-        return
-    try:
-        result = _snapshot(today, mode)
-        elapsed = _time.monotonic() - t0
-        _log.info(f"_snapshot_with_log done: task={task_name} saved={result.get('saved',0)} errors={result.get('errors',0)} elapsed={elapsed:.1f}s")
-        _tk_finish(task_name, today, "ok", summary=result)
-        return result
-    except Exception as e:
-        elapsed = _time.monotonic() - t0
-        _log.exception(f"_snapshot_with_log failed: task={task_name} elapsed={elapsed:.1f}s error={e}")
-        _tk_finish(task_name, today, "failed", error=str(e))
-        raise
 
 
 def _snapshot(today: str = None, mode: str = "open"):
@@ -128,33 +98,35 @@ def _snapshot(today: str = None, mode: str = "open"):
     _log.info(f"snapshot {label}: {today} — {len(symbols)} stocks")
 
     conn = DatabaseManager.market()
+    conn.execute("PRAGMA journal_mode=WAL")
+
     saved = 0
     errors = 0
-
     for i in range(0, len(symbols), _BATCH_SIZE):
         batch = symbols[i:i + _BATCH_SIZE]
-        prices = _fetch_batch(batch)
-        for sym, data in prices.items():
+        data = _fetch_batch(batch)
+        if not data:
+            continue
+        for sym, val in data.items():
             try:
-                if mode == "open":
-                    conn.execute(
-                        "INSERT OR REPLACE INTO intraday_snapshot(symbol, date, open_30min, open_30min_vol, prev_close) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        (sym, today, data["price"], data["volume"], data["prev_close"]))
-                else:
-                    # v418 (Bug 6): close_5min/close_5min_vol 列名注释 —
-                    #   close_5min     尾盘5分钟价 (元)
-                    #   close_5min_vol 尾盘累计成交量 (股, 腾讯原始单位)
-                    # 与 open_30min/open_30min_vol 单位一致.
-                    conn.execute(
-                        "UPDATE intraday_snapshot SET close_5min=?, close_5min_vol=? "
-                        "WHERE symbol=? AND date=?",
-                        (data["price"], data["volume"], sym, today))
+                conn.execute(
+                    "INSERT OR REPLACE INTO intraday_snapshot (date, symbol, mode, price, volume, prev_close) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (today, sym, mode, val["price"], val["volume"], val["prev_close"])
+                )
                 saved += 1
-            except Exception:
+            except Exception as e:
                 errors += 1
+                _log.warning(f"snapshot write {sym} failed: {e}")
+        conn.commit()
+        _time.sleep(0.05)  # 限速
 
-    conn.commit()
     conn.close()
-    _log.info(f"snapshot {label} done: {saved} saved, {errors} errors")
+    _log.info(f"snapshot {label} done: saved={saved} errors={errors}")
     return {"saved": saved, "errors": errors}
+
+
+if __name__ == "__main__":
+    import sys
+    mode = sys.argv[2] if len(sys.argv) > 2 else "open"
+    _snapshot(sys.argv[1] if len(sys.argv) > 1 else "2026-08-10", mode=mode)

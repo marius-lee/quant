@@ -63,6 +63,14 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     if date_str is None:
         date_str = datetime.today().strftime("%Y-%m-%d")
 
+    # ── trace_id 设置 (必须在最前，broker/log 依赖) ──
+    from quant.utils.logger import get_trace_id, set_trace_id as _set_tid
+    import uuid as _uuid
+    tid = get_trace_id() or _uuid.uuid4().hex[:12]
+    _set_tid(tid)
+
+    from quant.monitor.metrics import metrics as _m
+
     # ── preload 依赖已收敛进 ctx; 无 ctx 时全部为 None (不预加载) ──
     preloaded_data = factor_cache = turnover_amount_roll = bm_returns = None
     stock_names = preloaded_seal_ratios = None
@@ -568,6 +576,12 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
 
     results["elapsed_sec"] = round(elapsed, 1)
     logger.info(f"generate_signals done trace_id={tid} elapsed={elapsed:.1f}s phases=[{tracker.summary()}] date={date_str}")
+
+    # P1: 非回测 scope → 释放 ztd 预计算缓存 (~80MB)
+    if scope != "backtest":
+        from quant.factor.compute.price._alternative import clear_ztd_cache
+        clear_ztd_cache()
+
     return results
 
 

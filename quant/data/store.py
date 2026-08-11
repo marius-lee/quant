@@ -2121,7 +2121,10 @@ class DataStore:
         try:
             duckdb_proxy = get_duckdb_proxy()
             # DuckDB 支持大量参数，无需分块
-            return duckdb_proxy.get_daily(symbols, start, end, columns)
+            df = duckdb_proxy.get_daily(symbols, start, end, columns)
+            if df is not None and not df.empty:
+                return df
+            logger.warning("DuckDB returned empty DataFrame, fallback to SQLite")
         except Exception as e:
             logger.warning(f"DuckDB query failed, fallback to SQLite: {e}")
 

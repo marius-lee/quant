@@ -204,6 +204,9 @@ class FactorRepo:
                 if ic_ir is not None:
                     parts.append("ic_ir=?")
                     params.append(ic_ir)
+                if compute_fn is not None:
+                    parts.append("compute_fn=?")
+                    params.append(compute_fn)
                 if source:
                     parts.append("academic_source=?")
                     params.append(source)

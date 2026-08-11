@@ -48,6 +48,7 @@ DS_MODE         = "mode"
 DS_EXEC_NOTES   = "exec_notes"
 
 # pending_orders
+PO_ID             = "id"
 PO_STRATEGY      = "strategy"
 PO_SYMBOL        = "symbol"
 PO_SIDE          = "side"
@@ -62,6 +63,7 @@ PO_FILLED_PRICE  = "filled_price"
 PO_CHASE_COUNT   = "chase_count"
 PO_CANCEL_REASON = "cancel_reason"
 PO_DAY           = "day"
+PO_MODE          = "mode"
 
 # daily_equity
 DE_DATE           = "date"
@@ -337,6 +339,26 @@ class TradeRepo:
         finally:
             conn.close()
 
+    def get_daily_flow(self, day: str, strategy: str = "quant", mode: str = "live") -> tuple[float, float, float]:
+        """返回 (sells, buys, fees) 当日的流水."""
+        conn = self._conn()
+        try:
+            sells = conn.execute(
+                "SELECT COALESCE(SUM(price*shares - COALESCE(cost,0)), 0) FROM sim_trades "
+                "WHERE side='sell' AND strategy=? AND mode=? AND date=?",
+                (strategy, mode, day)).fetchone()[0]
+            buys = conn.execute(
+                "SELECT COALESCE(SUM(price*shares + COALESCE(cost,0)), 0) FROM sim_trades "
+                "WHERE side='buy' AND strategy=? AND mode=? AND date=?",
+                (strategy, mode, day)).fetchone()[0]
+            fees = conn.execute(
+                "SELECT COALESCE(SUM(COALESCE(cost,0)), 0) FROM sim_trades "
+                "WHERE strategy=? AND mode=? AND date=?",
+                (strategy, mode, day)).fetchone()[0]
+            return float(sells), float(buys), float(fees)
+        finally:
+            conn.close()
+
     def is_initialized(self, strategy: str = "quant", mode: str = "live") -> bool:
         row = self._query_one(
             f"SELECT COALESCE({SC_INITIALIZED},0) FROM strategy_config WHERE {SC_STRATEGY}=?",
@@ -419,6 +441,31 @@ class TradeRepo:
             f"WHERE {ST_SIDE}='sell' AND {ST_STRATEGY}=? AND {ST_MODE}=? AND {ST_PNL} IS NOT NULL",
             (strategy, mode))
         return [r[0] for r in rows]
+
+    def get_orders(self, day: str, strategy: str = "quant", mode: str = "live") -> list[dict]:
+        """返回当日的订单列表 (含 pending/filled/cancelled)."""
+        conn = self._conn()
+        try:
+            sql = (
+                f"SELECT {PO_ID},{PO_STRATEGY},{PO_SYMBOL},{PO_SIDE},{PO_TARGET_SHARES},"
+                f"{PO_LIMIT_PRICE},{PO_REFERENCE_PRICE},{PO_STATUS},{PO_PLACED_AT},"
+                f"{PO_FILLED_AT},{PO_FILLED_SHARES},{PO_FILLED_PRICE},"
+                f"{PO_CHASE_COUNT},{PO_CANCEL_REASON},{PO_DAY} "
+                f"FROM pending_orders "
+                f"WHERE {PO_STRATEGY}=? AND {PO_MODE}=? AND {PO_DAY}=? "
+                f"ORDER BY {PO_PLACED_AT}"
+            )
+            rows = conn.execute(sql, (strategy, mode, day)).fetchall()
+            return [
+                {"id": r[0], "strategy": r[1], "symbol": r[2], "side": r[3],
+                 "target_shares": r[3], "limit_price": r[4], "reference_price": r[5],
+                 "status": r[6], "placed_at": r[7], "filled_at": r[8],
+                 "filled_shares": r[9], "filled_price": r[10],
+                 "chase_count": r[11], "cancel_reason": r[12], "day": r[13]}
+                for r in rows
+            ]
+        finally:
+            conn.close()
 
     def get_pnl(self, strategy: str, mode: str = "live") -> float:
         row = self._query_one(

@@ -452,6 +452,7 @@ class FactorCurator:
                         status="evaluating",
                         ic_mean=round(float(abs_ic), 4),
                         source=cf["source"],
+                        compute_fn=cf["expression"],
                     )
                     _log.info(f"curator: registered {cf['name']} (IC={abs_ic:.4f}, {cf['source'][:30]})")
                 except Exception as ex:

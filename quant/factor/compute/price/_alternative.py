@@ -82,6 +82,13 @@ def preload_ztd_cache(dates: list, all_symbols: list):
              len(_ztd_cache), len(all_symbols))
 
 
+def clear_ztd_cache():
+    """释放 ztd 预计算缓存 (M1 8GB 硬约束: 2000 日期 × 5000 symbols ≈ 80MB)."""
+    global _ztd_cache
+    _ztd_cache.clear()
+    _log.debug("ztd_cache: cleared")
+
+
 def compute_ztd(data, date, window=250):
     """停牌比率: 过去 window 交易日中零成交天数占比, 取负号.
 

@@ -1702,3 +1702,16 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
   - 定期重训练时: `compute_backtest_ic(..., inc_ic=inc_ic)` 传入增量 IC 实例
   - 每日收盘后: `inc_ic.update(fv, ret_series)` 用当日因子值和收益率增量更新
 - **预期效果**: IC 重训练从全量 Spearman 重算 → 增量更新，预期 IC 重训练加速 50%+
+
+
+## 2026-08-12: P1 持久化回测数据缓存 (test-v461)
+- **新增**: `quant/backtest/data_cache.py` 持久化回测数据缓存模块
+  - 缓存 key: (start_date, end_date, symbols_hash, lookback_days, universe_size)
+  - 存储格式: Parquet 分区 + pickle 元数据，ZSTD 压缩
+  - TTL: 可配置 (默认 7 天)，自动失效检查 market.db mtime
+  - API: `get_or_load_backtest_data(key, loader)` - 缓存优先，miss 时调用 loader 并存盘
+- **集成到回测流程** (`quant/backtest/loop.py`):
+  - 预加载数据改为 `get_or_load_backtest_data()` 调用
+  - 缓存 key 包含: start_date, end_date, symbols_hash, lookback_days, universe_size
+  - 缓存数据包含: data_full, benchmark, fundamentals 等预加载数据
+- **预期效果**: 重复回测运行时避免重复 DB 查询，预期 30-50% 耗时降低

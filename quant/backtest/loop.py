@@ -24,6 +24,7 @@ from quant.factor.stats_cache import compute_backtest_ic
 from quant.alpha.model import AlphaModel
 from quant.risk.covariance import IncrementalCovariance
 from quant.factor.stats_cache import IncrementalIC
+from quant.backtest.data_cache import get_or_load_backtest_data, _compute_cache_key
 
 _log = get_logger("backtest.loop")
 
@@ -382,13 +383,42 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
                 f"Run: scripts/materialize_full.sh; verify: ls factor_cache/{_ic_dates[0]}.csv.gz")
 
         # ── Pre-load all daily data once (eliminates 843 DB queries) ──
-        from quant.data.repos import UniverseRepo
-        _all_symbols = UniverseRepo().get_symbols(exclude_market='BJ', start_date=start_date, end_date=end_date)
-        from quant.factor.windows import max_factor_calendar_days
-        _eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(None))
-        _full_start = (pd.Timestamp(trading_days[0]) - pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
-        data_full = store.get_daily(_all_symbols, start=_full_start, end=end_date)
-        _log.info("backtest: pre-loaded %d days x %d symbols data", len(data_full), len(_all_symbols))
+        # test-v458 P1: 使用持久化缓存避免重复 DB 查询
+        _cache_key = _compute_cache_key(
+            start_date=start_date,
+            end_date=end_date,
+            symbols=[],  # will be filled after universe selection
+            lookback_days=_eff_days,
+            universe_size=universe_size,
+        )
+        
+        def _load_all_data():
+            from quant.data.repos import UniverseRepo
+            _all_symbols = UniverseRepo().get_symbols(exclude_market='BJ', start_date=start_date, end_date=end_date)
+            from quant.factor.windows import max_factor_calendar_days
+            _eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(None))
+            _full_start = (pd.Timestamp(trading_days[0]) - pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
+            data_full = store.get_daily(_all_symbols, start=_full_start, end=end_date)
+            _log.info("backtest: pre-loaded %d days x %d symbols data", len(data_full), len(_all_symbols))
+            return {
+                "data_full": data_full,
+                "all_symbols": _all_symbols,
+                "start_date": start_date,
+                "end_date": end_date,
+            }
+        
+        cached_data = get_or_load_backtest_data(
+            start_date=start_date,
+            end_date=end_date,
+            symbols=[],  # universe not yet filtered
+            lookback_days=_eff_days,
+            loader=_load_all_data,
+            universe_size=universe_size,
+        )
+        data_full = cached_data["data_full"]
+        _all_symbols = cached_data["all_symbols"]
+        _log.info("backtest: pre-loaded %d days x %d symbols data (cached=%s)", 
+                  len(data_full), len(_all_symbols), "hit" if len(data_full) > 0 else "miss")
 
         # ── test-v398 (perf): broker + 复用实例 (需 data_full 已加载) ──
         broker = SimulatedBroker(store, engine, BACKTEST_DB, data_full=data_full)

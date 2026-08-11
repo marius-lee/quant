@@ -22,6 +22,7 @@ import pandas as pd
 from dataclasses import dataclass, field
 from statistics import NormalDist
 from typing import Optional
+import hashlib
 
 
 @dataclass
@@ -104,6 +105,31 @@ def _stock_sigma(symbol: str, log_returns: pd.DataFrame = None) -> float:
 # 0.5 为极端激进, 10.0 为极端保守, 网格覆盖全范围。
 _CALIBRATION_GRID = [0.5, 1.0, 2.0, 5.0, 10.0]
 
+# ── risk_aversion 校准缓存 (test-v458: P3) ──
+# key: (alpha_hash, cov_hash, capital, max_positions, max_single) -> optimal_lambda
+# alpha/cov 使用 values.tobytes() 哈希，capital 保留 2 位小数
+_CALIBRATION_CACHE: dict[tuple, float] = {}
+
+
+def _make_calibration_key(
+    alpha: pd.Series,
+    covariance: pd.DataFrame,
+    capital: float,
+    max_positions: int,
+    max_single: float,
+) -> tuple:
+    """生成校准缓存键。"""
+    import hashlib
+    # 取前 max_positions 个 alpha 值的 hash
+    top_alpha = alpha.iloc[:20].values.tobytes() if len(alpha) >= 20 else alpha.values.tobytes()
+    # 协方差矩阵 hash (只取对角线 + 上三角，避免完整矩阵太大)
+    cov_diag = covariance.values.diagonal().tobytes() if hasattr(covariance, 'values') else str(covariance).encode()
+    cov_upper = covariance.values[np.triu_indices_from(covariance.values, k=1)].tobytes() if hasattr(covariance, 'values') else b''
+    capital_key = round(capital, -2)  # 保留百元位
+    return (hashlib.md5(top_alpha).hexdigest()[:16],
+            hashlib.md5(cov_diag + cov_upper).hexdigest()[:16],
+            capital_key, max_positions, max_single)
+
 
 def calibrate_risk_aversion(
     alpha: pd.Series,
@@ -126,6 +152,15 @@ def calibrate_risk_aversion(
     返回:
       最优 λ (float)。若数据不足无法校准, 返回 2.0。
     """
+    # ── 校准缓存查找 (test-v458: P3) ───────────────────────────────
+    cache_key = _make_calibration_key(alpha, covariance, capital, max_positions, max_single)
+    if cache_key in _CALIBRATION_CACHE:
+        cached_lambda = _CALIBRATION_CACHE[cache_key]
+        logger.info(
+            "[calibrate] cache hit: λ=%.1f (key=%s)", cached_lambda, str(cache_key)[:50]
+        )
+        return cached_lambda
+
     n_stocks = min(max_positions, len(alpha))
     top = alpha.iloc[:n_stocks]
     common = [s for s in top.index if s in covariance.index]
@@ -168,6 +203,8 @@ def calibrate_risk_aversion(
         "[calibrate] grid search complete: best λ=%.1f (Sharpe=%.4f) "
         "from grid %s", best_lambda, best_sharpe, _CALIBRATION_GRID
     )
+    # 存入缓存
+    _CALIBRATION_CACHE[cache_key] = best_lambda
     return best_lambda
 
 

@@ -1676,3 +1676,13 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
   - `loop.py`: 用 `IncrementalCovariance` 替代 `covariance_subset()` 全量重算
   - `portfolio.py`: `construct()` 中传入增量协方差实例而非 None
   - 需在 `construct()` 入口处初始化/复用 `IncrementalCovariance` 实例
+
+
+## 2026-08-12: P2 增量协方差集成到回测流程 (test-v459)
+- **已完成集成**:
+  1. `loop.py`: 初始化 `IncrementalCovariance` (预热 252 天历史数据)，每日 `inc_cov.update(today_ret)`，通过 `ctx.covariance` 传递
+  2. `pipeline.py`: 从 `ctx.covariance` 读取协方差，回退 `None` (兼容旧逻辑)
+  3. `context.py`: `ExecutionContext` 新增 `covariance: Optional[pd.DataFrame]` 字段
+- **验证**: 语法检查通过，IncrementalCovariance 单元测试通过
+- **后续**: 需在 `portfolio.py` 的 `construct()` 中确保使用传入的 `covariance` 参数 (已支持)
+- **预期效果**: 协方差计算从 O(N³) 全量重算 → O(N²) 增量更新 + 周期性全量重算，预期 60-80% 耗时降低

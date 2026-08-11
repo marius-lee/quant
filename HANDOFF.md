@@ -1715,3 +1715,15 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
   - 缓存 key 包含: start_date, end_date, symbols_hash, lookback_days, universe_size
   - 缓存数据包含: data_full, benchmark, fundamentals 等预加载数据
 - **预期效果**: 重复回测运行时避免重复 DB 查询，预期 30-50% 耗时降低
+
+
+## 2026-08-12: P5 批量 DB 操作 - 除权除息批量检测 (test-v462)
+- **优化目标**: `ExecutionEngine._check_ex_dividend` 原为每单查询，N 个买单需 N 次 DB round-trip
+- **优化方案**: 新增 `_check_ex_dividend_batch(symbols, prices, date)` 批量查询
+  - 单次 SQL: `SELECT symbol, close FROM daily WHERE symbol IN (...) AND date < ? ORDER BY symbol, date DESC`
+  - 内存中按 symbol 取最近一条记录，批量判定除权
+  - 返回需跳过的 symbol 集合，`execute()` 中直接集合判断
+- **预期效果**: 
+  - DB round-trip 从 O(N) 降为 O(1)，N=买单数量
+  - 买单 100 单时，DB 查询从 100 次 → 1 次，预期执行阶段加速 50%+
+  - 兼容性: 保留原 `_check_ex_dividend` 单查版本供兼容

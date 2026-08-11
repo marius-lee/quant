@@ -87,7 +87,7 @@ class ExecutionEngine:
         TradeRepo(self.db_path).set_initial_capital(strategy, capital)
 
     def _check_ex_dividend(self, symbol: str, order_price: float, date: str) -> bool:
-        """除权除息检测: 对比昨日收盘 vs 订单价格。
+        """除权除息检测: 对比昨日收盘 vs 订单价格 (单个查询版本，保留兼容性)。
 
         A股涨跌停限制按板块区分 (B-16: 主板 ±10%, 创业板/科创板 ±20%, 北交所 ±30%)。
         若订单价格与前一交易日收盘价偏差超过该板块涨跌停幅度, 无法用正常交易解释,
@@ -121,6 +121,58 @@ class ExecutionEngine:
         mc.close()
         return False
 
+    def _check_ex_dividend_batch(self, symbols: list[str], prices: dict[str, float], date: str) -> set[str]:
+        """批量除权除息检测: 单次查询获取所有 symbol 的前一交易日收盘价。
+
+        Args:
+            symbols: 股票代码列表
+            prices: {symbol: order_price} 订单价格字典
+            date: 交易日期 (YYYY-MM-DD)
+        Returns:
+            set: 需要跳过买入的 symbol 集合
+        """
+        if not symbols:
+            return set()
+        
+        mc = market_conn("ro")
+        placeholders = ",".join(["?"] * len(symbols))
+        # 单次查询获取所有 symbol 在 date 前的最新收盘价
+        sql = f"""
+            SELECT symbol, close
+            FROM daily
+            WHERE symbol IN ({placeholders}) AND date < ?
+            ORDER BY symbol, date DESC
+        """
+        rows = mc.execute(sql, symbols + [date]).fetchall()
+        mc.close()
+        
+        # 取每个 symbol 的最近一条记录
+        prev_closes = {}
+        for symbol, close in rows:
+            if symbol not in prev_closes and close is not None:
+                prev_closes[symbol] = float(close)
+        
+        # 批量判定
+        skip_symbols = set()
+        for symbol in symbols:
+            order_price = prices.get(symbol, 0)
+            if not order_price:
+                continue
+            prev_close = prev_closes.get(symbol)
+            if prev_close is None:
+                continue
+            gap = abs(order_price / prev_close - 1)
+            threshold = _price_limit_pct(symbol)
+            if gap > threshold:
+                from quant.utils.logger import get_logger
+                get_logger("execution.engine").warning(
+                    f"Ex-dividend detected: {symbol} order_price={order_price:.2f} "
+                    f"prev_close={prev_close:.2f} gap={gap:.1%} > {threshold:.0%} — skipping buy"
+                )
+                skip_symbols.add(symbol)
+        
+        return skip_symbols
+
     def execute(
         self,
         orders: list,
@@ -143,6 +195,9 @@ class ExecutionEngine:
         repo = TradeRepo(self.db_path)
 
         # ── Phase 1: 预计算 (纯读, 事务外) ──
+        # test-v458 P5: 批量除权检测，减少 DB round-trip
+        buy_symbols = []
+        buy_prices = {}
         entries = []
         for o in orders:
             if isinstance(o, (list, tuple)):
@@ -153,23 +208,42 @@ class ExecutionEngine:
                 "symbol": symbol, "side": side, "shares": shares, "price": price,
                 "board_count": getattr(o, "board_count", 0),
             }
-            if side == "buy" and self._check_ex_dividend(symbol, price, date):
-                e["skip"] = True
-                entries.append(e)
-                continue
+            if side == "buy":
+                buy_symbols.append(symbol)
+                buy_prices[symbol] = price
+            entries.append(e)
+
+        # 批量除权检测
+        skip_symbols = self._check_ex_dividend_batch(buy_symbols, buy_prices, date)
+
+        # 处理除权标记和卖单 T+1 检查
+        for e in entries:
+            symbol = e["symbol"]
+            side = e["side"]
+            shares = e["shares"]
+            price = e["price"]
             if side == "buy":
                 e["cost"] = round(self.cost_model.buy_cost(price, shares) - price * shares, 2)
                 e["pnl"] = 0.0
                 e["pnl_pct"] = 0.0
+                if symbol in skip_symbols:
+                    e["skip"] = True
             else:
                 if repo.check_t1(strategy, symbol, date):
                     logger.warning(
                         f"T+1 blocked: {symbol} bought today, cannot sell until next trading day"
                     )
                     e["t1_blocked"] = True
-                    entries.append(e)
                     continue
                 proceeds = self.cost_model.sell_proceeds(price, shares)
+                e["cost"] = round(price * shares - proceeds, 2)
+                avg_cost = repo.get_average_cost(strategy, symbol)  # FIFO (2026-07-21 audit H7)
+                if avg_cost and avg_cost * shares > 0:
+                    e["pnl"] = round(proceeds - avg_cost * shares, 2)
+                    e["pnl_pct"] = round(proceeds / (avg_cost * shares) - 1, 2)
+                else:
+                    e["pnl"] = 0.0
+                    e["pnl_pct"] = 0.0
                 e["cost"] = round(price * shares - proceeds, 2)
                 avg_cost = repo.get_average_cost(strategy, symbol)  # FIFO (2026-07-21 audit H7)
                 if avg_cost and avg_cost * shares > 0:

@@ -20,6 +20,7 @@ Ledoit-Wolf (2004) 收缩估计:
 import numpy as np
 import pandas as pd
 from quant.config.constants import _require_cfg
+from quant.utils.logger import get_logger
 from typing import Optional
 from collections import deque
 import threading
@@ -275,7 +276,7 @@ class IncrementalCovariance:
                 self._symbols = daily_returns.index.tolist()
                 self._returns_buffer.clear()
                 self._cov = None
-                _log.info(f"IncrementalCovariance: symbol set changed, reset buffer ({len(self._symbols)} symbols)")
+                get_logger("risk.covariance").info(f"IncrementalCovariance: symbol set changed, reset buffer ({len(self._symbols)} symbols)")
 
             # 2. 加入新一天的收益率
             if self._symbols is None:

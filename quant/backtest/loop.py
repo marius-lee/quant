@@ -22,6 +22,7 @@ from quant.config.constants import _require_cfg
 from quant.config import loader as cfgl
 from quant.factor.stats_cache import compute_backtest_ic
 from quant.alpha.model import AlphaModel
+from quant.risk.covariance import IncrementalCovariance
 
 _log = get_logger("backtest.loop")
 
@@ -539,6 +540,17 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             suppress_push=suppress_push, db_path=BACKTEST_DB, universe_size=universe_size,
         )
 
+        # ── 初始化增量协方差 (test-v458 P2) ──
+        from quant.risk.covariance import IncrementalCovariance
+        inc_cov = IncrementalCovariance(window=252, full_recalc_interval=20)
+        # 预热: 用截至首日前的历史数据初始化
+        _cov_start = (pd.Timestamp(trading_days[0]) - pd.Timedelta(days=252)).strftime("%Y-%m-%d")
+        _pre_ret = np.log(data_full["close"]).diff().dropna(how="all")
+        _pre_ret = _pre_ret[_pre_ret.index < pd.Timestamp(trading_days[0])]
+        for _dt, _row in _pre_ret.dropna(how="all").iterrows():
+            inc_cov.update(_row)
+        _log.info("backtest: IncrementalCovariance initialized with %d pre-days", len(inc_cov._returns_buffer))
+
         # ── Main loop ──
         equity_curve = [{"date": trading_days[0], "equity": float(capital)}]
         errors = 0
@@ -570,6 +582,8 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
                 "exclude_symbols": cooloff_syms,
                 "ctx": _ctx,
             }
+            # Pass covariance via ctx (test-v458 P2)
+            _ctx.covariance = cov
             # Switch combine_mode from sleeve (warmup) to ic_weighted (walk-forward);
             # test-v298: run_backtest(combine_mode=...) 可覆盖 walk-forward 模式 (hyperopt)
             _in_oos = oos_start_date and today >= oos_start_date

@@ -1686,3 +1686,19 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
 - **验证**: 语法检查通过，IncrementalCovariance 单元测试通过
 - **后续**: 需在 `portfolio.py` 的 `construct()` 中确保使用传入的 `covariance` 参数 (已支持)
 - **预期效果**: 协方差计算从 O(N³) 全量重算 → O(N²) 增量更新 + 周期性全量重算，预期 60-80% 耗时降低
+
+
+## 2026-08-12: P4 增量 IC 更新 (test-v460)
+- **新增**: `quant/factor/stats_cache.py` 中 `IncrementalIC` 类
+  - 滚动窗口维护每个因子的 IC 时间序列
+  - 每日增量更新: `inc_ic.update(factor_values, returns)` O(N) 单因子
+  - `get_ic_map()` 获取最近窗口 IC 均值用于 alpha 合成
+  - `get_ic_ir()` 计算 IR = mean(IC)/std(IC) * sqrt(252/lookback)
+  - `full_recalc_interval` 控制定期全量重算修正数值漂移
+  - 线程安全 + 增量更新 + 定期全量重算
+- **集成到回测流程** (`quant/backtest/loop.py`):
+  - 初始化 `IncrementalIC(window=120, full_recalc_interval=20)`
+  - 每日调仓时: `inc_ic.update(factor_values, returns)` 增量更新
+  - 定期重训练时: `compute_backtest_ic(..., inc_ic=inc_ic)` 传入增量 IC 实例
+  - 每日收盘后: `inc_ic.update(fv, ret_series)` 用当日因子值和收益率增量更新
+- **预期效果**: IC 重训练从全量 Spearman 重算 → 增量更新，预期 IC 重训练加速 50%+

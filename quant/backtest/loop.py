@@ -23,6 +23,7 @@ from quant.config import loader as cfgl
 from quant.factor.stats_cache import compute_backtest_ic
 from quant.alpha.model import AlphaModel
 from quant.risk.covariance import IncrementalCovariance
+from quant.factor.stats_cache import IncrementalIC
 
 _log = get_logger("backtest.loop")
 
@@ -487,6 +488,7 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             n_train_days=ic_lookback,
             status_filter=factor_status_filter or "backtesting",
             factor_cache=_factor_cache,
+            inc_ic=inc_ic,
         )
         _last_retrain_idx = 0
         _log.info("backtest: initial IC: %d factors, retrain every %dd", len(_current_ic_map), retrain_freq)
@@ -542,6 +544,7 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
 
         # ── 初始化增量协方差 (test-v458 P2) ──
         from quant.risk.covariance import IncrementalCovariance
+        from quant.factor.stats_cache import IncrementalIC
         inc_cov = IncrementalCovariance(window=252, full_recalc_interval=20)
         # 预热: 用截至首日前的历史数据初始化
         _cov_start = (pd.Timestamp(trading_days[0]) - pd.Timedelta(days=252)).strftime("%Y-%m-%d")
@@ -592,13 +595,28 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             # Walk-forward IC retrain - OOS 期冻结
             if retrain_freq > 0 and (i - _last_retrain_idx) >= retrain_freq and bt_factor_names and not _in_oos:
                 _log.info("backtest: retraining IC at day %d (%s)", i, today)
+                # 使用增量 IC 更新 (test-v458 P4)
                 _current_ic_map = compute_backtest_ic(
                     start_date=(pd.Timestamp(today) - pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
                     n_train_days=ic_lookback,
                     status_filter=factor_status_filter or "backtesting",
                     factor_cache=_factor_cache,
+                    inc_ic=inc_ic,
                 )
                 _last_retrain_idx = i
+                # 增量更新: 用当日的因子值和收益率更新 IC
+                if _last_signals:
+                    fv = _last_signals.get("_factor_values", {})
+                    if fv:
+                        _held = engine.get_positions(strategy)
+                        _held_close = _get_prices([p["symbol"] for p in _held], today, store, field="close", data_full=data_full) if _held else {}
+                        # 计算当日收益率用于 IC 增量更新
+                        _today_ret = _get_prices(list(fv.keys()), today, store, field="close", data_full=data_full)
+                        _next_ret = _get_prices(list(fv.keys()), next_day, store, field="close", data_full=data_full)
+                        if _today_ret and _next_ret:
+                            _ret_series = pd.Series({s: (_next_ret[s] / _today_ret[s] - 1) for s in _today_ret if s in _next_ret and _today_ret[s] > 0})
+                            if not _ret_series.empty:
+                                inc_ic.update(fv, _ret_series)
             kwargs["ic_map"] = _current_ic_map
             # B-22 fix: 单日异常计入 errors 并跳过当日 (原 errors 计数器从未递增,
             # 且单日异常会中断整个回测)

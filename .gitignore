@@ -34,3 +34,10 @@ appendonly.aof
 # Python venv
 .venv-tushare/
 .venv-py312/
+
+# Temporary/lock files
+*.cooldown
+*.lock
+_fix_*
+*.backup
+quant/quant/

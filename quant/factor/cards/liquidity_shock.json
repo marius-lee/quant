@@ -1,0 +1,10 @@
+{
+  "name": "liquidity_shock",
+  "display_name": "liquidity_shock",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.0186,
+  "icir_12m": 0.1634,
+  "last_evaluated": "auto",
+  "n_obs": 130
+}

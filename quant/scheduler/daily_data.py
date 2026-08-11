@@ -38,6 +38,32 @@ def _run(today: str):
     # v382: 后续步骤各自独立 try/except, 单步失败不阻断整体
     import traceback
 
+    # v449: Sync SQLite -> DuckDB (DuckDB 仅用于读查询分流, 写入仍走 SQLite)
+    # v448: DuckDB 后台同步线程从未启动, 导致 DuckDB daily 表落后 SQLite 数月
+    #   - materialize() 走 DuckDB 优先, 获取不到新增日期数据 -> cache 短 fewer
+    #   - 手动补数: 同步缺失日期 2025-06-01..2026-08-10 (1575017 行)
+    # v453: 增加历史回填 + 同步验证 (backfill -> incremental -> verify)
+    # v456: 增加预聚合表刷新 (daily_ma, daily_ret, daily_std 等)
+    try:
+        from quant.data.duckdb_store import get_duckdb_proxy
+        proxy = get_duckdb_proxy()
+        # 对 daily 和 daily_valuation 两张带日期的表执行 3 步同步
+        for table in ("daily", "daily_valuation"):
+            # 1) 历史回填: 仅补最近 504 天内的缺失日期
+            proxy._duckdb._sync_backfill_missing_dates(table=table, max_backfill_days=504)
+            # 2) 增量同步: 追赶新增/更新行
+            proxy._duckdb._sync_incremental()
+            # 3) 验证一致性
+            res = proxy._duckdb.verify_sync(table=table)
+            if res["match"]:
+                _log.info(f"[{today}] DuckDB sync OK: {table} fully synced ({res['duckdb_dates']} dates, {res['duckdb_rows']} rows)")
+            else:
+                _log.warning(f"[{today}] DuckDB sync mismatch: {table} sqlite={res['sqlite_rows']} duckdb={res['duckdb_rows']} rows")
+        # 4) 刷新预聚合表 (最近 60 个交易日)
+        proxy._duckdb.refresh_preaggregates()
+    except Exception:
+        _log.warning(f"[{today}] DuckDB sync failed: {traceback.format_exc()}")
+
     # ── 换手率回填 ──
     try:
         s = DataStore()

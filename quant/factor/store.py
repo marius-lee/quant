@@ -15,8 +15,13 @@ import gzip
 import io
 import inspect
 import json
+import tempfile
+import multiprocessing as mp
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
 from quant.config.constants import _require_cfg
 from quant.utils.logger import get_logger
 from quant.factor.compute.price._alternative import preload_ztd_cache
@@ -27,7 +32,11 @@ _log = get_logger("factor.store")
 # 项目根目录
 _PROJ_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _CACHE_DIR = os.path.join(_PROJ_ROOT, "quant", "data", "factor_cache")
+_PARQUET_DIR = os.path.join(_CACHE_DIR, "parquet")
 _LOG_FILE = os.path.join(_CACHE_DIR, "materialization_log.jsonl")
+
+# 确保 parquet 目录存在
+os.makedirs(_PARQUET_DIR, exist_ok=True)
 
 
 # ── P1b: 因子源码 hash — 检测函数变更, 触发缓存重算 ──
@@ -79,18 +88,27 @@ class FactorStore:
     """
 
     def __init__(self, db_path: str = None):
-        # db_path: 向后兼容旧 SQLite 路径。传入时使用该路径的子目录作为缓存。
+        # db_path: 向后兼容旧 SQLite 路径。传入时使用该路径的父目录 + /factor_cache/。
         # 不传时使用默认 quant/data/factor_cache/。
         if db_path and db_path != _CACHE_DIR:
-            # 测试/自定义路径: 用 db_path 的父目录 + /factor_cache/
             parent = os.path.dirname(db_path)
             self._cache_dir = os.path.join(parent, "factor_cache")
         else:
             self._cache_dir = _CACHE_DIR
+        self._parquet_dir = os.path.join(self._cache_dir, "parquet")
         os.makedirs(self._cache_dir, exist_ok=True)
+        os.makedirs(self._parquet_dir, exist_ok=True)
 
     def _path(self, date_str: str) -> str:
+        # 兼容旧 CSV
         return os.path.join(self._cache_dir, f"{date_str}.csv.gz")
+
+    def _parquet_path(self, date_str: str, factor_name: str = None) -> str:
+        """Parquet 分区路径: parquet/date=YYYY-MM-DD/factor_name.parquet"""
+        base = os.path.join(self._parquet_dir, f"date={date_str}")
+        if factor_name:
+            return os.path.join(base, f"{factor_name}.parquet")
+        return base
 
     def _manifest_path(self, date_str: str) -> str:
         return os.path.join(self._cache_dir, f"{date_str}.manifest.json")
@@ -106,8 +124,9 @@ class FactorStore:
                     symbols: list[str],
                     store: "DataStore" = None,
                     force: bool = False,
-                    chunk_days: int = 200) -> dict:
-        """批量物化因子值: 分块加载数据 + 原语, 逐日计算全部因子, 写入 gzip CSV。
+                    chunk_days: int = 200,
+                    workers: int = None) -> dict:
+        """批量物化因子值: 多进程并行按日期分片计算, 写入 Parquet 分区。
 
         Args:
             date_range: 交易日列表
@@ -116,12 +135,12 @@ class FactorStore:
             store: DataStore 实例
             force: True 时删除旧数据重新物化
             chunk_days: 每块最大交易日数 (控制内存, 默认200天=~5GB/块)
+            workers: 并行工作进程数 (默认 CPU 核心数 // 2, 最大 4)
 
         Returns:
             dict: {n_dates, n_factors, n_symbols, n_rows, elapsed_sec}
 
-        Memory: 一次性加载 2020→now (~1590天) 需 ~25GB, 分块200天 (~5GB/块)
-                共 ~8 块, 每块完成后释放该块内存。
+        Parallel: 使用 multiprocessing.Pool 并行处理日期, 共享数据通过临时 Parquet 传递。
         """
         import time as _time
         import gc as _gc
@@ -130,6 +149,11 @@ class FactorStore:
         from quant.data.store import DataStore
         from quant.factor.windows import max_factor_calendar_days
         from quant.config.constants import _require_cfg
+
+        # 默认并行度: CPU 核心数 // 2, 最大 4
+        if workers is None:
+            workers = min(mp.cpu_count() // 2, 4)
+            workers = max(1, workers)
 
         _store_owned = store is None
         if store is None:
@@ -160,7 +184,7 @@ class FactorStore:
         try:
             mconn.close()
         except Exception as _e:
-            _log.debug("mconn close failed (non-fatal): %s", _e)  # monkeypatched shared conn in tests
+            _log.debug("mconn close failed (non-fatal): %s", _e)
         symbols_filtered = [s for s in symbols if s in valid_syms]
         _log.info("factor_cache: symbol filter %d → %d (stocks table)",
                   len(symbols), len(symbols_filtered))
@@ -178,132 +202,176 @@ class FactorStore:
 
         if force:
             for f in os.listdir(self._cache_dir):
-                if f.endswith('.csv.gz') or f.endswith('.manifest.json'):
+                if f.endswith('.csv.gz') or f.endswith('.manifest.json') or f.endswith('.parquet'):
                     os.remove(os.path.join(self._cache_dir, f))
+            # 也清理 parquet 目录
+            import shutil
+            if os.path.exists(self._parquet_dir):
+                shutil.rmtree(self._parquet_dir)
+            os.makedirs(self._parquet_dir, exist_ok=True)
 
         total_rows = 0
         n_dates_computed = 0
         n_chunks = (n_total + chunk_size - 1) // chunk_size
 
-        _log.info("factor_cache: %d total dates → %d chunks (≤%d dates/chunk, %dd lookback)",
-                  n_total, n_chunks, chunk_size, eff_days)
+        _log.info("factor_cache: %d total dates → %d chunks (≤%d dates/chunk, %dd lookback, workers=%d)",
+                  n_total, n_chunks, chunk_size, eff_days, workers)
 
-        for ci in range(n_chunks):
-            chunk_start_idx = ci * chunk_size
-            chunk_end_idx = min(chunk_start_idx + chunk_size, n_total)
-            chunk_dates = dates[chunk_start_idx:chunk_end_idx]
-            chunk_start_dt = chunk_dates[0]
-            chunk_end_dt = chunk_dates[-1]
+        # 收集所有需要计算的日期 (跳过已完全缓存的)
+        dates_to_compute = []
+        for date_str in dates:
+            if not force and self._date_has_all_factors(date_str, factor_names):
+                continue
+            dates_to_compute.append(date_str)
 
-            _log.info("factor_cache: chunk %d/%d — %s → %s (%d dates)",
-                      ci + 1, n_chunks, chunk_start_dt, chunk_end_dt, len(chunk_dates))
+        if not dates_to_compute:
+            _log.info("factor_cache: all dates already fully materialized, skip")
+            return {"n_dates": len(date_range), "n_factors": len(factor_names),
+                    "n_symbols": len(symbols), "n_rows": 0, "elapsed_sec": 0,
+                    "skipped": True}
 
-            # ── test-v403: 检查因子完整性而非文件存在 ──
-            # test-v274/test-v286 旧逻辑只看文件是否存在 → 新因子无法触发重算
-            # 修复: 抽查 chunk 首尾日期的因子覆盖, 不全则进入 Step 1-5
-            if not force:
-                _sample_dates = [chunk_dates[0], chunk_dates[-1]]
-                _all_cached = all(
-                    self._date_has_all_factors(d, factor_names) for d in _sample_dates
-                ) if len(chunk_dates) > 1 else self._date_has_all_factors(chunk_dates[0], factor_names)
-                if _all_cached:
-                    _log.info("factor_cache: chunk %d/%d — all %d dates fully cached, skip",
-                              ci + 1, n_chunks, len(chunk_dates))
-                    continue
+        _log.info("factor_cache: %d dates need computation (total %d, workers=%d)",
+                  len(dates_to_compute), len(dates), workers)
 
-            t_chunk = _time.time()
-
-            # ── Step 1: 数据加载 ──
-            data_start = (pd.Timestamp(chunk_start_dt) - pd.Timedelta(days=eff_days)).strftime("%Y-%m-%d")
-            data_full = store.get_daily(symbols, start=data_start, end=chunk_end_dt)
+        # 准备共享数据: 写入临时 Parquet 供工作进程读取
+        with tempfile.TemporaryDirectory() as tmpdir:
+            t_prep = _time.time()
+            
+            # 确定最早需要的数据起始日期
+            earliest_date = dates_to_compute[0]
+            data_start = (pd.Timestamp(earliest_date) - pd.Timedelta(days=eff_days)).strftime("%Y-%m-%d")
+            latest_date = dates_to_compute[-1]
+            
+            _log.info("factor_cache: loading data %s → %s (lookback %dd)", data_start, latest_date, eff_days)
+            data_full = store.get_daily(symbols, start=data_start, end=latest_date)
             t1 = _time.time()
-            _log.info("factor_cache: chunk %d/%d — loaded %d days × %d symbols (%.1fs)",
-                      ci + 1, n_chunks, len(data_full), len(symbols), t1 - t_chunk)
-
-            # ── Step 2: 原语预计算 ──
+            _log.info("factor_cache: loaded %d days × %d symbols (%.1fs)", len(data_full), len(symbols), t1 - t_prep)
+            
+            # 预计算原语
             prims = precompute_primitives(data_full, factor_names=factor_names)
             t2 = _time.time()
-
-            # ── Step 3: 基准+缓存+aux+fundamentals ──
+            _log.info("factor_cache: primitives computed (%.1fs)", t2 - t1)
+            
+            # 基准收益率
             try:
                 bm_ret = store.get_benchmark("000300", start=data_start)
                 if not bm_ret.empty:
                     prims["benchmark_ret"] = bm_ret
             except Exception as _e:
                 _log.warning("factor_cache: benchmark_ret not available (%s)", _e)
-
-            preload_ztd_cache(chunk_dates, symbols)
-            aux_full = preload_aux_data_chunk(symbols, chunk_start_dt, chunk_end_dt)
+            
+            # 预加载 ZTD 缓存
+            preload_ztd_cache(dates_to_compute, symbols)
+            
+            # 预加载 aux 数据
+            aux_full = preload_aux_data_chunk(symbols, earliest_date, latest_date)
+            
+            # 预加载基本面
             chunk_fundamentals = self._build_fundamentals_panel(
-                store, symbols, chunk_dates, data_full=data_full
+                store, symbols, dates_to_compute, data_full=data_full
             )
             t3 = _time.time()
-
-            # ── Step 4: 逐日因子计算 ──
-            chunk_new_rows: dict[str, list[str]] = {d: [] for d in chunk_dates}
-
-            # test-v398 (perf): ThreadPoolExecutor — 线程共享内存, 无 COW, numpy 释放 GIL
-            # test-v398 (perf): ThreadPoolExecutor — 线程共享内存, numpy 释放 GIL
-            # max_workers=2: M1 4性能核+4效率核, 物化是 CPU 密集 (>200MB data_full 共用)
-            # 4 workers 抢内存带宽互相拖慢, 2 workers 实测更快 (~1.5x→2x 加速)
-            from concurrent.futures import ThreadPoolExecutor, as_completed
+            _log.info("factor_cache: aux+fundamentals ready (%.1fs)", t3 - t2)
+            
+            # 写入临时文件供 worker 读取
+            _log.info("factor_cache: writing shared data to temp dir...")
+            data_full.to_parquet(os.path.join(tmpdir, "data_full.parquet"))
+            pd.to_pickle(prims, os.path.join(tmpdir, "prims.pkl"))
+            pd.to_pickle(aux_full, os.path.join(tmpdir, "aux_full.pkl"))
+            pd.to_pickle(chunk_fundamentals, os.path.join(tmpdir, "fundamentals.pkl"))
+            with open(os.path.join(tmpdir, "meta.json"), "w") as f:
+                json.dump({
+                    "symbols": symbols,
+                    "factor_names": factor_names,
+                    "eff_days": eff_days,
+                    "earliest_date": earliest_date,
+                    "latest_date": latest_date,
+                }, f)
+            
+            # 定义 worker 函数 (顶层函数才能被 pickle)
+            # 这里用静态方法避免序列化 self
             from quant.factor.compute._preload import slice_aux_for_date
-            chunk_dates_done = 0
-            with ThreadPoolExecutor(max_workers=2) as _ex:
-                _futures = {}
-                for date_str in chunk_dates:
-                    existing = self._get_existing_factors(date_str)
-                    missing = [f for f in factor_names if f not in existing]
-                    if not missing:
-                        continue
+            
+            def _worker_compute_date(args):
+                """Worker 进程计算单日因子"""
+                date_str, tmpdir, factor_names = args
+                try:
+                    # 读取共享数据
+                    data_full = pd.read_parquet(os.path.join(tmpdir, "data_full.parquet"))
+                    import pandas as pd
+                    prims = pd.read_pickle(os.path.join(tmpdir, "prims.pkl"))
+                    aux_full = pd.read_pickle(os.path.join(tmpdir, "aux_full.pkl"))
+                    chunk_fundamentals = pd.read_pickle(os.path.join(tmpdir, "fundamentals.pkl"))
+                    
+                    existing = set()  # worker 中不检查缓存，由主进程过滤
+                    missing = factor_names
+                    
+                    from quant.factor.compute._preload import slice_aux_for_date
+                    from quant.factor.compute._dispatch import compute_all_factors
+                    
                     _aux_sliced = slice_aux_for_date(aux_full, date_str)
                     _fund = chunk_fundamentals.get(date_str)
-                    _futures[_ex.submit(
-                        self._compute_date,
-                        date_str, data_full, prims, _fund, _aux_sliced, missing
-                    )] = date_str
-                for _fu in as_completed(_futures):
-                    _ds = _futures[_fu]
-                    _lines = _fu.result()
-                    if _lines:
-                        chunk_new_rows[_ds].extend(_lines)
-                        chunk_dates_done += 1
-                    if chunk_dates_done % 20 == 0 or chunk_dates_done == len(_futures):
-                        _log.info("  chunk compute: %d/%d dates done (threads=2)",
-                                  chunk_dates_done, len(_futures))
-            t4 = _time.time()
-
-            # ── Step 5: CSV 写入 ──
+                    
+                    fv = compute_all_factors(
+                        data_full, date_str,
+                        primitives=prims,
+                        fundamentals=_fund,
+                        preloaded_aux_chunk=_aux_sliced,
+                        factor_names=missing,
+                        status_filter=None,
+                        factor_fail_fast=False,
+                        quiet=True,
+                        financials_cache={},
+                    )
+                    
+                    lines = []
+                    for fname, series in fv.items():
+                        if not isinstance(series, pd.Series) or series.dropna().empty:
+                            continue
+                        for sym, val in series.dropna().items():
+                            lines.append(f"{sym},{fname},{val:.6f}")
+                    return date_str, lines
+                except Exception as e:
+                    import traceback
+                    return date_str, f"ERROR: {traceback.format_exc()}"
+            
+            # 并行计算
+            _log.info("factor_cache: starting parallel computation with %d workers...", workers)
+            t_compute_start = _time.time()
+            
+            # 准备任务参数
+            task_args = [(ds, tmpdir, factor_names) for ds in dates_to_compute]
+            
+            chunk_new_rows = {}
+            with mp.Pool(processes=workers) as pool:
+                # 使用 imap_unordered 获取结果
+                for i, result in enumerate(pool.imap_unordered(_worker_compute_date, task_args), 1):
+                    date_str, lines = result
+                    if isinstance(lines, str) and lines.startswith("ERROR"):
+                        _log.error("factor_cache: %s compute failed: %s", date_str, lines)
+                        continue
+                    if lines:
+                        chunk_new_rows[date_str] = lines
+                    if i % 20 == 0 or i == len(dates_to_compute):
+                        _log.info("  parallel compute: %d/%d dates done (workers=%d)", i, len(dates_to_compute), workers)
+            
+            t_compute_end = _time.time()
+            _log.info("factor_cache: parallel compute done (%.1fs)", t_compute_end - t_compute_start)
+            
+            # 批量写入 Parquet
             chunk_rows = self._write_chunk_rows(chunk_new_rows, factor_names)
-            t5 = _time.time()
-
-            # P3b: 断点续传
-            self._write_checkpoint(chunk_end_dt, ci + 1, n_chunks)
-
-            # 释放内存
-            del data_full, prims, chunk_fundamentals, aux_full
-            if hasattr(store, '_query_cache'):
-                store._query_cache.clear()
-            _gc.collect()
-
             total_rows += chunk_rows
-            n_dates_computed += chunk_dates_done
-            _log.info(
-                "factor_cache: chunk %d/%d done — %d rows | "
-                "load=%.0fs prim=%.0fs aux=%.0fs compute=%.0fs write=%.0fs total=%.0fs",
-                ci + 1, n_chunks, chunk_rows,
-                t1 - t_chunk, t2 - t1, t3 - t2, t4 - t3, t5 - t4, t5 - t_chunk,
-            )
+            n_dates_computed = len(chunk_new_rows)
+            
+            _log.info("factor_cache: wrote %d rows for %d dates (%.1fs)",
+                      chunk_rows, n_dates_computed, _time.time() - t_compute_end)
 
         elapsed = _time.time() - t0
-        _log.info("factor_cache: materialized %d dates × %d factors × %d symbols → %d rows in %.1fs",
-                  n_dates_computed, len(factor_names), len(symbols), total_rows, elapsed)
+        _log.info("factor_cache: materialized %d dates × %d factors × %d symbols → %d rows in %.1fs (workers=%d)",
+                  n_dates_computed, len(factor_names), len(symbols), total_rows, elapsed, workers)
 
         self._log_materialization(dates[0], dates[-1], len(factor_names), len(symbols),
                                   n_dates_computed, total_rows, elapsed, force)
-
-        # P3b: 物化完成, 清理断点
-        self._clear_checkpoint()
 
         # 关闭内部创建的 DataStore, 释放 SQLite 连接
         if _store_owned:
@@ -312,9 +380,18 @@ class FactorStore:
             except Exception as _e:
                 _log.debug("store close failed (non-fatal): %s", _e)
 
-        size_mb = sum(os.path.getsize(os.path.join(self._cache_dir, f))
-                      for f in os.listdir(self._cache_dir) if f.endswith('.csv.gz')) / 1024 / 1024
-        _log.info("factor_cache: total cache size %.0f MB", size_mb)
+        # 统计 Parquet 缓存大小
+        size_mb = 0
+        for root, dirs, files in os.walk(self._parquet_dir):
+            for f in files:
+                if f.endswith('.parquet'):
+                    size_mb += os.path.getsize(os.path.join(root, f))
+        size_mb /= 1024 * 1024
+        _log.info("factor_cache: total parquet cache size %.0f MB", size_mb)
+
+        # P1: 物化完成 → 释放 ztd 预计算缓存 (~80MB for 2000 dates)
+        from quant.factor.compute.price._alternative import clear_ztd_cache
+        clear_ztd_cache()
 
         return {"n_dates": n_dates_computed, "n_factors": len(factor_names),
                 "n_symbols": len(symbols), "n_rows": total_rows,
@@ -323,7 +400,30 @@ class FactorStore:
     # ── 读取 ──
 
     def load(self, date_str: str, symbols=None, factor_names=None) -> dict:
-        """从缓存读取单日因子值。返回 {factor_name: pd.Series(symbol→value)}."""
+        """从缓存读取单日因子值。返回 {factor_name: pd.Series(symbol→value)}.
+        优先读 Parquet 分区，回退兼容旧 gzip CSV。
+        """
+        # 1) 尝试读 Parquet 分区
+        pdir = self._parquet_path(date_str)
+        if os.path.exists(pdir):
+            try:
+                filters = []
+                if factor_names:
+                    filters.append(("factor", "in", factor_names))
+                df = pd.read_parquet(pdir, filters=filters)
+                if df.empty:
+                    return {}
+                if symbols:
+                    df = df[df["symbol"].isin(symbols)]
+                # 转为 {factor: Series}
+                result = {}
+                for fname, gdf in df.groupby("factor"):
+                    result[fname] = pd.Series(gdf["value"].values, index=gdf["symbol"], name=fname)
+                return result
+            except Exception as e:
+                _log.warning(f"factor_cache: parquet read failed for {date_str}, fallback to CSV: {e}")
+
+        # 2) 回退 CSV
         path = self._path(date_str)
         if not os.path.exists(path):
             return {}
@@ -334,10 +434,11 @@ class FactorStore:
 
         result = {}
         for line in lines:
-            parts = line.split(",", 2)
-            if len(parts) != 3:
+            parts = line.split(",")
+            if len(parts) < 3:
                 continue
-            sym, factor, val_str = parts
+            sym, factor = parts[0], parts[1]
+            val_str = parts[2]  # value is 3rd column (date may be 4th, ignored)
             if factor_names and factor not in factor_names:
                 continue
             if symbols and sym not in symbols:
@@ -356,12 +457,12 @@ class FactorStore:
         Returns: {date_str: {factor_name: pd.Series(symbol→value)}}
         用途: 回测启动时一次性加载全量, 消除逐日的 gzip I/O。
         244 天 × 30 因子 × 800 股 ≈ 47 MB, 内存完全可接受。
+        优先读 Parquet 分区 (列式投影 + 谓词下推)，回退 CSV。
         """
         cache: dict[str, dict] = {}
         n = len(dates)
 
-        # test-v398 (perf): ThreadPoolExecutor 并行读 gzip — 262 次 I/O 串行 → 8 线程
-        # self.load() 只调 gzip.open + str.split, 无共享状态, 无线程安全风险
+        # 并行读取：ThreadPoolExecutor 8 线程
         from concurrent.futures import ThreadPoolExecutor, as_completed
         with ThreadPoolExecutor(max_workers=8) as _ex:
             _futures = {_ex.submit(self.load, ds, symbols, factor_names): ds for ds in dates}
@@ -392,47 +493,62 @@ class FactorStore:
         写完后更新 manifest, 记录该日期已物化的因子集合。
         返回实际写入的总行数。
         """
+    def _write_chunk_rows(self, chunk_rows: dict[str, list[str]], factor_names: list[str]) -> int:
+        """批量写一个 chunk 的 Parquet 缓存 (分区: date=YYYY-MM-DD/factor_name.parquet)。
+
+        - 按因子分文件写入，列式压缩 (ZSTD level 3)
+        - 自动去重：同 (symbol, factor, date) 保留最后一条
+        - 更新 manifest 记录已物化因子集合
+        返回实际写入的总行数。
+        """
+        import pandas as pd
         total = 0
         for date_str, lines in chunk_rows.items():
             if not lines:
                 continue
-            path = self._path(date_str)
-            # test-v403: prune — 只保留 factor_names 中的因子,
-            # 同 (symbol, factor) 新值覆盖旧值
-            _key = lambda line: (line.split(",", 2)[0], line.split(",", 2)[1]) if "," in line else (line, "")
-            new_map = {}
+
+            # 解析行，构建 DataFrame
+            records = []
             for line in lines:
                 parts = line.split(",", 2)
                 if len(parts) < 3:
                     continue
-                sym, fname = parts[0], parts[1]
-                if fname in factor_names:
-                    new_map[(sym, fname)] = line
-            if os.path.exists(path):
-                old_lines = self._read_raw_lines(date_str)
-                for line in old_lines:
-                    parts = line.split(",", 2)
-                    if len(parts) < 3:
-                        continue
-                    sym, fname = parts[0], parts[1]
-                    k = (sym, fname)
-                    if k not in new_map:
-                        if fname in factor_names:
-                            new_map[k] = line  # 旧行有效且未更新→保留
-                        # else: fname 不在 factor_names → prune
-                # else: new_map 已有 → 新值覆盖旧值
-            lines = list(new_map.values())
+                sym, fname, val_str = parts[0], parts[1], parts[2]
+                if fname not in factor_names:
+                    continue
+                try:
+                    val = float(val_str)
+                except ValueError:
+                    continue
+                records.append((sym, fname, val, date_str))
 
-            raw = "\n".join(lines).encode()
-            compressed = gzip.compress(raw, compresslevel=_require_cfg("factor.compute.cache_compresslevel"))
-            with open(path, 'wb') as f:
-                f.write(compressed)
+            if not records:
+                continue
 
-            # C2: 更新 manifest, 从行中解析因子名
-            factors = set(line.split(",", 2)[1] for line in lines
-                          if len(line.split(",", 2)) >= 2)
-            self._write_manifest(date_str, factors, len(lines))
-            total += len(lines)
+            df = pd.DataFrame(records, columns=["symbol", "factor", "value", "date"])
+            df["value"] = df["value"].astype("float32")  # 节省空间
+
+            # 去重：同 (symbol, factor, date) 保留最后一条
+            df = df.drop_duplicates(subset=["symbol", "factor", "date"], keep="last")
+
+            # 按因子分组写入各自分区文件
+            for fname, fdf in df.groupby("factor"):
+                if fname not in factor_names:
+                    continue
+                pdir = self._parquet_path(date_str, fname)
+                os.makedirs(os.path.dirname(pdir), exist_ok=True)
+                # 如果已存在，读取合并去重
+                if os.path.exists(pdir):
+                    existing = pd.read_parquet(pdir)
+                    combined = pd.concat([existing, fdf], ignore_index=True)
+                    combined = combined.drop_duplicates(subset=["symbol", "factor", "date"], keep="last")
+                    fdf = combined
+                fdf.to_parquet(pdir, compression="zstd", compression_level=3, index=False)
+
+            # C2: 更新 manifest
+            factors = set(df["factor"].unique())
+            self._write_manifest(date_str, factors, len(df))
+            total += len(df)
         return total
 
     def _build_fundamentals_panel(self, store, symbols: list[str],

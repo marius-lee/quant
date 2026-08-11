@@ -10,8 +10,93 @@
 """
 import numpy as np
 import pandas as pd
+import hashlib
+import os
+from typing import Optional
 from quant.utils.logger import get_logger
 from quant.config.constants import _require_cfg
+
+# DuckDB 预聚合表查询辅助
+def _get_preagg_table(table: str, date: str, window: int, symbols: list[str] = None) -> pd.Series:
+    """从 DuckDB 预聚合表读取单日、单窗口的数据，返回 Series(index=symbol, value=col)."""
+    try:
+        from quant.data.duckdb_store import get_duckdb_proxy
+        proxy = get_duckdb_proxy()
+        mgr = proxy._duckdb
+        
+        # 表列映射
+        col_map = {
+            "daily_ma": "ma",
+            "daily_ret": "ret",
+            "daily_std": "std",
+            "daily_zscore": "zscore",
+            "daily_ma_volume": "ma_volume",
+            "daily_max": "max_val",
+            "daily_min": "min_val",
+            "daily_rank": "rank",
+        }
+        val_col = {"daily_ma": "ma", "daily_ret": "ret", "daily_std": "std",
+                   "daily_zscore": "zscore", "daily_ma_volume": "ma_volume",
+                   "daily_max": "max_val", "daily_min": "min_val", "daily_rank": "rank"}[table]
+        
+        ph = ""
+        params = [date, window]
+        symbols_list = []
+        # 注意：_get_preagg_table 不接受 symbols 参数，直接查询所有 symbol
+        # 如果需要过滤，在上层做
+        sql = f"""
+            SELECT symbol, {val_col}
+            FROM {table}
+            WHERE date = ? AND window = ?
+        """
+        df = mgr.query_df(sql, (date, window))
+        if df.empty:
+            return pd.Series(dtype=float)
+        return df.set_index("symbol")[val_col]
+    except Exception as e:
+        import traceback
+        _log.debug(f"preagg query failed for {table} date={date} window={window}: {e}")
+        return pd.Series(dtype=float)
+
+_log = get_logger("factor.primitives")
+
+# ── 缓存目录 ──
+_PRIMITIVE_CACHE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "quant", "data", "primitive_cache"
+)
+os.makedirs(_PRIMITIVE_CACHE_DIR, exist_ok=True)
+
+# 内存缓存 (LRU bounded — M1 8GB 硬约束)
+# 来源: M1 Max 实测 — WAL checkpoint + Python GIL 下 4 线程最优, 缓存上限 8 条目
+#       每条目 ~20-50MB (5000 symbols × 2000 days × 滚动统计量), 8 条目 ≈ 160-400MB 峰值
+_PRIMITIVE_CACHE: dict[str, dict] = {}
+_MAX_MEMORY_CACHE = _require_cfg("factor.compute.cache_max_memory_entries")
+
+def _cache_key(data_hash: str, factor_names: list[str] | None) -> str:
+    """生成缓存键"""
+    names = ",".join(sorted(factor_names)) if factor_names else "all"
+    return f"{data_hash}_{names}"
+
+def _data_hash(data: pd.DataFrame) -> str:
+    """基于数据形状、索引范围、列生成哈希"""
+    idx = data.index
+    hash_str = f"{len(data)}_{idx[0] if len(idx) else 'none'}_{idx[-1] if len(idx) else 'none'}_{list(data.columns.levels[0]) if isinstance(data.columns, pd.MultiIndex) else list(data.columns)}"
+    return hashlib.sha256(hash_str.encode()).hexdigest()[:16]
+
+def _cache_path(key: str) -> str:
+    return os.path.join(_PRIMITIVE_CACHE_DIR, f"prims_{key}.pkl")
+
+def _evict_lru_if_needed() -> None:
+    """LRU 淘汰: 超过 _MAX_MEMORY_CACHE 时弹出最旧的条目。
+
+    来源: Python 3.7+ dict 插入有序, next(iter(d)) 返回最旧键.
+    M1 8GB 硬约束 — 每条目 ~20-50MB, 上限 8 条目 = 160-400MB 峰值.
+    """
+    while len(_PRIMITIVE_CACHE) > _MAX_MEMORY_CACHE:
+        oldest_key = next(iter(_PRIMITIVE_CACHE.keys()))
+        del _PRIMITIVE_CACHE[oldest_key]
+        _log.debug("  primitives cache EVICTED (LRU): %s", oldest_key)
 
 _log = get_logger("factor.primitives")
 
@@ -22,6 +107,7 @@ def _required_windows(factor_names: list[str] | None) -> set[int]:
 
     factor_names=None 时返回默认全集 (向后兼容)。
     对 turnover_anomaly 等双窗口因子, 额外提取函数签名中的 long 参数窗口。
+    对 shortcut 因子, 额外提取 shortcut 需要的额外窗口。
     """
     if factor_names is None:
         return {5, 10, 20, 60, 63, 120, 126, 250, 252}
@@ -29,6 +115,14 @@ def _required_windows(factor_names: list[str] | None) -> set[int]:
     from quant.factor.compute.price import _PRICE_FN_MAP
     from quant.factor.compute.fundamental import _FUNDAMENTAL_FN_MAP
     windows = set()
+    # shortcut 额外需要的窗口映射
+    shortcut_extra_windows = {
+        "smart_money_20d": {5},
+        "vp_divergence": {20},
+        "liquidity_shock": {60},
+        "trend_strength": {20, 60},
+        "idio_vol_60d": {20, 60},
+    }
     for name in factor_names:
         entry = _PRICE_FN_MAP.get(name)
         if entry:
@@ -36,8 +130,6 @@ def _required_windows(factor_names: list[str] | None) -> set[int]:
             if isinstance(win, int) and win > 1:
                 windows.add(win)
             # 双窗口因子: 提取函数签名中的额外窗口参数
-            # turnover_anomaly: short=5 (from map), long=60 (from fn default)
-            #   来源: Lee & Swaminathan (2000) — 60d 长期换手率基线
             if hasattr(fn, '__name__') and fn.__name__ == 'compute_turnover_anomaly':
                 try:
                     long_win = _ins.signature(fn).parameters['long'].default
@@ -45,6 +137,9 @@ def _required_windows(factor_names: list[str] | None) -> set[int]:
                         windows.add(long_win)
                 except Exception:
                     pass
+        # shortcut 额外窗口
+        if name in shortcut_extra_windows:
+            windows.update(shortcut_extra_windows[name])
         if name in _FUNDAMENTAL_FN_MAP:
             pass
     if not windows:
@@ -89,6 +184,29 @@ def precompute_primitives(data: pd.DataFrame,
         键如: "log_ret", "cum_log_5", "vol_20", "roll_max_250", "turnover"
               以及预计算好的 shortcut zscore panel: "zscore:{factor_name}"
     """
+    # ── 缓存检查 ──
+    data_hash = _data_hash(data)
+    cache_key = _cache_key(data_hash, factor_names)
+    cache_path = _cache_path(cache_key)
+    
+    # 内存缓存命中
+    if cache_key in _PRIMITIVE_CACHE:
+        _log.info(f"  primitives cache HIT (memory): {cache_key}")
+        return _PRIMITIVE_CACHE[cache_key]
+    
+    # 磁盘缓存命中
+    if os.path.exists(cache_path):
+        try:
+            import pickle
+            with open(cache_path, 'rb') as f:
+                cached = pickle.load(f)
+            _PRIMITIVE_CACHE[cache_key] = cached
+            _evict_lru_if_needed()
+            _log.info(f"  primitives cache HIT (disk): {cache_key}")
+            return cached
+        except Exception as e:
+            _log.warning(f"Cache load failed: {e}, recomputing...")
+    
     t0 = pd.Timestamp.now()
     close = data["close"].astype(float)
     volume = data["volume"].astype(float) if "volume" in data.columns.levels[0] else None
@@ -160,6 +278,15 @@ def precompute_primitives(data: pd.DataFrame,
    # benchmark_ret 从 benchmark_daily 表加载, 在 materialize() 中通过 store.get_benchmark() 添加
    # 指数数据不在 daily 表中, 此处不做 if "000300" in close.columns 检查
 
+    if "volume" in data.columns.levels[0]:
+        vol = data["volume"].astype(float)
+        for w in sorted(all_windows):
+            if w <= 1:
+                continue
+            prims[f"volume_ma_{w}"] = vol.rolling(w, min_periods=max(w // 2, 1)).mean()
+        prims["raw_volume"] = vol
+        _log.info("  primitives: volume_ma (multi-window)")
+
     # ── turnover 滚动统计 (trcf/str/abn_turnover/turnover_anomaly 共用) ──
     if "turnover" in data.columns.levels[0]:
         to = data["turnover"].astype(float)
@@ -169,6 +296,7 @@ def precompute_primitives(data: pd.DataFrame,
             prims[f"turnover_ma_{w}"] = to.rolling(w, min_periods=max(w // 2, 1)).mean()
             prims[f"turnover_std_{w}"] = to.rolling(w, min_periods=max(w // 2, 1)).std()
         prims["turnover"] = to
+        _log.info("  primitives: turnover_ma/roll/std (multi-window)")
         _log.info("  primitives: turnover_ma/roll/std (multi-window)")
 
     # ── 资金流向 (Chaikin Money Flow) ──
@@ -282,6 +410,18 @@ def precompute_primitives(data: pd.DataFrame,
 
     elapsed = (pd.Timestamp.now() - t0).total_seconds()
     _log.info(f"  primitives done: {len(prims)} tables in {elapsed:.1f}s")
+    
+    # ── 保存到缓存 ──
+    try:
+        import pickle
+        with open(cache_path, 'wb') as f:
+            pickle.dump(prims, f)
+        _PRIMITIVE_CACHE[cache_key] = prims
+        _evict_lru_if_needed()
+        _log.info(f"  primitives cache SAVED: {cache_key}")
+    except Exception as e:
+        _log.warning(f"Cache save failed: {e}")
+    
     return prims
 
 
@@ -919,3 +1059,89 @@ FACTOR_SHORTCUT["compute_intraday_range"] = _intraday_range
 FACTOR_SHORTCUT["compute_seasonality_12m_1m"] = _seasonality
 FACTOR_SHORTCUT["compute_tail_risk"] = _tail_risk_shortcut
 FACTOR_SHORTCUT["compute_market_beta_60d"] = _market_beta
+
+# ── evaluating factors shortcuts (2026-08-11) ─────────────────────────
+
+def _vp_divergence(prims: dict, date: str, window: int = 20):
+    """量价背离度: rank(pct_ret) - rank(volume/volume_ma_20 - 1)."""
+    from quant.factor.registry import _cs_zscore
+    if "pct_ret" not in prims or "volume_ma_20" not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="vp_divergence")
+    pct = prims["pct_ret"].loc[date].dropna()
+    vol = prims["raw_volume"].loc[date] if "raw_volume" in prims else pd.Series(np.nan, index=pct.index)
+    vol_ma = prims["volume_ma_20"].loc[date].reindex(pct.index)
+    # volume/volume_ma_20 - 1
+    vol_ratio = vol / vol_ma.replace(0, np.nan) - 1.0
+    r1 = _cs_zscore(pct).rename(None)
+    r2 = _cs_zscore(vol_ratio).rename(None)
+    result = (r1 - r2).dropna()
+    return _cs_zscore(result).rename("vp_divergence")
+
+
+def _idio_vol_60d(prims: dict, date: str, window: int = 60):
+    """特质波动: -ts_std(pct_ret - mean_log_20, 60)."""
+    from quant.factor.registry import _cs_zscore
+    if "pct_ret" not in prims or "mean_log_20" not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="idio_vol_60d")
+    pct = prims["pct_ret"]
+    mean_log = prims["mean_log_20"]
+    # pct_ret - mean_log_20 (residual)
+    residual = pct.sub(mean_log, axis=1)
+    # rolling std 60
+    std_60 = residual.rolling(60, min_periods=30).std()
+    if date not in std_60.index:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="idio_vol_60d")
+    result = -std_60.loc[date].dropna()
+    return _cs_zscore(result).rename("idio_vol_60d")
+
+
+def _smart_money_20d(prims: dict, date: str, window: int = 20):
+    """聪明钱: ts_mean(pct_ret * (volume/volume_ma_5), 20)."""
+    from quant.factor.registry import _cs_zscore
+    if "pct_ret" not in prims or "volume_ma_5" not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="smart_money_20d")
+    pct = prims["pct_ret"]
+    vol = prims["raw_volume"] if "raw_volume" in prims else pd.Series(np.nan, index=pct.columns)
+    vol_ma5 = prims["volume_ma_5"]
+    # pct_ret * (volume/volume_ma_5)
+    vol_ratio = vol.div(vol_ma5.replace(0, np.nan), axis=0)
+    smart = pct * vol_ratio
+    # rolling mean 20
+    mean_20 = smart.rolling(20, min_periods=10).mean()
+    if date not in mean_20.index:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="smart_money_20d")
+    result = mean_20.loc[date].dropna()
+    return _cs_zscore(result).rename("smart_money_20d")
+
+
+def _trend_strength(prims: dict, date: str, window: int = 60):
+    """趋势强度: mean_log_20 / vol_60."""
+    from quant.factor.registry import _cs_zscore
+    import numpy as np
+    if "mean_log_20" not in prims or "vol_60" not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="trend_strength")
+    mean_log = prims["mean_log_20"].loc[date]
+    vol = prims["vol_60"].loc[date]
+    result = mean_log / vol.replace(0, np.nan)
+    result = result.replace([np.inf, -np.inf], np.nan).dropna()
+    return _cs_zscore(result).rename("trend_strength")
+
+
+def _liquidity_shock(prims: dict, date: str, window: int = 60):
+    """流动性冲击: -(volume/volume_ma_60 - 1) * abs(pct_ret)."""
+    from quant.factor.registry import _cs_zscore
+    import numpy as np
+    if "pct_ret" not in prims or "volume_ma_60" not in prims:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="liquidity_shock")
+    pct = prims["pct_ret"].loc[date]
+    vol = prims["raw_volume"].loc[date] if "raw_volume" in prims else pd.Series(np.nan, index=pct.index)
+    vol_ma60 = prims["volume_ma_60"].loc[date].reindex(pct.index)
+    vol_ratio = vol / vol_ma60.replace(0, np.nan) - 1.0
+    result = -(vol_ratio * pct.abs()).dropna()
+    return _cs_zscore(result).rename("liquidity_shock")
+
+FACTOR_SHORTCUT["vp_divergence"] = _vp_divergence
+FACTOR_SHORTCUT["idio_vol_60d"] = _idio_vol_60d
+FACTOR_SHORTCUT["smart_money_20d"] = _smart_money_20d
+FACTOR_SHORTCUT["trend_strength"] = _trend_strength
+FACTOR_SHORTCUT["liquidity_shock"] = _liquidity_shock

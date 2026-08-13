@@ -2,6 +2,54 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+### v479 数据健康闭环 — 表注册表 / 审计 / 自动补拉 (2026-08-13)
+
+**背景**: 诊断出 5 根因 (一半表无同步任务; 子同步 try/except 吞错; 检测只看 MAX(date) 不看覆盖/缺口; lhb/limit_up 无回头补拉; 回填仅人工一次性脚本)。
+
+**核心新增** — 单一真相源:
+| 文件 | 说明 |
+|------|------|
+| `quant/data/table_registry.py` | 11 表注册表: daily/daily_valuation (±14d), fund_flow (±100d), margin_detail (±30d), lhb_detail/limit_up_pool/limit_down_pool (±7d), dividend/stocks (weekly_full), benchmark_daily (±10d), adj_factor (none)。每表含 `date_col`/`slo_days`/`sync_daily`/`sync_weekly`/`custom_check`, `FACTORS_BY_TABLE` 聚合 |
+| `quant/data/data_health.py` | `audit_table` (freshness/gap_dates/coverage/total_rows/custom 5 类规则) + `audit_all` + `repair_table`/`repair_and_reaudit` + `data_audit` 表留痕 (含 repair 后仍 fail 标记) + `failed_tables_on`/`last_ok_check`/`consecutive_failures` |
+| `quant/data/freshness.py` (重构) | SLOS/TABLE_TO_FACTORS 改为从 REGISTRY 聚合, API (`check_freshness`/`unavailable_factors`) 兼容 |
+| `quant/data/stocks_snapshot.py` | `sync_stock_basic` (tushare, UPDATE 不 REPLACE 防清空 pe/total_shares) + `refresh_total_shares` (baostock) + `refresh_all` |
+| `quant/scheduler/daily_data.py` (重写) | 子同步改为按 rollback_specs 循环 (window_days 窗口); 末尾 `audit_all` + `repair_and_reaudit` + 连续失败≥3 天 ERROR 告警; 状态 ok/partial/failed (partial=审计残留失败表) |
+| `quant/scheduler/repair.py` | 08:00 早间补拉链: 最近 3 天 fail 表 + weekly_full 7 天兜底; 单表失败不阻断其余, task_log 留痕 |
+| `quant/scheduler/data_maintenance.py` | 周六数据维护: weekly_full 表全量刷 + 全表审计 |
+| `quant/scheduler/manifest.py` | 注册 `daily_repair` (周六+交易日, 08:00-08:30, grace/timeout 1800s) |
+| `quant/scheduler/runners.py` | +`run_daily_repair()` |
+| `quant/scheduler/orchestrator.py` | 非交易日分支放行 daily_repair + 交易日 08:00 处理块 + `_repair_done` 重置 (2 处) |
+| `quant/scheduler/weekly.py` | Phase 0 接入 `data_maintenance` (失败不阻断评估) |
+
+**测试**: `test/test_v479_data_health.py` 新增 15 测试 (audit 各规则/repair/data_audit/连续失败/因子裁剪聚合等); v306 旧测试 fixture 补全 11 表 (注册表扩张后缺表误判 stale)。全套 **393 passed**; VERSION=test-v479。
+
+**注意**: `data_audit` 表/`daily_data_partial` 状态为新增语义, 早间链 subprocess 启动后首次运行会补写 audit 基线。
+
+### v478 数据缺口回填 — total_shares / dividend / margin (2026-08-13)
+
+**背景**: 冒烟测试定位 4 处数据缺口 (sue 因子 0 行根因 + 陈旧表):
+
+| 缺口 | 修复前 | 修复后 | 数据源 |
+|------|--------|--------|--------|
+| `stocks.total_shares` | 200/5525 只填充 | **5207/5525** (miss=317 北交所 92xx + 1 ST, 均不参与因子池) | baostock profit_data 逐只 (2026Q2→Q1→2025Q4 最新报告总股本) |
+| `dividend` | 1551 行, 到 2026-07-10 | **55,080 行**, 到 2026-08-21 (07-10 后 +471) | 新浪 vISSUE_ShareBonus (akshare 包同源, 东财 IP 封不禁新浪) |
+| `margin_detail` | 到 2026-08-11 | **到 2026-08-12** (与 daily 同步) | SSE JSON sync_range (T+1 发布, 晚间链 30 天窗口自动覆盖) |
+| `lhb_detail` | 到 2026-08-12 | 无缺口 (本就最新) | — |
+
+**修改**:
+| 文件 | 改动 |
+|------|------|
+| `scripts/data_backfill_integrity.py` | +`total_shares` subcommand (baostock 逐只季度总股本, 幂等跳过已填充); +`margin_latest` subcommand (sync_range 14 天窗口); `dividend` 增强: tushare 限频自适应重试 (`_tushare_call`, 60s/3600s, 零 fallback 耗尽即 SystemExit) |
+
+**经验**:
+- tushare free 档 dividend 接口实测 **1 次/小时** 限频 → 5525 只逐只拉不可行 (脚本已保留限频重试, 但该源弃用)
+- **新浪 vip.stock.finance vISSUE_ShareBonus 直连可用** (akshare 封禁的是东财源); 现成 `quant.data.dividend.py::sync_range` 全量幂等重拉, ~25min/5525 只
+- baostock 逐只长跑 **会话故障模式**: 中途 "接收数据异常" → 后续全 miss (非真缺失); 重跑自动仅补 NULL 项, miss 列表 verify 需复查 92xx 前缀
+- 同库并行大写入 → `database is locked` (busy_timeout 30s 不够): 回填任务须**串行**
+- 北交所 (920xxx, 原 8xxxxx) baostock 不覆盖 — stocks 表 317 只保持 NULL, universe 已排除 BJ, 不影响因子
+
+**后续**: 全量物化 (94 因子) 将首次物化 sue/dividend_yield/margin_buy_ratio 等 6+ 因子; dividend_yield 依赖 ex_date 滚动窗口 → 55,080 行全覆盖。
+
 ### v477 全量物化性能重构 — 消除重复计算/加载 (2026-08-13)
 
 **背景 (性能分析结论)**: 全量物化 94 因子 × 1602 日期估算 15-25h, 而历史上晚间链 23 因子全量仅 2-3h。分析出 4 个浪费点:

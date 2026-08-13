@@ -273,6 +273,7 @@ def _run():
     _evening_runner: SubprocessRunner | None = None
     _evening_retries = 0
     _evening_done = False
+    _repair_done = False
     _weekly_done = False
 
     while True:
@@ -293,6 +294,7 @@ def _run():
             _evening_runner = None
             _evening_retries = 0
             _evening_done = False
+            _repair_done = False
             _weekly_done = False
             _log.info(f"[{today}] new day, orchestrator ready")
 
@@ -310,10 +312,16 @@ def _run():
                 _evening_runner.run_weekly_eval()
                 _weekly_done = True
 
-        # —— 非交易日: 仅周度评估 + 超时检测 ——
+        # —— 非交易日: 周度评估 + 早间补拉 + 超时检测 ——
         if not is_trading_day():
             from quant.scheduler.orchestrator import _check_timeouts
             _check_timeouts(today)
+            # v479: 非交易日也允许早间补拉 (周末覆盖周五晚间链缝隙, 如 margin T+1)
+            _rep = ALL.get("daily_repair")
+            if _rep and not _repair_done and _should_run(_rep, hhmm, now.weekday(), status, aborted):
+                _log.info(f"[{today}] 08:00 — spawning daily repair (weekend)")
+                SubprocessRunner(today).run_daily_repair()
+                _repair_done = True
             _time.sleep(POLL)
             continue
 
@@ -359,6 +367,13 @@ def _run():
                 _monitor_thread.join(timeout=5)
             _monitor_runner = None
             _monitor_thread = None
+
+        # —— 08:00 早间补拉链 (每日, signals 08:30 前修复 T+1 迟发缺口) ——
+        _rep = ALL.get("daily_repair")
+        if _rep and not _repair_done and _should_run(_rep, hhmm, now.weekday(), status, aborted):
+            _log.info(f"[{today}] 08:00 — spawning daily repair subprocess")
+            SubprocessRunner(today).run_daily_repair()
+            _repair_done = True
 
         # —— 19:00+ — 晚间链 subprocess ——
         _even = ALL.get("evening_chain")

@@ -1,5 +1,17 @@
-"""每日数据拉取调度器 — 每日 19:00."""
+"""每日数据拉取调度器 — 每日 19:00 (晚间链 stage 1).
+
+v479 改造: 子同步从硬编码 try/except 泳道改为按 table_registry 的 rollback
+循环 (自带 T+1 迟发补偿窗口); 末尾跑完整性审计 (data_health.audit_all) +
+失败表自动补拉 (repair_and_reaudit); 仍有失败 → 任务状态 partial
+(次日 08:00 早间补拉链 daily_repair 再试), 连续失败 ≥3 天 → ERROR 告警.
+
+状态语义:
+  ok      — 主流程 + 全部子同步成功且审计全绿
+  partial — 主流程成功, 但存在审计失败表 (已尝试补拉仍败) → 早间链修复
+  failed  — 主流程 (update_daily) 异常 → 晚间链崩溃语义 (下游 stage 跳过)
+"""
 import time as _time, uuid as _uuid
+from datetime import datetime as _dt, timedelta as _td
 from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
 from quant.utils.logger import get_logger, set_trace_id
 
@@ -20,8 +32,8 @@ def _run(today: str):
     t0 = _time.time()
     status = "failed"
     error_msg = None
-    summary = {}
 
+    # ── 主流程: daily 行情 (失败即 failed, 阻断链) ──
     try:
         from quant.data.store import DataStore
         store = DataStore()
@@ -35,7 +47,8 @@ def _run(today: str):
         _tk_finish("daily_data", today, "failed", error=error_msg)
         raise
 
-    # v382: 后续步骤各自独立 try/except, 单步失败不阻断整体
+    # v382: 后续步骤各自独立 try/except, 单步失败不阻断整体 (v479 改由
+    # 审计/补拉闭环兜底, 任务状态 partial 而非 ok)
     import traceback
 
     # v449: Sync SQLite -> DuckDB (DuckDB 仅用于读查询分流, 写入仍走 SQLite)
@@ -74,79 +87,46 @@ def _run(today: str):
     except Exception:
         _log.warning(f"[{today}] turnover backfill failed: {traceback.format_exc()}")
 
-    # ── fund_flow ──
-    try:
-        from quant.data.fund_flow import sync_all as _ff_sync
-        n_ff = _ff_sync(days=100)  # v430: 增量窗口, 覆盖 3m 因子; 全量回填走 backfill
-        _log.info(f"[{today}] fund_flow sync: {n_ff} rows")
-    except Exception:
-        _log.warning(f"[{today}] fund_flow sync failed: {traceback.format_exc()}")
+    # ── v479: 子同步按注册表循环 (rollback 模式, 自带 T+1 迟发补偿窗口) ──
+    from quant.data.table_registry import rollback_specs
+    sync_results: dict[str, object] = {}
+    for spec in rollback_specs():
+        if spec.sync_main is None:
+            continue
+        start_ = (_dt.strptime(today, "%Y-%m-%d") - _td(days=spec.window_days)).strftime("%Y-%m-%d")
+        try:
+            n = spec.sync_main(start_, today)
+            sync_results[spec.table] = n
+            _log.info(f"[{today}] sync {spec.table}: +{n} rows ({start_}..{today})")
+        except Exception as e:
+            sync_results[spec.table] = f"FAIL: {str(e)[:120]}"
+            _log.warning(f"[{today}] sync {spec.table} failed: {str(e)[:160]}")
 
-    # ── margin ──
-    try:
-        from quant.data import margin as _margin
-        from datetime import datetime as _dt, timedelta as _td
-        _mg_start = (_dt.strptime(today, "%Y-%m-%d") - _td(days=30)).strftime("%Y-%m-%d")
-        n_mg = _margin.sync_range(_mg_start, today)
-        _log.info(f"[{today}] margin sync: {n_mg} rows")
-    except Exception:
-        _log.warning(f"[{today}] margin sync failed: {traceback.format_exc()}")
+    # ── v479: 完整性审计 + 自动补拉修复 (sync → audit → repair → re-audit) ──
+    from quant.data.data_health import audit_all, repair_and_reaudit, consecutive_failures
+    audit = audit_all(today)
+    failed = sorted(t for t, rules in audit.items()
+                    if any(v == "fail" for v in rules.values()))
+    repaired: list[str] = []
+    still: list[str] = []
+    if failed:
+        _log.warning(f"[{today}] audit FAIL tables: {failed}")
+        repaired, still = repair_and_reaudit(today, failed)
+        for t in repaired:
+            _log.info(f"[{today}] audit repaired: {t}")
+        for t in still:
+            _log.error(f"[{today}] audit STILL FAILED after repair: {t}")
 
-    # ── daily_valuation ──
-    try:
-        from quant.data.em_valuation import sync_range as _em_sync
-        from datetime import datetime as _dt2, timedelta as _td2
-        _em_start = (_dt2.strptime(today, "%Y-%m-%d") - _td2(days=14)).strftime("%Y-%m-%d")
-        _em_sync(start=_em_start, end=today)
-        _log.info(f"[{today}] daily_valuation sync done ({_em_start}..{today})")
-    except Exception:
-        _log.warning(f"[{today}] daily_valuation sync failed: {traceback.format_exc()}")
+    # 连续失败告警升级 (≥3 天同一表 fail → ERROR, 需人工排查数据源)
+    for t, rules in audit.items():
+        if any(v == "fail" for v in rules.values()) and consecutive_failures(t, days=5) >= 3:
+            _log.error(f"[{today}] DATA HEALTH: {t} 连续失败 ≥3 天 — 数据源需人工排查/换源")
 
-    # ── 数据新鲜度 ──
-    try:
-        from quant.data.freshness import check_freshness
-        fresh = check_freshness(today)
-        stale = [r for r in fresh if r["stale"]]
-        for r in stale:
-            _log.error(f"[{today}] DATA STALE: {r['table']} max_date={r['max_date']} "
-                       f"lag={r['lag_days']}d > SLO {r['slo']}d")
-    except Exception:
-        _log.warning(f"[{today}] freshness check failed: {traceback.format_exc()}")
-
-    # ── limit_up_pool (涨停池) ──
-    # test-v404: 此前未纳入晚间链, 依赖手动 daily_sync.py, 7/9-7/16 永久缺失
-    try:
-        from quant.data.limit_up import sync_date as _lu_sync
-        _lu_n = _lu_sync(today)
-        _log.info(f"[{today}] limit_up sync: {_lu_n} rows")
-    except Exception:
-        _log.warning(f"[{today}] limit_up sync failed: {traceback.format_exc()}")
-
-    # ── limit_down_pool (跌停池) ──
-    # v430: 此前空表 — net_limit_ratio 读 df_down 恒空, 情绪因子失真.
-    # 同 akshare 东财源 (stock_zt_pool_dtgc_em), 失败不阻断 (fallback 由 retry 层)
-    try:
-        from quant.data.limit_up import sync_down_date as _ld_sync
-        _ld_n = _ld_sync(today)
-        _log.info(f"[{today}] limit_down sync: {_ld_n} rows")
-    except Exception:
-        _log.warning(f"[{today}] limit_down sync failed: {traceback.format_exc()}")
-
-    # ── lhb_detail (龙虎榜) ──
-    # test-v404: 此前未纳入晚间链, lhb_reversal_5d 因子因 post_5d 缺失而静默失败
-    try:
-        from quant.data.lhb import sync_date as _lhb_sync_date
-        _lhb_n = _lhb_sync_date(today)
-        _log.info(f"[{today}] lhb sync: {_lhb_n} rows")
-    except Exception:
-        _log.warning(f"[{today}] lhb sync failed: {traceback.format_exc()}")
-
-    # ── news_sentiment (个股新闻情绪) ──
-    # v430 判定: 不接入 — akshare stock_news_em 在本环境 (pyarrow 14) 必然崩溃
-    # (Invalid regular expression: \\u), 接入只会每晚打 warning; 待数据源修复再启
-
-    status = "ok"
-    summary = {"rows": n, "elapsed": round(elapsed, 1)}
-    _log.info(f"[SCHEDULER] {today} | TASK=daily_data | STATUS=OK | "
-              f"rows={n} | elapsed={elapsed:.1f}s")
-    _tk_finish("daily_data", today, status, summary=summary)
+    elapsed = _time.time() - t0
+    # v479: partial — 主流程 ok 但审计有残留失败 → 次日早间补拉链修复
+    status = "ok" if not still else "partial"
+    _log.info(f"[{today}] daily_data {status}: {elapsed:.1f}s, "
+              f"sync={sync_results}, repaired={repaired}, still_failed={still}")
+    _tk_finish("daily_data", today, status,
+               summary={"elapsed": round(elapsed, 1), "synced": {k: str(v) for k, v in sync_results.items()},
+                        "repaired": repaired, "still_failed": still})

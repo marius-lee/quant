@@ -190,6 +190,17 @@ def _run(today: str):
     t0 = _time.time()
 
     # ═══════════════════════════════════════════
+    # v479: 数据维护 — weekly_full 表全量刷新 (dividend/stocks) + 全表审计
+    # (失败不阻断评估, 由早间补拉链 weekly_full 7 天兜底)
+    # ═══════════════════════════════════════════
+    from quant.scheduler.data_maintenance import run_weekly_full
+    try:
+        mnt = run_weekly_full(today)
+        _log.info(f"[{today}] data maintenance: {mnt}")
+    except Exception as _mnt_e:
+        _log.error(f"[{today}] data maintenance failed: {_mnt_e}")
+
+    # ═══════════════════════════════════════════
     # Phase 0: 重评估 evaluating 因子并晋升/归档
     # ═══════════════════════════════════════════
     p0_ok = _run_phase("eval_reevaluate", today, lambda: reevaluate_evaluating_factors(today))

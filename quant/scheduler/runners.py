@@ -356,6 +356,20 @@ class SubprocessRunner(BaseRunner):
         _log.info(f"[{self.today}] 06:00 — spawning weekly eval subprocess")
         self._run_subprocess(s)
 
+    def run_daily_repair(self) -> None:
+        """启动早间补拉链 subprocess (每日 08:00, 交易日与非交易日均运行)."""
+        s = ALL.get("daily_repair")
+        if s is None:
+            _log.warning("daily_repair not found in manifest")
+            return
+
+        if not self._should_run(s):
+            _log.info(f"[{self.today}] daily_repair not in window or deps not met")
+            return
+
+        _log.info(f"[{self.today}] 08:00 — spawning daily repair subprocess")
+        self._run_subprocess(s)
+
     def _run_subprocess(self, s: TaskSpec) -> None:
         """启动并监控子进程."""
         if self._proc is not None:
@@ -427,3 +441,8 @@ def run_evening_chain(today: str) -> None:
 def run_weekly_eval(today: str) -> None:
     """运行周度评估 subprocess."""
     SubprocessRunner(today).run_weekly_eval()
+
+
+def run_daily_repair(today: str) -> None:
+    """运行早间补拉链 subprocess."""
+    SubprocessRunner(today).run_daily_repair()

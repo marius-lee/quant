@@ -121,6 +121,18 @@ _DAYLINE: list[TaskSpec] = [
         ),
         desc="daily_data → adj_factor → factor_cache → attribution → lgb/xgb",
     ),
+    TaskSpec(
+        name="daily_repair", label="早间补拉", schedule="08:00",
+        window=(time(8, 0), time(8, 30)), grace_s=1800, timeout_s=1800,
+        mode="subprocess", group="盘后",
+        # v479: 晚间链审计失败的表现在 08:00 重试 (T+1 迟发数据此时已发布),
+        # 在 signals 08:30 之前完成; 非交易日亦运行 (周末覆盖周五晚间链缺口)
+        subprocess_cmd=(
+            "from quant.utils.excepthook import setup; setup();"
+            "from quant.scheduler.repair import _run;"
+        ),
+        desc="重试昨日审计失败表 (T+1 迟发) + weekly_full 7 天兜底",
+    ),
 ]
 
 

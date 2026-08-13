@@ -1,6 +1,6 @@
 """数据完整性回填脚本 (2026-08-13) — akshare IP 被封, 数据源重排。
 
-数据源约定:
+data源约定:
   adj_factor 2019  → baostock (tushare 免费档 3-4批/天不可用)
   benchmark_daily → baostock query_history_k_data_plus (sh.000300)
   financials      → tushare income/cashflow/balancesheet 按季度 (无积分则明确报错)
@@ -18,6 +18,8 @@ subcommand:
   financials      tushare 财报 2019Q1-2023Q4 (income/cashflow) + balance 2023 缺口
   limit_up        tushare limit_list_d 2019-04-08..2026-06-11 (若报错=无积分)
   dividend        tushare dividend 逐只 2019+ (若报错=无积分)
+  total_shares    baostock 逐只查季度报告总股本 → stocks.total_shares (sue 因子依赖, v478)
+  margin_latest   SSE JSON 源补最近滞后交易日 (margin_detail T+1 发布, v478)
   verify          复跑审计: 逐表 2019+ 覆盖统计
 """
 import argparse
@@ -228,6 +230,28 @@ def limit_up() -> None:
 
 
 # ── dividend (tushare) ─────────────────────────────────────────────────────
+def _tushare_call(pro, name, retries=30, **kwargs):
+    """tushare 调用 + 限频自适应重试 (免费档限频: 分/小时级).
+
+    零 fallback: 重试耗尽即 SystemExit, 不静默降级.
+    """
+    last = None
+    for attempt in range(retries):
+        try:
+            return getattr(pro, name)(**kwargs)
+        except Exception as e:
+            last = e
+            msg = str(e)
+            if "频率超限" in msg or "每分钟" in msg or "访问" in msg:
+                wait = 3600 if "小时" in msg else 60
+                print(f"  {name} rate-limited, sleep {wait}s (try {attempt + 1}/{retries})", flush=True)
+                _time.sleep(wait)
+            else:
+                print(f"  {name} failed: {msg[:120]} (try {attempt + 1}/{retries})", flush=True)
+                _time.sleep(65)
+    raise SystemExit(f"{name} 重试 {retries} 次仍失败: {last}")
+
+
 def dividend() -> None:
     pro = _tushare_pro()
     c = _conn()
@@ -236,13 +260,9 @@ def dividend() -> None:
     total = 0
     for i, sym in enumerate(syms):
         try:
-            df = pro.dividend(ts_code=sym)
-        except Exception as e:
-            msg = str(e)
-            if "权限" in msg or "积分" in msg or "freq" in msg.lower():
-                print(f"\ndividend: tushare 无权限 (第 {i} 只 {sym}): {msg[:120]}")
-                sys.exit(1)
-            print(f"  {sym} failed: {msg[:80]}"); continue
+            df = _tushare_call(pro, "dividend", ts_code=sym)
+        except SystemExit:
+            raise
         if df is None or df.empty:
             continue
         for _, r in df.iterrows():
@@ -258,14 +278,91 @@ def dividend() -> None:
                   float((r.get("stk_bo_rate") or 0) if r.get("stk_bo_rate") else 0)) / 10.0,
                  r.get("record_date"), f"{ex[:4]}-{ex[4:6]}-{ex[6:]}"))
             total += 1
-        if (i + 1) % 500 == 0:
+        if (i + 1) % 200 == 0:
             c.commit()
-            print(f"  {i+1}/{len(syms)} ({( _time.time()-t0)/60:.1f}min)")
+            print(f"  {i+1}/{len(syms)} ({( _time.time()-t0)/60:.1f}min)", flush=True)
+            _time.sleep(0.5)
     c.commit()
     print(f"dividend: {total} rows")
 
 
-def valuation_recent() -> None:
+# ── total_shares (baostock) ────────────────────────────────────────────────
+def total_shares() -> None:
+    """stocks.total_shares 补齐 — sue 因子依赖 (amm+市值 计算分母).
+
+    v478 现状: 仅 200/5525 只有值 → sue 全 0 行. 数据源 baostock
+    profit_data 逐只 (免费无限频; akshare 东财 IP 封禁, tushare 免费档
+    逐只 5000+ 请求 1/h 不可行). 取最新已披露报告总股本 (2026Q2 → Q1 → 2025Q4).
+    """
+    import baostock as bs
+    c = _conn()
+    syms = [r[0] for r in c.execute(ALL_SYMS).fetchall()]
+    need = []
+    for s in syms:
+        cur = c.execute("SELECT total_shares FROM stocks WHERE symbol=?", (s,)).fetchone()[0]
+        if not cur:
+            need.append(s)
+    print(f"total_shares: {len(need)}/{len(syms)} 只待补 (已填充 {len(syms) - len(need)})")
+    if not need:
+        return
+    lg = bs.login()
+    if lg.error_code != "0":
+        raise SystemExit(f"baostock login failed: {lg.error_msg}")
+
+    t0 = _time.time()
+    updated, miss = 0, []
+    for i, sym in enumerate(need):
+        code = ("sh." if sym[0] in "6" else "sz.") + sym
+        val = None
+        for y, q in ((2026, 2), (2026, 1), (2025, 4)):
+            rs = bs.query_profit_data(code=code, year=y, quarter=q)
+            if rs.error_code != "0":
+                continue
+            while rs.next():
+                row = rs.get_row_data()
+                try:
+                    v = float(row[9])
+                    if v > 0:
+                        val = v
+                        break
+                except (ValueError, IndexError):
+                    continue
+            if val:
+                break
+        if val:
+            c.execute("UPDATE stocks SET total_shares=? WHERE symbol=?", (round(val, 0), sym))
+            updated += 1
+        else:
+            miss.append(sym)
+        if (i + 1) % 200 == 0:
+            c.commit()
+            el = _time.time() - t0
+            print(f"  {i+1}/{len(need)} ({el/60:.1f}min, {updated} ok)", flush=True)
+    c.commit()
+    bs.logout()
+    print(f"total_shares: {updated} updated, {len(miss)} miss: {miss[:30]}")
+    if miss:
+        print("  miss 未写入, 保持 NULL (停牌/退市/报告缺失可忽略)")
+
+
+# ── margin_latest (SSE JSON) ───────────────────────────────────────────────
+def margin_latest() -> None:
+    """margin_detail 滞后日期补齐 (T+1 发布 → 晚间链 30 天窗口覆盖).
+
+    v478: 2026-08-12 缺口 (当日数据 T+1 发布, 晚间链当夜未及发布).
+    """
+    from quant.data.margin import sync_range
+    from datetime import datetime as _dt, timedelta as _td
+    st = (_dt.now() - _td(days=14)).strftime("%Y-%m-%d")
+    end = _dt.now().strftime("%Y-%m-%d")
+    n = sync_range(st, end)
+    c = _conn()
+    rng = c.execute(f"SELECT MAX(date), COUNT(*) FROM margin_detail WHERE date>='{st}'").fetchone()
+    c.close()
+    print(f"margin_latest: synced {st}..{end} +{n} rows; now max={rng[0]} (14d rows={rng[1]})")
+
+
+def verify() -> None:
     """daily_valuation 缺失日期按 daily 差分定位, tushare daily_basic 逐日补.
 
     v476 fix: 实测 daily_basic 免费档限频 1次/小时 (not 1/min) — 原 75s 重试
@@ -334,7 +431,8 @@ def verify() -> None:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("sub", choices=["macro_cleanup", "benchmark", "adj_2019", "valuation_recent",
-                                    "financials", "limit_up", "dividend", "verify"])
+                                    "financials", "limit_up", "dividend", "total_shares",
+                                    "margin_latest", "verify"])
     args = ap.parse_args()
     globals()[args.sub]()
 

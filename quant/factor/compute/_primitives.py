@@ -47,7 +47,7 @@ def _get_preagg_table(table: str, date: str, window: int, symbols: list[str] = N
         sql = f"""
             SELECT symbol, {val_col}
             FROM {table}
-            WHERE date = ? AND window = ?
+            WHERE date = ? AND "window" = ?
         """
         df = mgr.query_df(sql, (date, window))
         if df.empty:
@@ -60,23 +60,42 @@ def _get_preagg_table(table: str, date: str, window: int, symbols: list[str] = N
 
 _log = get_logger("factor.primitives")
 
-# ── 缓存目录 ──
+# ── 缓存目录 (v476: 原 join 多套一层 "quant" → 写进 quant/quant/data/
+#   primitive_cache 孤儿目录 4GB; parents[2] = quant 包根 → data/ 同级) ──
 _PRIMITIVE_CACHE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "quant", "data", "primitive_cache"
+    "data", "primitive_cache"
 )
 os.makedirs(_PRIMITIVE_CACHE_DIR, exist_ok=True)
+
+def _prims_cache_dir(key: str) -> str:
+    """返回 primitive 缓存目录路径（每个 key 一个目录，内含多个 parquet 文件）"""
+    return os.path.join(_PRIMITIVE_CACHE_DIR, f"prims_{key}")
 
 # 内存缓存 (LRU bounded — M1 8GB 硬约束)
 # 来源: M1 Max 实测 — WAL checkpoint + Python GIL 下 4 线程最优, 缓存上限 8 条目
 #       每条目 ~20-50MB (5000 symbols × 2000 days × 滚动统计量), 8 条目 ≈ 160-400MB 峰值
 _PRIMITIVE_CACHE: dict[str, dict] = {}
 _MAX_MEMORY_CACHE = _require_cfg("factor.compute.cache_max_memory_entries")
+_MAX_DISK_CACHE = _require_cfg("factor.compute.cache_max_disk_entries")
+
+_PRIM_CACHE_VERSION = "v2"  # v477: 窗口集/依存代码变化时递增 — 旧缓存缺 rsi_14 的教训
+
 
 def _cache_key(data_hash: str, factor_names: list[str] | None) -> str:
-    """生成缓存键"""
-    names = ",".join(sorted(factor_names)) if factor_names else "all"
-    return f"{data_hash}_{names}"
+    """生成缓存键 — v472: 仅数据哈希, 不含因子批次。
+
+    v472 前 key 含 factor_names: 相同数据的两个批次 (如 ma_alignment_20d 与
+    momentum_63d) 各自生成独立目录重复计算, 且窗口集随批次变化互相不可用。
+    窗口集恒定后内容与批次无关, key 退化为 data_hash。
+    旧格式目录 (prims_{hash}_{names}) 由磁盘 LRU 自然淘汰。
+
+    v477: key 追加 _PRIM_CACHE_VERSION — 仅 data_hash 时, 修改窗口集/primary
+    依赖代码后旧磁盘缓存依旧 HIT 缺新 prim (实证: 冒烟 31 日期全 FAIL,
+    rsi_14 无 parquet 文件)。版本段使代码变更自动失效旧缓存重算 (prim
+    一次全量 ~5s, 成本可忽略), 旧目录由磁盘 LRU 淘汰。
+    """
+    return f"{data_hash}.{_PRIM_CACHE_VERSION}"
 
 def _data_hash(data: pd.DataFrame) -> str:
     """基于数据形状、索引范围、列生成哈希"""
@@ -85,7 +104,7 @@ def _data_hash(data: pd.DataFrame) -> str:
     return hashlib.sha256(hash_str.encode()).hexdigest()[:16]
 
 def _cache_path(key: str) -> str:
-    return os.path.join(_PRIMITIVE_CACHE_DIR, f"prims_{key}.pkl")
+    return _prims_cache_dir(key)
 
 def _evict_lru_if_needed() -> None:
     """LRU 淘汰: 超过 _MAX_MEMORY_CACHE 时弹出最旧的条目。
@@ -98,53 +117,50 @@ def _evict_lru_if_needed() -> None:
         del _PRIMITIVE_CACHE[oldest_key]
         _log.debug("  primitives cache EVICTED (LRU): %s", oldest_key)
 
+def _evict_disk_lru_if_needed() -> None:
+    """磁盘缓存 LRU 淘汰: 超过 _MAX_DISK_CACHE 目录数时删除 mtime 最旧的目录。
+
+    来源: v470 实测 — 物化每 chunk 落盘 ~1GB prs_*.pkl, key 含数据哈希 (窗口随 chunk 滚动),
+          跨 chunk 命中率趋近 0, 无上限曾膨胀至 10GB; 按 mtime 淘汰最旧.
+    """
+    if _MAX_DISK_CACHE <= 0:
+        return
+    import glob as _glob
+    dirs = sorted(
+        (os.path.getmtime(p), p) for p in _glob.glob(os.path.join(_PRIMITIVE_CACHE_DIR, "prims_*"))
+        if os.path.isdir(p)
+    )
+    while len(dirs) > _MAX_DISK_CACHE:
+        mtime, oldest = dirs.pop(0)
+        try:
+            import shutil
+            shutil.rmtree(oldest)
+            _log.info(f"  primitives cache EVICTED (disk LRU): {os.path.basename(oldest)}")
+        except OSError as e:
+            _log.warning(f"  cache evict failed: {oldest}: {e}")
+
 _log = get_logger("factor.primitives")
 
 
 
 def _required_windows(factor_names: list[str] | None) -> set[int]:
-    """根据因子名列表推导需要的滚动窗口。
+    """恒定标准窗口集 (v472) — 不再按因子列表推导。
 
-    factor_names=None 时返回默认全集 (向后兼容)。
-    对 turnover_anomaly 等双窗口因子, 额外提取函数签名中的 long 参数窗口。
-    对 shortcut 因子, 额外提取 shortcut 需要的额外窗口。
+    2026-08-12 事故 (batch2 23 因子 × 1846 日期全败, 67min/0 行):
+    ma_alignment_20d 声明窗口仅 20, 但 shortcut 硬编码依赖 ma_5/ma_10/ma_60;
+    按声明窗口推导出 {20} → prims 缺 ma_10 → KeyError → 整日判失败,
+    checkpoint 永久重试。按因子列表手工维护 extra-windows 映射同样会漏
+    (shortcut_extra_windows 曾只覆盖 5 个因子, 维护即失效)。
+
+    修复: 窗口集与因子批次无关, 恒定全集 = 全部已注册窗口。
+    代价: prims 计算量恒定 (一次全量), 换来自动覆盖所有硬编码依赖。
+
+    factor_names 参数保留仅为向后兼容, 不再参与推导。
+
+    v477 冒烟补漏: 94 因子全量物化暴露 rsi_rev_14d → rsi_14 缺失 (14 不在集合内),
+    晚间链无此因子故未触发。14 为已注册窗口, 补入恒定集。
     """
-    if factor_names is None:
-        return {5, 10, 20, 60, 63, 120, 126, 250, 252}
-    import inspect as _ins
-    from quant.factor.compute.price import _PRICE_FN_MAP
-    from quant.factor.compute.fundamental import _FUNDAMENTAL_FN_MAP
-    windows = set()
-    # shortcut 额外需要的窗口映射
-    shortcut_extra_windows = {
-        "smart_money_20d": {5},
-        "vp_divergence": {20},
-        "liquidity_shock": {60},
-        "trend_strength": {20, 60},
-        "idio_vol_60d": {20, 60},
-    }
-    for name in factor_names:
-        entry = _PRICE_FN_MAP.get(name)
-        if entry:
-            fn, win = entry
-            if isinstance(win, int) and win > 1:
-                windows.add(win)
-            # 双窗口因子: 提取函数签名中的额外窗口参数
-            if hasattr(fn, '__name__') and fn.__name__ == 'compute_turnover_anomaly':
-                try:
-                    long_win = _ins.signature(fn).parameters['long'].default
-                    if isinstance(long_win, int) and long_win > 1:
-                        windows.add(long_win)
-                except Exception:
-                    pass
-        # shortcut 额外窗口
-        if name in shortcut_extra_windows:
-            windows.update(shortcut_extra_windows[name])
-        if name in _FUNDAMENTAL_FN_MAP:
-            pass
-    if not windows:
-        windows = {5, 10, 20, 60, 63, 120, 126, 250, 252}
-    return windows
+    return {5, 10, 14, 20, 60, 63, 120, 126, 250, 252}
 
 
 def _ts_rank_vectorized(df: pd.DataFrame, window: int) -> pd.DataFrame:
@@ -187,23 +203,31 @@ def precompute_primitives(data: pd.DataFrame,
     # ── 缓存检查 ──
     data_hash = _data_hash(data)
     cache_key = _cache_key(data_hash, factor_names)
-    cache_path = _cache_path(cache_key)
+    cache_dir = _cache_path(cache_key)
     
     # 内存缓存命中
     if cache_key in _PRIMITIVE_CACHE:
         _log.info(f"  primitives cache HIT (memory): {cache_key}")
         return _PRIMITIVE_CACHE[cache_key]
     
-    # 磁盘缓存命中
-    if os.path.exists(cache_path):
+    # 磁盘缓存命中 (目录下读取所有 parquet 文件重建 dict)
+    if os.path.isdir(cache_dir):
         try:
-            import pickle
-            with open(cache_path, 'rb') as f:
-                cached = pickle.load(f)
-            _PRIMITIVE_CACHE[cache_key] = cached
-            _evict_lru_if_needed()
-            _log.info(f"  primitives cache HIT (disk): {cache_key}")
-            return cached
+            import glob as _glob
+            prims = {}
+            for p in _glob.glob(os.path.join(cache_dir, "*.parquet")):
+                name = os.path.basename(p).replace(".parquet", "")
+                df = pd.read_parquet(p)
+                prims[name] = df
+            if prims:
+                _PRIMITIVE_CACHE[cache_key] = prims
+                _evict_lru_if_needed()
+                try:
+                    os.utime(cache_dir, None)
+                except OSError:
+                    pass
+                _log.info(f"  primitives cache HIT (disk): {cache_key}")
+                return prims
         except Exception as e:
             _log.warning(f"Cache load failed: {e}, recomputing...")
     
@@ -411,13 +435,18 @@ def precompute_primitives(data: pd.DataFrame,
     elapsed = (pd.Timestamp.now() - t0).total_seconds()
     _log.info(f"  primitives done: {len(prims)} tables in {elapsed:.1f}s")
     
-    # ── 保存到缓存 ──
+    # ── 保存到缓存 (float32 parquet 目录) ──
     try:
-        import pickle
-        with open(cache_path, 'wb') as f:
-            pickle.dump(prims, f)
+        os.makedirs(cache_dir, exist_ok=True)
+        for name, df in prims.items():
+            # 转 float32 节省空间
+            if df.dtypes.apply(lambda x: x.kind == 'f').any():
+                df = df.astype({c: 'float32' for c in df.columns if df[c].dtype.kind == 'f'})
+            df.to_parquet(os.path.join(cache_dir, f"{name}.parquet"), 
+                          compression='zstd', compression_level=3, index=True)
         _PRIMITIVE_CACHE[cache_key] = prims
         _evict_lru_if_needed()
+        _evict_disk_lru_if_needed()
         _log.info(f"  primitives cache SAVED: {cache_key}")
     except Exception as e:
         _log.warning(f"Cache save failed: {e}")

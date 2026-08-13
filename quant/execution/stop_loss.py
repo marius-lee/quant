@@ -25,10 +25,11 @@ _log = get_logger("execution.stop_loss")
 
 from quant.config.paths import MARKET_DB as _DB
 _CACHE = {}  # symbol -> (atr, ts)
+_CACHE_MAX = 4096  # test-v466 (BT-2): 有界 — 回测2年×多持仓会无限增长
 
 
 def _compute_atr(symbol: str, period: int = 20, as_of: str = None) -> float:
-    """从 market.db daily 表计算 ATR(period), PIT 截止到 as_of 日期. 缓存 120 秒."""
+    """从 market.db daily 表计算 ATR(period), PIT 截止到 as_of 前一天. 缓存 120 秒."""
     if as_of is None:
         raise ValueError("as_of is required — 回测必须传入当天日期, 防止未来行情前视")
     now = __import__('time').time()
@@ -38,10 +39,11 @@ def _compute_atr(symbol: str, period: int = 20, as_of: str = None) -> float:
         if now - ts < 120:
             return val
 
-    # P0-4 fix: WHERE date <= ? 确保回测不会读取未来行情
+    # P0-4 fix + test-v466 (BT-2): WHERE date < ? — 严格取执行日前一日及以前,
+    # 原 date <= as_of 混入执行日日内行情 (当日 high/low 未收盘, 隐含前视)。
     conn = DatabaseManager.market()
     rows = conn.execute(
-        "SELECT high, low, close FROM daily WHERE symbol=? AND date <= ? "
+        "SELECT high, low, close FROM daily WHERE symbol=? AND date < ? "
         "ORDER BY date DESC LIMIT ?",
         (symbol, as_of, period + 1)
     ).fetchall()
@@ -59,6 +61,8 @@ def _compute_atr(symbol: str, period: int = 20, as_of: str = None) -> float:
         prev_close = close
 
     atr = float(np.mean(tr_values)) if tr_values else 0.0
+    if len(_CACHE) >= _CACHE_MAX:
+        _CACHE.clear()
     _CACHE[key] = (atr, now)
     return atr
 
@@ -173,8 +177,13 @@ class RiskManager:
                 del data[symbol]
                 self._save_cooloff_db(data)
 
-    def check(self, positions: list, quotes: dict, today: str) -> list:
-        """返回触发信号列表."""
+    def check(self, positions: list, quotes: dict, today: str,
+              atr_panel: dict = None) -> list:
+        """返回触发信号列表.
+
+        atr_panel (test-v466, BT-2): {date_str: {symbol: atr}} 预计算面板 —
+        回测热路径注入后免每仓每日 SQLite 查询; 缺失时回退实时计算。
+        """
         results = []
         for p in positions:
             sym = p["symbol"]
@@ -190,7 +199,13 @@ class RiskManager:
             if cur <= 0:
                 continue
 
-            atr = _compute_atr(sym, self.atr_period, today)
+            _panel_atr = None
+            if atr_panel and today in atr_panel:
+                _panel_atr = atr_panel[today].get(sym)
+            if _panel_atr is not None:
+                atr = float(_panel_atr)
+            else:
+                atr = _compute_atr(sym, self.atr_period, today)
             if atr <= 0:
                 continue
 

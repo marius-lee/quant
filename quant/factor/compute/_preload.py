@@ -85,8 +85,8 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
             df = pd.read_sql_query(
                 "SELECT symbol, date, margin_buy, margin_balance, short_balance, short_total, "
                 "CAST(margin_balance + short_balance AS REAL) AS margin_total "
-                "FROM margin_detail WHERE date >= ? AND date <= ?",
-                conn, params=(margin_start, margin_max_date)
+                "FROM margin_detail WHERE symbol IN (" + ph + ") AND date >= ? AND date <= ?",
+                conn, params=symbols + [margin_start, margin_max_date]
             )
             result["margin"] = df if not df.empty else pd.DataFrame(
                 columns=["symbol", "date", "margin_buy", "margin_balance",
@@ -203,8 +203,8 @@ def preload_aux_data_chunk(symbols: list, date_from: str, date_to: str,
         df = pd.read_sql_query(
             "SELECT symbol, date, margin_buy, margin_balance, short_balance, short_total, "
             "CAST(margin_balance + short_balance AS REAL) AS margin_total "
-            "FROM margin_detail WHERE date >= ? AND date <= ? ORDER BY date",
-            conn, params=(margin_start, date_to)
+            "FROM margin_detail WHERE symbol IN (" + ph + ") AND date >= ? AND date <= ? ORDER BY date",
+            conn, params=symbols + [margin_start, date_to]
         )
         result["margin"] = df if not df.empty else pd.DataFrame(
             columns=["symbol", "date", "margin_buy", "margin_balance",
@@ -277,21 +277,20 @@ def preload_aux_data_chunk(symbols: list, date_from: str, date_to: str,
 
     # intraday_snapshot: chunk 日期范围 (ADR-043 layer1: 替代 3 个 intraday 因子 per-date 查询)
     # v418 (R10): 附带 total days 计数 — 供 _snapshot_matured 门控 (快照积累<60日跳过因子)
+    # 实际表结构: (date, symbol, mode, price, volume, prev_close) — mode 区分 open/close 快照
     try:
         df = pd.read_sql_query(
-            "SELECT symbol, date, open_30min, prev_close, open_30min_vol, close_5min "
+            "SELECT symbol, date, mode, price, volume, prev_close "
             "FROM intraday_snapshot WHERE date >= ? AND date <= ? ORDER BY date",
             conn, params=(date_from, date_to)
         )
         result["intraday_snapshot"] = df if not df.empty else pd.DataFrame(
-            columns=["symbol", "date", "open_30min", "prev_close",
-                     "open_30min_vol", "close_5min"])
+            columns=["symbol", "date", "mode", "price", "volume", "prev_close"])
         result["intraday_snapshot_days"] = int(
             result["intraday_snapshot"]["date"].nunique())
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
         result["intraday_snapshot"] = pd.DataFrame(
-            columns=["symbol", "date", "open_30min", "prev_close",
-                     "open_30min_vol", "close_5min"])
+            columns=["symbol", "date", "mode", "price", "volume", "prev_close"])
         result["intraday_snapshot_days"] = 0
 
     # news_daily_count: chunk 日期范围 (v366: 消除 3 个新闻因子 per-date SQL)

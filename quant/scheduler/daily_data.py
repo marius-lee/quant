@@ -9,10 +9,10 @@ _log = get_logger(__name__)
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
-    # grace 对齐 orchestrator._TIMEOUTS["daily_data"]=7200 (test-v301:
-    # 原 1800s, 合法运行曾达 6251s → 19:30 第二触发误 abort 活任务,
-    # 僵尸持锁 → 下一次 daily_data "database is locked")
-    rid = _tk_start("daily_data", today, grace_seconds=7200)
+    # grace 对齐 manifest._EVENING_STAGE_GRACE["daily_data"]=21600 (v474:
+    # v428 后 _check_timeouts fallback 300s 每晚误杀 5-12min 的回归;
+    # 实测合法运行最长 4.4h; 原 7200 在 1.7h 后 dedup 失效也有双跑风险)
+    rid = _tk_start("daily_data", today, grace_seconds=21600)
     if rid is None:
         _log.info(f"[{today}] daily_data already running, skip duplicate trigger")
         return

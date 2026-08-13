@@ -8,6 +8,7 @@ import time as _time, uuid as _uuid
 from datetime import time
 from quant.monitor.metrics import metrics as _m
 from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
+from quant.scheduler.manifest import EVENING_STAGE_GRACE
 from quant.utils.logger import get_logger, set_trace_id
 
 _log = get_logger(__name__)
@@ -16,7 +17,7 @@ _log = get_logger(__name__)
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
-    rid = _tk_start("xgb_train", today, grace_seconds=3600)
+    rid = _tk_start("xgb_train", today, grace_seconds=EVENING_STAGE_GRACE["xgb_train"])
     if rid is None:
         _log.info(f"[{today}] xgb_train already running, skip duplicate trigger")
         return

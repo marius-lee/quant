@@ -3,8 +3,8 @@
   "display_name": "wq_alpha_006",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0178,
-  "icir_12m": 0.2059,
+  "ic_mean_12m": 0.0167,
+  "icir_12m": 0.1952,
   "last_evaluated": "auto",
   "n_obs": 130
 }

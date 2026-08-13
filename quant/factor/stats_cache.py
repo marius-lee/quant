@@ -358,12 +358,15 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
             if row:
                 cached = json.loads(row[0])
                 cached_at = datetime.fromisoformat(cached.get("cached_at", "2000-01-01"))
-                # [test-v399] 感知底层数据变化: factor_cache 文件比 snapshot 新 → 失效
-                import os, glob
-                _cache_dir = os.path.join(os.path.dirname(_DB_PATH), "factor_cache")
-                _cache_files = glob.glob(os.path.join(_cache_dir, "*.csv.gz"))
-                if _cache_files:
-                    _newest_cache_mtime = max(os.path.getmtime(f) for f in _cache_files)
+                # [test-v399] 感知底层数据变化: factor_cache 比 snapshot 新 → 失效
+                # test-v471: 改扫 parquet_f/*/*.parquet 分区 mtime (v470 新布局) —
+                # 原扫 parquet/date=* 在 v471 已被 parquet_f 取代
+                import glob
+                _parquet_dir = os.path.join(
+                    os.path.dirname(_DB_PATH), "factor_cache", "parquet_f")
+                _cache_dirs = glob.glob(os.path.join(_parquet_dir, "*", "*.parquet"))
+                if _cache_dirs:
+                    _newest_cache_mtime = max(os.path.getmtime(f) for f in _cache_dirs)
                     _newest_cache_dt = datetime.fromtimestamp(_newest_cache_mtime)
                     if _newest_cache_dt > cached_at:
                         logger.info(
@@ -475,13 +478,15 @@ def _load_ic_from_db(filter_names=None, scope='live') -> dict:
 
 def compute_backtest_ic(start_date: str, n_train_days: int = 120,
                        status_filter: str = 'backtesting',
-                       factor_cache: dict = None) -> dict:  # test-v397 (P0): 预加载因子缓存
+                       factor_cache: dict = None,
+                       symbols: list = None) -> dict:
     """计算回测用 IC 权重 — 训练期 OOS 验证 → 写入 factor_ic_daily(scope='backtest').
 
     start_date: 回测开始日期 (如 '2026-01-01')
     n_train_days: 训练期天数, 从 start_date 往前数
     status_filter: 因子池 ('backtesting' = evaluating+probation)
     factor_cache: test-v397 (P0) — 预加载的 {date: {factor: Series}}, 跳过 gzip I/O
+    symbols: test-v466 (BT-4) — 显式符号集 (回测主循环口径), None=全量+流动性 top-N
 
     返回: {factor_name: weight} 归一化 IC 权重, 供 generate_signals(ic_map=...) 使用.
     同时写入 factor_ic_daily(scope='backtest') 持久化.
@@ -504,6 +509,7 @@ def compute_backtest_ic(start_date: str, n_train_days: int = 120,
         test_days=_require_cfg("oos_verify.test_window_days"),
         decay_warn_threshold=_require_cfg("oos_verify.decay_warn_threshold"),
         n_symbols=_require_cfg("oos_verify.backtest_n_symbols"),
+        symbols=symbols,
         factor_cache=factor_cache,
     )
     if result.get("alert"):
@@ -517,10 +523,13 @@ def compute_backtest_ic(start_date: str, n_train_days: int = 120,
     f_repo = FactorRepo()
     f_repo.ensure_ic_daily_table()
     written = 0
+    # test-v466 (BT-8): n_stocks 用实际参与 IC 计算的股票数 (run_oos_check 返回),
+    # 原 len(per_factor) 是因子数 → factor_ic_daily.n_stocks 恒为 ~30 (虚假样本量)
+    _n_stocks = result.get("n_symbols", 0) or max(len(symbols or []), 1)
     for fname, daily_ics in ic_daily.items():
         for ds, ic_val in daily_ics.items():
             f_repo.insert_ic_daily(ds, fname, float(ic_val),
-                                   n_stocks=len(per_factor),
+                                   n_stocks=_n_stocks,
                                    scope='backtest')
             written += 1
     logger.info(f"backtest IC: wrote {written} rows to factor_ic_daily(scope='backtest')")

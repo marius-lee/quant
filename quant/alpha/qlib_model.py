@@ -802,11 +802,10 @@ def train_lgb_model(
 
     fstore = FactorStore(db_path=FACTOR_CACHE_DB)
 
-    # ADR-039: gzip CSV backend — 逐日加载，每日文件只读一次
-    _log.info("train_lgb: building factor panels from gzip CSV cache...")
-    import os
-    cache_dir = fstore._cache_dir
-    avail_dates = sorted(f.replace('.csv.gz', '') for f in os.listdir(cache_dir) if f.endswith('.csv.gz'))
+    # Parquet 分区 — 日期发现走 FactorStore.list_cached_dates() (test-v469:
+    # 原扫 .csv.gz 在 parquet 主存储下训练集被旧格式文件集限缩)
+    _log.info("train_lgb: building factor panels from parquet cache...")
+    avail_dates = fstore.list_cached_dates()
     train_dates = [d for d in avail_dates if start_date <= d <= end_date]
     _log.info("train_lgb: %d dates, %d factors", len(train_dates), len(fn))
 

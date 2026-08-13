@@ -24,6 +24,22 @@ def _cached_sig(fn) -> inspect.Signature:
         _sig_cache[fn] = inspect.signature(fn)
     return _sig_cache[fn]
 
+def _prims_windows(prims: dict) -> list[int]:
+    """从 prims 字典键中提取已计算的窗口集 (失败诊断日志用).
+
+    仅匹配带 _<int> 后缀的标准窗口原语键; 无后缀键 (log_ret 等) 不计入.
+    """
+    import re
+    _pat = re.compile(
+        r"^(?:ma|cum_log|vol|max_pct|volume_ma|turnover_ma|turnover_std|"
+        r"money_flow|vol_price_corr|skew|rsi|amihud_ma)_(\d+)$")
+    ws = set()
+    for k in prims:
+        m = _pat.match(k)
+        if m:
+            ws.add(int(m.group(1)))
+    return sorted(ws)
+
 def compute_all_factors(data: pd.DataFrame, date: str,
                       primitives: dict = None,
                       fundamentals: pd.DataFrame = None,
@@ -95,7 +111,17 @@ def compute_all_factors(data: pd.DataFrame, date: str,
         fn_name = getattr(fn, '__name__', '')
         shortcut_key = name if name in FACTOR_SHORTCUT else (fn_name if fn_name in FACTOR_SHORTCUT else None)
         if use_shortcut and primitives is not None and shortcut_key:
-            shortcut_result = FACTOR_SHORTCUT[shortcut_key](primitives, date, win)
+            try:
+                shortcut_result = FACTOR_SHORTCUT[shortcut_key](primitives, date, win)
+            except KeyError as _ke:
+                # v472 埋点: 2026-08-12 batch2 全败根因即 shortcut 硬编码依赖
+                # 缺失 (KeyError 'ma_10') — 单行定位缺哪个 primitive + 已算窗口集
+                _plog.error(
+                    "  shortcut %s KeyError: missing primitive %r (factor window=%s, "
+                    "computed windows=%s)", shortcut_key,
+                    _ke.args[0] if _ke.args else _ke, win,
+                    _prims_windows(primitives))
+                raise  # 零 fallback: 不得吞错降级
             if shortcut_result is None:
                 raise ValueError(
                     f"factor {name}: shortcut returned None — "

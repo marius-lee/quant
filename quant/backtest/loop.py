@@ -22,8 +22,6 @@ from quant.config.constants import _require_cfg
 from quant.config import loader as cfgl
 from quant.factor.stats_cache import compute_backtest_ic
 from quant.alpha.model import AlphaModel
-from quant.risk.covariance import IncrementalCovariance
-from quant.factor.stats_cache import IncrementalIC
 from quant.backtest.data_cache import get_or_load_backtest_data, _compute_cache_key
 
 _log = get_logger("backtest.loop")
@@ -244,7 +242,10 @@ def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
                                 beta_val = cov_mat[0, 1] / bm_var
                                 beta = round(float(beta_val), 3)
                             if beta is not None:
-                                daily_alpha = (strat - beta_val * bm).mean()
+                                # test-v466 (BT-8): alpha 扣无风险利率 —
+                                # 原 (strat - beta*bm) 未减 rf, 高估 alpha
+                                _daily_rf = _require_cfg("benchmark.risk_free_rate") / ann_days
+                                daily_alpha = (strat - _daily_rf - beta_val * bm).mean()
                                 alpha = round(float(daily_alpha * ann_days), 4)
                                 tracking_err = (strat - bm).std() * np.sqrt(ann_days)
                                 if tracking_err > 0:
@@ -373,17 +374,24 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
         ic_lookback = ic_lookback if ic_lookback is not None else _require_cfg("backtest.diagnosis_ic_window")
         bt_factor_names = get_factor_names(status_filter=factor_status_filter)
 
-        # v395: 缓存覆盖检查 — 缺则阻断 (不再 warn+继续半路 crash)
+        # v395 + test-v466 (BT-5): 缓存覆盖检查 — 全量 IC 窗口日期逐日检查, 缺则阻断
+        # (原只查 _ic_dates[0] 起始日, 窗口中间缺日期半路静默空算)
         _ic_start = (pd.Timestamp(trading_days[0]) - pd.Timedelta(days=ic_lookback * 2)).strftime("%Y-%m-%d")
         _ic_dates = [d.strftime("%Y-%m-%d") for d in pd.date_range(start=_ic_start, end=trading_days[0], freq="B")
                      if is_trading_day(d.date())]
-        if _ic_dates and not _fstore.is_materialized([_ic_dates[0]], bt_factor_names):
+        _missing_ic = [d for d in _ic_dates
+                       if _fstore._date_missing_factors(d, bt_factor_names)]
+        if _missing_ic:
             raise RuntimeError(
-                f"factor cache missing for IC lookback ({_ic_dates[0]}). "
-                f"Run: scripts/materialize_full.sh; verify: ls factor_cache/{_ic_dates[0]}.csv.gz")
+                f"factor cache missing for {len(_missing_ic)} IC lookback dates "
+                f"({_missing_ic[0]} .. {_missing_ic[-1]}). "
+                f"Run: scripts/materialize_full.sh")
 
         # ── Pre-load all daily data once (eliminates 843 DB queries) ──
         # test-v458 P1: 使用持久化缓存避免重复 DB 查询
+        from quant.factor.windows import max_factor_calendar_days
+        _eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(None))
+        
         _cache_key = _compute_cache_key(
             start_date=start_date,
             end_date=end_date,
@@ -400,8 +408,34 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             _full_start = (pd.Timestamp(trading_days[0]) - pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
             data_full = store.get_daily(_all_symbols, start=_full_start, end=end_date)
             _log.info("backtest: pre-loaded %d days x %d symbols data", len(data_full), len(_all_symbols))
+            
+            # Also load benchmark data
+            benchmark = store.get_benchmark("000300", start=start_date)
+            if benchmark is None or benchmark.empty:
+                benchmark = pd.Series(dtype=float)
+            
+            # Also load fundamentals
+            from quant.factor.store import FactorStore
+            fs = FactorStore()
+            _fv_start = trading_days[0]
+            _fv_end = trading_days[-1]
+            _mconn = store._connect()
+            _val_df = pd.read_sql_query(
+                "SELECT symbol, date, pe_ttm, pb, ps_ttm, pcf_ttm, market_cap FROM daily_valuation "
+                "WHERE date >= ? AND date <= ? ORDER BY date",
+                _mconn, params=(_fv_start, _fv_end))
+            _stocks_df = pd.read_sql_query(
+                "SELECT symbol, pe, pe_ttm, pb, total_mv, roe, industry, high_52w, eps, bvps FROM stocks",
+                _mconn).set_index("symbol")
+            
             return {
                 "data_full": data_full,
+                "benchmark": benchmark if benchmark is not None else pd.Series(dtype=float),
+                "fundamentals": {
+                    "val_df": _val_df,
+                    "stocks_df": _stocks_df,
+                    "close_piv": data_full["close"] if "close" in data_full.columns.levels[0] else None,
+                },
                 "all_symbols": _all_symbols,
                 "start_date": start_date,
                 "end_date": end_date,
@@ -420,6 +454,11 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
         _log.info("backtest: pre-loaded %d days x %d symbols data (cached=%s)", 
                   len(data_full), len(_all_symbols), "hit" if len(data_full) > 0 else "miss")
 
+        # ── test-v466 (BT-3): 移除增量协方差/增量IC 死代码 — 
+        # _ctx.covariance 无消费者 (ExecutionContext 无此字段, pipeline 不读),
+        # inc_ic 参数 compute_backtest_ic 从不使用, 两段重复预热互覆盖。
+        # 协方差在图谱里由 PortfolioConstructor 内部现值计算承担。
+
         # ── test-v398 (perf): broker + 复用实例 (需 data_full 已加载) ──
         broker = SimulatedBroker(store, engine, BACKTEST_DB, data_full=data_full)
         _br = broker  # Python 3.14 兼容: 循环内 try 块通过别名访问
@@ -437,12 +476,13 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
         _log.info("backtest: stock names preloaded — %d symbols", len(_stock_names))
 
         # test-v398 (perf): 涨停封成比预加载 — 一次加载全表, 避免每日期独立连接
+        # test-v466 (BT-8): 删除错误建表 — 原 CREATE IF NOT EXISTS 用 3 列 schema,
+        # 与实际 16 列表 (quant/data/limit_up.py) 冲突恒失败, 只读即可。
         import sqlite3 as _sql3
         from quant.config.paths import MARKET_DB
         _preloaded_seal: dict[str, list] = {}
         try:
             _sconn = _sql3.connect(MARKET_DB)
-            _sconn.execute("CREATE TABLE IF NOT EXISTS limit_up_pool (date TEXT, symbol TEXT, seal_ratio REAL, PRIMARY KEY(date, symbol))")
             _seal_rows = _sconn.execute(
                 "SELECT date, symbol, lock_capital, amount FROM limit_up_pool ORDER BY date"
             ).fetchall()
@@ -454,23 +494,22 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
         except Exception as _se:
             _log.warning("backtest: limit_up_pool preload failed (non-fatal): %s", _se)
 
-        # v391: ztd 预加载一次 (generate_signals 内每日期 1700 次 → 1 次)
-        from quant.factor.compute.price._alternative import preload_ztd_cache
-        preload_ztd_cache(trading_days, _all_symbols)
-        _log.info("backtest: ztd cache preloaded for %d dates", len(trading_days))
+        # v391 原 ztd 预加载 — test-v466 (BT-8): 移除。
+        # 回测因子全部来自物化缓存 (bulk_load), 不触发因子重算 → ztd 预计算 ~80MB 纯浪费。
 
         # ── test-v398 (perf): 基本面 PIT 组件预加载 (共享 pivot 表, 按日切片, 零拷贝) ──
         # 存 shared pivot 而非 dict-of-DataFrame: 全量回测 1580d×5000s 仅 ~400MB
-        _fv_start = trading_days[0]
-        _fv_end = trading_days[-1]
-        _mconn = store._connect()
-        _val_df = pd.read_sql_query(
-            "SELECT symbol, date, pe_ttm, pb, ps_ttm, pcf_ttm, market_cap FROM daily_valuation "
-            "WHERE date >= ? AND date <= ? ORDER BY date",
-            _mconn, params=(_fv_start, _fv_end))
-        _stocks_df = pd.read_sql_query(
-            "SELECT symbol, pe, pe_ttm, pb, total_mv, roe, industry, high_52w, eps, bvps FROM stocks",
-            _mconn).set_index("symbol")
+        # test-v466 (BT-8): 复用缓存 loader 的查询结果 — 原主路径重复查
+        # daily_valuation/stocks 两表 (与 data_cache loader 双重查询)。
+        _fund_data = cached_data.get("fundamentals", {})
+        _val_df = _fund_data.get("val_df")
+        _stocks_df = _fund_data.get("stocks_df")
+        if _val_df is None or _stocks_df is None:
+            # 仅兼容旧格式磁盘缓存 (缺 fundamentals key), 丢弃重载
+            _log.warning("backtest: cached fundamentals missing — reloading")
+            _fund_data = _load_all_data()["fundamentals"]
+            _val_df = _fund_data["val_df"]
+            _stocks_df = _fund_data["stocks_df"]
         _log.info("backtest: fundamentals preload — %d valuation rows, %d stocks",
                   len(_val_df), len(_stocks_df))
 
@@ -518,7 +557,7 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             n_train_days=ic_lookback,
             status_filter=factor_status_filter or "backtesting",
             factor_cache=_factor_cache,
-            inc_ic=inc_ic,
+            symbols=_factor_syms,
         )
         _last_retrain_idx = 0
         _log.info("backtest: initial IC: %d factors, retrain every %dd", len(_current_ic_map), retrain_freq)
@@ -558,6 +597,36 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             except Exception as _re:
                 _log.warning("backtest: regime detection skipped (non-fatal): %s", _re)
 
+        # ── test-v466 (BT-2): ATR 面板预计算 — 止损热路径免每仓每日 SQLite 查询 ──
+        # 口径与 _compute_atr 一致: 最近 atr_period 个 TR 的简单均值 (TR 不含当日行情)
+        try:
+            from quant.config.constants import _require_cfg as _rc
+            _atr_period = _rc("risk.atr_period")
+            _h, _l, _c = (data_full[f] for f in ("high", "low", "close"))
+            _prev_c = _c.shift(1)
+            _tr = np.maximum.reduce([
+                (_h - _l).values,
+                (_h - _prev_c).abs().values,
+                (_l - _prev_c).abs().values,
+            ])
+            _atr_df = pd.DataFrame(_tr, index=_h.index, columns=_h.columns).rolling(
+                window=_atr_period, min_periods=_atr_period).mean()
+            _ctx_atr_panel = {
+                _d.strftime("%Y-%m-%d"): {s: float(v) for s, v in _row.dropna().items()}
+                for _d, _row in _atr_df.iterrows()
+            }
+            _ctx_atr_panel = {d: p for d, p in _ctx_atr_panel.items() if p}
+            _log.info("backtest: ATR panel ready — %d dates (TR-based, period=%d)",
+                      len(_ctx_atr_panel), _atr_period)
+        except Exception as _ae:
+            _log.warning("backtest: ATR panel build failed — fallback per-position SQL: %s", _ae)
+            _ctx_atr_panel = None
+
+        # ── test-v466 (BT-6): probation 名单冻结一次 — 回测全程 PIT 一致 ──
+        from quant.data.repos.factor_repo import FactorRepo
+        _ctx_probation = sorted(set(FactorRepo().get_probation_factor_names()))
+        _log.info("backtest: probation frozen at start — %d factors", len(_ctx_probation))
+
         # ── 统一上下文: ExecutionContext — 收敛 16+ 参数为单一上下文 ──
         from quant.backtest.context import ExecutionContext
         _ctx = ExecutionContext(
@@ -570,19 +639,8 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             prebuilt_engine=engine, prebuilt_cost_model=cost_model,
             prebuilt_constructor=_prebuilt_constructor,
             suppress_push=suppress_push, db_path=BACKTEST_DB, universe_size=universe_size,
+            atr_panel=_ctx_atr_panel, probation_names=_ctx_probation,
         )
-
-        # ── 初始化增量协方差 (test-v458 P2) ──
-        from quant.risk.covariance import IncrementalCovariance
-        from quant.factor.stats_cache import IncrementalIC
-        inc_cov = IncrementalCovariance(window=252, full_recalc_interval=20)
-        # 预热: 用截至首日前的历史数据初始化
-        _cov_start = (pd.Timestamp(trading_days[0]) - pd.Timedelta(days=252)).strftime("%Y-%m-%d")
-        _pre_ret = np.log(data_full["close"]).diff().dropna(how="all")
-        _pre_ret = _pre_ret[_pre_ret.index < pd.Timestamp(trading_days[0])]
-        for _dt, _row in _pre_ret.dropna(how="all").iterrows():
-            inc_cov.update(_row)
-        _log.info("backtest: IncrementalCovariance initialized with %d pre-days", len(inc_cov._returns_buffer))
 
         # ── Main loop ──
         equity_curve = [{"date": trading_days[0], "equity": float(capital)}]
@@ -615,8 +673,8 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
                 "exclude_symbols": cooloff_syms,
                 "ctx": _ctx,
             }
-            # Pass covariance via ctx (test-v458 P2)
-            _ctx.covariance = cov
+            # (原 test-v458 P2 增量协方差注入已移除 — 无消费者)
+
             # Switch combine_mode from sleeve (warmup) to ic_weighted (walk-forward);
             # test-v298: run_backtest(combine_mode=...) 可覆盖 walk-forward 模式 (hyperopt)
             _in_oos = oos_start_date and today >= oos_start_date
@@ -625,28 +683,14 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             # Walk-forward IC retrain - OOS 期冻结
             if retrain_freq > 0 and (i - _last_retrain_idx) >= retrain_freq and bt_factor_names and not _in_oos:
                 _log.info("backtest: retraining IC at day %d (%s)", i, today)
-                # 使用增量 IC 更新 (test-v458 P4)
                 _current_ic_map = compute_backtest_ic(
                     start_date=(pd.Timestamp(today) - pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
                     n_train_days=ic_lookback,
                     status_filter=factor_status_filter or "backtesting",
                     factor_cache=_factor_cache,
-                    inc_ic=inc_ic,
+                    symbols=_factor_syms,
                 )
                 _last_retrain_idx = i
-                # 增量更新: 用当日的因子值和收益率更新 IC
-                if _last_signals:
-                    fv = _last_signals.get("_factor_values", {})
-                    if fv:
-                        _held = engine.get_positions(strategy)
-                        _held_close = _get_prices([p["symbol"] for p in _held], today, store, field="close", data_full=data_full) if _held else {}
-                        # 计算当日收益率用于 IC 增量更新
-                        _today_ret = _get_prices(list(fv.keys()), today, store, field="close", data_full=data_full)
-                        _next_ret = _get_prices(list(fv.keys()), next_day, store, field="close", data_full=data_full)
-                        if _today_ret and _next_ret:
-                            _ret_series = pd.Series({s: (_next_ret[s] / _today_ret[s] - 1) for s in _today_ret if s in _next_ret and _today_ret[s] > 0})
-                            if not _ret_series.empty:
-                                inc_ic.update(fv, _ret_series)
             kwargs["ic_map"] = _current_ic_map
             # B-22 fix: 单日异常计入 errors 并跳过当日 (原 errors 计数器从未递增,
             # 且单日异常会中断整个回测)
@@ -694,12 +738,12 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
                     exec_result = _br.execute(targets, next_day, strategy=strategy)
                     if exec_result.get("skipped"):
                         _log.warning(f"backtest {next_day}: no open prices available, skipping")
-                        equity_curve.append({"date": next_day, "equity": engine.get_capital(strategy)})
+                        equity_curve.append({"date": next_day, "equity": _br.get_mtm_capital(strategy, next_day)})
                         continue
             except Exception as _day_err:
                 errors += 1
                 _log.error(f"backtest {today}: day failed ({errors} total): {_day_err}")
-                equity_curve.append({"date": next_day, "equity": engine.get_capital(strategy)})
+                equity_curve.append({"date": next_day, "equity": _br.get_mtm_capital(strategy, next_day)})
                 continue
 
             # ── Step 2.5: Update cooling-off from stop-loss events ──

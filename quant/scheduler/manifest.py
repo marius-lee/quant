@@ -142,7 +142,25 @@ _WEEKLY: list[TaskSpec] = [
 ]
 
 
-# ── 统一注册表: 决策顺序 = 清单顺序 ──
+# ─────────────────────────────────────────────────────────────────────
+# 晚间链子任务超时表 (v474: v428 回归修复)
+# v428 删掉 orchestrator._TIMEOUTS 后仅 manifest.ALL 有超时; 晚间链 6 个
+# stage 不在 ALL → _check_timeouts fallback 300s → 每晚 daily_data 跑 5-12min
+# 即被 abort → factor_cache 跳过 → 次日 signals "factor_store empty".
+# 实测时长 (task_runs 2026-08-05~07): daily_data 2.4~4.4h, factor_cache
+# 25min~4.6h, attribution <3min, 链最长 7.2h (v430 注释, fund_flow 限流占大头).
+EVENING_STAGE_GRACE: dict[str, int] = {
+    "daily_data": 21600,      # 6h — 实测最长 4.4h
+    "factor_cache": 21600,    # 6h — 实测最长 4.6h
+    "attribution": 3600,      # 1h — 实测 <3min
+    "adj_factor": 3600,       # 1h — 实测秒级
+    "lgb_train": 21600,       # 6h — 训练可能数小时
+    "xgb_train": 21600,       # 6h
+}
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 统一注册表: 决策顺序 = 清单顺序 ──
 ALL: dict[str, TaskSpec] = {s.name: s for s in _DAYLINE + _WEEKLY}
 
 # 执行顺序 (依赖拓扑序): signals → execute → snapshot_open → monitor →

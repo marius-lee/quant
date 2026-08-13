@@ -19,7 +19,7 @@ def _run(start_date: str, end_date: str):
     """
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
-    rid = _tk_start("factor_cache", end_date, grace_seconds=5400)
+    rid = _tk_start("factor_cache", end_date, grace_seconds=21600)
     if rid is None:
         _log.info(f"[{end_date}] factor_cache already running, skip duplicate trigger")
         return
@@ -36,12 +36,16 @@ def _run(start_date: str, end_date: str):
         from quant.data.store import DataStore
 
         store = DataStore()
-        _latest = store._connect().execute(
-            'SELECT MAX(date) FROM daily').fetchone()[0]
-        actual_end = min(end_date, _latest) if _latest else end_date
-        dates = [r[0] for r in store._connect().execute(
-            'SELECT DISTINCT date FROM daily WHERE date >= ? AND date <= ? ORDER BY date',
-            (start_date, actual_end)).fetchall()]
+        _conn = store._connect()
+        try:
+            _latest = _conn.execute(
+                'SELECT MAX(date) FROM daily').fetchone()[0]
+            actual_end = min(end_date, _latest) if _latest else end_date
+            dates = [r[0] for r in _conn.execute(
+                'SELECT DISTINCT date FROM daily WHERE date >= ? AND date <= ? ORDER BY date',
+                (start_date, actual_end)).fetchall()]
+        finally:
+            _conn.close()
         symbols = UniverseRepo().get_symbols(exclude_market='BJ')
         factors = sorted(set(get_factor_names(status_filter='backtesting'))
                          | set(get_factor_names(status_filter='using')))
@@ -70,14 +74,15 @@ def _run(start_date: str, end_date: str):
             _log.info(f"[{end_date}] factor_cache: all dates already materialized, skipped")
         else:
             _log.info(f"[{end_date}] factor_cache done: {result['n_rows']} new rows ({elapsed:.1f}s)")
-            # Trim old cache to max_days window
+            # Trim old cache to max_days window (test-v466: 失败不再降级为 warning)
             try:
                 from quant.config.constants import _require_cfg
                 max_days = _require_cfg("backtest.factor_cache_max_days")
                 trimmed = fs.trim_to_max_days(max_days)
                 _log.info(f"[{end_date}] factor_cache: trimmed {trimmed} old rows ({max_days}d window)")
             except Exception as e:
-                _log.warning(f"[{end_date}] factor_cache: trim failed (non-fatal): {e}")
+                _log.error(f"[{end_date}] factor_cache: trim failed: {e}")
+                raise
             # Sync ic_mean to factor_registry
             try:
                 from quant.data.repos import FactorRepo
@@ -87,8 +92,16 @@ def _run(start_date: str, end_date: str):
             except Exception as e:
                 _log.warning(f"[{end_date}] factor_cache: sync ic_mean failed: {e}")
 
-        status = "ok"
-        summary = {"rows": result.get("n_rows", 0), "elapsed": round(elapsed, 1)}
+        # test-v466 (MC-6): 失败日期上报 — 不再静默吞掉, 任务标记 failed
+        _failed = result.get("failed_dates") or []
+        if _failed:
+            status = "failed"
+            error_msg = f"{len(_failed)} dates failed: {','.join(sorted(_failed)[:20])}"
+            _log.error(f"[{end_date}] factor_cache: {error_msg}")
+        else:
+            status = "ok"
+        summary = {"rows": result.get("n_rows", 0), "elapsed": round(elapsed, 1),
+                   "failed_dates": _failed}
         _log.info(f"[SCHEDULER] {end_date} | TASK=factor_cache | STATUS=OK | "
                   f"rows={result.get('n_rows', 0)} | elapsed={elapsed:.1f}s")
     except Exception as e:

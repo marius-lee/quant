@@ -228,9 +228,11 @@ def _check_timeouts(today: str):
                 start = _dt.strptime(started_at, "%Y-%m-%d %H:%M:%S")
             except ValueError:
                 start = _dt.strptime(started_at, "%Y-%m-%dT%H:%M:%S")
-            from quant.scheduler.manifest import ALL
+            from quant.scheduler.manifest import ALL, EVENING_STAGE_GRACE
             s = ALL.get(task_name)
-            grace_s = s.grace_s if s else 300
+            # v474: 晚间链 stage (daily_data/factor_cache/...) 不在 ALL,
+            # 原 fallback 300s 导致每晚 5-12min 即被误杀 (v428 回归)
+            grace_s = s.grace_s if s else EVENING_STAGE_GRACE.get(task_name, 300)
             elapsed = (datetime.now() - start).total_seconds()
             if elapsed > grace_s:
                 with sqlite3.connect(MARKET_DB) as conn3:

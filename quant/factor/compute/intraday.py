@@ -75,14 +75,16 @@ def compute_intraday_reversal(data, date, window=None, aux=None):
     rows = None
     if aux is not None and "intraday_snapshot" in aux:
         snap = aux["intraday_snapshot"]
+        snap = snap[snap["mode"] == "open"] if "mode" in snap.columns else snap
         if not snap.empty:
-            rows = [(r["symbol"], r.get("open_30min"), r.get("prev_close"))
+            rows = [(r["symbol"], r.get("price"), r.get("prev_close"))
                     for _, r in snap.iterrows()]
     if rows is None:
         from quant.data.repos._base import DatabaseManager
         conn = DatabaseManager.market()
         rows = conn.execute(
-            "SELECT symbol, open_30min, prev_close FROM intraday_snapshot WHERE date=?",
+            "SELECT symbol, price, prev_close FROM intraday_snapshot "
+            "WHERE date=? AND mode='open'",
             (date,)
         ).fetchall()
         conn.close()
@@ -140,14 +142,16 @@ def compute_open_volume_ratio(data, date, window=None, aux=None):
     rows = None
     if aux is not None and "intraday_snapshot" in aux:
         snap = aux["intraday_snapshot"]
+        snap = snap[snap["mode"] == "open"] if "mode" in snap.columns else snap
         if not snap.empty:
-            rows = [(r["symbol"], r.get("open_30min_vol"))
+            rows = [(r["symbol"], r.get("volume"))
                     for _, r in snap.iterrows()]
     if rows is None:
         from quant.data.repos._base import DatabaseManager
         conn = DatabaseManager.market()
         rows = conn.execute(
-            "SELECT symbol, open_30min_vol FROM intraday_snapshot WHERE date=?",
+            "SELECT symbol, volume FROM intraday_snapshot "
+            "WHERE date=? AND mode='open'",
             (date,)
         ).fetchall()
         conn.close()
@@ -192,14 +196,16 @@ def compute_close_surge(data, date, window=None, aux=None):
     rows = None
     if aux is not None and "intraday_snapshot" in aux:
         snap = aux["intraday_snapshot"]
+        snap = snap[snap["mode"] == "close"] if "mode" in snap.columns else snap
         if not snap.empty:
-            rows = [(r["symbol"], r.get("close_5min"))
+            rows = [(r["symbol"], r.get("price"))
                     for _, r in snap.iterrows()]
     if rows is None:
         from quant.data.repos._base import DatabaseManager
         conn = DatabaseManager.market()
         rows = conn.execute(
-            "SELECT symbol, close_5min FROM intraday_snapshot WHERE date=?",
+            "SELECT symbol, price FROM intraday_snapshot "
+            "WHERE date=? AND mode='close'",
             (date,)
         ).fetchall()
         conn.close()

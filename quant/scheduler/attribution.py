@@ -12,6 +12,7 @@ P5: Brinson 基准从等权改为市值加权
 """
 import time as _time, uuid as _uuid
 from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
+from quant.scheduler.manifest import EVENING_STAGE_GRACE
 import numpy as np
 from datetime import time
 from quant.monitor.metrics import metrics as _m
@@ -47,7 +48,7 @@ def _tier_label(tier: str) -> str:
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
-    rid = _tk_start("attribution", today, grace_seconds=900)
+    rid = _tk_start("attribution", today, grace_seconds=EVENING_STAGE_GRACE["attribution"])
     if rid is None:
         _log.info(f"[{today}] attribution already running, skip duplicate trigger")
         return
@@ -162,11 +163,12 @@ def _run(today: str):
     from quant.scheduler.oos_verify import run_oos_check
     from quant.config.constants import _require_cfg as _ecfg
     # 用最近有因子缓存的日期 (盘中 today 可能还没物化)
+    # test-v466 (MC-2): 改走 FactorStore.latest_cached_date() — 原扫 .csv.gz
+    # 在 parquet 主存储下恒为空列表 → OOS 永远用 today (可能未物化)
     from quant.factor.store import FactorStore
-    import os as _os
     _fs = FactorStore()
-    _cached = sorted(f.replace(".csv.gz", "") for f in _os.listdir(_fs._cache_dir) if f.endswith(".csv.gz"))
-    _check_date = _cached[-1] if _cached and today not in _cached else today
+    _cached = _fs.latest_cached_date()
+    _check_date = _cached if _cached and today not in (_cached,) else today
     if _check_date != today:
         _log.info(f"[{today}] OOS verify: using latest cached date {_check_date} (today not yet materialized)")
     oos_result = run_oos_check(

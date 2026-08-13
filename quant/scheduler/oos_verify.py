@@ -209,6 +209,7 @@ def run_oos_check(
     test_days: int,
     decay_warn_threshold: float,
     n_symbols: int,
+    symbols: list = None,  # test-v466 (BT-4): 显式符号集 — 回测 IC 与主循环同口径
     factor_cache: dict = None,  # test-v397 (P0): {date: {factor: Series}}, 跳过 gzip I/O
 ) -> dict:
     """编排层: 加载数据 → compute_ic_series → analyze_is_oos → 返回结果.
@@ -250,8 +251,24 @@ def run_oos_check(
 
     # ── 3. 数据加载 (编排层职责) ──
     store = DataStore()
-    all_symbols = UniverseRepo().get_symbols(exclude_market='BJ')
-    symbols = all_symbols if n_symbols == 0 else all_symbols[:n_symbols]
+    if symbols is not None:
+        # 调用方已提供符号集 (回测 IC 与主循环同口径), 不另行排名
+        symbols = list(symbols)
+        if n_symbols and len(symbols) > n_symbols:
+            symbols = symbols[:n_symbols]
+    else:
+        all_symbols = UniverseRepo().get_symbols(exclude_market='BJ')
+        # test-v466 (BT-4): 流动性排名后取 top-N — 原 all_symbols[:n_symbols] 按
+        # universe 表顺序切片 (非流动性), IC 样本偏差 + 与回测口径不一致。
+        if n_symbols == 0 or len(all_symbols) <= n_symbols:
+            symbols = all_symbols
+        else:
+            symbols = store.rank_by_turnover(
+                all_symbols, test_start,
+                lookback_days=_require_cfg("backtest.universe_turnover_days"),
+                top_n=n_symbols,
+            )
+            _log.info(f"[{today}] OOS verify: top-{len(symbols)} by turnover (of {len(all_symbols)})")
     data = store.get_daily(symbols, start=data_start, end=today)
 
     if data.empty:
@@ -285,10 +302,11 @@ def run_oos_check(
             if fv:
                 factor_values_by_date[ds] = fv
             else:
-                store.close()
-                raise RuntimeError(
-                    f"factor_cache miss for {ds} ({len(symbols)} symbols, "
-                    f"{len(factor_names)} factors), run materialization first"
+                # test-v466 (BT-5): 单日缺失降级跳过 — 原 RuntimeError 中断整个
+                # OOS 验证链; 缺失是增量物化的常态 (尾部若干交易日未物化)。
+                _log.warning(
+                    f"[{today}] factor_cache miss for {ds} ({len(symbols)} symbols, "
+                    f"{len(factor_names)} factors) — skipped for this day"
                 )
     else:
         from quant.factor.store import FactorStore
@@ -299,11 +317,9 @@ def run_oos_check(
             if fv:
                 factor_values_by_date[ds] = fv
             else:
-                fs.close()
-                store.close()
-                raise RuntimeError(
-                    f"factor_cache miss for {ds} ({len(symbols)} symbols, "
-                    f"{len(factor_names)} factors), run materialization first"
+                _log.warning(
+                    f"[{today}] factor_cache miss for {ds} ({len(symbols)} symbols, "
+                    f"{len(factor_names)} factors) — skipped for this day"
                 )
         fs.close()
 
@@ -341,6 +357,7 @@ def run_oos_check(
 
     return {
         "n_factors": len(factor_names),
+        "n_symbols": len(symbols),
         "ic_daily": ic_series,
         "n_qualified": n_qualified,
         "oos_ir": result["oos_ir_agg"],

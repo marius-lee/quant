@@ -126,7 +126,8 @@ class ExecutionModel(ABC):
                 result.stopped_out.append(st["symbol"])
             # v410: ATR 动态止盈止损 (回测↔实盘一致)
             _quotes = {s: {"price": p} for s, p in ctx.prices.items() if p > 0}
-            atr_stops = rm.check(positions, _quotes, ctx.today)
+            atr_stops = rm.check(positions, _quotes, ctx.today,
+                                 atr_panel=getattr(ctx, "atr_panel", None))
             for _as in atr_stops:
                 ctx.engine.execute(
                     [Order(symbol=_as["symbol"], side="sell", shares=_as["shares"],
@@ -168,7 +169,8 @@ class ExecutionModel(ABC):
         # v410: ATR 动态止盈止损 (回测↔实盘一致)
         # 构建 quotes dict (回测用日线价格)
         _quotes = {s: {"price": p} for s, p in ctx.prices.items() if p > 0}
-        atr_stops = rm.check(positions, _quotes, ctx.today)
+        atr_stops = rm.check(positions, _quotes, ctx.today,
+                             atr_panel=getattr(ctx, "atr_panel", None))
         for _as in atr_stops:
             _log.warning(f"[{ctx.today}] ATR stop: {_as['symbol']} {_as['reason']}")
             ctx.engine.execute(

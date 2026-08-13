@@ -253,7 +253,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         import sqlite3
         from quant.config.paths import MARKET_DB
         _mconn = sqlite3.connect(MARKET_DB)
-        _mconn.execute("CREATE TABLE IF NOT EXISTS limit_up_pool (date TEXT, symbol TEXT, seal_ratio REAL, PRIMARY KEY(date, symbol))")
+        # test-v466 (BT-8): 删除错误建表 — 原 3 列 schema 与 limit_up.py 16 列表冲突
         _prev_dates = _mconn.execute(
             "SELECT date FROM limit_up_pool WHERE date < ? ORDER BY date DESC LIMIT 1",
             (date_str,)
@@ -366,9 +366,14 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     ic_map = ic_map if ic_map is not None else load_ic_map_from_cache(factor_values, scope=scope)
 
     # v390: probation 因子 IC 衰减 — 状态机降级后权重减半, 不再以全权重交易
+    # test-v466 (BT-6): 回测用回测启动时冻结名单 (ctx.probation_names, PIT 全程一致),
+    # 原每日期查 factor_registry → 非 PIT (某日升/降级会中途改变权重) + 每日 DB 往返。
     try:
         from quant.data.repos import FactorRepo
-        _probation_names = FactorRepo().get_probation_factor_names()
+        if ctx is not None and getattr(ctx, "probation_names", None) is not None:
+            _probation_names = ctx.probation_names
+        else:
+            _probation_names = FactorRepo().get_probation_factor_names()
         if _probation_names:
             ic_map = dict(ic_map)  # 不修改传入的原始dict
             for _pn in _probation_names:
@@ -393,8 +398,11 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     try:
         _ind_info = fundamentals["industry"].reindex(factor_values[next(iter(factor_values))].index) \
             if "industry" in fundamentals.columns else None
-        _mcap_info = fundamentals["total_mv"].reindex(factor_values[next(iter(factor_values))].index) \
-            if "total_mv" in fundamentals.columns else None
+        # test-v466 (BT-1): 市值用 PIT market_cap (fund_val_piv 覆盖), 
+        # 原 fundamentals["total_mv"] 为 stocks 表当前快照 — 回测历史日期隐含前视
+        _mcap_col = "market_cap" if "market_cap" in fundamentals.columns else "total_mv"
+        _mcap_info = fundamentals[_mcap_col].reindex(factor_values[next(iter(factor_values))].index) \
+            if _mcap_col in fundamentals.columns else None
         if _ind_info is not None or _mcap_info is not None:
             from quant.risk.neutralize import neutralize_factors_batch
             factor_values = neutralize_factors_batch(
@@ -450,7 +458,9 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     close_df = data["close"]
     risk_date = actual_date if actual_date in close_df.index[:end_idx+1] else close_df.index[end_idx].strftime("%Y-%m-%d")
     prices = close_df.loc[risk_date].dropna()
-    mcap_real = fundamentals["total_mv"].reindex(prices.index)
+    # test-v466 (BT-1): 市值用 PIT market_cap — 原 total_mv 为 stocks 当前快照 (前视)
+    _mcap_col = "market_cap" if "market_cap" in fundamentals.columns else "total_mv"
+    mcap_real = fundamentals[_mcap_col].reindex(prices.index)
     mcap_real = mcap_real.fillna(prices * 1e8)
     industries = fundamentals["industry"].reindex(prices.index) if "industry" in fundamentals.columns else None
     industry_min = _require_cfg("risk.neutralize.min_common_stocks")

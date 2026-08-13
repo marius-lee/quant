@@ -122,55 +122,37 @@ class ExecutionEngine:
         return False
 
     def _check_ex_dividend_batch(self, symbols: list[str], prices: dict[str, float], date: str) -> set[str]:
-        """批量除权除息检测: 单次查询获取所有 symbol 的前一交易日收盘价。
+        """批量除权除息检测 — 精确事件查询.
+
+        以 dividend 事件表为准 (ex_date == 交易日期): 当日有除权事件的股票跳过买入。
+        不再使用价格 gap 启发式 — 虚构/模拟价格与真实昨收的偏差会造成误杀
+        (ADR: 2026-08-12, 由 broker 模拟器测试暴露)。
 
         Args:
             symbols: 股票代码列表
-            prices: {symbol: order_price} 订单价格字典
+            prices: {symbol: order_price} 订单价格字典 (保留签名兼容, 检测不再依赖价格)
             date: 交易日期 (YYYY-MM-DD)
         Returns:
-            set: 需要跳过买入的 symbol 集合
+            set: 当日有除权事件、需跳过买入的 symbol 集合
         """
         if not symbols:
             return set()
-        
+
         mc = market_conn("ro")
         placeholders = ",".join(["?"] * len(symbols))
-        # 单次查询获取所有 symbol 在 date 前的最新收盘价
-        sql = f"""
-            SELECT symbol, close
-            FROM daily
-            WHERE symbol IN ({placeholders}) AND date < ?
-            ORDER BY symbol, date DESC
-        """
-        rows = mc.execute(sql, symbols + [date]).fetchall()
+        rows = mc.execute(
+            f"SELECT DISTINCT symbol FROM dividend "
+            f"WHERE symbol IN ({placeholders}) AND ex_date = ?",
+            symbols + [date],
+        ).fetchall()
         mc.close()
-        
-        # 取每个 symbol 的最近一条记录
-        prev_closes = {}
-        for symbol, close in rows:
-            if symbol not in prev_closes and close is not None:
-                prev_closes[symbol] = float(close)
-        
-        # 批量判定
-        skip_symbols = set()
-        for symbol in symbols:
-            order_price = prices.get(symbol, 0)
-            if not order_price:
-                continue
-            prev_close = prev_closes.get(symbol)
-            if prev_close is None:
-                continue
-            gap = abs(order_price / prev_close - 1)
-            threshold = _price_limit_pct(symbol)
-            if gap > threshold:
-                from quant.utils.logger import get_logger
-                get_logger("execution.engine").warning(
-                    f"Ex-dividend detected: {symbol} order_price={order_price:.2f} "
-                    f"prev_close={prev_close:.2f} gap={gap:.1%} > {threshold:.0%} — skipping buy"
-                )
-                skip_symbols.add(symbol)
-        
+        skip_symbols = {r[0] for r in rows}
+        if skip_symbols:
+            from quant.utils.logger import get_logger
+            get_logger("execution.engine").warning(
+                f"Ex-dividend on {date}: {sorted(skip_symbols)} — skipping buy"
+            )
+
         return skip_symbols
 
     def execute(
@@ -244,15 +226,6 @@ class ExecutionEngine:
                 else:
                     e["pnl"] = 0.0
                     e["pnl_pct"] = 0.0
-                e["cost"] = round(price * shares - proceeds, 2)
-                avg_cost = repo.get_average_cost(strategy, symbol)  # FIFO (2026-07-21 audit H7)
-                if avg_cost and avg_cost * shares > 0:
-                    e["pnl"] = round(proceeds - avg_cost * shares, 2)
-                    e["pnl_pct"] = round(proceeds / (avg_cost * shares) - 1, 2)
-                else:
-                    e["pnl"] = 0.0
-                    e["pnl_pct"] = 0.0
-            entries.append(e)
 
         # ── Phase 2: 写入 (事务内) ──
         conn = repo._conn()

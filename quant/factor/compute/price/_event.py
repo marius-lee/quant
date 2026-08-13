@@ -182,16 +182,13 @@ def compute_lhb_net_buy(data: "pd.DataFrame", date: str, window: int = _LHB_WIND
     symbols = list(data["close"].columns)
     date_str = date.strftime("%Y-%m-%d") if hasattr(date, "strftime") else str(date)[:10]
 
-    all_dates = sorted(data.index)
+    all_dates = [str(d)[:10] for d in sorted(data.index)]
     if date_str not in all_dates:
         return pd.Series(np.nan, index=symbols, name=f"lhb_net_buy_{window}d")
 
     pos = all_dates.index(date_str)
     start = max(0, pos - window + 1)
-    if hasattr(all_dates[start], "strftime"):
-        start_date = all_dates[start].strftime("%Y-%m-%d")
-    else:
-        start_date = str(all_dates[start])[:10]
+    start_date = all_dates[start]
 
     if aux is None or "lhb" not in aux:
         return None  # aux not preloaded'lhb']")

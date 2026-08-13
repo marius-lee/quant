@@ -221,6 +221,7 @@ class TradeRepo:
             "ALTER TABLE sim_trades ADD COLUMN mode TEXT DEFAULT 'live'",
             "ALTER TABLE sim_trades ADD COLUMN cost REAL DEFAULT 0",
             "ALTER TABLE daily_signals ADD COLUMN mode TEXT DEFAULT 'live'",
+            "ALTER TABLE pending_orders ADD COLUMN mode TEXT DEFAULT 'live'",
             "ALTER TABLE pending_orders ADD COLUMN cancel_reason TEXT DEFAULT ''",
             "ALTER TABLE daily_signals ADD COLUMN exec_notes TEXT DEFAULT '{}'",
         ]:
@@ -340,20 +341,24 @@ class TradeRepo:
             conn.close()
 
     def get_daily_flow(self, day: str, strategy: str = "quant", mode: str = "live") -> tuple[float, float, float]:
-        """返回 (sells, buys, fees) 当日的流水."""
+        """返回 (sells, buys, fees) 截至 day 的累计流水 (全账本重算, 含当日).
+
+        reconcile 现金对账需要 initial_capital + Σ卖 - Σ买 - Σ费 与当前现金
+        全量核对 (docstring 即"全账本重算"); 只查当日会导致历史流水缺失 → 假 break.
+        """
         conn = self._conn()
         try:
             sells = conn.execute(
                 "SELECT COALESCE(SUM(price*shares - COALESCE(cost,0)), 0) FROM sim_trades "
-                "WHERE side='sell' AND strategy=? AND mode=? AND date=?",
+                "WHERE side='sell' AND strategy=? AND mode=? AND date<=?",
                 (strategy, mode, day)).fetchone()[0]
             buys = conn.execute(
                 "SELECT COALESCE(SUM(price*shares + COALESCE(cost,0)), 0) FROM sim_trades "
-                "WHERE side='buy' AND strategy=? AND mode=? AND date=?",
+                "WHERE side='buy' AND strategy=? AND mode=? AND date<=?",
                 (strategy, mode, day)).fetchone()[0]
             fees = conn.execute(
                 "SELECT COALESCE(SUM(COALESCE(cost,0)), 0) FROM sim_trades "
-                "WHERE strategy=? AND mode=? AND date=?",
+                "WHERE strategy=? AND mode=? AND date<=?",
                 (strategy, mode, day)).fetchone()[0]
             return float(sells), float(buys), float(fees)
         finally:
@@ -458,10 +463,10 @@ class TradeRepo:
             rows = conn.execute(sql, (strategy, mode, day)).fetchall()
             return [
                 {"id": r[0], "strategy": r[1], "symbol": r[2], "side": r[3],
-                 "target_shares": r[3], "limit_price": r[4], "reference_price": r[5],
-                 "status": r[6], "placed_at": r[7], "filled_at": r[8],
-                 "filled_shares": r[9], "filled_price": r[10],
-                 "chase_count": r[11], "cancel_reason": r[12], "day": r[13]}
+                 "target_shares": r[4], "limit_price": r[5], "reference_price": r[6],
+                 "status": r[7], "placed_at": r[8], "filled_at": r[9],
+                 "filled_shares": r[10], "filled_price": r[11],
+                 "chase_count": r[12], "cancel_reason": r[13], "day": r[14]}
                 for r in rows
             ]
         finally:

@@ -190,7 +190,7 @@ def get_or_load_backtest_data(
     )
     
     if not force_refresh:
-        cached = load_backtest_data(cache_key)
+        cached = load_backtest_cache(cache_key)
         if cached:
             from quant.utils.logger import get_logger
             get_logger("backtest.data_cache").info(f"Cache hit: {cache_key[:8]}")
@@ -200,7 +200,7 @@ def get_or_load_backtest_data(
     data = loader()
     
     # 保存到缓存
-    _save_to_cache(cache_key, data)
+    save_backtest_cache(cache_key, data["data_full"], data["benchmark"], data["fundamentals"], data.get("meta", {}))
     
     return data
 

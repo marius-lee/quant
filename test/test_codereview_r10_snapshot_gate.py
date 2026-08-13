@@ -56,8 +56,8 @@ def test_mature_path_produces_series_or_none_not_nan_noise():
     for i in range(n_sym):
         p30 = 10.0 + i * 0.1
         prev = 9.0 + i * 0.09
-        snaps.append({"symbol": syms[i], "open_30min": p30, "prev_close": prev,
-                      "open_30min_vol": 100 + i * 10, "close_5min": p30 - 0.1})
+        snaps.append({"symbol": syms[i], "mode": "open", "price": p30,
+                      "prev_close": prev, "volume": 100 + i * 10})
     snap = pd.DataFrame(snaps)
     aux = {"intraday_snapshot_days": 60, "intraday_snapshot": snap}
     r = compute_intraday_reversal(_mk_data(n_sym), "2026-01-05", aux=aux)

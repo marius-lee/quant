@@ -103,9 +103,12 @@ def compute_ztd(data, date, window=250):
     _syms = close.columns.tolist()
 
     # ── 优先使用预计算缓存 ──
-    if date in _ztd_cache:
+    # v477: 缓存 key 为 str (preload_ztd_cache dates), dispatch 传入 Timestamp —
+    #       Timestamp in dict 永远 False → 缓存永不命中 → 因子 0 行
+    key = str(date)[:10] if not isinstance(date, str) else date
+    if key in _ztd_cache:
         import numpy as np
-        ztd = _ztd_cache[date].reindex(_syms)
+        ztd = _ztd_cache[key].reindex(_syms)
         ztd.name = "ztd"
         ztd = ztd.where(ztd.notna(), other=np.nan)
         result = _cs_zscore(-ztd)

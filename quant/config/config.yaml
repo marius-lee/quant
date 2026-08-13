@@ -242,7 +242,14 @@ factor:
     cache_checkpoint_ttl_sec: 86400
     # 内存 LRU 缓存条目上限 (M1 8GB 硬约束)
     # 来源: 每条目 ~20-50MB (5000 symbols × 2000 days × 滚动统计量), 8 条目 = 160-400MB 峰值
-    cache_max_memory_entries: 8
+    cache_max_memory_entries: 3
+    # 磁盘 primitive_cache LRU 文件数上限
+    # 来源: v470 实测 — 物化每 chunk 落盘 ~1GB prims_*.pkl, key 含数据哈希 (窗口随 chunk 滚动),
+    #       跨 chunk 命中率趋近 0, 无上限曾膨胀至 10GB; 上限 4 文件 ≈ 4GB 有界
+    cache_max_disk_entries: 4
+    # 全量物化并行 worker 数上限 (M1 8核, 模板8: max_workers 上限 4)
+    # 来源: store.materialize 默认 min(cpu_count,4); 脚本 materialize_full 默认走此值
+    materialize_max_workers: 4
     redundancy_corr_threshold: 0.7
   debt_ratio:
     max: 2

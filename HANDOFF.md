@@ -2,7 +2,296 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
-## 当前状态 (test-v453, 2026-08-11)
+### v477 全量物化性能重构 — 消除重复计算/加载 (2026-08-13)
+
+**背景 (性能分析结论)**: 全量物化 94 因子 × 1602 日期估算 15-25h, 而历史上晚间链 23 因子全量仅 2-3h。分析出 4 个浪费点:
+
+| # | 浪费 | 根因 | 修复 |
+|---|------|------|------|
+| 1 | 5 个 batch 拆跑 → data/aux/fundamentals/prims 各装载 5 遍 | materialize_full.py BATCHES 逐批独立走完整 chunk 循环 | **单批直跑** 94 因子一次 materialize 调用 |
+| 2 | 每 (factor, year) 每次 read-modify-write 整年度 parquet (94×8年×8chunks ≈ 6000 次全文件重写) | `_write_factor_date_rows` 每次 concat+dedup+重写全文件 | **part 文件追加 + 末尾合并** |
+| 3 | WORKERS=1 (8 核 M1 闲置) | 脚本硬编码 | 默认走 config `factor.compute.materialize_max_workers`=4 |
+| 4 | prims 磁盘缓存跨 batch 无法命中 | v472 已修 (key=仅 data_hash) | 单批后天然全命中 |
+
+**修改**:
+
+| 文件 | 关键改动 |
+|------|----------|
+| `scripts/materialize_full.py` | 删除逐批循环 → `ALL_FACTORS` (94) 单次 `fs.materialize`; `--batch N` 保留 (兼容单批); `--workers` 默认 `_require_cfg("factor.compute.materialize_max_workers")` |
+| `quant/factor/store.py` | **part 文件机制**: `_write_factor_date_part` 写 `{factor}/{year}.part{part_seq}` (纯新增, 不读旧); `_merge_pending_parts()` 幂等合并残留 part → 主文件 (concat+dedup keep=last+原子写+删 part); materialize 开头合并上次中断残留 + 结尾合并本次; part 文件名无 `.parquet` 后缀 → trim/load/bulk_load 扫描天然免疫 |
+| `quant/config/config.yaml` | 新增 `factor.compute.materialize_max_workers: 4` (来源注释; 行内插入保留全部既有注释) |
+| `test/test_v472_factor_cache_materialize.py` | +2 测试: part 合并无残留 / 残留 part 可重入幂等合并 |
+
+**验证**: 全套 378 passed (原 373 + 新 2 + 修正 3)。语法 ast 校验通过。`--dry` 输出 `[ALL] 94 factors × 1602 dates → ~1602/1602 pending`。
+
+**冒烟测试 (100 只 × 2026-07-01..08-12 × 94 因子, 独立临时 cache)**: 最终 259,238 行 / 31 天 / failed_dates=[] / part 残留 0 / 61.9s@4w。冒烟连环触发 4 类存量 bug (全量 94 因子才暴露, 晚间链 23 因子不含故从未触发):
+
+| # | Bug | 文件 | 修复 |
+|---|-----|------|------|
+| 1 | v472 恒定窗口集漏 14 → rsi_rev_14d 全 FAIL (KeyError rsi_14) | `_primitives.py _required_windows` | 14 补入恒定集 |
+| 2 | prims 磁盘缓存 key 仅 data_hash, 代码改动后旧缓存依旧 HIT 缺新 prim → 永久失败 | `_primitives.py _cache_key` | 追加 `_PRIM_CACHE_VERSION="v2"` 段, 旧目录 LRU 淘汰 |
+| 3 | `preload_aux_data_chunk/preload_aux_data` margin 查询缺 symbols 过滤 (全市场 371K 行, 应为子集) | `_preload.py` | 加 `symbol IN (ph)` |
+| 4 | `compute_margin_buy_ratio` 全量相除不切片 → 物化对齐后全 NaN | `fundamental.py` | 按当日过滤 + reindex(symbols) |
+| 5 | `compute_dividend_yield` 查假列 `close_latest` (不存在) → SQL 异常 0 行 | `fundamental.py` | 改 daily 表当日最近收盘价子查询; 另 `Timestamp` 直接绑定 SQL → str → sqlite3 抛 "type Timestamp is not supported" |
+| 6 | `compute_lhb_net_buy` date_str(str) not in all_dates(Timestamp list) 恒 True → 恒 NaN | `_event.py` | 统一 str 列表 |
+| 7 | `compute_ztd` 缓存 key str vs dispatch Timestamp → 永不命中 | `_alternative.py` | key 统一 str |
+| 8 | sue/holder_reduction/ocfp `Timestamp` 直接绑 SQL 参数 → 绑定异常 0 行 | `fundamental.py` | date_str |
+
+**冒烟 0 行因子定性 (均非 bug)**: sue — `stocks.total_shares` 仅 200/5208 只有值 (数据回填任务, 全量物化也将 0 行); ztd — 前 100 蓝筹 250 天零停牌 → 恒 0 → zscore(min_count=30) NaN, 全市场有停牌股 → 有值; lhb_net_buy_20d — 前 100 蓝筹无上榜 → 全 0 同样 zscore NaN, 全市场实证 755 只有值。**注意 `zscore_min_count_dense: 30` — 截面 <30 只有效值即全 NaN, 属设计 (防小样本噪声)**。
+
+**测试脚本教训**: 测试冒烟勿用 `ds._connect()` 拿内部连接又 close — DataStore 缓存线程局部连接, 关闭后材料化读 closed DB。照抄 `factor_cache.py::_run` 模式 (`_conn.close()` 后 `ds.close()` 重置)。
+
+**预期效果**: 单批 + part 合并 + workers 4 → 全量物化估 ~6-8h (对比 15-25h)。历史 23 因子 2.8h@2w 实测 → 94 因子按比例 11.5h@2w → 4 workers + 消除装载/写放大 ≈ 5-7h。
+
+**教训 (本次踩坑)**: `git checkout config.yaml` 会丢弃工作区未提交改动 — 恢复 config 时先确认 `git diff HEAD` 无未提交内容; 测试新增 `import os` 勿写在函数内。
+
+### v476 primitive 缓存路径 bug — quant/quant 孤儿目录 4GB 清理 (2026-08-13)
+
+**症状**: 项目占盘 9.1G, 其中 `quant/quant/data/primitive_cache` 4.0G (8-11~13 物化写入)。
+
+**根因**: `_primitives.py _PRIMITIVE_CACHE_DIR` 用 `dirname(abspath(__file__))×3` = quant 包根, 又 join 了 `"quant","data",...` → 多套一层 → 真路径 `quant/data/primitive_cache` 从未建过, 缓存全写进 `quant/quant/quant/data/...`。旧格式 1GB×4 pkl (v472 前) + 新格式目录 (当前代码依然在写)。
+
+**修复**: join 去掉多余 `"quant"` → `quant/data/primitive_cache` (与 factor_cache 同级)。迁移 4 个新格式目录过去; 删除 4×1GB 旧格式 pkl + 空壳目录 (旧格式由 v472 起不再读取)。占盘 9.1G→5.1G。
+
+**剩余占盘构成** (均正常, 无需清理): market.db 2.9G (daily 9.4M 行 774MB + 索引 478MB + daily_valuation 687MB + margin_detail 266MB, 无空洞); logs 275M (quant.log 50M×5 轮转保留 10 天); .venv 1.7G; factor_cache 135M (会随物化涨至 ~1.5G); models 33M; .git 42M。
+
+**duckdb 预聚合表**: duckdb 1.5.x 起 `window` 为保留字, `_TABLE_SCHEMAS` 中 8 张预聚合表 (daily_ma/daily_ret/daily_std/daily_zscore/daily_ma_volume/daily_max/daily_min/daily_rank) CREATE 全部 Parser Error (仅 WARNING 吞掉) → 从未建成, market.duckdb 中无此 8 表。
+- 修复: 建表 SQL 列定义与 PK 加双引号 `"window"`; `_upsert_df` 全部列名/pk/set 通用加双引号 (duckdb 双引号标识符合法, 对其他表无副作用); `_primitives.py _get_preagg_table` WHERE 加引号。
+- 验证: 21 表全量建表成功 + `_upsert_df` 实测 upsert 成功 + 查询路径实测成功。注意: `_get_preagg_table` 目前无调用方 (死代码), 属能力修复, 不影响现网数值。
+
+**lgb_train skipped "lightgbm not installed"**: 08-12 11:12 手动补跑时用的环境无 lightgbm。已确认: .venv 有 lightgbm 4.7.0 + xgboost 3.3.0, 系统 python (Homebrew 3.14) 也有 lightgbm 4.6.0。晚间链 subprocess 走 `runners._run_subprocess` 的 `.venv/bin/python3` → import 正常。**注意: 当前线上 web (PID 67310) 是系统 python 手动启动的, 必须用 `bash scripts/restart.sh` 重启回 .venv**。
+
+### v475 duckdb `window` 保留字建表修复 + lgb_train 环境确认 (2026-08-13)
+
+**duckdb 预聚合表**: duckdb 1.5.x 起 `window` 为保留字, `_TABLE_SCHEMAS` 中 8 张预聚合表 (daily_ma/daily_ret/daily_std/daily_zscore/daily_ma_volume/daily_max/daily_min/daily_rank) CREATE 全部 Parser Error (仅 WARNING 吞掉) → 从未建成, market.duckdb 中无此 8 表。
+
+### v474 晚间链每日被杀回归修复 (2026-08-13) — 08-10 起系统"一天没工作"根因
+
+**故障**: 08-10..08-12 每晚 `daily_data` 跑 5-12min 即被 abort → factor_cache 跳过 → 次日 signals `factor_store empty for T-1` → 08-12 一整天无信号/执行/归因。
+
+**根因**: v428 (08-08) manifest 重构删除 orchestrator._TIMEOUTS 后, `_check_timeouts` 改为 `s = ALL.get(task_name); grace_s = s.grace_s if s else 300`。晚间链 6 个 stage (daily_data/factor_cache/attribution/lgb/xgb/adj_factor) 不在 manifest.ALL(只含 signals/execute/snapshot/monitor/reconcile/evening_chain/…) → fallback 300s。而 daily_data 实测需 2.4~4.4h (08-05~07 顺利时), 旧 _TIMEOUTS 里根本没有这些任务 (=不查超时, limit=None)。
+
+**修复** (零 fallback 前提下最小改动):
+- `manifest.py`: 新增 `EVENING_STAGE_GRACE` 表 (daily_data/factor_cache 6h, attribution/adj_factor 1h, lgb/xgb 6h), 延续单一真相源
+- `orchestrator.py _check_timeouts`: `grace_s = s.grace_s if s else EVENING_STAGE_GRACE.get(task_name, 300)`
+- grace 统一: daily_data.py 7200→21600, factor_cache.py 5400→21600, attribution.py 900→manifest, lgb/xgb 3600→manifest (dedup 宽限与超时对齐, 防长任务 1.5h 后 dedup 失效双跑)
+- 新增测试 TestEveningStageGrace 3 例 (防漏配) — 全量 376 passed
+
+**注意**: 修复只对重启后的新链生效。08-12 晚链已 failed 无补跑; 08-10/11/12 三天 daily 缺失 (5208 只 stale_recent) 待今晚 19:00 链自动拉 (6h 预算足够) 或手动 `daily_data`。web 需重启生效 v474。
+
+### v472 埋点补充: shortcut 缺失原语单行定位 + per-factor 覆盖日志 (2026-08-13)
+
+旧日志证实 1846 条 per-date traceback 可 grep 根因 (KeyError 'ma_10'), 但缺结构化原因行与 per-factor 结果口径。补充:
+
+| 文件 | 埋点 |
+|------|------|
+| `quant/factor/compute/_dispatch.py` | shortcut KeyError → 单行 ERROR: `shortcut {name} KeyError: missing primitive '{key}' (factor window={w}, computed windows=[...])` + re-raise (零 fallback 不吞错); 新增 `_prims_windows()` 从 prims 键反推窗口集 |
+| `quant/factor/store.py` | 汇总行后新增: `per-factor dates covered: {factor}={n}` (本 run 每因子唯一日期数) + ZERO 覆盖 ERROR: `N factors produced ZERO dates this run: ...` (因子全败早报警, 兼容 wq_alpha_006/ztd 类无值正常因子列入观察) |
+
+验证: 模拟 RED 场景 (prims 仅 {20} 窗口) → `shortcut compute_ma_alignment KeyError: missing primitive 'ma_5' (factor window=20, computed windows=[20])` 单行命中。full suite 373 passed。
+
+### v473 物化起点修正: 2020-01-01 (数据 2019-01-01 备) (2026-08-13)
+
+v470 引入 scripts/materialize_full.py 时误设 START=2019-01-01, 违反约定 (config start_date=2020-01-01, 数据齐 2019-01-01)。查库证实 2018 年 daily 仅 354 只股票 (2017 遗留子集), 2019 起才全量 ~3,551 只 → 2019 起点需 2018 lookback (378 天, momentum_252d), 绝大多数股票早期全 NaN, 且 5d/10d 短窗因子会把 2019 日期误标已物化留下半脏缓存。修正 `START = "2020-01-01"`, docstring 记录约定防回退。残留: batch2 中途停止可能已写少量 2019 短窗因子行 (2020+ 不受影响, 不清理)。
+
+### v473 数据回填 — 堵死项记录 (2026-08-13, 待解)
+
+| 项目 | 状态 | 出路 |
+|------|------|------|
+| dividend 2019+ | tushare 免费档 1次/分钟 (5481只≈91h) 不可行; akshare 封 IP; baostock 无分红 | tushare 积分 / JQ 续费 / akshare 解封 |
+| financials income/cashflow 2019-2023 + balance 2023 | tushare 财报接口无权限; akshare 封禁; **JQ trial 已过期** (auth 成功但全部查询空, 试覆盖至 2026-04-02) | 同上 |
+| limit_up_pool 2019-04-08..2026-06-11 | tushare limit_list_d 无权限; akshare 封禁 | 同上 (影响 ztd/zt_streak/limit_touch_no_seal/limit_up_prox_5d, 现有仅 2026-06-12 起) |
+| pmi_manufacturing 整列缺失 | 仅 akshare 源, 封禁 | 同上 (影响 macro_pmi_diff) |
+| scripts/backfill_financials_jq.py | 有未定义变量 bug (for r in rows: 而 rows 未定义) 从未跑通; 依赖过期 JQ 账号 | 修复脚本+有效账号后再用 |
+
+已完成: benchmark_daily 2019-01-02..2026-08-12 (baostock, 1846 天); adj_factor 2019 (baostock 后台); daily_valuation 2026-07-01/02 (tushare 节流); macro 无重复 (bond 日频属正常)。
+
+## 当前状态 (test-v472, 2026-08-13)
+
+### v472: prims 恒定标准窗口集 — batch2 全败根因修复 (2026-08-13)
+
+**背景 (2026-08-12 现场)**: batch2 (23 因子 × 1846 日期) 全败 67min/0 行。ma_alignment_20d 声明窗口仅 20, 但 shortcut 硬编码依赖 ma_5/ma_10/ma_60; `_required_windows` 按声明窗口推导漏 ma_10 → prims 缺 → `KeyError: 'ma_5'` → 整日判失败 → checkpoint 永久重试。`shortcut_extra_windows` 手工映射维护即失效 (仅覆盖 5 因子)。
+
+**v472 修复**:
+1. `_required_windows` → 恒定标准集 `{5,10,20,60,63,120,126,250,252}`, 与因子批次无关 (参数保留向后兼容)
+2. `_cache_key` → 仅 data_hash, 不再含 factor_names (窗口集恒定后内容与批次无关; 旧目录由磁盘 LRU 淘汰)
+3. `materialize` 返回值 `n_dates` 语义修正: 因子×日期双计 → 唯一日期数
+
+**验证**: 新增 `test/test_v472_factor_cache_materialize.py` 6 测试全绿 (prims 窗口完整性/增量 append/失败续传/跨年分区/trim 重映射/force 重算), 全量 373 passed。静态校验: 全部 32 个硬编码 `prims[...]` 引用均被标准集覆盖。
+
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/factor/compute/_primitives.py` | `_required_windows` 恒定标准集 (带事故文档注释); `_cache_key` 去因子批次 |
+| `quant/factor/store.py` | `n_dates_computed` 去重 (原按因子×日期双计) |
+| `test/test_v472_factor_cache_materialize.py` | 新增 6 测试 + fixture 陷阱记录 (seed 用独立连接, 勿关 DataStore thread-local conn; duckdb proxy 需禁用避免锁生产 duckdb 文件) |
+
+## 当前状态 (test-v471, 2026-08-12)
+
+### v471: 因子缓存完全重写 — parquet f×year 分区 + fork 共享内存 (2026-08-12)
+
+**背景**: v466-v470 存在根本性性能问题 — workers 每日期重新 `read_pickle(prims.pkl ~1GB)` + `read_parquet(data_full)` + CSV 字符串往返, O(n_dates) 反序列化, 8GB 机器 swap 爆表 (11.8GB→12.7GB)。v470 修复点缀, 未触本质架构。
+
+**v471 重解方案** (用户确认 3 大架构决策):
+1. **`mp.get_context('fork')` worker batching** — shared data (data_full/prims/aux/fundamentals) 一次性 fork 继承 via COW, 单 Worker 顺序处理日期范围, 消除 per-date pickle/parquet 反序列化
+2. **`factor_cache/parquet_f/{factor}/{year}.parquet` 存储** — float32 schema (date_i16 全局交易日序号 + symbol_i16 dict idx + value_f32), zstd level 3
+3. **manifest per-factor source_hash** — 粒度失效
+
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/factor/store.py` | **完全重写 (v470)**: `parquet_f/{factor}/{year}.parquet` 布局, float32 schema(date_i16+symbol_i16+value_f32, zstd), fork pool worker (COW 继承 data_full/prims/aux, 一次 fork per chunk), `_worker_main` 模块级静态方法, checkpoint resume (failed_dates 加回重试 + source_hash check), `_build_symbol_map` 累积 i16 字典, trading_days 累积 date_i16 |
+| `quant/factor/store_metadata.py` | 元数据模块: symbol_dict.json / trading_days.json / factor_{name}.meta.json, partition_year() / partition_path() / meta_path() |
+| `scripts/materialize_full.py` | WORKERS 6→3 (M1 8GB 机器, fork COW 无多进程副本), chunk_days 调优 |
+| `quant/factor/compute/_primitives.py` | 磁盘缓存 float32 parquet (完成) |
+| `quant/config/config.yaml` | cache_max_memory_entries: 3 |
+
+**验证**: batch1 13 dates × 5 factors 全量 materialize + load + is_materialized + list_cached_dates 全部正常 (wq_alpha_006/ztd 无有效值属正常, 无对应股票)。
+
+**Batch 状态**: Batch 1-5 顺序 `nohup env PYTHONPATH=. .venv/bin/python scripts/materialize_full.py > logs/materialize_full_all.log 2>&1 &` (Workers=3, fork, 顺序批次 1→5).
+
+## 当前状态 (test-v470, 2026-08-12)
+
+### v470: 全因子物化回填 + primitive_cache 磁盘 LRU (2026-08-12)
+
+**背景**: factor_registry 定义全集 114 中 20 个数据源不足 (北向 3 / intraday 3 / analyst 4 / fund_hold 3 /
+holder_trade 3 / pledge_ratio), 剩余 94 因子 (90 全期 + 4 macro) 确认进入物化池。物化池不受状态收缩限制
+(`factor_names` 显式列表 + `status_filter=None`)。全量 1845 交易日 (2019-01-02..2026-08-11) 全部 pending
+(v466 source_hash 变更使旧 manifest 全失效), 分批回填。
+
+| 文件 | 关键改动 |
+|------|----------|
+| `scripts/materialize_full.py` | 新增分批物化脚本: 6 批 (1: 5 probation; 2/3: 46 价量; 4: 22; 5: 21 含基本面/margin/macro), START=2019-01-01, WORKERS=6, force=False (幂等 + checkpoint 断点续传), `--batch N` / `--dry` 参数 |
+| `quant/factor/compute/_primitives.py` | **磁盘缓存 LRU**: 新增 `_evict_disk_lru_if_needed()` (保存后按 mtime 淘汰最旧, 上限 `cache_max_disk_entries`), 磁盘命中时 `os.utime` touch (LRU 语义)。原因: 物化每 chunk 落盘 ~1GB `prims_*.pkl` 且 key 含数据哈希 (窗口随 chunk 滚动) → 跨 chunk 命中率趋近 0, 无上限曾膨胀至 10GB |
+| `quant/config/config.yaml` | 新增 `factor.compute.cache_max_disk_entries: 4` (≈4GB 有界; 来源注释: v470 实测 10GB 膨胀) |
+
+**物化池定稿 (94 因子)**: 排除北向/intraday/analyst/fund_hold/holder_trade/pledge (数据不足, 避免 nightly 空算)。
+macro 4 因子已注册进 registry (category=macro, status=evaluating): macro_cpi_yoy / macro_m2_yoy / macro_pmi_diff / macro_rate_10y。
+数据源 `macro_indicator` 表 (2008-01 起; 无 pmi → pmi_diff 全 0 可物化)。
+
+**磁盘空间事件 (非内存泄漏)**: 现象 70G→47G 可用。根因 ① primitive_cache 无回收策略 10GB (本批物化 5 chunks 即 4.6GB);
+② `/var/folders` 昨晚 (01:27) 全量物化中断残留 tempdir 5.3GB (data_full.parquet + aux_full.pkl + fundamentals.pkl ×3)。
+已清理: 删 tmp 残留 + 全部 primitive_cache (重算成本 5-8s/chunk, 有内存缓存兜底), 加磁盘 LRU 治本。
+实测: 全量 94 因子最终占用 ≈ 6.5-7GB (8.05 字节/行 × ~8.5 亿行), 磁盘余量充足 (available ~60G+)。
+
+**Batch 状态**: Batch 1 (5 probation) 12:20 启动 PID 58315 (nohup, logs/materialize_batch1.log), 预计 ~85min。
+批次 2-5 依次 `nohup env PYTHONPATH=. .venv/bin/python scripts/materialize_full.py --batch N > logs/materialize_batchN.log 2>&1 &`。
+全部完成后: 删除一次性脚本 + 全量回归 + 抽查 FactorStore.load() 某日 94 因子行数。
+
+**Batch 1 事故复盘 (v470 同章更新)**:
+- Batch 1 首跑 (12:20→14:35, PID 58315) 成功 1705 天/3809 万行, 但 **2022-07-20..2023-02-16 共 140 天失败**:
+  根因 — 13:05 清理 /var/folders 残留 tempdir 时误删了物化进程 chunk 5 正在使用的
+  `tmpimyx6i4x` (TemporaryDirectory 名巧合与昨晨残留目录同名), 13:06 workers 读
+  data_full.parquet 全部 FileNotFoundError。教训: **删除 tempdir 前必须先确认无活动物化进程**。
+- **checkpoint resume 缺陷 (已修复)**: 失败日期 < checkpoint.last_date 被 resume 裁剪 → 重跑 0
+  pending 永不重算。修复: `_write_checkpoint` 记录累计 failed_dates 快照, resume 时加回重试
+  (“(%d failed retry)”)。
+- 重跑 (PID 85537, 15:44 起) todo=1045 天 (2022-04-21..2026-08-11: 140 失败 + source_hash 变化
+  导致的 invalidate 段), 预计 ~2h。**待其完成后**: batch1 5 因子全期完成, 再启 `--batch 2`。
+- 注意: 每次重启物化进程, source_hash 变化 → 大量日期 invalidate 重算 (设计行为, 非 bug)。
+
+**测试**: test_factor_compute 16 passed; test_v305_factor_cache_trailing_slice 5 passed (LRU 集成验证: 文件数封顶 4, batch1 旧 chunk 缓存被正确淘汰)。
+全量 367 基线待批次完成后回归。
+
+
+
+### v469: 因子缓存格式唯一化 — 移除全部 gzip CSV 依赖 (2026-08-12)
+
+**背景**: 审计发现 parquet 已是唯一写入格式 (v466 起), 但 `.csv.gz` 仍以 3 种形态残留:
+337 个旧格式文件 (8-11 weekly 评估物化的 v465 产物, 378d 窗口) + 3 处没跟上迁移的取数/判活代码 +
+1 个从未执行完的一次性迁移脚本。LGB/XGB 训练日期发现扫 `*.csv.gz` → 训练集被旧格式
+文件集限缩 (337 天), 且文件被删即训练崩溃; stats_cache 快照失效检测扫 csv.gz mtime →
+parquet 主存储下恒空, mtime 失效检测静默失灵。
+
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/factor/store.py` | 新增 `list_cached_dates()` 统一日期发现入口 (parquet/date=* 主扫, 空目录回退 csv.gz 兼容, 数据归档后自然失效); `latest_cached_date()` 改为复用; **删除全部 CSV 分支**: `_path()`/`_read_raw_lines()`/`_scan_file_factors()` (死代码, 零调用) + `load()` 的 parquet→CSV 回退 (读失败改直接抛, 零降级) + `_get_existing_factors` 的 CSV 扫描回退 + `trim_to_max_days`/`force` 的 csv.gz 匹配; `_date_has_data` 改查 parquet 分区; 顺带修复既有缺陷: `load()` 无因子过滤时 `filters=[]` 传给 pyarrow 目录读取报 "Malformed filters" → 改 `filters=None` (实盘链 `factor_store.load(date, factor_names=None)` 此前必炸) |
+| `quant/alpha/qlib_model.py` | 训练日期发现 `fstore.list_cached_dates()` (原扫 `.csv.gz`) — 训练集回归 parquet 全量 821 天 |
+| `quant/alpha/xgb_model.py` | 同上; 删无用 `cache_dir` 局部变量 |
+| `quant/factor/stats_cache.py` | 快照失效检测改扫 `parquet/date=*` 目录 mtime (原 `.csv.gz` 恒空) — test-v399 的"底层数据变化自动失效"在 v466 后恢复生效 |
+| `migrate_csv_to_parquet.py` | 删除 (git rm) — 迁移已完成, 脚本既不删源文件也从未执行完, 无保留价值 |
+| 数据 | 337 个 `.csv.gz` (55MB) 归档至 `quant/data/factor_cache/csv_gz_backup/` (可恢复, gitignore 不跟踪) |
+
+**验证**: `list_cached_dates()` 返回 821 天纯 parquet; load 无过滤/带过滤/批量均正常;
+全量 `test/` 367 passed, 0 failed。
+
+**注意事项**
+- **全因子物化从未跑过 (独立已知事项)**: 全部历史物化均为 5-6 因子评估组或 7 因子演示物化,
+  parquet 821 天仅覆盖 9 种因子 → 8-12 08:00 晚间链 signals 崩溃
+  `factor_store returned empty for 2026-08-11 (946 symbols)` — 物化只算评估因子子集,
+  signals 请求全因子集返回空。与 csv.gz 无关, 需专项处理 (全因子物化任务)
+- `list_cached_dates` 的 csv.gz 回退分支保留仅为迁移期兼容, csv_gz_backup 内文件已不在扫描路径
+- `load()` 删除回退后 parquet 分区损坏将直接抛异常 (零 fallback 约束)
+
+### v467: 执行引擎无限循环挂死根因 + v462 连带 bug 修复 (2026-08-12)
+
+**背景**: v466 记录为"环境性阻塞"的 5 个测试文件悬挂问题被重新诊断 — 根因不是 logger,
+是 `engine.execute` 的无限循环 + v462 (P5 批量 DB 重构) 一系列连带 bug 一直躲在挂死后面。
+本次定位挂死真根因并修复全部连带问题, 悬挂清单清零。
+
+**挂死根因 (真正根因, 非 logger)**
+- `quant/execution/engine.py` — **`for e in entries:` 循环体内 `entries.append(e)` → 无限循环**:
+  v462 (bb17613) 批量重构引入, 每轮把处理过的 e 追加回列表, `buy_cost` 被无限调用,
+  quant.log 疯写 100MB+ (15s 内 45 万次相同日志), 表现为"emit/flush 卡死"。
+  T+1 阻塞的卖单因 `continue` 逃逸, 所以只含买单/正常卖单的测试才挂。
+  顺带删除 sell 分支完全重复的 PnL 计算块 (复制粘贴错误)。
+
+**v462 连带 bug (被挂死掩盖, 本次全部暴露并修复)**
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/data/repos/trade_repo.py` | **pending_orders 补 `mode` 列 migration** — `get_orders` 查询 `WHERE mode=?` 但该表从未加过该列 (sim_trades/daily_signals 都有); **`get_orders` 列映射全部错位 1** (target_shares=r[3] 实为 side 列, filled_shares 起全错位); **`get_daily_flow` 改累计语义** `date<=?` (原只查当日, 全账本重算 docstring 不符) |
+| `quant/execution/engine.py` | **除权检测改 dividend 事件表精确查询** — 原 gap 启发式 (订单价 vs 真实昨收偏差 > 涨跌幅阈值) 对模拟器/测试虚构价格必然误杀 (600036 买 20.00 vs 昨收 38.95 → 48.7% gap → 误跳过 4 个 broker 测试)。现 `SELECT symbol FROM dividend WHERE ex_date = date` 精确判定, 当日有除权事件才跳过 (用户决策) |
+| `quant/scheduler/reconcile.py` | **equity_cross 语义修正** — 原 initial+flow 重算 (v462 前语义) 与测试契约 (日终快照交叉: daily_equity 最近快照 vs 当前现金, 快照被篡改 → drift 暴露) 不符; **新增 invariant 检查行** (cash >= 0); **新增 filled_but_no_trade 交叉核对** (filled 订单当日账本无对应买入 → break); **返回结构补 `positions`/`cash`/`orders` 分组** (保留 `rows` 兼容 web), 含 `check`/`order_status` 等契约字段 |
+
+**验证**: `test_execution_model` + `test_execution` + `test_broker_adapter` + `test_reconcile` 63 passed (原悬挂);
+全量 `test/` 365 passed, 2 failed (12.3s, 原 600s 超时挂死) — 2 failed 为既有漂移, 已在 v468 修复。
+
+**注意事项**
+- dividend 表覆盖不全 (1551 行) → 除权防护依赖 dividend 同步任务; 无记录的 symbol 不再被 gap 启发式保护 (精确优先设计)
+- `get_daily_flow` 语义改为累计 (`date<=?`), 调用方仅 reconcile, 无其他影响
+- 跑测试必须 `QUANT_LOG_DIR=/tmp/quant-test-logs` (测试会写爆 web 进程共享日志)
+
+### v466: 因子物化缓存 + 回测链路 16 项 bug 修复 (2026-08-12)
+
+**背景**: 物化因子缓存代码流程与回测策略代码流程双审计 (MC-1..8 物化链路 / BT-1..8 回测链路), 逐项修复。
+
+**MC — 物化缓存流程**
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/factor/store.py` | **分块物化恢复** — chunk_days 此前从未生效 (全量单 Pool + data_full 2000 天全载 → OOM 风险), 现外层 chunk 循环, 每块独立 data_full/prims/tempdir; **逐日期×因子粒度** — `_date_missing_factors()` 集合包含判断 (原 `len(existing) >= len(factor_names)` 数量制漏判"数量同集合异"), 源表修复后缺失因子自动补算; **failed_dates 上报** — worker "ERROR:" 不再静默吞掉, 返回 dict 含 `failed_dates`; **断点续传接入** — 既有 `_write_checkpoint/_read_checkpoint` 死代码接通, 每块完成写断点; **删重复 `_write_chunk_rows`** (CSV 死代码); **source_hash 扩展** — 纳入 FACTOR_SHORTCUT 算子源码 + precompute_primitives 源码 (原只 hash fn 源码, shortcut 修复不失效); **trim_to_max_days 改扫 parquet** — 锚点/删除按 `parquet/date=*` 目录 (原只匹配 .csv.gz → 恒 no-op); 新增 `latest_cached_date()` helper; WAL checkpoint 改一次性独立连接 (原关闭线程局部共享连接) |
+| `quant/scheduler/factor_cache.py` | 双 `_connect()` → 单连接 try/finally 关闭; `failed_dates` 非空 → 任务 status=failed + error_msg; trim 失败不再降级 warning (raise) |
+| `quant/scheduler/attribution.py` | G1 OOS 最新物化日期判定改走 `FactorStore.latest_cached_date()` — 原扫 `.csv.gz` 在 parquet 主存储下恒为空 |
+
+**BT — 回测流程**
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/pipeline.py` | 中性化市值改 PIT `market_cap` (fund_val_piv 覆盖, 原 `total_mv` 为 stocks 当前快照 → 历史日期前视); probation 名单改用 ctx.probation_names 冻结 (原每日期查 factor_registry, 非 PIT + DB 往返); 删除 limit_up_pool 错误建表 (3 列 schema 与 limit_up.py 16 列冲突) |
+| `quant/execution/stop_loss.py` | `_compute_atr` 改 `date < as_of` (原 `date <=` 混入执行日盘中行情 → 日内前视); `_CACHE` 加 4096 上限; `RiskManager.check` 加 `atr_panel` 注入参数 (回测热路径免逐仓 SQL, 保留 `_compute_atr(sym, self.atr_period, today)` 调用形态) |
+| `quant/backtest/loop.py` | 删 inc_cov/inc_ic 死代码 (covariance 无消费者 + 两段重复预热互覆盖 + IncrementalIC.update 用 now() 打历史戳); IC precheck 改全量窗口日期逐日检查 (原只查起始日); equity 统一 MTM (skipped/exception 路径由成本价改 `_br.get_mtm_capital`); 删 limit_up_pool 错误建表 / preload_ztd_cache (~80MB) / fundamentals 双重查询; daily alpha 扣无风险利率; ATR 面板预计算 (rolling mean TR, 与 _compute_atr 口径一致) + probation 冻结名单注入 ctx |
+| `quant/backtest/context.py` | ExecutionContext 新增 `atr_panel`、`probation_names` 字段 |
+| `quant/execution/execution_model.py` | 两处 `rm.check(...)` 透传 `atr_panel=getattr(ctx, "atr_panel", None)` |
+| `quant/scheduler/oos_verify.py` | 新增 `symbols` 参数 (回测 IC 与主循环同口径); 无显式 symbols 时按 `rank_by_turnover` 流动性取 top-N (原 `all_symbols[:n]` 无排序); 返回加 `n_symbols`; 单日 factor_cache miss 降级跳过 (原 RuntimeError 中断整链) |
+| `quant/factor/stats_cache.py` | `compute_backtest_ic` 删死参数 `inc_ic`, 加 `symbols` 透传; `insert_ic_daily` 的 `n_stocks` 用实际股票数 (原 `len(per_factor)` 因子数 → 虚假样本量) |
+| `quant/utils/logger.py` | `QUANT_LOG_DIR` 环境变量 — 日志目录隔离 (web 进程与 pytest 并发写同一 FileHandler 锁争用) |
+
+**注意事项**
+- source_hash 方法变更 → 所有旧 manifest 失效, **首次物化将全量重算** (预期一次性成本)
+- 回归: `test_v305_factor_cache_trailing_slice` + `test_stop_loss_c4` + `test_risk_manager` + `test_codereview_fixplan_p0` 50 passed; 其余 16 个轻量文件 PASS
+- 悬挂问题已在 v467 修复 (根因 = engine.execute 无限循环, 非 logger); `test_scheduler_status_c10` 仍为测试漂移 (execute.py 无 `_tk_start`)
+- 跑测试建议 `QUANT_LOG_DIR=/tmp/quant-test-logs` 隔离日志
+
+### v468: 剩余 2 个既有测试漂移修复 — 全量套件归零失败 (2026-08-12)
+
+**背景**: v467 遗留的 2 个既有漂移失败 (`close_5min` schema、`_tk_start`) 修复, 全量 `test/` **367 passed, 0 failed**。
+
+| 文件 | 关键改动 |
+|------|----------|
+| `quant/factor/compute/_preload.py` | intraday_snapshot aux 预载查询列对齐实际表结构 — 原 `open_30min/open_30min_vol/close_5min` 列不存在 (表结构为 `date, symbol, mode, price, volume, prev_close`), try/except 吞错 → aux 恒空 → 三因子静默失效; 改 `SELECT symbol, date, mode, price, volume, prev_close` |
+| `quant/factor/compute/intraday.py` | 3 因子 aux 路径 + DB 回退查询统一对齐实际 schema, 按 mode 区分: intraday_reversal 用 `mode='open'` 的 `price/prev_close`; open_volume_ratio 用 `mode='open'` 的 `volume`; close_surge 用 `mode='close'` 的 `price`. 修复前 DB 回退路径 `no such column` 直接爆炸 |
+| `test/test_codereview_r10_snapshot_gate.py` | 测试 aux 数据列名对齐新 schema (mode/price/volume/prev_close) |
+| `test/test_scheduler_status_c10.py` | 测试适配 Runner 重构后契约: execute 状态由 `runners._dispatch` 统一落 (无异常→ok), 测试改验证 `_run` 返回业务空转 dict + no_targets metric; lgb_train patch 改打在模块绑定名 `lgb_mod._tk_start/_tk_finish` (模块级 `import ... as` 绑定, patch task_log 模块无效) |
+
+**注意事项**
+- intraday 快照的 `prev_close` 列当前写入为 None (snapshot.py 未填) → intraday_reversal 因子实际仍返回 None, 属数据层问题, 与查询修复无关
+- execute 任务状态 ok/failed 由 Runner 统一判定, 任务模块不再自管状态 (v424 重构方向)
 
 ### v453: 内存泄漏修复 — 3 无界缓存 + SQLite 连接泄漏 (2026-08-11)
 

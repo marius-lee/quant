@@ -17,7 +17,12 @@ from contextlib import contextmanager
 import json
 from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 
-_log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "logs")
+# QUANT_LOG_DIR: 日志目录覆盖 (测试/CI 隔离用 — web 进程与 pytest 并发写
+# 同一 FileHandler 时文件锁争用会导致 logger 阻塞)
+_log_dir = os.getenv(
+    "QUANT_LOG_DIR",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "logs"),
+)
 _log_file = os.path.join(_log_dir, "quant.log")
 _initialized = False
 _lock = threading.Lock()

@@ -218,72 +218,72 @@ _TABLE_SCHEMAS = {
         CREATE TABLE IF NOT EXISTS daily_ma (
             date DATE NOT NULL,
             symbol VARCHAR(10) NOT NULL,
-            window INTEGER NOT NULL,
+            "window" INTEGER NOT NULL,
             ma DOUBLE,
-            PRIMARY KEY (date, symbol, window)
+            PRIMARY KEY (date, symbol, "window")
         )
     """,
     "daily_ret": """
         CREATE TABLE IF NOT EXISTS daily_ret (
             date DATE NOT NULL,
             symbol VARCHAR(10) NOT NULL,
-            window INTEGER NOT NULL,
+            "window" INTEGER NOT NULL,
             ret DOUBLE,
-            PRIMARY KEY (date, symbol, window)
+            PRIMARY KEY (date, symbol, "window")
         )
     """,
     "daily_std": """
         CREATE TABLE IF NOT EXISTS daily_std (
             date DATE NOT NULL,
             symbol VARCHAR(10) NOT NULL,
-            window INTEGER NOT NULL,
+            "window" INTEGER NOT NULL,
             std DOUBLE,
-            PRIMARY KEY (date, symbol, window)
+            PRIMARY KEY (date, symbol, "window")
         )
     """,
     "daily_zscore": """
         CREATE TABLE IF NOT EXISTS daily_zscore (
             date DATE NOT NULL,
             symbol VARCHAR(10) NOT NULL,
-            window INTEGER NOT NULL,
+            "window" INTEGER NOT NULL,
             zscore DOUBLE,
-            PRIMARY KEY (date, symbol, window)
+            PRIMARY KEY (date, symbol, "window")
         )
     """,
     "daily_ma_volume": """
         CREATE TABLE IF NOT EXISTS daily_ma_volume (
             date DATE NOT NULL,
             symbol VARCHAR(10) NOT NULL,
-            window INTEGER NOT NULL,
+            "window" INTEGER NOT NULL,
             ma_volume DOUBLE,
-            PRIMARY KEY (date, symbol, window)
+            PRIMARY KEY (date, symbol, "window")
         )
     """,
     "daily_max": """
         CREATE TABLE IF NOT EXISTS daily_max (
             date DATE NOT NULL,
             symbol VARCHAR(10) NOT NULL,
-            window INTEGER NOT NULL,
+            "window" INTEGER NOT NULL,
             max_val DOUBLE,
-            PRIMARY KEY (date, symbol, window)
+            PRIMARY KEY (date, symbol, "window")
         )
     """,
     "daily_min": """
         CREATE TABLE IF NOT EXISTS daily_min (
             date DATE NOT NULL,
             symbol VARCHAR(10) NOT NULL,
-            window INTEGER NOT NULL,
+            "window" INTEGER NOT NULL,
             min_val DOUBLE,
-            PRIMARY KEY (date, symbol, window)
+            PRIMARY KEY (date, symbol, "window")
         )
     """,
     "daily_rank": """
         CREATE TABLE IF NOT EXISTS daily_rank (
             date DATE NOT NULL,
             symbol VARCHAR(10) NOT NULL,
-            window INTEGER NOT NULL,
+            "window" INTEGER NOT NULL,
             rank DOUBLE,
-            PRIMARY KEY (date, symbol, window)
+            PRIMARY KEY (date, symbol, "window")
         )
     """,
 }
@@ -458,7 +458,7 @@ class DuckDBManager:
             else:
                 select_parts.append(c)
         col_str = ", ".join(select_parts)
-        pk_col_str = ", ".join(pk_cols)
+        pk_col_str = ", ".join(f'"{c}"' for c in pk_cols)
         
         # ���� �� �� 增量策略: ��� � � 若存在 date 列, ��� � � 按 DuckDB MAX(date) vs SQLite MAX(date) 追���赶
         has_date_col = "date" in cols
@@ -496,7 +496,7 @@ class DuckDBManager:
         placeholders = ", ".join(["?" for _ in cols])
         update_cols = [c for c in cols if c not in pk_cols]
         if len(update_cols) > 0:
-            set_clause = ", ".join([f"{c} = EXCLUDED.{c}" for c in update_cols])
+            set_clause = ", ".join([f'"{c}" = EXCLUDED."{c}"' for c in update_cols])
             upsert_sql = f"""
                 INSERT INTO {table} ({col_str}) VALUES ({placeholders})
                 ON CONFLICT ({pk_col_str}) DO UPDATE SET {set_clause}
@@ -842,12 +842,12 @@ class DuckDBManager:
         """DataFrame UPSERT 到 DuckDB 表."""
         if df.empty:
             return
-        col_str = ", ".join(df.columns)
+        col_str = ", ".join(f'"{c}"' for c in df.columns)
         placeholders = ", ".join(["?"] * len(df.columns))
         update_cols = [c for c in df.columns if c not in pk_cols]
         if update_cols:
-            set_clause = ", ".join([f"{c} = EXCLUDED.{c}" for c in update_cols])
-            pk_col_str = ", ".join(pk_cols)
+            set_clause = ", ".join([f'"{c}" = EXCLUDED."{c}"' for c in update_cols])
+            pk_col_str = ", ".join(f'"{c}"' for c in pk_cols)
             upsert_sql = f"""
                 INSERT INTO {table} ({col_str}) VALUES ({",".join(["?"]*len(df.columns))})
                 ON CONFLICT ({pk_col_str}) DO UPDATE SET {set_clause}

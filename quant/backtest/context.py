@@ -34,6 +34,10 @@ class ExecutionContext:
     factor_cache: Optional[object] = None             # _FactorCache 实例
     factor_store: Optional[object] = None             # FactorStore 实例
 
+    # ── 回测热路径注入 (test-v466) ──
+    atr_panel: Optional[dict] = None                  # {date: {symbol: atr}} — ATR 止损免逐仓 SQL
+    probation_names: Optional[list] = None            # 回测启动时冻结的 probation 因子名单 (PIT)
+
     # ── 市场辅助数据 ──
     stock_names: Optional[dict] = None                # {symbol: name}
     preloaded_seal_ratios: Optional[dict] = None      # {date: [(symbol, lock_cap, amt)]}

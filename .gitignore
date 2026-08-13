@@ -20,9 +20,11 @@ logs/
 *.db
 *.db-shm
 *.db-wal
+*.duckdb
 
 # 因子缓存数据 (不跟踪)
 quant/data/factor_cache/
+quant/data/primitive_cache/
 
 # 模型二进制 (不跟踪)
 quant/data/models/
@@ -41,3 +43,6 @@ appendonly.aof
 _fix_*
 *.backup
 quant/quant/
+
+# 运行时状态标记
+quant/data/.fund_flow_cooldown

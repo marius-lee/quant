@@ -152,8 +152,15 @@ def compute_margin_buy_ratio(fundamentals: "pd.DataFrame", date: str, aux=None) 
     # Aligns with: compute_analyst_buy (a.empty → NaN), compute_margin_buy_ratio_price (w.empty → 0.0)
     if m.empty or "margin_buy" not in m.columns or "margin_balance" not in m.columns:
         return pd.Series(np.nan, index=fundamentals.index, name="margin_buy_ratio")
-    s = m["margin_buy"] / m["margin_balance"].replace(0, np.nan)
-    return s.dropna().rename("margin_buy_ratio")
+    # v477: 必须按当日过滤 + 对齐 symbols — 之前直接全量相除, 返回
+    # 全 chunk 全市场非唯一 index Series, 物化端 reindex 对齐后全 NaN → 因子 0 行
+    date_str = str(date)[:10]
+    w = m[(m["date"].astype(str) == date_str) & m["margin_balance"].notna()
+          & (m["margin_balance"] > 0) & m["margin_buy"].notna()]
+    if w.empty:
+        return pd.Series(np.nan, index=fundamentals.index, name="margin_buy_ratio")
+    s = w.set_index("symbol")["margin_buy"] / w.set_index("symbol")["margin_balance"]
+    return s.reindex(fundamentals.index).rename("margin_buy_ratio")
 
 
 def compute_analyst_consensus(fundamentals: "pd.DataFrame", date: str, aux=None) -> "pd.Series":
@@ -774,6 +781,9 @@ def compute_sue(fundamentals, date, financials=None):
 
     _syms = fundamentals.index.tolist()
     _ph = ",".join(["?"] * len(_syms))
+    # v477: 原实现 date 直接作 SQL 参数 — dispatch 传 Timestamp → 
+    #       sqlite3 "type Timestamp is not supported" → 因子永远 0 行
+    date_str = str(date)[:10] if not isinstance(date, str) else date
 
     # 读取季度净利润 + 总股本
     rows = conn.execute(f"""
@@ -786,7 +796,7 @@ def compute_sue(fundamentals, date, financials=None):
           AND s.total_shares > 0
           AND fi.net_profit IS NOT NULL
         ORDER BY fi.symbol, fi.stat_date DESC
-    """, [date] + _syms).fetchall()
+    """, [date_str] + _syms).fetchall()
 
     if not rows:
         return pd.Series(np.nan, index=fundamentals.index, name="sue")
@@ -856,6 +866,9 @@ def compute_holder_reduction(fundamentals, date, financials=None):
     _syms = fundamentals.index.tolist()
     _ph = ",".join(["?"] * len(_syms))
     end_date = pd.Timestamp(date)
+    date_str = str(date)[:10] if not isinstance(date, str) else date
+
+    vals = {r[0]: r[1] for r in rows if r[1] is not None}
     start_date = end_date - pd.DateOffset(days=60)
 
     rows = conn.execute(f"""
@@ -864,7 +877,7 @@ def compute_holder_reduction(fundamentals, date, financials=None):
         WHERE ann_date BETWEEN ? AND ?
           AND symbol IN ({_ph})
         GROUP BY symbol
-    """, [start_date.strftime("%Y-%m-%d"), date] + _syms).fetchall()
+    """, [start_date.strftime("%Y-%m-%d"), date_str] + _syms).fetchall()
 
     vals = {r[0]: r[1] for r in rows if r[1] is not None}
     result = pd.Series(vals, name="holder_reduction")
@@ -941,7 +954,8 @@ def compute_dividend_yield(fundamentals, date, financials=None):
     _ph = ",".join(["?"] * len(_syms))
 
     # 取最近12个月分红
-    end_date = pd.Timestamp(date)
+    date_str = str(date)[:10] if not isinstance(date, str) else date
+    end_date = pd.Timestamp(date_str)
     start_date = end_date - pd.DateOffset(months=12)
 
     div_rows = conn.execute(f"""
@@ -951,14 +965,19 @@ def compute_dividend_yield(fundamentals, date, financials=None):
           AND symbol IN ({_ph})
           AND cash_div IS NOT NULL
         GROUP BY symbol
-    """, [start_date.strftime("%Y-%m-%d"), date] + _syms).fetchall()
+    """, [start_date.strftime("%Y-%m-%d"), date_str] + _syms).fetchall()
 
     # v406: 股息率 = 每股股息 / 股价, 不是股息额
     # 原实现只取了 div 直接做截面标准化, 实际是"股息额因子"而非"股息率"
-    # 用 total_mv / total_shares 估股价, 或从 fundamentals.close_latest 取
+    # v477: 原实现 SELECT close_latest FROM stocks — 该列不存在 (PRAGMA 实证),
+    #       SQL 异常 → 因子永远 0 行; 改为当日最近收盘价 (daily 表)
     price_rows = conn.execute(f"""
-        SELECT symbol, close_latest FROM stocks WHERE symbol IN ({_ph})
-    """, _syms).fetchall()
+        SELECT d.symbol, d.close
+        FROM daily d
+        JOIN (SELECT symbol, MAX(date) AS mx FROM daily
+              WHERE date <= ? AND symbol IN ({_ph}) GROUP BY symbol) t
+          ON d.symbol = t.symbol AND d.date = t.mx
+    """, [date_str] + _syms).fetchall()
     price_map = {r[0]: r[1] for r in price_rows if r[1] and r[1] > 0}
 
     div_map = {r[0]: r[1] for r in div_rows if r[1] and r[1] > 0}
@@ -1000,6 +1019,8 @@ def compute_ocfp(fundamentals, date, financials=None):
         return pd.Series(np.nan, index=fundamentals.index, name="ocfp")
 
     syms = fundamentals.index.tolist()
+    # v477: 原实现 date 直接作 SQL 参数 — dispatch 传 Timestamp 绑定异常 → 0 行
+    date_str = str(date)[:10] if not isinstance(date, str) else date
 
     # 金融/地产/银行剔除
     # 从 fundamentals 获取总市值和行业（无需重复查询 DB）
@@ -1027,7 +1048,7 @@ def compute_ocfp(fundamentals, date, financials=None):
               AND stat_date <= ?
               AND symbol IN ({placeholders})
             ORDER BY symbol, stat_date""",
-        _conn, params=[date, date] + valid_syms
+        _conn, params=[date_str, date_str] + valid_syms
     )
     if not cf_df.empty:
         for sym in valid_syms:

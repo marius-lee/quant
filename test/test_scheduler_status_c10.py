@@ -1,12 +1,13 @@
 """C10/C11 (CODE-REVIEW 2026-08-07): 调度任务状态契约回归.
 
 C11: execute 调仓日无信号 = 业务空转 → 任务状态 ok (非 failed), 保留 no_targets metric.
-修复前: finally 落 failed → /api/scheduler 显示红色"今日失败".
-C10: lgb_train lightgbm 缺失 → 落 skipped 状态, /api/scheduler 渲染为"今日跳过"
-(修复前落 has_cron → 误显示"未配置").
+    状态落库已由 Runner._dispatch 统一管理 (无异常 → _tk_finish("ok")), 本测试验证
+    _run 的业务空转 dict + metric.
+C10: lgb_train lightgbm 缺失 → finish(skipped) + reason + metric skip.
+    (lgb_train 内部经 task_log.start/finish 报状态 — patch 打在 task_log 模块.)
 
 注意: execute/lgb_train 内部是函数内 import (`from quant.data.repos import TradeRepo`),
-patch 必须打在来源模块 (quant.data.repos / quant.alpha.qlib_model) — 而非 task 模块.
+patch 必须打在来源模块 (quant.data.repos / quant.alpha.qlib_model).
 """
 import pytest
 
@@ -44,39 +45,36 @@ def _patch_daemons(monkeypatch):
     qlib_mod._check_lightgbm = orig_qlib
 
 
-def _run(module):
-    """用假 start/finish/metrics 跑任务, 返回 (finish 参数, metric key)."""
+def test_execute_no_signals_status_ok(monkeypatch):
+    """调仓日无信号: _run 返回业务空转 dict + no_targets metric.
+
+    状态落库由 Runner 统一管理: _run 无异常 → 状态 ok (runners.py _dispatch).
+    """
+    fm = _FakeMetrics()
+    monkeypatch.setattr(execute_mod, "_m", fm)
+    result = execute_mod._run("2026-08-07")
+    assert result == {"reason": "no signals", "targets": 0}
+    assert fm.key == "scheduler.execute.no_targets"
+
+
+def test_lgb_train_skipped_when_no_lightgbm(monkeypatch):
+    """lightgbm 缺失 → 状态 skipped + summary reason, metric skip."""
     calls = {}
     fm = _FakeMetrics()
 
-    def _fake_start(task, date, grace_seconds=120):
+    def _fake_start(task, date, grace_seconds=3600):
         return 1
 
     def _fake_finish(task, date, status, error=None, summary=None):
         calls["finish"] = (task, date, status, error, summary)
 
-    orig_s, orig_f, orig_m = module._tk_start, module._tk_finish, module._m
-    module._tk_start, module._tk_finish, module._m = _fake_start, _fake_finish, fm
-    try:
-        module._run("2026-08-07")
-        return calls.get("finish"), fm.key
-    finally:
-        module._tk_start, module._tk_finish, module._m = orig_s, orig_f, orig_m
-
-
-def test_execute_no_signals_status_ok():
-    """调仓日无信号: 任务落 ok, no_targets metric, 不以 failed 收尾."""
-    finish, metric_key = _run(execute_mod)
-    assert finish is not None
-    assert finish[2] == "ok"
-    assert finish[4] == {"reason": "no signals", "targets": 0}
-    assert metric_key == "scheduler.execute.no_targets"
-
-
-def test_lgb_train_skipped_when_no_lightgbm():
-    """lightgbm 缺失 → 状态 skipped + summary reason, metric skip."""
-    finish, metric_key = _run(lgb_mod)
-    assert finish is not None
-    assert finish[2] == "skipped"
-    assert finish[4] == {"reason": "lightgbm not installed"}
-    assert metric_key == "scheduler.lgb_train.skip"
+    # lgb_train 模块级绑定了 task_log.start/finish (import ... as _tk_start),
+    # patch 须打在模块绑定名上
+    monkeypatch.setattr(lgb_mod, "_tk_start", _fake_start)
+    monkeypatch.setattr(lgb_mod, "_tk_finish", _fake_finish)
+    monkeypatch.setattr(lgb_mod, "_m", fm)
+    lgb_mod._run("2026-08-07")
+    assert calls["finish"] is not None
+    assert calls["finish"][2] == "skipped"
+    assert calls["finish"][4] == {"reason": "lightgbm not installed"}
+    assert fm.key == "scheduler.lgb_train.skip"

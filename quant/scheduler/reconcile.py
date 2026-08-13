@@ -103,24 +103,42 @@ def _recon_cash(day: str, strategy: str, db_path: str) -> list[dict]:
     engine = ExecutionEngine(db_path=db_path)
 
     initial = repo.get_initial_capital(strategy)
+    actual_cash = engine.get_cash(strategy)
     if initial is None:
         _log.warning(f"[{day}] initial_capital not found for {strategy}")
         return []
 
-    sells, buys, fees = repo.get_daily_flow(day, strategy)
-    expected_cash = initial + sells - buys - fees
-    actual_cash = engine.get_cash(strategy)
-    drift = actual_cash - expected_cash
-
     # P0-2 fix: drift 容差由配置读取, 默认 1.0 (报告 §1.6)
     tol = _require_cfg("recon.cash_drift_tolerance")
-    status = "break" if abs(drift) > tol else "ok"
-    if status == "break":
-        _m.inc("recon.cash_break")
 
-    return [{"kind": "cash", "symbol": "", "expected": expected_cash,
-             "actual": actual_cash, "drift": drift, "status": status,
-             "detail": f"initial={initial} sells={sells} buys={buys} fees={fees} tol={tol}"}]
+    # equity_cross: 最近日终快照现金 vs 当前现金 (快照后账本被改 → drift 暴露)
+    snapshot = repo._query_one(
+        "SELECT cash FROM daily_equity WHERE strategy=? ORDER BY date DESC LIMIT 1",
+        (strategy,))
+    if snapshot and snapshot[0] is not None:
+        snapshot_cash = float(snapshot[0])
+        eq_drift = actual_cash - snapshot_cash
+        eq_status = "break" if abs(eq_drift) > tol else "ok"
+        eq_row = {"kind": "cash", "symbol": "", "check": "equity_cross",
+                  "expected": snapshot_cash, "actual": actual_cash,
+                  "drift": eq_drift, "status": eq_status,
+                  "detail": f"snapshot_cash={snapshot_cash} tol={tol}"}
+        if eq_status == "break":
+            _m.inc("recon.cash_break")
+    else:
+        eq_row = {"kind": "cash", "symbol": "", "check": "equity_cross",
+                  "expected": None, "actual": actual_cash, "drift": None,
+                  "status": "skip", "detail": "no equity snapshot yet"}
+
+    # 现金不变量: cash >= 0
+    inv_status = "break" if actual_cash < 0 else "ok"
+
+    return [
+        eq_row,
+        {"kind": "cash", "symbol": "", "check": "invariant",
+         "expected": None, "actual": actual_cash, "drift": 0.0,
+         "status": inv_status, "detail": "cash >= 0 invariant"},
+    ]
 
 
 # ── 3. 订单审计 ──
@@ -129,13 +147,41 @@ def _recon_orders(day: str, strategy: str, db_path: str) -> list[dict]:
     from quant.data.repos import TradeRepo
     repo = TradeRepo(db_path=db_path)
     orders = repo.get_orders(day, strategy)
+
+    # 当日账本买入 (filled 交叉核对): {symbol: shares}
+    ledger = {}
+    conn = _conn(db_path)
+    try:
+        for r in conn.execute(
+            "SELECT symbol, SUM(shares) FROM sim_trades "
+            "WHERE strategy=? AND side='buy' AND date=? GROUP BY symbol",
+            (strategy, day)).fetchall():
+            ledger[r[0]] = r[1]
+    finally:
+        conn.close()
+
     rows = []
     for o in orders:
+        symbol = o["symbol"]
+        order_shares = o.get("target_shares", 0) or 0
         if o["status"] == "pending":
-            rows.append({"kind": "order", "symbol": o["symbol"],
-                         "expected": o["shares"], "actual": 0,
-                         "drift": -o["shares"], "status": "break",
-                         "detail": f"pending: {o.get('reason','unknown')}"})
+            rows.append({"kind": "order", "symbol": symbol,
+                         "order_status": "pending", "check": "stale_pending",
+                         "order_shares": order_shares, "ledger_shares": None,
+                         "expected": order_shares, "actual": 0,
+                         "drift": -order_shares, "status": "break",
+                         "detail": f"pending: {o.get('cancel_reason','unknown')}"})
+        elif o["status"] == "filled":
+            ledger_shares = ledger.get(symbol, 0) or 0
+            if ledger_shares <= 0:
+                rows.append({"kind": "order", "symbol": symbol,
+                             "order_status": "filled",
+                             "check": "filled_but_no_trade",
+                             "order_shares": order_shares,
+                             "ledger_shares": 0,
+                             "expected": order_shares, "actual": 0,
+                             "drift": -order_shares, "status": "break",
+                             "detail": "filled but no matching buy in ledger"})
     return rows
 
 
@@ -167,7 +213,26 @@ def run_reconcile(day: str, strategy: str = "quant", db_path: str = TRADE_DB) ->
     breaks = [r for r in all_rows if r["status"] == "break"]
     if breaks:
         _m.inc("scheduler.reconcile.break", len(breaks))
-    return {"status": "break" if breaks else "ok", "breaks": len(breaks), "rows": all_rows}
+
+    # 分组视图 (测试/API 契约): positions / cash / orders
+    pos_rows = [r for r in all_rows if r["kind"] == "position"]
+    cash_rows = [r for r in all_rows if r["kind"] == "cash"]
+    order_rows = [r for r in all_rows if r["kind"] == "order"]
+    skipped = any(r["status"] == "skip" for r in pos_rows)
+    result = {
+        "status": "break" if breaks else "ok",
+        "breaks": len(breaks),
+        "rows": all_rows,
+        "positions": {
+            "checked": len([r for r in pos_rows if r["status"] != "skip"]),
+            "drifted": len([r for r in pos_rows if r["status"] == "break"]),
+            "skipped": skipped,
+            "rows": pos_rows,
+        },
+        "cash": cash_rows,
+        "orders": order_rows,
+    }
+    return result
 
 
 def get_recon(day: str = None, strategy: str = "quant",

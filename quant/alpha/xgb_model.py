@@ -408,10 +408,7 @@ def train_xgb_model(
     _log.info("train_xgb: loading %d factors from cache...", len(fn))
 
     fstore = FactorStore(db_path=FACTOR_CACHE_DB)
-    cache_dir = fstore._cache_dir
-    avail_dates = sorted(
-        f.replace(".csv.gz", "") for f in os.listdir(cache_dir) if f.endswith(".csv.gz")
-    )
+    avail_dates = fstore.list_cached_dates()
     train_dates = [d for d in avail_dates if start_date <= d <= end_date]
     _log.info("train_xgb: %d dates, %d factors", len(train_dates), len(fn))
 

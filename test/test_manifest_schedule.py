@@ -6,7 +6,7 @@
 from datetime import time
 
 import quant.scheduler.orchestrator as orch
-from quant.scheduler.manifest import ALL
+from quant.scheduler.manifest import ALL, EVENING_STAGE_GRACE
 
 
 def _st(**kw):
@@ -108,3 +108,25 @@ class TestWeeklyWindow:
         assert orch._should_run(ALL["weekly_eval"], time(5, 59), 5, {}, {}) is False
         assert orch._should_run(ALL["weekly_eval"], time(12, 0), 5, {}, {}) is True
         assert orch._should_run(ALL["weekly_eval"], time(12, 1), 5, {}, {}) is False
+
+
+class TestEveningStageGrace:
+    """v474: v428 回归 — 晚间链 stage 不在 manifest.ALL, _check_timeouts
+    fallback 300s 每晚误杀 daily_data (5-12min abort) → factor_cache 跳过
+    → 次日 signals "factor_store empty". 各 stage 必须有 >300s 的兜底超时."""
+
+    EVENING_CHILDREN = ["daily_data", "factor_cache", "attribution",
+                        "lgb_train", "xgb_train", "adj_factor"]
+
+    def test_all_evening_stages_have_grace(self):
+        missing = [t for t in self.EVENING_CHILDREN if t not in EVENING_STAGE_GRACE]
+        assert missing == []
+
+    def test_evening_stage_grace_exceeds_fallback(self):
+        for t in self.EVENING_CHILDREN:
+            assert EVENING_STAGE_GRACE[t] > 300, f"{t} grace 仍会被 300s fallback 掩盖"
+
+    def test_known_durations_covered(self):
+        # 实测 (task_runs 2026-08-05~07): daily_data 最长 4.4h, factor_cache 4.6h
+        assert EVENING_STAGE_GRACE["daily_data"] >= 6 * 3600
+        assert EVENING_STAGE_GRACE["factor_cache"] >= 6 * 3600

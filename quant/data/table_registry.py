@@ -162,7 +162,7 @@ class TableSpec:
 REGISTRY: dict[str, TableSpec] = {
     "daily": TableSpec(
         table="daily", date_col="date", mode="primary",
-        min_rows_per_day=5200, slo_days=4,
+        min_rows_per_day=5000, slo_days=4,
         desc="主力行情 (晚间链主流程 update_daily, 失败即 failed)"),
     "daily_valuation": TableSpec(
         table="daily_valuation", date_col="date", mode="rollback",
@@ -172,14 +172,14 @@ REGISTRY: dict[str, TableSpec] = {
         desc="估值 (东财源, 封禁时 audit fail → partial 可见)"),
     "adj_factor": TableSpec(
         table="adj_factor", date_col="date", mode="none",
-        min_rows_per_day=5200, slo_days=15,
-        desc="复权因子 (晚间链独立 stage, 失败在晚间链层面)"),
+        min_rows_per_day=None, slo_days=15,
+        desc="复权因子 (事件型: 仅调整日有行; 独立 stage, 失败在晚间链层面)"),
     "fund_flow": TableSpec(
         table="fund_flow", date_col="date", mode="rollback",
         sync_main=_sync_fund_flow, window_days=100,
-        min_rows_per_day=5000, slo_days=6,
+        min_rows_per_day=450, slo_days=6,
         factors=FACTORS_BY_TABLE["fund_flow"],
-        desc="个股资金流 (东财源)"),
+        desc="个股资金流 (东财源; 晚间链仅维护市值前 500)"),
     "margin_detail": TableSpec(
         table="margin_detail", date_col="date", mode="rollback",
         sync_main=_sync_margin, window_days=30,

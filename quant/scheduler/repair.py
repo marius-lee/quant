@@ -22,14 +22,22 @@ _log = get_logger(__name__)
 
 
 def _pending_tables(today: str) -> list[str]:
-    """最近 3 天审计失败表 + 超过 7 天未 ok 的 weekly_full 表."""
+    """最近 3 天审计失败表 + 超过 7 天未 ok 的 weekly_full 表.
+
+    v492: 过滤 repair_eligible=False 的表 (财务表 sina 首轮 4-5h > 30min
+    窗口, 早间链不兜底, 只由周六 data_maintenance 维护).
+    """
     from quant.data.data_health import failed_tables_on, last_ok_check
+    from quant.data.table_registry import REGISTRY, weekly_full_specs
     tables: set[str] = set()
     for i in range(1, 4):
         d = (_date.fromisoformat(today) - _td(days=i)).strftime("%Y-%m-%d")
-        tables |= set(failed_tables_on(d))
-    from quant.data.table_registry import weekly_full_specs
+        for t in failed_tables_on(d):
+            if REGISTRY.get(t) is not None and REGISTRY[t].repair_eligible:
+                tables.add(t)
     for spec in weekly_full_specs():
+        if not spec.repair_eligible:
+            continue
         last_ok = last_ok_check(spec.table)
         if last_ok is None:
             tables.add(spec.table)

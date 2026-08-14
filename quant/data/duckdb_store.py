@@ -425,17 +425,18 @@ class DuckDBManager:
 
     def _sync_incremental(self):
         """增量同步: 从 SQLite 读取新增/更新行 -> DuckDB UPSERT."""
-        # ���� �� �� 获取各表最大日期/ID
+        # v492: financial_* 从本表移除 — SQLite 列 (total_operating_revenue/
+        # total_owner_equities/pub_date...) 与 DuckDB schema (revenue/
+        # total_hldr_eqy/ann_date...) 完全不同, 每轮 UPSERT 必败被吞 (每晚噪音);
+        # 因子物化 fundamentals 直读 SQLite, DuckDB 财务表无人消费. limit_up_pool
+        # 同理 (SQLite 16 列 vs DuckDB 3 列 seal_ratio).
         tables_to_sync = [
             ("daily", ["date", "symbol"], ["date", "symbol", "open", "high", "low", "close", "volume", "amount", "turnover"], []),
             ("daily_valuation", ["symbol", "date"], ["symbol", "date", "pe_ttm", "pb", "ps_ttm", "pcf_ttm", "market_cap", "turnover_rate", "source"], []),
             ("stocks", ["symbol"], ["symbol", "name", "market", "list_date", "industry", "list_status", "delist_date", "total_shares",
                                 "pe", "pb", "total_mv", "roe", "high_52w", "low_52w", "circ_mv", "eps", "bvps", "div_yield",
                                 "turnover_rate", "pe_ttm", "cfps"], ["list_date", "delist_date"]),
-            ("financial_balance", ["symbol", "stat_date"], ["symbol", "stat_date", "pub_date", "total_assets", "total_liability", "total_owner_equities", "equities_parent_company_owners", "minority_interests", "fixed_assets", "intangible_assets", "good_will", "inventories", "account_receivable", "total_current_assets", "total_current_liability", "shortterm_loan", "longterm_loan"], []),
-            ("financial_income", ["symbol", "stat_date"], ["symbol", "stat_date", "pub_date", "total_operating_revenue", "operating_revenue", "operating_cost", "operating_profit", "net_profit", "total_profit", "income_tax_expense", "administration_expense"], []),
             ("margin_detail", ["symbol", "date"], ["symbol", "date", "market", "margin_buy", "margin_balance", "margin_repay", "short_sell_vol", "short_balance", "short_total", "margin_total"], []),
-            ("limit_up_pool", ["date", "symbol"], ["date", "symbol", "name", "change_pct", "close", "amount", "circ_mv", "total_mv", "turnover_rate", "lock_capital", "first_time", "last_time", "open_times", "zt_stat", "limit_up_times", "industry"], []),
             ("factor_ic_daily", ["date", "factor_name", "scope"], ["date", "factor_name", "ic_value", "n_stocks", "is_ir", "oos_ir", "scope", "created_at"], []),
             ("factor_registry", ["name"], ["name", "category", "compute_fn", "academic_source", "status", "status_reason", "ic_mean", "ic_ir", "direction", "last_evaluated", "created_at", "updated_at", "notes", "formula", "paper_ic_mean", "retry_count", "last_retry"], []),
         ]
@@ -474,17 +475,14 @@ class DuckDBManager:
             sql = f"SELECT {col_str} FROM {table} WHERE date > ?"
             df = self._sqlite_conn.execute(sql, (str(last_dk_date),)).df()
         else:
-            # 单 PK 或无 date 列 — 原���逻辑
-            if len(pk_cols) == 1:
-                pk_vals = self.execute(f"SELECT MAX({pk_cols[0]}) FROM {table}").fetchone()
-                last_pk = pk_vals[0] if pk_vals and pk_vals[0] else None
-                if last_pk is None:
-                    sql = f"SELECT {col_str} FROM {table}"
-                    df = self._sqlite_conn.execute(sql).df()
-                else:
-                    pk_col = pk_cols[0]
-                    sql = f"SELECT {col_str} FROM {table} WHERE {pk_col} > ?"
-                    df = self._sqlite_conn.execute(sql, (last_pk,)).df()
+            # v492: 无 date 列的表 (stocks/factor_registry) 一律全量 — 原实现对
+            # 单字符串主键走 MAX(pk) 增量: 新股的 symbol (如 '000001') < 现存
+            # MAX (如 '688999') → WHERE symbol > MAX 永不命中 → 新股/新因子
+            # 永不进 DuckDB, 且 get_universe 读 DuckDB 缺股票. 全表 5k 行级,
+            # 每轮 300s 全量 UPSERT 可忽略, 且天然覆盖值级 UPDATE.
+            if has_date_col:
+                sql = f"SELECT {col_str} FROM {table} WHERE date > ?"
+                df = self._sqlite_conn.execute(sql, (str(last_dk_date),)).df()
             else:
                 sql = f"SELECT {col_str} FROM {table}"
                 df = self._sqlite_conn.execute(sql).df()
@@ -568,7 +566,7 @@ class DuckDBManager:
         _log.info(f"backfill: {table} inserted {total_inserted} rows for {len(missing_dates)} dates")
 
     def verify_sync(self, table: str = "daily") -> dict:
-        """验证 DuckDB vs SQLite 行数和日期范围一致性。
+        """验证 DuckDB vs SQLite 行数和日期范围一致性.
 
         返回: {"sqlite_rows": int, "duckdb_rows": int, "sqlite_dates": int, "duckdb_dates": int, "match": bool}
         """
@@ -577,6 +575,29 @@ class DuckDBManager:
         sqlite_dates = self._sqlite_conn.execute(f"SELECT COUNT(DISTINCT date) FROM {table}").fetchone()[0]
         duckdb_dates = self.execute(f"SELECT COUNT(DISTINCT date) FROM {table}").fetchone()[0]
         match = sqlite_count == duckdb_count and sqlite_dates == duckdb_dates
+        # v491: 值一致性校验 — 增量同步只追新日期 (date > MAX), 历史行的
+        # UPDATE (turnover/amount 回填) 永不进 DuckDB, 而因子物化/回测
+        # get_daily() 走 DuckDB 优先 → 回填后物化仍读到旧值 (2026-08-14
+        # backfill_turnover 268k 行实测). 对 daily 表额外比对关键列非零行数,
+        # 不一致即 match=False (调度链日志显式暴露, 供全量重同步决策).
+        # v492: 同机制扩展到 daily_valuation (market_cap/turnover_rate) —
+        # v491 的调度链只在 daily 上做全量重同步, daily_valuation 走 _sync_table
+        # 增量 → 其历史行 UPDATE 依然永不进 DuckDB (半成品, 本版补全).
+        if table in ("daily", "daily_valuation"):
+            sign_cols = {
+                "daily": [("turnover", "turnover>0"), ("amount", "amount>0")],
+                "daily_valuation": [("market_cap", "market_cap>0 and market_cap is not null"),
+                                    ("turnover_rate", "turnover_rate>0 and turnover_rate is not null")],
+            }[table]
+            for col, cond in sign_cols:
+                sq = self._sqlite_conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE {cond}").fetchone()[0]
+                dk = self.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE {cond}").fetchone()[0]
+                if sq != dk:
+                    match = False
+                    _log.warning(f"verify_sync: {table} {col} 值级不一致 sqlite={sq} duckdb={dk} — "
+                                 f"历史行 UPDATE 未同步, 需全量重同步 (sync_table_full)")
         _log.info(f"verify_sync: {table} sqlite={sqlite_count} duckdb={duckdb_count} dates(sq/dk)={sqlite_dates}/{duckdb_dates} match={match}")
         return {
             "sqlite_rows": sqlite_count,
@@ -585,6 +606,57 @@ class DuckDBManager:
             "duckdb_dates": duckdb_dates,
             "match": match,
         }
+
+    def sync_table_full(self, table: str, cols: List[str], pk_cols: List[str]) -> int:
+        """通用全量值同步 — 覆盖历史行 UPDATE (回填) 进 DuckDB. 幂等.
+
+        v492: v491 的 sync_daily_full 只解决 daily; daily_valuation 及其他
+        带 date 表的verify_sync 值级不一致同样需要全量 UPSERT (不是 _sync_table
+        增量). 分批执行, 850 万行 ~1-2min.
+        """
+        update_cols = [c for c in cols if c not in pk_cols]
+        placeholders = ", ".join(["?" for _ in cols])
+        pk_str = ", ".join(f'"{c}"' for c in pk_cols)
+        col_str = ", ".join(cols)
+        if update_cols:
+            set_clause = ", ".join([f'"{c}" = EXCLUDED."{c}"' for c in update_cols])
+            upsert_sql = f"""
+                INSERT INTO {table} ({col_str}) VALUES ({placeholders})
+                ON CONFLICT ({pk_str}) DO UPDATE SET {set_clause}
+            """
+        else:
+            upsert_sql = f"INSERT INTO {table} ({col_str}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"
+        total = 0
+        offset = 0
+        _BATCH = 50000
+        t0 = time.time()
+        while True:
+            batch = self._sqlite_conn.execute(
+                f"SELECT {col_str} FROM {table} ORDER BY {pk_str} LIMIT ? OFFSET ?",
+                (_BATCH, offset)).fetchall()
+            if not batch:
+                break
+            with self._lock:
+                self._conn.executemany(upsert_sql, batch)
+            total += len(batch)
+            offset += _BATCH
+            if offset % 500000 == 0:
+                _log.info(f"sync_table_full({table}): {total:,} rows ({time.time()-t0:.0f}s)")
+        _log.info(f"sync_table_full({table}): done — {total:,} rows ({time.time()-t0:.0f}s)")
+        return total
+
+    def sync_daily_full(self) -> int:
+        """daily 全量值同步 — 覆盖历史行 UPDATE (turnover/amount 回填) 进 DuckDB.
+
+        背景 (v491): _sync_incremental 按 date > DuckDB.MAX(date) 只追新日期,
+        _sync_backfill_missing_dates 只补缺失日期 — 已存在日期的行值更新
+        (backfill_turnover/backfill_amount 全量回填) 永不同步; 因子物化
+        get_daily() DuckDB 优先 → 物化读到旧值. 本方法全量 UPSERT daily,
+        幂等, 850 万行分批 ~1-2min. 由调度链 verify_sync 值级不一致时调用.
+        """
+        cols = ["date", "symbol", "open", "high", "low", "close",
+                "volume", "amount", "turnover"]
+        return self.sync_table_full("daily", cols, ["date", "symbol"])
 
     # ── 查询接口 (供因子计算/回测/归因使用) ──
 

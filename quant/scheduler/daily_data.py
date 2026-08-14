@@ -10,7 +10,7 @@ v479 改造: 子同步从硬编码 try/except 泳道改为按 table_registry 的
   partial — 主流程成功, 但存在审计失败表 (已尝试补拉仍败) → 早间链修复
   failed  — 主流程 (update_daily) 异常 → 晚间链崩溃语义 (下游 stage 跳过)
 """
-import time as _time, uuid as _uuid
+import time as _time, uuid as _uuid, traceback as _tb
 from datetime import datetime as _dt, timedelta as _td
 from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
 from quant.utils.logger import get_logger, set_trace_id
@@ -47,9 +47,20 @@ def _run(today: str):
         _tk_finish("daily_data", today, "failed", error=error_msg)
         raise
 
+    # ── 换手率回填 (v491: 必须在 DuckDB 同步之前 — 否则新行 turnover=0 先进
+    # DuckDB, 之后 SQLite 补 turnover 但 DuckDB 增量只追新日期, 永不同步回补
+    # 的历史行 → 因子物化读 DuckDB 恒读到 0) ──
+    try:
+        s = DataStore()
+        tn = s.backfill_turnover(date=today)
+        s.close()
+        if tn > 0:
+            _log.info(f"[{today}] turnover backfill: {tn} stocks updated")
+    except Exception:
+        _log.warning(f"[{today}] turnover backfill failed: {_tb.format_exc()}")
+
     # v382: 后续步骤各自独立 try/except, 单步失败不阻断整体 (v479 改由
     # 审计/补拉闭环兜底, 任务状态 partial 而非 ok)
-    import traceback
 
     # v449: Sync SQLite -> DuckDB (DuckDB 仅用于读查询分流, 写入仍走 SQLite)
     # v448: DuckDB 后台同步线程从未启动, 导致 DuckDB daily 表落后 SQLite 数月
@@ -71,21 +82,27 @@ def _run(today: str):
             if res["match"]:
                 _log.info(f"[{today}] DuckDB sync OK: {table} fully synced ({res['duckdb_dates']} dates, {res['duckdb_rows']} rows)")
             else:
-                _log.warning(f"[{today}] DuckDB sync mismatch: {table} sqlite={res['sqlite_rows']} duckdb={res['duckdb_rows']} rows")
+                # v491: verify_sync 值级校验 (turnover/amount 非零行数) 不一致
+                # → 历史行 UPDATE (回填) 未进 DuckDB, 物化会读旧值 → 全量重同步
+                _log.warning(f"[{today}] DuckDB sync mismatch: {table} sqlite={res['sqlite_rows']} duckdb={res['duckdb_rows']} rows — 触发全量重同步")
+                try:
+                    # v492: daily_valuation 也走通用全量 UPSERT — v491 的
+                    # _sync_table 是增量 (date > MAX), 历史行 UPDATE 依然
+                    # 不进 DuckDB (半成品, 本版补全)
+                    if table == "daily":
+                        n = proxy._duckdb.sync_daily_full()
+                    else:
+                        n = proxy._duckdb.sync_table_full(
+                            "daily_valuation",
+                            ["symbol", "date", "pe_ttm", "pb", "ps_ttm", "pcf_ttm", "market_cap", "turnover_rate", "source"],
+                            ["symbol", "date"])
+                    _log.info(f"[{today}] DuckDB {table} 全量重同步: {n} rows")
+                except Exception as _se:
+                    _log.error(f"[{today}] DuckDB 全量重同步失败: {_tb.format_exc()}")
         # 4) 刷新预聚合表 (最近 60 个交易日)
         proxy._duckdb.refresh_preaggregates()
     except Exception:
-        _log.warning(f"[{today}] DuckDB sync failed: {traceback.format_exc()}")
-
-    # ── 换手率回填 ──
-    try:
-        s = DataStore()
-        tn = s.backfill_turnover(date=today)
-        s.close()
-        if tn > 0:
-            _log.info(f"[{today}] turnover backfill: {tn} stocks updated")
-    except Exception:
-        _log.warning(f"[{today}] turnover backfill failed: {traceback.format_exc()}")
+        _log.warning(f"[{today}] DuckDB sync failed: {_tb.format_exc()}")
 
     # ── v479: 子同步按注册表循环 (rollback 模式, 自带 T+1 迟发补偿窗口) ──
     from quant.data.table_registry import rollback_specs

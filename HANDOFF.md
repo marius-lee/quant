@@ -2,6 +2,141 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+### v492 数据拉取+物化缓存全链路 9 项修复 — 输入指纹失效 + DuckDB 同步收口 (2026-08-14)
+
+**背景**: v491 交付后全链路审查 (调度链 → 数据拉取 → DuckDB 同步 → 物化缓存 → 消费路径),
+发现 9 个问题, 含 2 个 v491 半成品:
+
+**修复清单**:
+1. **[P0] 物化缓存不感知输入数据变化** (`quant/factor/store.py`): source_hash 只检测
+   因子代码; amount/turnover/财务回填后已物化日期永不重算 → 缓存恒读旧值. 新增
+   `_compute_data_fingerprint()`: daily 行数/turnover>0/amount>0/MAX(date) + 财务三表
+   行数/MAX(stat_date)/MAX(pub_date) → sha256[:16], 进程内缓存每晚算一次;
+   meta 写 `data_hash`, `_get_existing_factors` 指纹不匹配 → 该日期全部因子判定缺失
+   → 自动重算 (回填后首晚全量重算一次, 之后稳定增量). 旧 meta 无 data_hash → 按缺失
+   处理 (首轮全量重算)
+2. **[P0] daily_valuation 值级同步半成品** (`quant/data/duckdb_store.py`,
+   `quant/scheduler/daily_data.py`): v491 的 verify_sync 值校验只覆盖 daily;
+   daily_valuation 走 `_sync_table` 是**增量** (date > MAX), 历史行 UPDATE 依然
+   永不进 DuckDB. 新增通用 `sync_table_full(table, cols, pk_cols)` 全量 UPSERT
+   (sync_daily_full 委托复用); verify_sync 值级校验扩展到 daily_valuation
+   (market_cap>0/turnover_rate>0); 调度链 match=False → daily_valuation 也走全量
+3. **[P0] `_sync_table` 字符串主键伪增量 bug**: stocks/factor_registry 无 date 列,
+   单字符串 PK 走 `WHERE symbol > MAX(symbol)` → 新上市小盘股 (000xxx/300xxx)
+   永不进 DuckDB (get_universe 缺股票). 改为无 date 列表一律全量 UPSERT
+   (5k 行级, 每轮 300s 成本可忽略, 且覆盖值级 UPDATE)
+4. **[P0] financial_* 从 DuckDB 同步表移除**: SQLite 列 (total_operating_revenue/
+   total_owner_equities/pub_date) vs DuckDB schema (revenue/total_hldr_eqy/ann_date)
+   完全不同 → 每轮 UPSERT 必败被吞 (每晚噪音); limit_up_pool 同理 (16 列 vs 3 列);
+   financial_cashflow 本就不在列表. 物化 fundamentals 直读 SQLite, DuckDB 财务表
+   无人消费 → 全部移除同步
+5. **[P0] sina 快速路径历史缺口** (`quant/data/sina_financials.py`): 只判
+   MAX(stat_date) < target → JQ 已写 2025q2-2026q1 的股票 target 推进后 MAX 达标
+   → 跳过 → 2019-2023 缺口永不补. 增强: 老股 (list_date ≤ 8 年前) 且
+   MIN(stat_date) > 3 年前 → 视为历史不完整强制拉取 (sina num=50 一次补齐);
+   新股天然历史短, 不判 (避免每周反复拉)
+6. **[P0] daily_data.py `traceback` 用而未导**: `_tb.format_exc()` 在 import 前,
+   backfill_turnover 失败时 NameError 掩盖真异常. import 移到文件头
+7. **[P0] `curl_cffi.requestes` 拼写 bug** (`quant/data/store.py`): 应为 requests,
+   akshare 源每次调用必 ImportError 被吞 → 永远不可用
+8. ~~[P1] factor_cache 物化起点 vs trim 窗口~~: 误报 — 物化范围 1840 交易日
+   < max_days 2000, trim 永不触发, 无需修
+9. **[P1] repair 早间链兜底慢表** (`quant/data/table_registry.py`,
+   `quant/scheduler/repair.py`): sina 首轮全量 4-5h > 早间链 30min 窗口 → 每天
+   触发必超时被杀 (v491 注册后每早白跑). TableSpec 新增 `repair_eligible` 字段,
+   财务三表 = False → 早间链跳过 (审计失败表同样过滤), 只由周六 data_maintenance
+   (12h 窗口) 维护
+
+**结论**: 数据拉取调度任务 + 物化因子缓存全链路问题已理清并闭环 —
+   回填触发重算、DuckDB 值级同步、新股/新因子入库、历史缺口补齐、慢表兜底
+   均机制化 (非打补丁), 后续常规运维无已知遗留问题 (残留低影响项见上).
+
+**验证**: ast 全 OK; 指纹集成测试 (指纹一致→不重算 / 回填变化→失效重算 / 重算后
+匹配→稳定, 全过); `_compute_data_fingerprint` 生产库实测 678c558b0291b64e;
+weekly_full 财务三表 repair_eligible=False 生效; test_registry_smoke +
+test_v472_factor_cache_materialize 12 passed. 全量 pytest 套件超 5min 未跑完
+(含网络/重任务), 相关子集已过.
+
+**注意**: 回填 (amount/财务) 完成后首次晚间链 factor_cache 会触发全量重算
+(~1-2h, 并行 4 worker) — 属预期行为, 之后每晚仅增量.
+
+### v491 数据缺口修复接入调度链 — DuckDB 值级同步闭环 + 财务三表 weekly_full (2026-08-14)
+
+**背景**: v490 交付的是手动回填脚本, 但**调度链存在同样问题** (用户询问后排查):
+- `_sync_incremental` 按 `date > DuckDB.MAX(date)` 只追新日期 → 历史行 UPDATE
+  (turnover/amount 回填) 永不进 DuckDB; `verify_sync` 只比行数/日期数, 不比**值**;
+  而因子物化 `store.get_daily()` DuckDB 优先 → 回填后物化仍读旧值 (268k 行 turnover
+  回填实测)
+- `daily_data.py` 顺序缺陷: DuckDB 同步在 backfill_turnover 之前 → 新行 turnover=0
+  先进 DuckDB 后永不同步
+- **财务三表完全不在调度链**: table_registry 无注册, 晚间链/周度维护无人拉财务,
+  data_health 无审计 → 历史缺口 (income/cashflow 2019-2023 全缺) 永远补不上
+- `_backfill_via_baostock` amount 单位 bug: 直接写 baostock 元, DB 标准千元 → 错 1000 倍
+
+**改动**:
+1. `quant/data/duckdb_store.py`:
+   - `verify_sync` 值级校验: daily 表比对 turnover>0 / amount>0 非零行数
+     (sqlite vs duckdb), 不一致 → match=False + warning
+   - 新增 `sync_daily_full()`: daily 全量 UPSERT (850 万行分批 5 万, 幂等 ~1-2min)
+2. `quant/scheduler/daily_data.py`: backfill_turnover 移到 DuckDB 同步之前;
+   DuckDB 同步循环中 verify_sync match=False → daily 触发 sync_daily_full /
+   daily_valuation 触发 _sync_table 全量重同步
+3. `quant/data/store.py` `_backfill_via_baostock`: amount 元 → 千元 `/1000` 对齐
+   `_fetch_baostock_daily`
+4. `quant/data/sina_financials.py` (新建): 调度链财务同步模块 — `sync()` 无参全量
+   幂等 (easy_tdx.sina 单股 50 期), 三表字段映射 (14/8/6 字段), 快速路径:
+   该股某表 MAX(stat_date) 已达最近报告期 → 跳过该表 HTTP (weekly 15000 请求 →
+   首轮后仅增量); 修 sqlite3 表名参数化 bug (FROM ? 不支持 → f-string)
+5. `quant/data/table_registry.py`: 注册 `financial_income/balance/cashflow`
+   三表 (mode=weekly_full, sync_main=sina_financials.sync, date_col=stat_date,
+   slo_days=None 事件型不判新鲜度, min_total_rows=100000, factors=11 基本面因子);
+   FACTORS_BY_TABLE 同步补三表映射 → freshness/unavailable_factors 自动覆盖
+   (freshness 从 REGISTRY 聚合, 无需改)
+
+**调度链闭环语义** (注册后自动生效):
+- 周六 weekly_eval data_maintenance 12h 窗口全量刷新
+- 晚间链 audit_all → 财务表 total_rows fail → repair 自动补拉 (幂等, 7.5h 窗口)
+- 早间链 daily_repair 7 天兜底; audit 未全绿 → daily_data=partial, 不阻断晚间链
+  (v487)
+- 日线因子物化走 DuckDB → sync_daily_full 值级闭环; 基本面因子直接读 SQLite,
+  回填即受益
+
+**验证**: ast 全 OK; `_latest_report_end()`=2026-06-30; 三表 2026-06-30 覆盖 0 →
+  首轮 16100 次 symbol-table 拉取 (~4-5h, 幂等可续); balance 21 期/股 vs income
+  6.5 期/股缺口分布确认。scheduler daemon 运行中 (PID 45574), DuckDB 值校验
+  由晚间链实际运行时自动生效。
+
+### v490 verify 全量检查收口 — amount/财务历史缺口回填就绪 (2026-08-14)
+
+**背景**: turnover 回填完成 + verify 脚本 benchmark 慢查询修复 (NOT EXISTS+GROUP BY
+在 850 万行 daily 全表扫描 120s+ 卡死 → 改写为 DISTINCT date 子查询 EXISTS, 0.9s)。
+verify 全量结果 293 项失败, 构成:
+- **244 项 daily**: 2019 年 amount 缺 89% (750k 行, 早期源只写 close/volume 未写
+  amount; 2019-01-02 仅 353/3349 行有 amount)
+- **49 项财务三表**: income/cashflow 2019-2023 全缺 + 2024Q1/Q2/Q4 缺
+  (JQ 权限窗口仅 2025q2~2026q1, tushare income 无权限, baostock 需 25 万次查询
+  5 天不可行); balance 仅缺 2024Q1/Q2/Q4
+
+**改动**:
+1. `scripts/verify_materialize_inputs.py` — `check_benchmark` 慢查询改为
+   `SELECT date FROM (SELECT DISTINCT date FROM daily WHERE ...) WHERE NOT EXISTS (...)`
+   (0.9s, 原 120s+ 卡死)
+2. `scripts/backfill_financials.py` — TARGET_QUARTERS 2019-2022 → 2019-2024
+   (easy_tdx.sina 单股 50 期一次拉全, 15000 次请求; 实测 600519 2023 营收
+   1505.6 亿/净利 775 亿与公开财报一致)
+3. `quant/data/store.py` — 新增 `_backfill_amount_full`/`backfill_amount`
+   (复用 turnover full 断点/重登/限速模式; baostock 元 → DB 千元 ×1000 已实测
+   一致 000070: DB 261343.875千元 ↔ baostock 261343875.90元)
+4. `scripts/backfill_amount.py` — 新入口 (full 模式 5208 只 ≈ 50 分钟)
+
+**待用户执行** (顺序无关, 可并行):
+```bash
+PYTHONPATH=. .venv/bin/python scripts/backfill_amount.py          # amount ~50min
+PYTHONPATH=. .venv/bin/python scripts/backfill_financials.py       # sina 财务 ~1-2h
+```
+
+**验证**: ast 全 OK; 回填后重跑 `scripts/verify_materialize_inputs.py` 应转绿。
+
 ### v489 turnover full 断连自恢复 — Broken pipe 不再 3 次全败 (2026-08-14)
 
 **背景**: 09:08 起 baostock 服务端断连 (`Connection reset by peer`/`Broken pipe`/

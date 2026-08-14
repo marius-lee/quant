@@ -1120,7 +1120,7 @@ class DataStore:
         """
         import sys
         import requests as _orig_requests
-        import curl_cffi.requestes as _curl_requests
+        import curl_cffi.requests as _curl_requests
 
         self._init_cache_instance()
         self._akshare_limiter.wait()
@@ -1588,7 +1588,7 @@ class DataStore:
                         "VALUES(?,?,?,?,?,?,?,?,?)",
                         (sym, r[0], float(r[1]), float(r[2]), float(r[3]),
                          float(r[4]), int(float(r[5]) / 100) if r[5] else 0,
-                         float(r[6]) if r[6] else 0,   # v407: amount 元 (A3 fix)
+                         float(r[6]) / 1000 if r[6] else 0,   # v491: amount 元→千元 (对齐 _fetch_baostock_daily; 原 v407 直写元错 1000 倍)
                          float(r[7]) if r[7] else 0))
                     total += 1
                 if (i + 1) % 100 == 0:
@@ -2052,6 +2052,210 @@ class DataStore:
                     f"same={total_same} failed={failed} skipped={skipped}"
                     f"{' (resumed from checkpoint)' if _resumed else ''}")
         return total_upd
+
+    def _backfill_amount_full(self) -> int:
+        """存量 daily.amount 全量回填 — 每 symbol 一次 baostock 查询, 只补缺失行.
+
+        背景: 2019 年 daily 数据来自早期源, amount 缺失 ~89% (750k 行, 2026-08-14
+        verify 全量检查发现: 2019 仅 10.5% 行有 amount, 2020+ 仅停牌日缺).
+        复权/单位口径: baostock 返回 元+股, DB 存 千元+手 (000070 2020-01-02:
+        DB amount=261343.875千元 ↔ baostock 261343875.90元, volume=234640手
+        ↔ 23464004股 实测一致). 只 UPDATE amount IS NULL 或 =0 的行;
+        其他列 (close/volume/turnover) 不动.
+
+        复用 _backfill_turnover_full 模式: 断点文件 + 每 200 只重登 + 限速.
+        """
+        import time as _time
+        import datetime
+        import json as _json
+        import socket as _socket
+        from pathlib import Path as _Path
+        _socket.setdefaulttimeout(_require_cfg("data.http_timeout.baostock"))
+        from quant.data.repos.universe_repo import UniverseRepo
+
+        _progress_path = _Path(__file__).resolve().parents[1] / "data" / ".amount_full_progress.json"
+
+        def _load_done() -> set:
+            if not _progress_path.exists():
+                return set()
+            try:
+                with open(_progress_path, encoding="utf-8") as _f:
+                    return set(_json.load(_f).get("done_symbols", []))
+            except Exception as _e:
+                logger.warning(f"amount backfill full: 进度文件损坏, 从头跑: {_e}")
+                return set()
+
+        def _save_done(done: set) -> None:
+            _tmp = _progress_path.with_suffix(".tmp")
+            try:
+                with open(_tmp, "w", encoding="utf-8") as _f:
+                    _json.dump({"done_symbols": sorted(done)}, _f)
+                _tmp.replace(_progress_path)
+            except Exception as _e:
+                raise RuntimeError(f"amount backfill full: 进度文件写入失败: {_e}")
+
+        conn = self._connect()
+        import baostock as _bs
+        try:
+            _lg = _bs_query("login")
+        except BaostockBlacklisted as _bl:
+            raise RuntimeError(f"baostock IP 拉黑 (冷却期): {_bl}")
+        except BaostockQuotaExceeded as _q:
+            raise RuntimeError(f"baostock 配额: {_q}")
+        if _lg.error_code != "0":
+            raise RuntimeError(f"baostock login failed: {_lg.error_msg}")
+        _bs_socket_timeout()
+
+        symbols = UniverseRepo().get_symbols(exclude_market="BJ")
+        _BS_START = "2018-01-01"
+        logger.info(f"amount backfill full: {len(symbols)} symbols, "
+                    f"start={_BS_START}, ~{len(symbols)*0.55/60:.0f}min estimated")
+
+        def _fetch_amount(code: str) -> dict[str, float]:
+            """baostock 查询 date,amount 全区间; session 失效自动重登, 最多 3 次."""
+            last_err: Exception | None = None
+            for _attempt in range(3):
+                try:
+                    try:
+                        rs = _bs_query(
+                            "query_history_k_data_plus",
+                            code, "date,amount",
+                            start_date=_BS_START,
+                            end_date=datetime.date.today().strftime("%Y-%m-%d"),
+                            frequency="d", adjustflag="2")
+                    except BaostockBlacklisted as _bl:
+                        _bs_gate.mark_blacklisted(str(_bl))
+                        raise RuntimeError(f"baostock IP 黑名单: {_bl}")
+                    except BaostockQuotaExceeded as _q:
+                        raise RuntimeError(f"baostock 配额: {_q}")
+                except Exception as _e:
+                    last_err = _e
+                    _time.sleep(1.5 * (_attempt + 1))
+                    continue
+                if rs.error_code == "0":
+                    out: dict[str, float] = {}
+                    while rs.next():
+                        row = rs.get_row_data()
+                        if not row or row[1] in ("", "None"):
+                            continue
+                        try:
+                            # 单位: baostock 元 → DB 千元 (000070 实测一致)
+                            out[row[0]] = float(row[1]) / 1000.0
+                        except ValueError:
+                            continue
+                    return out
+                if "登录" in rs.error_msg:
+                    _bs.logout()
+                    try:
+                        _lg2 = _bs_query("login")
+                    except (BaostockBlacklisted, BaostockQuotaExceeded) as _e:
+                        raise RuntimeError(f"baostock re-login blocked: {_e}")
+                    if _lg2.error_code != "0":
+                        raise RuntimeError(f"baostock re-login failed: {_lg2.error_msg}")
+                    _bs_socket_timeout()
+                elif any(_kw in rs.error_msg for _kw in
+                         ("网络接收", "网络错误", "socket", "连接")):
+                    _bs.logout()
+                    try:
+                        _lg3 = _bs_query("login")
+                    except (BaostockBlacklisted, BaostockQuotaExceeded) as _e:
+                        raise RuntimeError(f"baostock re-login blocked: {_e}")
+                    if _lg3.error_code != "0":
+                        raise RuntimeError(f"baostock re-login failed: {_lg3.error_msg}")
+                    _bs_socket_timeout()
+                    last_err = RuntimeError(f"baostock {code}: 断连已重登: {rs.error_msg}")
+                else:
+                    last_err = RuntimeError(f"baostock {code}: {rs.error_msg}")
+                _time.sleep(1.5 * (_attempt + 1))
+            raise last_err if last_err else RuntimeError(f"baostock {code}: query failed")
+
+        _t0 = _time.time()
+        total_upd = 0
+        total_same = 0
+        failed = 0
+        skipped = 0
+        done = _load_done()
+        _resumed = bool(done)
+        for i, sym in enumerate(symbols):
+            if sym in done:
+                skipped += 1
+                continue
+            code = _ts_code(sym)
+            try:
+                amounts = _fetch_amount(code)
+            except Exception as e:
+                failed += 1
+                logger.warning(f"backfill_amount full: {sym} failed: {e}")
+                if isinstance(e, (BaostockBlacklisted,)) or "黑名单" in str(e) \
+                        or "配额" in str(e) or "blocked" in str(e).lower():
+                    logger.error(f"backfill_amount full: 数据源熔断, 立即停止 "
+                                 f"(已有 {total_upd} 行落库, 进度已存断点)")
+                    break
+                continue
+
+            existing = dict(conn.execute(
+                "SELECT date, amount FROM daily WHERE symbol=?", (sym,)).fetchall())
+            upd = []
+            for d, a in amounts.items():
+                if d not in existing:
+                    continue
+                old = existing[d]
+                if old is None or abs(old) < 1e-9 or abs(old - a) > 1e-9:
+                    upd.append((a, d))
+                else:
+                    total_same += 1
+            if upd:
+                conn.executemany(
+                    "UPDATE daily SET amount=? WHERE symbol=? AND date=?",
+                    [(a, sym, d) for a, d in upd])
+                conn.commit()
+            total_upd += len(upd)
+            done.add(sym)
+
+            if (i + 1) % 200 == 0:
+                logger.info(f"backfill_amount full: re-login at {i+1} stocks")
+                _bs.logout()
+                try:
+                    _lg = _bs_query("login")
+                except (BaostockBlacklisted, BaostockQuotaExceeded) as _e:
+                    logger.error(f"backfill_amount full: re-login blocked: {_e}; 停止")
+                    break
+                if _lg.error_code != "0":
+                    logger.warning(f"baostock re-login failed: {_lg.error_msg}")
+            if (i + 1) % 100 == 0:
+                _save_done(done)
+                _el = _time.time() - _t0
+                _rate = (i + 1) / _el
+                _eta = (len(symbols) - i - 1) / _rate / 60
+                logger.info(f"backfill_amount full: {i+1}/{len(symbols)} "
+                            f"updated={total_upd} same={total_same} "
+                            f"skipped={skipped} ({_rate:.1f}/s ETA={_eta:.0f}min)")
+
+        _save_done(done)
+        _bs.logout()
+        conn.close()
+        logger.info(f"backfill_amount full: done — updated={total_upd} "
+                    f"same={total_same} failed={failed} skipped={skipped}"
+                    f"{' (resumed from checkpoint)' if _resumed else ''}")
+        return total_upd
+
+    def backfill_amount(self, date: str = None, full: bool = False) -> int:
+        """回填 daily.amount — baostock 逐只拉取, 只补缺失行 (v490).
+
+        背景: 2019 年 amount 缺失 ~89% (750k 行, 早期源未写该列), verify
+        物化阻断. 与 backfill_turnover 同模式: full 每 symbol 一次查询全区间.
+        """
+        if full or date is None:
+            return self._backfill_amount_full()
+        conn = self._connect()
+        missing = conn.execute(
+            "SELECT symbol FROM daily WHERE date=? AND (amount IS NULL OR amount=0)",
+            (date,)).fetchall()
+        conn.close()
+        if not missing:
+            return 0
+        raise NotImplementedError(
+            "backfill_amount 逐日模式未实现 — 存量缺口规模下请用 full 模式")
 
     def _sync_industry_akshare(self, conn) -> int:
         """akshare 逐只查询行业回退 — 仅针对 industry IS NULL 的股票。

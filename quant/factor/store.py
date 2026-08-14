@@ -60,6 +60,66 @@ _BLOCKED_PATH = os.path.join(_CACHE_DIR, "blocked.json")
 # per-factor 源码 hash 缓存 (代码不变则 hash 不变, 进程内安全缓存)
 _SOURCE_HASH_CACHE: dict[str, str] = {}
 
+# 输入数据指纹缓存 (进程内一次) — v492: 检测 daily/财务表数据变化触发重算
+_DATA_FINGERPRINT_CACHE: dict[str, str] = {}
+
+
+def _compute_data_fingerprint(db_path: str = None) -> str:
+    """计算输入数据指纹: daily 行数/turnover>0/amount>0/MAX(date) +
+    财务三表 行数/MAX(stat_date)/MAX(pub_date)。
+
+    v492: source_hash 只覆盖因子代码; 回填 amount/turnover/财务后已物化日期
+    永不重算 → 缓存永远读旧值。本指纹纳入缺失判定: 指纹变化 → 该日期全部
+    因子视为缺失 → 自动重算。指纹查询失败时返回 "" (与任何实值不等 →
+    触发全量重算, 失败安全)。进程内缓存, 物化每晚只算一次。
+    """
+    if db_path is None:
+        from quant.config.paths import MARKET_DB
+        db_path = MARKET_DB
+    cached = _DATA_FINGERPRINT_CACHE.get(db_path)
+    if cached is not None:
+        return cached
+    import sqlite3
+    h = hashlib.sha256()
+    try:
+        conn = sqlite3.connect(db_path, timeout=30)
+        try:
+            r = conn.execute(
+                "SELECT COUNT(*), "
+                "SUM(CASE WHEN turnover > 0 THEN 1 ELSE 0 END), "
+                "SUM(CASE WHEN amount > 0 THEN 1 ELSE 0 END), "
+                "COALESCE(MAX(date),'') FROM daily"
+            ).fetchone()
+            h.update(f"daily:{r[0]}:{r[1]}:{r[2]}:{r[3]}".encode())
+            # v492b: daily_valuation 也是基本面因子输入 (pe_ttm/pb/market_cap,
+            # fundamental.py EPD/EPDS), 回填/修正后已物化日期须重算
+            try:
+                r = conn.execute(
+                    "SELECT COUNT(*), "
+                    "SUM(CASE WHEN market_cap > 0 AND market_cap IS NOT NULL THEN 1 ELSE 0 END), "
+                    "SUM(CASE WHEN pe_ttm IS NOT NULL THEN 1 ELSE 0 END), "
+                    "COALESCE(MAX(date),'') FROM daily_valuation"
+                ).fetchone()
+                h.update(f"daily_valuation:{r[0]}:{r[1]}:{r[2]}:{r[3]}".encode())
+            except sqlite3.OperationalError:
+                h.update(b"daily_valuation:missing")
+            for tbl in ("financial_income", "financial_balance", "financial_cashflow"):
+                try:
+                    r = conn.execute(
+                        f"SELECT COUNT(*), COALESCE(MAX(stat_date),''), "
+                        f"COALESCE(MAX(pub_date),'') FROM {tbl}"
+                    ).fetchone()
+                    h.update(f"{tbl}:{r[0]}:{r[1]}:{r[2]}".encode())
+                except sqlite3.OperationalError:
+                    h.update(f"{tbl}:missing".encode())
+        finally:
+            conn.close()
+    except Exception as e:
+        _log.warning("factor_cache: data fingerprint query failed (%s) — 触发全量重算", e)
+        return ""
+    _DATA_FINGERPRINT_CACHE[db_path] = h.hexdigest()[:16]
+    return _DATA_FINGERPRINT_CACHE[db_path]
+
 
 def _source_hash_single(factor_name: str) -> str:
     """单因子源码 hash (缓存) — meta 与缺失判定统一用此口径。"""
@@ -707,6 +767,7 @@ class FactorStore:
         if not meta:
             meta = {"source_hash": None, "dates": []}
         meta["source_hash"] = _source_hash_single(factor_name)
+        meta["data_hash"] = _compute_data_fingerprint()
         existing = set(meta.get("dates", []))
         existing.update(covered_dates)
         meta["dates"] = sorted(existing)
@@ -816,6 +877,10 @@ class FactorStore:
                 continue
             # source_hash 不匹配 → 因子代码已变, 该日期需重算 (per-factor 口径)
             if "source_hash" in meta and meta["source_hash"] != _source_hash_single(fname):
+                continue
+            # data_hash 不匹配 → 输入数据已变 (amount/turnover/财务回填),
+            # 该日期需重算 (v492) — meta 无 data_hash (旧版) 时按缺失处理
+            if meta.get("data_hash") != _compute_data_fingerprint():
                 continue
             existing.add(fname)
         return existing

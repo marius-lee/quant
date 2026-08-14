@@ -24,6 +24,12 @@ from typing import Callable, Optional
 # 从 quant.data.X import sync_* — 延迟导入避免模块加载时序 (quant.data 各模块
 # 顶层连库), 统一在 _lazy_sync 包装器内 import.
 
+# [v491: _FIN_FACTOR_NAMES 定义见文件末尾 — 财务三表注册引用, 需在 REGISTRY 前可用]
+_FIN_FACTOR_NAMES: set[str] = {
+    "roe_reported", "ocfp", "roa", "debt_ratio", "accruals", "asset_growth",
+    "gp_ta", "sue", "holder_reduction", "pledge_ratio", "dividend_yield",
+}
+
 # ── 因子映射: 表 → 依赖它的因子 (factor_cache 物化裁剪 unavailable_factors 用) ──
 FACTORS_BY_TABLE: dict[str, frozenset[str]] = {
     "daily_valuation": frozenset({"ep_ratio", "bp_ratio", "ocfp"}),
@@ -37,6 +43,11 @@ FACTORS_BY_TABLE: dict[str, frozenset[str]] = {
     "limit_up_pool": frozenset({"limit_touch_no_seal", "limit_up_prox_5d",
                                 "net_limit_ratio"}),
     "limit_down_pool": frozenset({"net_limit_ratio"}),
+    # v491: 财务三表 → 基本面因子 (与 REGISTRY 中 financial_* 的 factors 同源,
+    # 见文件前部 _FIN_FACTOR_NAMES; 保持两份一致, 供 factor_cache 裁剪)
+    "financial_income": frozenset(_FIN_FACTOR_NAMES),
+    "financial_balance": frozenset(_FIN_FACTOR_NAMES),
+    "financial_cashflow": frozenset(_FIN_FACTOR_NAMES),
 }
 
 
@@ -153,6 +164,7 @@ class TableSpec:
     slo_days: Optional[int] = None          # max_date 滞后 SLO (事件型 None)
     factors: frozenset[str] = frozenset()
     custom_check: Optional[Callable[[object], tuple[bool, str]]] = None
+    repair_eligible: bool = True      # v492: 早间链兜底资格 (慢表 False → 仅周度链)
     desc: str = ""
 
 
@@ -222,6 +234,36 @@ REGISTRY: dict[str, TableSpec] = {
         sync_main=_lazy_sync("benchmark", "sync_benchmark"),
         window_days=10, min_rows_per_day=None, slo_days=15,
         desc="指数基准 (baostock 幂等全量, 便宜)"),
+    # v491: 财务三表接入调度链 — 此前完全不在注册表, JQ 权限窗口 (2025q2~2026q1)
+    # 外的季度 (income/cashflow 2019-2023 全缺) 无人自动拉取, 只能手动脚本.
+    # 注册 weekly_full (周六 data_maintenance 全量刷新 + 早间链 7 天兜底),
+    # 源 = sina (quant/data/sina_financials.sync), 幂等跳过已有行.
+    # 审计: date_col=stat_date + slo=None (事件型, 不判新鲜度) — gap/coverage
+    # 检查按 date 列跳过; total_rows 底线防清库; custom 检查最近报告期覆盖.
+    # v492: repair_eligible=False — sina 首轮全量 4-5h > 早间链 30min 窗口,
+    # 每天触发必超时被杀 (v491 注册后每早白跑). 财务表只由周六 data_maintenance
+    # (12h 窗口) 维护, 早间链不兜底.
+    "financial_income": TableSpec(
+        table="financial_income", date_col="stat_date", mode="weekly_full",
+        sync_main=_lazy_sync("sina_financials", "sync"),
+        min_total_rows=100000, slo_days=None,
+        factors=frozenset(_FIN_FACTOR_NAMES),
+        repair_eligible=False,
+        desc="利润表 (sina 全历史幂等; JQ 窗口外季度由本任务补)"),
+    "financial_balance": TableSpec(
+        table="financial_balance", date_col="stat_date", mode="weekly_full",
+        sync_main=_lazy_sync("sina_financials", "sync"),
+        min_total_rows=100000, slo_days=None,
+        factors=frozenset(_FIN_FACTOR_NAMES),
+        repair_eligible=False,
+        desc="资产负债表 (sina 全历史幂等)"),
+    "financial_cashflow": TableSpec(
+        table="financial_cashflow", date_col="stat_date", mode="weekly_full",
+        sync_main=_lazy_sync("sina_financials", "sync"),
+        min_total_rows=100000, slo_days=None,
+        factors=frozenset(_FIN_FACTOR_NAMES),
+        repair_eligible=False,
+        desc="现金流量表 (sina 全历史幂等)"),
 }
 
 

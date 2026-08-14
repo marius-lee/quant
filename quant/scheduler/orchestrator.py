@@ -355,9 +355,15 @@ def _run():
                     _monitor_thread = None
                 continue
 
-            # inline 单发任务
+            # inline 单发任务 — 崩溃不杀 orchestrator (v487: 2026-08-14 实证
+            # signals RuntimeError 冒泡 → 主循环死亡 → 当日全部调度瘫痪,
+            # daily_repair/execute/monitor/evening_chain 全部未跑)
             runner = InlineRunner(today)
-            runner.run_once(s.name)
+            try:
+                runner.run_once(s.name)
+            except Exception as _e:
+                _log.exception(f"[{today}] inline task {s.name} crashed "
+                               f"(orchestrator continues): {_e}")
 
         # —— monitor 窗口关闭后清理 ——
         if not ALL["monitor"].in_window(hhmm, now.weekday()) and _monitor_runner is not None:

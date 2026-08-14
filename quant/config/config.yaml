@@ -150,7 +150,10 @@ data:
     sina_per_stock_sec: 0.5
     tencent_per_stock_sec: 0.5
     akshare_per_stock_sec: 1.5
-    baostock_per_stock_sec: 0.3
+    baostock_per_stock_sec: 0.5
+    baostock_calls_per_minute: 120
+    baostock_calls_per_day: 50000
+    baostock_blacklist_cooldown_sec: 86400
     akshare_industry_sec: 0.8
   source_policy:
     enabled:
@@ -174,6 +177,7 @@ data:
     tushare: 10
     tencent: 15
     sse: 20
+    baostock: 30  # baostock 底层阻塞 socket 无超时 — 服务器挂起时永久阻塞 (2026-08-13 实测 2 次卡死), 需 setdefaulttimeout 兜底
   pytdx:
     connect_timeout: 10
     sse: 20
@@ -250,6 +254,10 @@ factor:
     # 全量物化并行 worker 数上限 (M1 8核, 模板8: max_workers 上限 4)
     # 来源: store.materialize 默认 min(cpu_count,4); 脚本 materialize_full 默认走此值
     materialize_max_workers: 4
+    # aux financial 三表加载窗口下界 (v480-B3: 物化全量回填 5208 symbols × 全历史曾占数 GB)
+    # 来源: 财务因子最大回看 — YoY 需去年同期 (±45d 容差) ≈ 410 天; TTM 差分 5 季度 ≈ 460 天;
+    #       730 = 8 季度缓冲覆盖稀疏披露 (仅半年报/年报的主体)
+    financial_lookback_days: 730
     redundancy_corr_threshold: 0.7
   debt_ratio:
     max: 2

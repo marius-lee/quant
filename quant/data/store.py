@@ -22,6 +22,7 @@ logger = get_logger("data.store")
 _TICKFLOW_BATCH_NO_PERM = False
 
 from quant.data.cache import get_backend, DataCache, RateLimiter
+from quant.utils.baostock_gate import gate as _bs_gate, bs_query as _bs_query, BaostockBlacklisted, BaostockQuotaExceeded
 from quant.config.loader import load as _load_config
 from quant.config.constants import _require_cfg
 from quant.data.repos._base import DatabaseManager
@@ -67,6 +68,22 @@ def _ts_code(sym: str) -> str:
     if sym.startswith(("6", "9", "68")):
         return f"{sym}.SH"
     return f"{sym}.SZ"
+
+
+def _bs_socket_timeout() -> None:
+    """baostock 阻塞 socket 强制超时 — login 后调用.
+
+    baostock 底层 socket 无超时 (socketutil.py 未 settimeout), 服务器挂起时
+    recv 永久阻塞 (2026-08-13 实测 2 次卡死). setdefaulttimeout 继承在
+    部分路径不生效, 需直接对 context.default_socket.settimeout.
+    """
+    try:
+        from baostock.common import context as _bsctx
+        _sock = getattr(_bsctx, "default_socket", None)
+        if _sock is not None:
+            _sock.settimeout(_require_cfg("data.http_timeout.baostock"))
+    except Exception as _e:
+        logger.warning(f"baostock socket timeout setup failed: {_e}")
 
 
 def _tencent_market(sym: str) -> str:
@@ -438,8 +455,13 @@ class DataStore:
         except ImportError:
             logger.info("baostock library not installed, trying akshare...")
             return self._sync_industry_akshare(conn)
+        _bs_gate.acquire()  # 全局限速: 防 IP 拉黑 (2026-08-14)
         bs.login()
-        rs = bs.query_stock_industry()
+        try:
+            rs = bs.query_stock_industry()
+        except BaostockBlacklisted as _bl:
+            logger.error(f"industry sync aborted: {_bl}")
+            return 0
         df = rs.get_data()
         bs.logout()
         if df.empty:
@@ -677,7 +699,7 @@ class DataStore:
             logger.warning("baostock not installed, skip adj_factor fallback")
             return 0, 0
 
-        lg = bs.login()
+        lg = _bs_query("login")
         if lg.error_code != "0":
             logger.warning(f"baostock login failed: {lg.error_msg}")
             return 0, 0
@@ -703,7 +725,11 @@ class DataStore:
                     logger.info(f"baostock adj_factor: re-login at {processed} stocks "
                                 f"(防 session 超时, baostock 免费服务 ~1-2h)")
                     bs.logout()
-                    lg = bs.login()
+                    try:
+                        lg = _bs_query("login")
+                    except (BaostockBlacklisted, BaostockQuotaExceeded) as _e:
+                        logger.error(f"baostock adj_factor aborted: {_e}")
+                        break
                     if lg.error_code != "0":
                         logger.warning(f"baostock re-login failed at {processed}: {lg.error_msg}; "
                                        "continuing with old session")
@@ -711,8 +737,15 @@ class DataStore:
                         _time.sleep(0.5)  # 重登后稍等
 
                 try:
-                    rs = bs.query_adjust_factor(
+                    rs = _bs_query(
+                        "query_adjust_factor",
                         code=bs_code, start_date=start, end_date=end_date)
+                except BaostockBlacklisted as _b:
+                    logger.error(f"baostock adj_factor IP 黑名单: {_b}; 停止本轮")
+                    break
+                except BaostockQuotaExceeded as _q:
+                    logger.error(f"baostock adj_factor 配额: {_q}; 停止本轮")
+                    break
                 except Exception as e:
                     logger.warning(f"baostock adj_factor {bs_code}: query failed: {e}")
                     processed += 1
@@ -758,9 +791,7 @@ class DataStore:
                                 f"({100*processed//total}%) {total_rows} rows | "
                                 f"{elapsed:.0f}s ETA {eta:.0f}s")
 
-                # 逐只间隔 0.15s: baostock 免费服务器无公开限流,
-                # 但避免短时间内大量 TCP 连接压垮对方
-                _time.sleep(0.15)
+            # 全局限速已由 _bs_query (BaostockGate) 统一控制 — 不再裸 sleep
 
             # ── 重基准: 因子落地的股票重写 daily 历史 ──
             if done_symbols:
@@ -970,7 +1001,7 @@ class DataStore:
         except ImportError:
             return None
 
-        lg = bs.login()
+        lg = _bs_query("login")
         if lg.error_code != "0":
             logger.warning(f"baostock login failed: {lg.error_msg}")
             return None
@@ -985,7 +1016,8 @@ class DataStore:
                     bs_code = f"sz.{sym}"
 
                 try:
-                    rs = bs.query_history_k_data_plus(
+                    rs = _bs_query(
+                        "query_history_k_data_plus",
                         code=bs_code,
                         fields="date,open,high,low,close,volume,amount,turn",
                         start_date=start_date,
@@ -993,6 +1025,12 @@ class DataStore:
                         frequency="d",
                         adjustflag="2",  # 2=前复权
                     )
+                except BaostockBlacklisted as _b:
+                    logger.error(f"baostock daily IP 黑名单: {_b}; 停止本轮")
+                    break
+                except BaostockQuotaExceeded as _q:
+                    logger.error(f"baostock daily 配额: {_q}; 停止本轮")
+                    break
                 except Exception as e:
                     logger.warning(f"baostock daily {bs_code}: query failed: {e}")
                     continue
@@ -1016,7 +1054,7 @@ class DataStore:
                         continue
                     rows.append(self._norm_row(sym, d, o, h, l, c, vol, amt, turnover))
 
-                _time.sleep(0.15)  # 逐只间隔, 避免压垮服务器
+            # 全局限速已由 _bs_query (BaostockGate) 统一控制 — 不再裸 sleep
         finally:
             bs.logout()
 
@@ -1516,16 +1554,25 @@ class DataStore:
 
     def _backfill_via_baostock(self, symbols: list, start: str, end: str):
         """baostock 逐只拉取历史 K 线并写入 daily 表 (test-v351)."""
-        import baostock as bs, time as _t
-        bs.login()
+        import baostock as bs
+        try:
+            _bs_query("login")
+        except (BaostockBlacklisted, BaostockQuotaExceeded) as _e:
+            logger.error(f"baostock backfill aborted: {_e}")
+            return
         conn = self._connect()
         total = 0
         for i, sym in enumerate(symbols):
             code = f"sh.{sym}" if sym.startswith(('6','5','9')) else f"sz.{sym}"
             try:
-                rs = bs.query_history_k_data_plus(
-                    code, 'date,open,high,low,close,volume,amount,turn',
-                    start_date=start, end_date=end, frequency='d', adjustflag='2')
+                try:
+                    rs = _bs_query(
+                        "query_history_k_data_plus",
+                        code, 'date,open,high,low,close,volume,amount,turn',
+                        start_date=start, end_date=end, frequency='d', adjustflag='2')
+                except (BaostockBlacklisted, BaostockQuotaExceeded) as _e:
+                    logger.error(f"baostock backfill {sym}: {_e}; 停止本轮")
+                    break
                 if rs.error_code != '0':
                     continue
                 rows = []
@@ -1548,7 +1595,6 @@ class DataStore:
                     conn.commit()
                     logger.info(f"baostock backfill: {i+1}/{len(symbols)} "
                                 f"({(i+1)*100//len(symbols)}%) — {total} rows")
-                    _t.sleep(0.5)
             except Exception as e:
                 logger.warning(f"baostock {sym}: {type(e).__name__}: {e}")
         conn.commit()
@@ -1556,14 +1602,20 @@ class DataStore:
         logger.info(f"baostock backfill done: {len(symbols)} stocks, {total} new rows")
         return total
 
-    def backfill_turnover(self, date: str = None):
+    def backfill_turnover(self, date: str = None, full: bool = False):
         """回填换手率 — baostock 逐只拉取 K 线, 取 turn 字段 UPDATE daily。
 
         date: 指定时只回填该日; None 时扫描全缺口 (历史存量回填).
-        baostock 免费无需注册, 无硬限速, 建议 0.3s/只间隔 (来源: 2026-07-21 实测)。
+        full: True 时按 symbol 全区间拉取 — 2020-2024 全市场 turnover≈0
+              (tushare daily API 无此字段, 2026-07-21 实测), 逐日模式需
+              7.2M 次查询不可行; 每只 1 次查询, 5208 只 ≈ 40 分钟.
         turn 值与 tushare daily_basic turnover_rate 完全一致 (600519: 0.8492%)。
         来源: scripts/check_turnover_sources.py 实测 + baostock 官方文档。
         """
+        if full:
+            return self._backfill_turnover_full()
+        import socket as _socket
+        _socket.setdefaulttimeout(_require_cfg("data.http_timeout.baostock"))  # baostock 阻塞 socket 兜底 (2026-08-13 实测服务器挂起永久阻塞)
         import time as _time
         from datetime import datetime, timedelta
         from quant.execution.calendar import is_trading_day
@@ -1572,9 +1624,13 @@ class DataStore:
         # ── 确定回填日期范围 ──
         if date:
             # 单日模式: 只回填指定日期, 跳过全缺口扫描
+            # 排除北交所 (92xxx): baostock 不覆盖北交所, 逐日查询必然失败
+            # (来源: 2026-08-13 实测 266 只 daily 全零且 baostock query error),
+            # 北交所换手率由 tickflow (backfill_turnover_quotes) 处理.
             needs_fill = {}
             syms = [r[0] for r in conn.execute(
-                "SELECT symbol FROM daily WHERE date=? AND (turnover=0 OR turnover IS NULL)", (date,)
+                "SELECT symbol FROM daily WHERE date=? AND (turnover=0 OR turnover IS NULL) "
+                "AND symbol NOT LIKE '92%'", (date,)
             ).fetchall()]
             if syms:
                 needs_fill[date] = syms
@@ -1586,40 +1642,12 @@ class DataStore:
             gap_start_dt = datetime.strptime(date, "%Y-%m-%d")
             gap_end_dt = gap_start_dt
         else:
-            # 全量模式: 扫描所有缺口日期
-            last_good = conn.execute("SELECT MAX(date) FROM daily WHERE turnover>0").fetchone()[0]
-            if last_good is None:
-                logger.info("turnover backfill: no turnover>0 data")
-                return 0
-
-            _today = datetime.today()
-            gap_start_dt = datetime.strptime(last_good, "%Y-%m-%d")
-            gap_end_dt = _today
-
-            gap_dates = []
-            for d_offset in range((gap_end_dt - gap_start_dt).days + 1):
-                d = (gap_start_dt + timedelta(days=d_offset)).strftime("%Y-%m-%d")
-                if is_trading_day(datetime.strptime(d, "%Y-%m-%d").date()):
-                    gap_dates.append(d)
-
-            if not gap_dates:
-                logger.info("turnover backfill: no trading days in gap, nothing to do")
-                return 0
-
-            # ── 收集需回填的 (symbol, date) ──
-            needs_fill = {}
-            for d in gap_dates:
-                syms = [r[0] for r in conn.execute(
-                    "SELECT symbol FROM daily WHERE date=? AND (turnover=0 OR turnover IS NULL)", (d,)
-                ).fetchall()]
-                if syms:
-                    needs_fill[d] = syms
-
-            if not needs_fill:
-                logger.info("turnover backfill: all dates have complete turnover, nothing to do")
-                return 0
-
-            total_stocks = sum(len(v) for v in needs_fill.values())
+            # 无 date 全量模式: 历史存量缺口 (2020-2024 全市场 turnover≈0,
+            # ~720 万行) 无法用逐日模式 (需 7.2M 次 baostock 查询) — 旧实现
+            # 从 last_good (MAX turnover>0) 起扫, 历史大洞在 last_good 之前
+            # 永远扫不到 (2026-08-13 实测). 直接路由 full 模式 (每 symbol 一次查询).
+            logger.info("turnover backfill: no date → full mode (per-symbol full range)")
+            return self._backfill_turnover_full()
 
         _est_sec = total_stocks * 0.3 + total_stocks * 0.15
         logger.info(f"turnover backfill: {total_stocks} stock×dates via baostock, ~{_est_sec/60:.0f}min estimated")
@@ -1627,22 +1655,24 @@ class DataStore:
         # ── baostock login ──
         import baostock as _bs
         try:
-            _lg = _bs.login()
+            _lg = _bs_query("login")
             if _lg.error_code != '0':
                 logger.error(f"baostock login failed: {_lg.error_msg}")
                 return 0
             logger.info(f"baostock login: {_lg.error_msg}")
+            _bs_socket_timeout()
+        except (BaostockBlacklisted, BaostockQuotaExceeded) as _e:
+            logger.error(f"baostock login blocked: {_e}")
+            return 0
         except Exception as _e:
             logger.error(f"baostock import/login failed: {_e}")
             return 0
 
-        # ── baostock K线拉取间隔 ──
-        _BS_INTERVAL = _require_cfg("data.rate_limit.baostock_per_stock_sec")  # 来源: config.yaml, 默认0.3s
-
         _bs_t0 = _time.time()
         total_updated = 0
         _bs_processed = 0
-        logger.info(f"turnover backfill: starting, first progress at 50 stocks (~{_BS_INTERVAL * 50 + 7.5:.0f}s)")
+        logger.info("turnover backfill: starting, first progress at 50 stocks "
+                    "(全局限速 BaostockGate 0.5s/只, 跨进程共享)")
         for d_offset in range((gap_end_dt - gap_start_dt).days + 1):
             d = (gap_start_dt + timedelta(days=d_offset)).strftime("%Y-%m-%d")
             if not is_trading_day(datetime.strptime(d, "%Y-%m-%d").date()):
@@ -1653,16 +1683,29 @@ class DataStore:
 
             logger.info(f"turnover backfill {d}: {len(syms)} stocks via baostock")
             updated_today = 0
+            gate_blocked = False
             for i, sym in enumerate(syms):
                 code = _ts_code(sym)
-                # ── baostock 查询, 3次重试 ──
+                # ── baostock 查询, 3次重试 (2026-08-13: error_code≠0 也重试 —
+                #    旧实现仅在 Python 异常时重试, session 失效/服务抖动
+                #    (如 \"用户未登录\") 静默跳过 → 缺口永远缺) ──
                 tv = 0.0
                 for _retry in range(3):
                     try:
-                        _rs = _bs.query_history_k_data_plus(
-                            code, "date,turn",
-                            start_date=d, end_date=d,
-                            frequency="d", adjustflag="2")
+                        try:
+                            _rs = _bs_query(
+                                "query_history_k_data_plus",
+                                code, "date,turn",
+                                start_date=d, end_date=d,
+                                frequency="d", adjustflag="2")
+                        except BaostockBlacklisted as _bl:
+                            logger.error(f"turnover backfill IP 黑名单: {_bl}; 立即停止")
+                            gate_blocked = True
+                            break
+                        except BaostockQuotaExceeded as _q:
+                            logger.error(f"turnover backfill 配额: {_q}; 停止本轮")
+                            gate_blocked = True
+                            break
                         if _rs.error_code == '0':
                             while _rs.next():
                                 row = _rs.get_row_data()
@@ -1670,15 +1713,27 @@ class DataStore:
                                     tv_str = row[1] if len(row) > 1 else ''
                                     tv = float(tv_str) if tv_str and tv_str.strip() else 0.0
                                     break
+                            break
+                        # 非零 error_code: 退避重试; session 失效重登一次
+                        if _retry < 2:
+                            if "登录" in _rs.error_msg:
+                                _bs.logout()
+                                _lg = _bs_query("login")
+                                if _lg.error_code != '0':
+                                    logger.warning(f"turnover backfill {d}: baostock re-login failed: {_lg.error_msg}")
+                                else:
+                                    _bs_socket_timeout()
+                            _time.sleep(2 * (_retry + 1))  # 退避: 2s/4s
                         else:
-                            if _retry == 0 and _bs_processed < 5:
-                                logger.warning(f"turnover backfill {d}: baostock {code} error — {_rs.error_msg}")
-                        break  # 跳出重试循环
+                            if _bs_processed < 5:
+                                logger.warning(f"turnover backfill {d}: baostock {code} failed — {_rs.error_msg}")
                     except Exception as _e:
                         if _retry < 2:
                             _time.sleep(2 * (_retry + 1))  # 退避: 2s/4s/6s
                         else:
                             logger.warning(f"turnover backfill {d}: baostock {code} failed after 3 retries — {_e}")
+                if gate_blocked:
+                    break
 
                 if tv > 0:
                     conn.execute("UPDATE daily SET turnover=? WHERE symbol=? AND date=?", (tv, sym, d))
@@ -1689,9 +1744,11 @@ class DataStore:
                 if _bs_processed > 0 and _bs_processed % 200 == 0:
                     logger.info(f"turnover backfill: baostock re-login at {_bs_processed} stocks")
                     _bs.logout()
-                    _lg = _bs.login()
+                    _lg = _bs_query("login")
                     if _lg.error_code != '0':
                         logger.warning(f"baostock re-login failed: {_lg.error_msg}")
+                    else:
+                        _bs_socket_timeout()
                 if _bs_processed % 50 == 0:
                     _elapsed = _time.time() - _bs_t0
                     _rate = _bs_processed / _elapsed if _elapsed > 0 else 0
@@ -1700,7 +1757,9 @@ class DataStore:
                                 f"{_rate:.1f}stocks/s ETA={_eta/60:.0f}min today={updated_today} total={total_updated}")
                 if _bs_processed % 100 == 0:
                     conn.commit()  # 每100只提交一次, 防数据丢失
-                _time.sleep(_BS_INTERVAL)
+                # 全局限速已由 _bs_query (BaostockGate) 统一控制 — 不再裸 sleep
+            if gate_blocked:
+                break
 
             conn.commit()
             logger.info(f"turnover backfill {d}: done — {updated_today}/{len(syms)} updated")
@@ -1799,6 +1858,187 @@ class DataStore:
                            f"{_rate:.1f}stocks/s ETA={_eta:.0f}s today={total_updated}")
         logger.info(f"turnover backfill (tickflow): {total_updated} stocks for {date}")
         return total_updated
+
+    def _backfill_turnover_full(self) -> int:
+        """存量 turnover 全量模式 — 每 symbol 一次 baostock 查询拉全区间, 只更新差异行.
+
+        背景: _fetch_tushare_daily 写 daily.turnover 恒为 0 (tushare daily API
+        不含 turnover_rate, 2026-07-21 实测), 2020-2024 全市场 ~99.9% 行
+        turnover=0 → 10 个 turnover 系因子在受影响日期物化不出数据且每次全量
+        回填都重算 (永不收敛). 逐日模式 (backfill_turnover) 需 7.2M 次查询
+        不可行; 本方法每只 1 次查询 5208 只 ≈ 40 分钟.
+
+        复用成熟模式: 每 200 只重登防 session 超时 (同 _sync_adj_factor_baostock),
+        session 失效 ("用户未登录") 自动 logout+login 再重试 (2026-08-13:
+        20:48 起跑 9 分钟即遇 session 失效, 旧实现 3 次重试全败后白等 200 只),
+        config rate_limit.baostock_per_stock_sec 限速, 每 100 只 commit + 进度日志.
+
+        断点续跑 (2026-08-14): 全程进度文件记录已完成的 symbols,
+        中断后从断点继续而非重头 (旧实现 5 次起跑全中断于前排 ~700 只,
+        后续 ~4600 只永远轮不到 — 2026-08-14 DB 审计发现).
+        """
+        import time as _time
+        import datetime
+        import json as _json
+        import socket as _socket
+        from pathlib import Path as _Path
+        _socket.setdefaulttimeout(_require_cfg("data.http_timeout.baostock"))  # baostock 阻塞 socket 兜底
+        from quant.data.repos.universe_repo import UniverseRepo
+
+        _progress_path = _Path(__file__).resolve().parents[1] / "data" / ".turnover_full_progress.json"
+
+        def _load_done() -> set:
+            if not _progress_path.exists():
+                return set()
+            try:
+                with open(_progress_path, encoding="utf-8") as _f:
+                    return set(_json.load(_f).get("done_symbols", []))
+            except Exception as _e:
+                logger.warning(f"turnover backfill full: 进度文件损坏, 从头跑: {_e}")
+                return set()
+
+        def _save_done(done: set) -> None:
+            _tmp = _progress_path.with_suffix(".tmp")
+            try:
+                with open(_tmp, "w", encoding="utf-8") as _f:
+                    _json.dump({"done_symbols": sorted(done)}, _f)
+                _tmp.replace(_progress_path)
+            except Exception as _e:
+                raise RuntimeError(f"turnover backfill full: 进度文件写入失败: {_e}")
+
+        conn = self._connect()
+        import baostock as _bs
+        try:
+            _lg = _bs_query("login")
+        except BaostockBlacklisted as _bl:
+            raise RuntimeError(f"baostock IP 拉黑 (冷却期): {_bl}")
+        except BaostockQuotaExceeded as _q:
+            raise RuntimeError(f"baostock 配额: {_q}")
+        if _lg.error_code != "0":
+            raise RuntimeError(f"baostock login failed: {_lg.error_msg}")
+        _bs_socket_timeout()
+
+        symbols = UniverseRepo().get_symbols(exclude_market="BJ")
+        _BS_START = "2018-01-01"  # 覆盖因子 250d lookback 窗口
+        logger.info(f"turnover backfill full: {len(symbols)} symbols, "
+                    f"start={_BS_START}, ~{len(symbols)*0.55/60:.0f}min estimated")
+
+        def _fetch_turn(code: str) -> dict[str, float]:
+            """baostock 查询 date,turn 全区间; session 失效自动重登, 最多 3 次."""
+            last_err: Exception | None = None
+            for _attempt in range(3):
+                try:
+                    try:
+                        rs = _bs_query(
+                            "query_history_k_data_plus",
+                            code, "date,turn",
+                            start_date=_BS_START,
+                            end_date=datetime.date.today().strftime("%Y-%m-%d"),
+                            frequency="d", adjustflag="2")
+                    except BaostockBlacklisted as _bl:
+                        _bs_gate.mark_blacklisted(str(_bl))
+                        raise RuntimeError(f"baostock IP 黑名单: {_bl}")
+                    except BaostockQuotaExceeded as _q:
+                        raise RuntimeError(f"baostock 配额: {_q}")
+                except Exception as _e:  # socket/网络级异常
+                    last_err = _e
+                    _time.sleep(1.5 * (_attempt + 1))
+                    continue
+                if rs.error_code == "0":
+                    out: dict[str, float] = {}
+                    while rs.next():
+                        row = rs.get_row_data()
+                        if not row or row[1] in ("", "None"):
+                            continue
+                        try:
+                            out[row[0]] = float(row[1])
+                        except ValueError:
+                            continue
+                    return out
+                if "登录" in rs.error_msg:  # session 失效 → 重登
+                    _bs.logout()
+                    try:
+                        _lg2 = _bs_query("login")
+                    except (BaostockBlacklisted, BaostockQuotaExceeded) as _e:
+                        raise RuntimeError(f"baostock re-login blocked: {_e}")
+                    if _lg2.error_code != "0":
+                        raise RuntimeError(f"baostock re-login failed: {_lg2.error_msg}")
+                    _bs_socket_timeout()
+                else:
+                    last_err = RuntimeError(f"baostock {code}: {rs.error_msg}")
+                _time.sleep(1.5 * (_attempt + 1))
+            raise last_err if last_err else RuntimeError(f"baostock {code}: query failed")
+
+        _t0 = _time.time()
+        total_upd = 0
+        total_same = 0
+        failed = 0
+        skipped = 0
+        done = _load_done()
+        _resumed = bool(done)
+        for i, sym in enumerate(symbols):
+            if sym in done:
+                skipped += 1  # 断点续跑: 上次已完成, 跳过
+                continue
+            code = _ts_code(sym)
+            try:
+                turns = _fetch_turn(code)
+            except Exception as e:
+                failed += 1
+                logger.warning(f"backfill_turnover full: {sym} failed: {e}")
+                if isinstance(e, (BaostockBlacklisted,)) or "黑名单" in str(e) \
+                        or "配额" in str(e) or "blocked" in str(e).lower():
+                    logger.error(f"backfill_turnover full: 数据源熔断, 立即停止 (已有 {total_upd} 行落库, 进度已存断点)")
+                    break
+                continue
+
+            existing = dict(conn.execute(
+                "SELECT date, turnover FROM daily WHERE symbol=?", (sym,)).fetchall())
+            upd = []
+            for d, t in turns.items():
+                if d not in existing:
+                    continue  # daily 表无此行 (停牌/未同步), 不写
+                old = existing[d]
+                if old is None or abs(old - t) > 1e-9:
+                    upd.append((t, d))
+                else:
+                    total_same += 1
+            if upd:
+                conn.executemany(
+                    "UPDATE daily SET turnover=? WHERE symbol=? AND date=?",
+                    [(t, sym, d) for t, d in upd])
+                conn.commit()
+            total_upd += len(upd)
+            done.add(sym)
+
+            # 每 200 只重登, 防 session 超时 (baostock 免费服务 ~1-2h, 同 _sync_adj_factor_baostock)
+            if (i + 1) % 200 == 0:
+                logger.info(f"backfill_turnover full: re-login at {i+1} stocks")
+                _bs.logout()
+                try:
+                    _lg = _bs_query("login")
+                except (BaostockBlacklisted, BaostockQuotaExceeded) as _e:
+                    logger.error(f"backfill_turnover full: re-login blocked: {_e}; 停止")
+                    break
+                if _lg.error_code != "0":
+                    logger.warning(f"baostock re-login failed: {_lg.error_msg}")
+            if (i + 1) % 100 == 0:
+                _save_done(done)  # 断点: 每 100 只落盘, 中断可续
+                _el = _time.time() - _t0
+                _rate = (i + 1) / _el
+                _eta = (len(symbols) - i - 1) / _rate / 60
+                logger.info(f"backfill_turnover full: {i+1}/{len(symbols)} "
+                            f"updated={total_upd} same={total_same} "
+                            f"skipped={skipped} ({_rate:.1f}/s ETA={_eta:.0f}min)")
+
+        _save_done(done)  # 最终落盘
+        _bs.logout()
+        conn.close()
+        logger.info(f"backfill_turnover full: done — updated={total_upd} "
+                    f"same={total_same} failed={failed} skipped={skipped}"
+                    f"{' (resumed from checkpoint)' if _resumed else ''}")
+        return total_upd
+
     def _sync_industry_akshare(self, conn) -> int:
         """akshare 逐只查询行业回退 — 仅针对 industry IS NULL 的股票。
 
@@ -1925,7 +2165,7 @@ class DataStore:
         流程:
           1. 分析哪些股票缺少数据（不浪费时间拉已有数据）
           2. tushare(批量50股,qfq) → zzshare → pytdx(通达信TCP) → baostock(证券宝) → tencent → akshare → tickflow → longbridge
-          3. OHLCV 完成后，Baostock 补充换手率
+          3. OHLCV 完成后，Baostock 补充换手率 (nightly backfill_turnover)
 
         symbols: None 表示自动分析缺口并只拉缺失/不足的股票
         返回: 新写入的行数
@@ -1998,8 +2238,8 @@ class DataStore:
             # zzshare/pytdx=前复权, tencent/akshare=em qfq 前复权。
 
             # ── 全量拉取源选择 (多源回退, 按优先级排序) ──
-            # 各源简介:
-            #   - tushare:     批量50股, qfq✅, turnover✅. 首家优选.
+            # 各源简介 (turnover 实际值 2026-07-21/08-13 实测):
+            #   - tushare:     批量50股, qfq✅, turnover✗ (daily API 无此字段 → 写 0, 由 backfill_turnover 后补).
             #   - zzshare:     逐只拉取, 前复权, turnover=0.
             #   - pytdx:       通达信 (财富趋势 688318) — TCP 直连, 无需API key, 30年+稳定.
             #   - baostock:    证券宝 — 免费开源, qfq 前复权, turnover✅. 逐只 0.3s, 兜底可靠.
@@ -2008,8 +2248,9 @@ class DataStore:
             #   - tickflow:    批量拉取, adj_factor 转 qfq, 无 turnover. 免费版无批量权限.
             #   - longbridge:  批量拉取, 无 turnover. 需凭证.
             # akshare 排在 zzshare/pytdx/tencent 之后: IP 封禁期内减少无效重试 (4次×3s=12s/批).
-            # 设计决策: 速度优先于 turnover 完整性 — tushare 首位的 99%+ 成功率保证了 turnover 覆盖率。
-            # 若 tushare 某批失败, 回退源(无 turnover)接盘 → backfill_turnover 后续补 turnover。
+            # 设计决策: 速度优先 — tushare 首位 99%+ 成功率; turnover 完整性由
+            # nightly backfill_turnover 补齐 (2026-08-13: 2020-2024 历史存量
+            # 由 backfill_turnover(full) 一次性回填).
             # TLS 指纹对抗: tencent/akshare 使用 curl_cffi 模拟 Chrome 131
             # 来源: 2026-07-20 scripts/test_all_sources_rate.py 全源实测; 2026-07-21 全链路逻辑分析
             all_sources = [

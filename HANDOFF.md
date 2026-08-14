@@ -2,6 +2,183 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+### v488 signals 窗口修正 08:00→08:30 (2026-08-14)
+
+**原因**: `manifest.py` signals `schedule="08:30"` 仅为展示标签, orchestrator 实际按
+`window=(8:00,15:30)` 触发 → 08:00:03 就运行 (08-14 task_runs 实锤), 抢跑在
+daily_repair (08:00-08:30, 本意先做 T+1 补拉) 之前, 违背 manifest 自述意图.
+**改动**: `quant/scheduler/manifest.py` signals window → (8:30,15:30), 与 daily_repair
+窗口严格衔接, 保证 08:00 补拉链先完成再生成信号.
+
+### v487 信号生成 failed 根因修复 — 故障链三层 (2026-08-14)
+
+**故障链 (08-14 08:00 signals failed, 界面显示今日失败)**:
+1. 08-13 晚间链 `fund_flow` 东财源 curl 连接中断 (30 连败 → cooldown), `limit_down_pool`/`margin_detail` 同步失败, 修复后仍败 → `daily_data`=**partial**
+2. evening.py fail-loud: daily_data≠ok → **整链 abort** → factor_cache 未物化 08-13 因子
+3. 08-14 08:00 signals 读 factor_store 空 → RuntimeError → **冒泡杀死 orchestrator 主循环** (orchestrator.py:360 run_once 无兜底) → 当日全部剩余调度 (daily_repair/execute/monitor/evening_chain) 瘫痪
+
+**修复 (2 处)**:
+- `quant/scheduler/evening.py`: daily_data=partial **不再中止链** — partial 仅表示 aux 表审计失败, 核心 daily/valuation 主流程已 ok; factor_cache 内 unavailable_factors 自动剪除超 SLO 因子, 链继续保证次日 signals 可用; aux 缺口由 08:00 daily_repair 补
+- `quant/scheduler/orchestrator.py`: inline 任务 (signals/execute/snapshot/reconcile) 崩溃 **不再杀死主循环** — try/except 包裹 run_once, 异常记日志后继续; task_runs 已由 _dispatch 标 failed, 不会漏状态
+
+**待用户执行** (backfill 完成后):
+1. `bash scripts/restart.sh` — 重启 web+orchestrator (今日 orchestrator 已死, 必须重启恢复调度)
+2. 物化 08-13 因子: `PYTHONPATH=. .venv/bin/python -c "from quant.scheduler.factor_cache import _run; _run('2026-08-13','2026-08-13')"`
+3. 重跑信号: `PYTHONPATH=. .venv/bin/python -c "from quant.scheduler.signals import _run; _run('2026-08-14')"`
+4. 补 aux 表: repair_and_reaudit 脚本 (下一步给全)
+
+### v486 turnover full 断点续跑 — 解决"跑了很多次还是缺"根因 (2026-08-14)
+
+**根因审计 (DB 实证)**:
+1. **无任何代码删除 turnover** — 无 DELETE daily; 唯一写点 store.py:2280 `ON CONFLICT DO UPDATE` 带 `turnover=CASE WHEN excluded.turnover>0 THEN excluded.turnover ELSE turnover END` 保护, tushare 0 值不覆盖已补数据。已补股票的 2020/2024 交集 653/656 — 数据持久, 不是被删。
+2. **真因: full 模式 5 次起跑全中断, 无断点续跑**。日志: 08-13 19:23 手动 full 死在第 ~700 只 (20:50 session 失效 → 22:00 黑名单); 08-14 07:53 又从头跑前 300 只 updated=0 (早已补过)。每轮从符号列表头开始, 中断后无"已处理到哪" — 前排反复被查, 后排 ~4600 只**永远轮不到**。656/715/744 只集合 = 深市前排代码 (000/002/001/300), 正是中断位置; 逐年比例 14-17% 因股票总数增长而微降, 非数据丢失。
+3. 2019 amount 缺失是另一旧账 (2019 数据源当时没写 amount 字段, 非本次问题)。
+
+**改动** (`quant/data/store.py` `_backfill_turnover_full`):
+- 进度文件 `quant/data/.turnover_full_progress.json` (`{"done_symbols": [...]}`), 每 100 只 + 结束时落盘 (原子写 tmp+replace); 损坏则 WARNING 从头跑
+- 循环开头 `if sym in done: skipped++; continue` — set 查询, 与符号排序无关 (get_symbols 无 ORDER BY 不影响正确性)
+- 熔断 break 前进度已存, 下次直接续跑
+- 预生成初始断点: DB 中 2024 有值的 744 只已写入 (跳过前排重查), 剩余 ~4464 只将从断点后继续
+
+**待用户执行**: 停掉旧进程 (PID 42800, Ctrl+C) → `PYTHONPATH=. .venv/bin/python scripts/backfill_turnover.py` → 一次 ~50min 补完剩余 → verify 重跑确认。
+
+### v485 baostock 全局限速门 (BaostockGate) — 防 IP 再被拉黑 (2026-08-14)
+
+**背景**: 2026-08-13 全市场回填被 baostock IP 拉黑 (login error_code 10001011)。根因: 6+ 处调用点各自裸 sleep (0.15s~0.5s) 限速, 跨进程互不知晓 — nightly 链 + 手动回填同 IP 并发叠加, 频次远超免费服务容量。用户 08-14 换热点新 IP 解封, 要求先设计防黑名单机制再补数。
+
+**设计** (新增 `quant/utils/baostock_gate.py`):
+| 层 | 机制 |
+|------|------|
+| 跨进程令牌桶 | fcntl 文件锁 + 状态文件 `quant/data/.baostock_state.json` — 所有 baostock 请求 (登录/日线/财务/复权/股本) 经 `bs_query()` 统一入口, scheduler subprocess 链与手动回填共享同一限速, 不再各自 sleep |
+| 黑名单熔断 | 检测到 error_msg 含"黑名单" → `mark_blacklisted()` 写时间戳; 冷却期 (`baostock_blacklist_cooldown_sec`=86400s) 内所有 `acquire()` 直接抛 `BaostockBlacklisted`, **一个请求都不发** — 防止高频重试加重封禁 |
+| 配额上限 | 每分钟 / 每日请求数上限 (`baostock_calls_per_minute`=120 / `per_day`=50000), 超限抛 `BaostockQuotaExceeded` (fail-fast 不静默降级) |
+| 均一间隔 | `baostock_per_stock_sec` 0.3→0.5s; 进程内 + 跨进程双重间隔保证, ±10% 抖动防规律节奏 |
+
+**改动** (7 文件):
+- 新增 `quant/utils/baostock_gate.py` (BaostockGate + bs_query 统一入口 + _NeedWait 内部信号)
+- `quant/data/store.py` 5 处调用点接入: `_sync_industry` / `_sync_adj_factor_baostock` / `_fetch_baostock_daily` / `_backfill_via_baostock` / `backfill_turnover`(逐日+full) — 裸 sleep 全部移除, 黑名单/配额异常立即 break 停止本轮
+- `quant/data/stocks_snapshot.py` refresh_total_shares 接入 (nightly 周度股本刷新)
+- `scripts/backfill_financials_bs.py` 重写: login+逐股查询走 gate, 黑名单/配额停止本轮 (新增 TARGETS 不变)
+- `scripts/backfill_valuation_baostock.py` + `scripts/data_backfill_integrity.py` 接入
+- `quant/config/config.yaml`: baostock_per_stock_sec 0.3→0.5 + 新增 3 配置项
+- `daily_basic.py` 已 DEPRECATED 跳过
+
+**验证**:
+1. 并发测试: 2 线程 (模拟跨进程) 12 请求全部被 0.5s 间隔串行化 (总耗时 5.68s, 最小间隔 0.501s) — 无并发叠加
+2. 黑名单熔断: mark_blacklisted 后 acquire 抛 86400s 冷却错误 ✓
+3. 单日真实回填 2026-08-12: 297/297 只全更新, 166s, 1.8st/s — 无封禁
+
+**联动**: baostock 解封后待跑: `backfill_turnover` full 模式 (5208 只 ≈ 45-70min) → financials_bs (income 2023 + cash_flow 2019-2023, 24 季度 × 5200 只 ≈ 12.5 万次查询 — **单日配额 50000 上限, 需分 3 天跑**, 每日重跑自动续) → 重跑 verify 确认全绿。
+
+### v484 财务数据 JQ 回填修复 — 2025Q4+2026Q1 补齐 18600 行 (2026-08-14)
+
+**背景**: verify 暴露财务三表 2025Q4 不足 (income/cashflow 仅 1083、balance 仅 963) 与 2026Q1 全 0。实测 JQData 账号权限窗口 = statDate 2025-05-06 ~ 2026-05-13 (get_query_count 配额 100 万/日), 2019-2023 历史季度请求返回空 (2024Q4 仅 13 行) — 历史缺口仍待 baostock 解封。
+
+**改动** (全部在 `scripts/backfill_financials_jq.py`):
+| 项 | 内容 |
+|------|------|
+| 原脚本 3 bug | ① `for r in rows` — `rows` 未定义直接 NameError (旧版残留); ② `date=` 参数是"截至日快照"语义 (latest-as-of per code), 实测 2025Q4 只返回 2 行 — 必须用 `statDate='YYYYqN'` 报告期参数才返回全市场 ~5200 行; ③ 按年跳过 (>100 行跳过 2025) — 2025 有 6232 行但 2025Q4 仍缺 |
+| 列映射 | JQData 返回列与库表列名一致 (蛇形), 仅 pubDate→pub_date 需映射; 按 PRAGMA table_info 动态取列, 过滤不存在列 |
+| NaN 处理 | `pd.isna(v)` → None (原 `v != v` 对 numpy 类型失效) |
+| 去重按表 | `existing` 改为 `existing_by_tbl[表]` — 原共享 set 导致 income/cashflow 跳过计数被 balance 行污染 (首轮 income 2026q1 假 skip) |
+
+**结果** (实测 3 分钟): balance 2025Q4 963→5197、2026Q1 0→5199; income 2025Q4 1083→5184、2026Q1 0→5199; cashflow 同 income — 共 18600 行, 三表两季度全部达标 (≥4500 阈值)。
+
+**验证**: 重跑脚本幂等 — 已完整季度 (≥4500 行) 全部 skip, 无重复插入 (ON CONFLICT DO UPDATE)。
+
+**联动**: verify 脚本 financial 缺口项 2025Q4/2026Q1 预计转绿; 剩余缺口 = daily.amount 2019 全年 + daily.turnover 2020-2026 (~15% 覆盖) + financial 2019-2023 (JQ 权限外), 全部依赖 baostock 黑名单解除。
+
+### v483 物化 todo 粒度 (date,factor) — 消除整日期白算 + 缺数据因子 blocked 剔除 (2026-08-14)
+
+**背景**: 用户指出物化"永不收敛"根因是设计缺陷: (1) **todo 按日期粒度** — 某日期缺任意 1 因子, 该日期 94 因子全量重算 (白算源头); (2) **缺数据是静默空结果** — `if s.empty: continue` 无日志、无剔除、日期永远 pending → 每轮全量回填白算数小时。用户要求: 因子缺数据 → 写日志说明原因 → 从全量剔除 → 继续下一因子。
+
+**改动** (全部在 `quant/factor/store.py`):
+| 项 | 内容 |
+|------|------|
+| todo 粒度 | `todo` (日期列表) → `todo_map: dict[date, list[factor]]` (该日期**缺失因子**列表); worker 内 `compute_all_factors(factor_names=missing)` 只算缺失因子, 已物化因子不重算 |
+| 空结果捕获 | worker `for fname in missing` 循环: `fv.get()` 非 Series / dropna 空 / 符号映射全 invalid → 记 `empty_factors[(date, factor)]` 返回父进程, 不再静默 continue |
+| blocked 机制 | 空结果因子 → `_log.warning("factor X blocked at date — 依赖数据缺失/不足, 已剔除后续重算")` + 写入 `factor_cache/blocked.json` `{date: {factor: ts}}`; 下次 todo 构建时从 missing 剔除 |
+| blocked TTL | `_load_blocked` 按 `cache_checkpoint_ttl_sec` (86400s) 过期过滤 — **数据补齐后自动恢复**: TTL 过期 → 重试一次 → 算出非空即解除, 仍空则重新记录 |
+| ZERO-dates 误报修复 | 收敛检查只针对本次 todo 内的因子 — 已物化因子不在 todo 属正常, 不计入 "ZERO dates" 误报 |
+| 新增 `_save_blocked`/`_clear_blocked_for` | 持久化 + 手动解除 (故障排查用) |
+
+**验证** (冒烟, 2024-02-21 单日, 9 backtesting 因子): 第一轮 dt_streak 空结果 → WARNING 日志 + blocked.json 记录 `{2024-02-21: {dt_streak: ts}}`; 第二轮同日期 **3 秒全部跳过零重算** (`all dates already fully materialized, skip`) — 收敛达成。全量回填时: turnover 6 因子/财务因子在数据补齐前只算一次记 blocked, 不再每轮白算数小时。
+
+**联动**: 表名 bug 修复 (financial_cash_flow→financial_cashflow, SQLite 重命名 + 7 处代码/脚本引用) 与 verify 脚本 (scripts/verify_materialize_inputs.py, 物化前逐日输入验证) 在 v482 记录。补数仍依赖 baostock 黑名单解除。
+
+### v482 物化输入完整性 — financial_cashflow 表名修复 + 全量验证脚本 (2026-08-14)
+
+**背景**: 用户要求物化前从 2019-01-01 顺序验证输入数据完整性与准确性（非抽查，缺失即阻断物化）。排查发现 3 个数据坑 + 1 个表名 bug：
+
+| 坑 | 事实 | 影响 |
+|------|------|------|
+| **financial_cashflow 表名 bug** | jq_financials.py 建表 `financial_cash_flow`（下划线），而物化代码/preload/duckdb/prometheus 全读 `financial_cashflow`（无下划线） | 现金流数据物理存在（2024-2025，21697 行）但物化永远读空表 → ocfp/gp_ta 因子全废 |
+| financial_income | 2019-2023 每年仅 6~1047 行（全市场应 ~5000/季），2024-2025 正常 | sue/earnings_growth_yoy/revenue_growth_yoy/gross_margin_diff 等利润表因子 2019-2023 全废 |
+| financial_balance | 2023 仅 2243 只（缺一半）、2024 不全 | accruals/asset_growth/debt_ratio 等 2023-2024 部分废 |
+| financial_cash_flow | 2019-2023 完全缺失（0 行），仅 2024-2025 有 | ocfp/gp_ta 2019-2023 全废 |
+
+**数据源可用性实测** (2026-08-14): tushare token 有效但无 income/cashflow/balancesheet 接口权限；JQData auth 成功但账号权限仅 2025-05-06~2026-05-13；**baostock 是补 2019-2023 财务历史唯一可行源，但 IP 被封禁中，待解除后跑 backfill_financials_bs.py**（income 2023 缺口 + cashflow 2019-2023 全量，TARGETS/API_MAP 已更新）。
+
+**改动**:
+| 项 | 内容 |
+|------|------|
+| SQLite | `ALTER TABLE financial_cash_flow RENAME TO financial_cashflow`（real 数据保留，21697 行） |
+| jq_financials.py | ensure_tables 建表名 + idx + upsert_cash_flow INSERT 全改 `financial_cashflow` |
+| missing.py / fundamental.py | 直查 SQL 表名改 `financial_cashflow`（此前物化 fallback 路径会崩溃 "no such table"，实际走 aux 分支没触发） |
+| 回填脚本 ×3 | backfill_financials.py / backfill_financials_jq.py / backfill_financials_bs.py / data_backfill_integrity.py 表名引用统一 |
+| scripts/verify_materialize_inputs.py | **新验证脚本**（方案 docs/plan_materialize_input_verification.md）: 逐日检查 daily 行数 + close>0 + **turnover>0 比例 ≤95%**（值有效性，非仅行数）、daily_valuation 覆盖 ≥ daily 90% + pe/mv 非空、benchmark 与 daily 对齐缺日、财务三表按报告期 (Q1-Q4) 每季 ≥1000 行、margin 非负 + 交易日 ≥50、lhb 日期非空、stocks 静态列缺失率。**任一 fail → 退出码 1 → 阻断物化**。用法: `PYTHONPATH=. .venv/bin/python scripts/verify_materialize_inputs.py --start 2019-01-01 --end 2026-08-13` |
+
+**流程约束**（用户规则）: (1) 物化前必须跑 verify 全绿; (2) 长 DB 任务写成命令由用户执行，Agent 做其他事; (3) 财务 2019-2023 补数依赖 baostock 黑名单解除（probe: login error_code==10001011 即仍封禁），解除后跑 backfill_financials_bs.py（先 5 只 probe 再全量）; (4) 补数+verify 全绿后才允许 materialize_full。
+
+**验证**: 8 个修改文件 ast.parse 全过; VERSION=test-v482。verify 脚本执行结果待用户终端跑出。
+
+### v481 turnover 数据修复 — baostock full 回填 (2026-08-13)
+
+**背景**: 排查物化"永不收敛"根因 (10 因子 2020 覆盖缺失反复重算) 发现: `_fetch_tushare_daily` 写 daily.turnover 恒为 0 (tushare daily API 不含 turnover_rate, 2026-07-21 实测, store.py:923 注释); 2020-2024 全市场 ~99.9% 行 turnover=0 (仅 4 只 symbol 非零), 2025 起部分 symbol 由 baostock/sina 同步才有真值, 2026-08-12 仍有 297/5191 只 (5.7%) 零值且 volume>0。影响: turnover_accel/ctr_20d/hl_volume_20d/turnover_adj_amihud_20d/turnover_anomaly/turnover_rev_5d/abn_turnover/abn_turnover_resid/accruals/sue 等 10 因子在受影响日期物化空结果 → 日期永远 pending → 每次全量回填白算数小时。
+
+**改动**:
+| 项 | 内容 |
+|------|------|
+| store.py | `backfill_turnover` 新增 `full=True` 模式 → `_backfill_turnover_full()`: 每 symbol 一次 baostock 查询拉全区间 (2018-01-01→今), 只 UPDATE 差异行, 幂等; 复用成熟模式: `datasource_retry` 指数退避 (3 次), 每 200 只重登防 session 超时, config `rate_limit.baostock_per_stock_sec` 限速, 每 100 只 commit+进度日志 |
+| scripts/backfill_turnover.py | 新入口: 默认 full 模式 (存量 7.2M 行逐日模式需 7.2M 次查询不可行), `--date` 单日缺口 (调度 `daily_data.py` 每日增量仍用原逐日路径) |
+
+逐日模式 `_ts_code` 格式 (000001.SZ) 实测 baostock 两种格式均接受, 无隐藏 bug。
+
+**验证**: 40 只并行联测 0.7min 无错误; 全市场 5208 只 ETA ~39min; 幂等 (已更新行跳过)。曾用 multiprocessing.Pool 并行方案, 并发 baostock login 互踢 ("用户未登录") 弃用, 改回单进程成熟模式。
+
+**调度任务侧修复** (用户要求审查 daily_data 链的 turnover 回填, 发现 3 处问题):
+| 行 | 问题 | 修复 |
+|------|------|------|
+| `backfill_turnover` no-date 模式 | docstring 声称"扫描全缺口", 实际只扫 `MAX(turnover>0)` 之后 — 2020-2024 历史大洞在 last_good 之前**永远扫不到** (即"历史存量回填"从未生效) | no-date 直接路由 `_backfill_turnover_full()` (每 symbol 一次查询) |
+| 逐日模式查询循环 | baostock `error_code != '0'` (session 失效/服务抖动, 如"用户未登录") 只打一次 warning 就 break — **静默跳过不重试**, 缺口永远缺 | 非零 error_code 退避重试 (2s/4s), 含"登录"字样先 logout+login 再试; 3 次后打 warning |
+| 逐日模式 needs_fill | 含北交所 (92xxx, 266 只) — baostock 不覆盖北交所, 每夜必败白查 | `AND symbol NOT LIKE '92%'` 排除 (北交所换手率归 tickflow `backfill_turnover_quotes`) |
+| baostock socket | 底层无超时 (socketutil 未 settimeout), 服务器挂起时 recv 永久阻塞 — 实测 full 回填连续 2 次卡死 (0 写入/0 日志) | 新增 `_bs_socket_timeout()`: login/re-login 后对 `context.default_socket` 强制 `settimeout(30)`; config 新增 `data.http_timeout.baostock: 30` |
+| full 模式 session 失效 | "用户未登录" 3 次重试全败静默, 白等至 200 只重登点 | `_fetch_turn` 改为内部 3 次重试, 检测 "登录" 字样即 logout+login+重设 socket 超时 |
+| baostock IP 黑名单 | 08-13 21:48 起 002244 后全部失败 "黑名单用户，请与管理员联系" — 今日用量叠加 (晚间链 5192 只 + 3 轮全量) 触发 IP 级封禁, 连 login 都拒绝 (error 10001011) | ① 全量/逐日两模式均加熔断: 检测 "黑名单" 立即 raise, 不再 94 次白打加重封禁 ② 已停回填, 待封禁解除后重启 (probe: `baostock.login` error_code==10001011 即仍封禁) |
+
+另修正 `update_daily` 误导注释: "tushare turnover✅ 保证覆盖率" → 实测 tushare daily API 无 turnover 字段 (写 0), turnover 靠 nightly backfill + full 回填保障。`test_evening_chain` 两用例当晚间链运行时因 `database is locked` 失败 — 环境锁竞争非代码问题, 晚间链结束后复测通过。
+
+**联动**: materialize_full 全量回填 (v480 验证通过后) 中道发现 chunk 6-9 仍白算 — turnover 未补前 10 因子永不可物化, 已停 (用户确认), 待本回填完成后重启一次即收敛。重要: **materialize_full 必须等晚间链 (daily_data→factor_cache→attribution) 全部结束后再启动** — 两者并发写 factor cache parquet/_checkpoint.json 有损坏风险。
+
+### v480 物化内存修复 (B 方案) — 紧凑数组 + 边收边写 (2026-08-13)
+
+**背景**: 2026-08-13 10:22 全量回填 (5208 symbols × 94 factors × 1602 dates) 在 chunk 1 worker 阶段 RSS 40+GB, macOS 卡死, 日志中断 (app.log:15560)。根因: worker 结果用 Python tuple 列表逐行累积 (~150B/行 × 50 日期 × 94 因子 = ~3GB/worker), 父进程 `[ar.get() for ...]` 一次性收齐 4 个结果 (~14GB), fork COW ×4 复制 ~5GB 共享数据, pickle 序列化双份驻留; aux financial 三表无日期下界全历史入内存。
+
+**改动** (全部在 `quant/factor/store.py` + `_preload.py` + config.yaml):
+
+| 项 | 内容 |
+|------|------|
+| B1 | worker 结果改紧凑 numpy 数组 `(symbol_i16 ndarray, value_f32 ndarray)`, 单 (factor,date) 750KB→15KB |
+| B2 | 父进程边收边写: 新增 `_consume_worker_result()`, 每收到一个 worker 结果立即分组写 part + 更新 meta, 不再累积全 chunk |
+| B3 | `preload_aux_data_chunk` financial 三表加 `stat_date >= fin_start` 下界, 新增配置 `factor.compute.financial_lookback_days: 730` (来源注释: YoY 410d / TTM 460d / 8 季度缓冲) |
+| B4 | worker 内向量化符号映射 (`Index.map(dict)` C 层 get_indexer) 替代 `dropna().items()` 逐行循环 (2350 万次/worker) |
+
+`_write_factor_date_part` 同步改为数组直拼落盘 (消除每行 dict 构造 ~300MB/因子瞬态); 每 chunk 新增 consumed worker result 日志 (模板 9)。
+
+**验证**: 复现原场景 (200 天 × 5208 × 94 因子整 chunk, 4 workers): 峰值 RSS **2.98GB** (修复前 40+GB, 8× 降幅), 56,161,317 行, failed_dates=[], 2095s 完成, macOS 无卡顿; 落盘无 part 残留, checkpoint 正常清除, load 抽查 100% 覆盖。test_v472/test_v305 全套 **393 passed**; VERSION=test-v480。
+
+**遗留**: 全量回填 1602 日期中 2020-11-02 之后部分仍未物化 (原 10:22 任务被卡死中断), 需用户重跑 `scripts/materialize_full.py` (checkpoint 已清, 按 per-date manifest 增量, 现内存安全)。
+
 ### v479 数据健康闭环 — 表注册表 / 审计 / 自动补拉 (2026-08-13)
 
 **背景**: 诊断出 5 根因 (一半表无同步任务; 子同步 try/except 吞错; 检测只看 MAX(date) 不看覆盖/缺口; lhb/limit_up 无回头补拉; 回填仅人工一次性脚本)。

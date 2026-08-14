@@ -293,7 +293,7 @@ def compute_piotroski_fscore(data, date, window=None, fundamentals=None, aux=Non
         ).fetchall()
         cf_rows = conn.execute(
             "SELECT symbol, stat_date, net_operate_cash_flow "
-            "FROM financial_cash_flow WHERE stat_date <= ? "
+            "FROM financial_cashflow WHERE stat_date <= ? "
             "ORDER BY symbol, stat_date DESC",
             (date,)
         ).fetchall()

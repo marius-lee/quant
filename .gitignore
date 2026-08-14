@@ -46,3 +46,5 @@ quant/quant/
 
 # 运行时状态标记
 quant/data/.fund_flow_cooldown
+quant/data/.baostock_state.json
+quant/data/.turnover_full_progress.json

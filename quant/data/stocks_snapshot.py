@@ -84,7 +84,8 @@ def refresh_total_shares() -> int:
     c = _conn()
     syms = [r[0] for r in c.execute(
         "SELECT symbol FROM stocks WHERE symbol NOT LIKE '92%'").fetchall()]
-    lg = bs.login()
+    from quant.utils.baostock_gate import bs_query, BaostockBlacklisted, BaostockQuotaExceeded
+    lg = bs_query("login")
     if lg.error_code != "0":
         raise RuntimeError(f"baostock login failed: {lg.error_msg}")
     t0 = _time.time()
@@ -92,8 +93,14 @@ def refresh_total_shares() -> int:
     for i, sym in enumerate(syms):
         code = ("sh." if sym[0] in "6" else "sz.") + sym
         val = None
+        gate_blocked = False
         for y, q in ((2026, 2), (2026, 1), (2025, 4)):
-            rs = bs.query_profit_data(code=code, year=y, quarter=q)
+            try:
+                rs = bs_query("query_profit_data", code=code, year=y, quarter=q)
+            except (BaostockBlacklisted, BaostockQuotaExceeded) as e:
+                print(f"refresh_total_shares: {e}; 停止本轮", flush=True)
+                gate_blocked = True
+                break
             if rs.error_code != "0":
                 continue
             while rs.next():
@@ -107,6 +114,8 @@ def refresh_total_shares() -> int:
                     continue
             if val:
                 break
+        if gate_blocked:
+            break
         if val:
             c.execute("UPDATE stocks SET total_shares=? WHERE symbol=?", (round(val, 0), sym))
             updated += 1

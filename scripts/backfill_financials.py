@@ -108,7 +108,7 @@ def _upsert_one(conn, table: str, row: dict):
 def _load_existing(conn) -> set:
     """返回所有表的已有 (symbol, stat_date) 集合 (跨三表合并)。"""
     existing = set()
-    for tbl in ["financial_balance", "financial_income", "financial_cash_flow"]:
+    for tbl in ["financial_balance", "financial_income", "financial_cashflow"]:
         rows = conn.execute(f"SELECT symbol, stat_date FROM {tbl}").fetchall()
         existing.update((r[0], r[1]) for r in rows)
     return existing
@@ -148,7 +148,7 @@ def main():
         for report_type, mapping, table_name in [
             ("fzb", BALANCE_MAP, "financial_balance"),
             ("lrb", INCOME_MAP, "financial_income"),
-            ("llb", CASHFLOW_MAP, "financial_cash_flow"),
+            ("llb", CASHFLOW_MAP, "financial_cashflow"),
         ]:
             try:
                 df = client.get_financial_report(symbol, report_type=report_type, num=50)

@@ -1037,13 +1037,13 @@ def compute_ocfp(fundamentals, date, financials=None):
     exclude_inds = {'银行', '非银金融', '房地产', '综合金融'}
     valid_syms = [s for s in syms if s in mv_map and ind_map.get(s, '') not in exclude_inds]
 
-    # TTM经营现金流: 直接查 financial_cash_flow 表最近4个季度
+    # TTM经营现金流: 直接查 financial_cashflow 表最近4个季度
     ocfp_vals = {}
     _conn = _db_connect()
     placeholders = ",".join("?" for _ in valid_syms)
     cf_df = pd.read_sql_query(
         f"""SELECT symbol, stat_date, net_operate_cash_flow
-            FROM financial_cash_flow
+            FROM financial_cashflow
             WHERE stat_date >= date(?, '-1 year')
               AND stat_date <= ?
               AND symbol IN ({placeholders})

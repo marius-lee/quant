@@ -83,13 +83,20 @@ def macro_cleanup() -> None:
 # ── benchmark (baostock) ───────────────────────────────────────────────────
 def benchmark() -> None:
     import baostock as bs
-    lg = bs.login()
+    from quant.utils.baostock_gate import bs_query, BaostockBlacklisted, BaostockQuotaExceeded
+    try:
+        lg = bs_query("login")
+    except (BaostockBlacklisted, BaostockQuotaExceeded) as e:
+        raise SystemExit(f"baostock login blocked: {e}")
     assert lg.error_code == "0", f"baostock login failed: {lg.error_msg}"
     fields = "date,open,high,low,close,volume,amount"
-    rs = bs.query_history_k_data_plus("sh.000300", fields,
-                                      start_date="2019-01-01",
-                                      end_date="2099-12-31",
-                                      frequency="d", adjustflag="3")
+    try:
+        rs = bs_query("query_history_k_data_plus", "sh.000300", fields,
+                      start_date="2019-01-01",
+                      end_date="2099-12-31",
+                      frequency="d", adjustflag="3")
+    except (BaostockBlacklisted, BaostockQuotaExceeded) as e:
+        raise SystemExit(f"baostock benchmark blocked: {e}")
     assert rs.error_code == "0", f"query_history_k_data_plus failed: {rs.error_msg}"
     c = _conn()
     n = 0
@@ -135,7 +142,7 @@ _FIN_MAP = {
                    "n_income": "net_profit", "total_profit": "total_profit",
                    "income_tax_expense": "income_tax_expense", "admin_expense": "administration_expense"},
         "key": "ts_code", "date_key": "end_date"},
-    "financial_cash_flow": {
+    "financial_cashflow": {
         "api": "cashflow", "periods": ["20190331", "20190630", "20190930", "20191231",
                                        "20200331", "20200630", "20200930", "20201231",
                                        "20210331", "20210630", "20210930", "20211231",
@@ -295,6 +302,7 @@ def total_shares() -> None:
     逐只 5000+ 请求 1/h 不可行). 取最新已披露报告总股本 (2026Q2 → Q1 → 2025Q4).
     """
     import baostock as bs
+    from quant.utils.baostock_gate import bs_query, BaostockBlacklisted, BaostockQuotaExceeded
     c = _conn()
     syms = [r[0] for r in c.execute(ALL_SYMS).fetchall()]
     need = []
@@ -305,17 +313,26 @@ def total_shares() -> None:
     print(f"total_shares: {len(need)}/{len(syms)} 只待补 (已填充 {len(syms) - len(need)})")
     if not need:
         return
-    lg = bs.login()
+    try:
+        lg = bs_query("login")
+    except (BaostockBlacklisted, BaostockQuotaExceeded) as e:
+        raise SystemExit(f"baostock login blocked: {e}")
     if lg.error_code != "0":
         raise SystemExit(f"baostock login failed: {lg.error_msg}")
 
     t0 = _time.time()
     updated, miss = 0, []
+    gate_blocked = False
     for i, sym in enumerate(need):
         code = ("sh." if sym[0] in "6" else "sz.") + sym
         val = None
         for y, q in ((2026, 2), (2026, 1), (2025, 4)):
-            rs = bs.query_profit_data(code=code, year=y, quarter=q)
+            try:
+                rs = bs_query("query_profit_data", code=code, year=y, quarter=q)
+            except (BaostockBlacklisted, BaostockQuotaExceeded) as e:
+                print(f"total_shares: {e}; 停止本轮", flush=True)
+                gate_blocked = True
+                break
             if rs.error_code != "0":
                 continue
             while rs.next():
@@ -329,6 +346,8 @@ def total_shares() -> None:
                     continue
             if val:
                 break
+        if gate_blocked:
+            break
         if val:
             c.execute("UPDATE stocks SET total_shares=? WHERE symbol=?", (round(val, 0), sym))
             updated += 1
@@ -423,7 +442,7 @@ def verify() -> None:
                     ("benchmark_daily", "date"), ("limit_up_pool", "date"),
                     ("lhb_detail", "trade_date"), ("margin_detail", "date"),
                     ("financial_balance", "stat_date"), ("financial_income", "stat_date"),
-                    ("financial_cash_flow", "stat_date"), ("dividend", "ex_date")]:
+                    ("financial_cashflow", "stat_date"), ("dividend", "ex_date")]:
         rng = c.execute(f"SELECT MIN({dcol}), MAX({dcol}), COUNT(*) FROM {t}").fetchone()
         print(f"  {t}: {rng}")
 

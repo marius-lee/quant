@@ -9,6 +9,7 @@ import sys
 import time
 
 from quant.config.paths import MARKET_DB
+from quant.utils.baostock_gate import bs_query, BaostockBlacklisted, BaostockQuotaExceeded
 
 DATES = sys.argv[1:] or None  # 未指定 → 自动差分定位
 
@@ -33,7 +34,10 @@ def main() -> None:
     if not miss:
         return
 
-    lg = bs.login()
+    try:
+        lg = bs_query("login")
+    except (BaostockBlacklisted, BaostockQuotaExceeded) as e:
+        raise SystemExit(f"baostock login blocked: {e}")
     if lg.error_code != "0":
         raise SystemExit(f"baostock login failed: {lg.error_msg}")
 
@@ -46,7 +50,10 @@ def main() -> None:
             return _shares[sym]
         code = ("sh." if sym[0] in "6" else "sz.") + sym
         for y, q in [(2026, 1), (2025, 4)]:
-            rs = bs.query_profit_data(code=code, year=y, quarter=q)
+            try:
+                rs = bs_query("query_profit_data", code=code, year=y, quarter=q)
+            except (BaostockBlacklisted, BaostockQuotaExceeded) as e:
+                raise SystemExit(f"baostock total_shares {sym}: {e}")
             if rs.error_code != "0":
                 continue
             while rs.next():
@@ -63,9 +70,15 @@ def main() -> None:
         updated = 0
         for i, sym in enumerate(syms):
             code = ("sh." if sym[0] in "6" else "sz.") + sym
-            rs = bs.query_history_k_data_plus(
-                code, "date,close,peTTM,pbMRQ,psTTM,pcfNcfTTM,turn",
-                start_date=ds, end_date=ds, frequency="d")
+            try:
+                rs = bs_query(
+                    "query_history_k_data_plus",
+                    code, "date,close,peTTM,pbMRQ,psTTM,pcfNcfTTM,turn",
+                    start_date=ds, end_date=ds, frequency="d")
+            except BaostockBlacklisted as e:
+                raise SystemExit(f"baostock {sym} {ds}: IP 黑名单: {e}")
+            except BaostockQuotaExceeded as e:
+                raise SystemExit(f"baostock {sym} {ds}: 配额已尽: {e}")
             row = None
             while rs.next():
                 row = rs.get_row_data()

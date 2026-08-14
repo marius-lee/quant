@@ -17,6 +17,7 @@ import pandas as pd
 import sqlite3
 import time as _time
 from quant.data.repos._base import DatabaseManager
+from quant.config.constants import _require_cfg
 from quant.utils.logger import get_logger
 import os
 
@@ -246,12 +247,17 @@ def preload_aux_data_chunk(symbols: list, date_from: str, date_to: str,
             columns=["symbol", "report_date", "fund_count", "change_ratio"])
 
     # financial tables: chunk 范围 + symbol 过滤 (ADR-043: 补 symbol 过滤, 消除全表扫描)
+    # v480-B3: 加 stat_date 下界 (financial_lookback_days) — 全量回填时
+    # 5208 symbols × 全历史 × 3 表曾占数 GB, 财务因子最大回看 ≈ 8 季度足够
+    fin_start = (pd.Timestamp(date_from)
+                 - pd.Timedelta(days=_require_cfg("factor.compute.financial_lookback_days"))
+                 ).strftime("%Y-%m-%d")
     for tbl in ["financial_income", "financial_balance", "financial_cashflow"]:
         try:
             df = pd.read_sql_query(
                 f"SELECT * FROM {tbl} WHERE symbol IN ({ph}) "
-                f"AND stat_date <= ? ORDER BY stat_date",
-                conn, params=symbols + [date_to]
+                f"AND stat_date >= ? AND stat_date <= ? ORDER BY stat_date",
+                conn, params=symbols + [fin_start, date_to]
             )
             result[tbl] = df if not df.empty else pd.DataFrame(
                 columns=["symbol", "stat_date"])

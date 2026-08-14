@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """JQData 财务数据回填 — 利润表/资产负债表/现金流量表.
 
-回填 2019-2026 所有季度报告, 跳过已有数据.
+回填缺失季度报告 (按报告期 statDate 拉取, 用 statDate='YYYYqN' 参数,
+非 date 参数), 跳过已有数据.
+
+注意: JQData 账号权限仅覆盖 statDate 2025-05-06 ~ 2026-05-13 的报告期
+(实测 2024Q4 仅 13 行、2019-2023 返回 0 行), 历史季度拉不到是预期行为,
+会以 WARNING 记录而非报错.
+
 依赖: JQData 账号 (环境变量 JQDATA_USER / JQDATA_PASS).
 运行:
   PYTHONPATH=. .venv/bin/python3 scripts/backfill_financials_jq.py
@@ -13,18 +19,22 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env'))
 
 from quant.utils.logger import get_logger
-from quant.data.jq_financials import ensure_tables, upsert_balance, upsert_income, upsert_cash_flow
+from quant.data.jq_financials import ensure_tables
 
 logger = get_logger("backfill.financials_jq")
 DB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                   "quant", "data", "market.db")
 
-# 回填范围
-YEARS = list(range(2019, 2027))
+# 报告期范围 (YYYYqN). 默认仅覆盖权限窗口内的季度 (2025q2~2026q1),
+# 权限外季度 (2019-2023 等) 每次调用返回空, 徒耗配额, 不进默认范围.
+# 若权限扩展, 自行展开: [f"{y}q{q}" for y in range(2019, 2027) for q in range(1, 5)]
+QUARTERS = ["2025q2", "2025q3", "2025q4", "2026q1"]
+# 某季度已存在 >= 该行数视为完整, 跳过 (全市场约 5200-5400 只)
+MIN_ROWS_PER_QUARTER = 4500
 TABLES = [
-    ("balance",     upsert_balance,     "financial_balance"),
-    ("income",      upsert_income,      "financial_income"),
-    ("cash_flow",   upsert_cash_flow,   "financial_cash_flow"),
+    ("balance",   "financial_balance"),
+    ("income",    "financial_income"),
+    ("cash_flow", "financial_cashflow"),
 ]
 
 
@@ -36,72 +46,92 @@ def main():
         logger.error("JQDATA_USER/JQDATA_PASS not set in .env, abort")
         sys.exit(1)
 
-    from jqdatasdk import auth, get_fundamentals, query, balance, income, cash_flow
+    from jqdatasdk import auth, query, balance, income, cash_flow, get_fundamentals
+    import pandas as pd
     auth(user, passwd)
     logger.info("JQData auth OK")
 
     # 2. 加载已有数据
     conn = sqlite3.connect(DB, timeout=30)
     ensure_tables(conn)
-    existing = set()
-    for _, _, tbl in TABLES:
+    tbl_cols = {}
+    for _, tbl in TABLES:
+        tbl_cols[tbl] = {r[1] for r in conn.execute(f"PRAGMA table_info({tbl})")}
+    existing_by_tbl = {}
+    for _, tbl in TABLES:
         rows = conn.execute(f"SELECT symbol, stat_date FROM {tbl}").fetchall()
-        existing.update((r[0], str(r[1])[:10]) for r in rows)
-    logger.info(f"existing records: {len(existing)}")
+        existing_by_tbl[tbl] = {(r[0], str(r[1])[:10]) for r in rows}
+    total_existing = sum(len(s) for s in existing_by_tbl.values())
+    logger.info(f"existing records: {total_existing}")
 
-    # 3. 逐表逐年回填
+    # 3. 逐表逐季度回填
     cls_map = {"balance": balance, "income": income, "cash_flow": cash_flow}
-    # JQData 三表日期字段统一为 statDate (camelCase)
-    date_field_map = {"balance": balance.statDate, "income": income.statDate, "cash_flow": cash_flow.statDate}
+    # JQData 列名与库表列名一致 (蛇形), 仅 pubDate/statDate/code 需要转列名
+    col_map = {"pubDate": "pub_date", "statDate": "stat_date", "code": "symbol"}
     total = 0
     t0 = time.monotonic()
 
-    for year in YEARS:
-        for api_name, upsert_fn, tbl in TABLES:
-            # 检查该年是否已有数据 (stat_date 格式: YYYY-MM-DD)
-            year_prefix = f"{year}-"
-            year_existing = sum(1 for s, d in existing if str(d)[:7].startswith(year_prefix))
-            if year_existing > 100:  # 粗略: >100行就跳过
-                logger.info(f"{tbl} {year}: {year_existing} rows exist, skip")
+    for api_name, tbl in TABLES:
+        cols = tbl_cols[tbl] - {"symbol", "stat_date", "created_at"}
+        existing = existing_by_tbl[tbl]
+        cls = cls_map[api_name]
+        for quarter in QUARTERS:
+            # 检查该季度是否已完整
+            # 报告期日期: q1=03-31, q2=06-30, q3=09-30, q4=12-31
+            q_idx = int(quarter[-1])
+            sd_prefix = f"{quarter[:4]}-{['03-31','06-30','09-30','12-31'][q_idx - 1]}"
+            q_existing = sum(1 for s, d in existing if d.startswith(sd_prefix))
+            if q_existing >= MIN_ROWS_PER_QUARTER:
+                logger.info(f"{tbl} {quarter}: {q_existing} rows exist, skip")
                 continue
 
-            cls = cls_map[api_name]
-            date_field = date_field_map[api_name]
-            q = query(cls).filter(
-                date_field >= f"{year}-01-01",
-                date_field <= f"{year}-12-31"
-            )
             try:
-                df = get_fundamentals(q)
+                df = get_fundamentals(query(cls), statDate=quarter)
             except Exception as e:
-                logger.warning(f"{tbl} {year}: JQData failed ({e})")
+                logger.warning(f"{tbl} {quarter}: JQData query failed ({e})")
                 continue
 
             if df is None or df.empty:
-                logger.info(f"{tbl} {year}: JQData returned empty")
+                logger.warning(f"{tbl} {quarter}: JQData returned empty"
+                               " (likely outside permission window 2025-05-06~2026-05-13)")
                 continue
 
-            # 标准化: JQData 日期字段名因表而异
-            for r in rows:
-                code = str(r.get("code", ""))
-                r["symbol"] = code.split(".")[0].zfill(6) if "." in code else code.zfill(6)
-                sd = str(r.get("stat_date", "") or r.get("statDate", "") or r.get("day", ""))
-                r["stat_date"] = sd[:10]
+            new_rows = []
+            col_list = sorted(cols)
+            for _, r in df.iterrows():
+                rec = {"symbol": str(r["code"]).split(".")[0].zfill(6),
+                       "stat_date": str(r["statDate"])[:10]}
+                if (rec["symbol"], rec["stat_date"]) in existing:
+                    continue
+                for col in col_list:
+                    jq_key = "pubDate" if col == "pub_date" else col
+                    v = r.get(jq_key)
+                    if v is not None and pd.isna(v):
+                        v = None
+                    rec[col] = v
+                new_rows.append(rec)
 
-            # 去重: 过滤已有
-            new_rows = [r for r in rows
-                        if (r["symbol"], r["stat_date"]) not in existing]
             if not new_rows:
-                logger.info(f"{tbl} {year}: all {len(rows)} rows already exist")
+                logger.info(f"{tbl} {quarter}: all {len(df)} rows already exist")
                 continue
 
-            upsert_fn(conn, new_rows)
+            # upsert (每表每季度一批)
+            placeholders = ",".join(["?" for _ in sorted(cols)])
+            set_clause = ",".join([f"{c}=excluded.{c}" for c in sorted(cols)])
+            sql = (
+                f"INSERT INTO {tbl} (symbol,stat_date,{','.join(sorted(cols))}) "
+                f"VALUES (?,?,{placeholders}) "
+                f"ON CONFLICT(symbol,stat_date) DO UPDATE SET {set_clause}"
+            )
+            conn.executemany(sql, [
+                (r["symbol"], r["stat_date"]) + tuple(r.get(c) for c in sorted(cols))
+                for r in new_rows
+            ])
             conn.commit()
-            for r in new_rows:
-                existing.add((r["symbol"], r["stat_date"]))
+            existing.update((r["symbol"], r["stat_date"]) for r in new_rows)
             total += len(new_rows)
             elapsed = time.monotonic() - t0
-            logger.info(f"{tbl} {year}: {len(new_rows)} new rows "
+            logger.info(f"{tbl} {quarter}: {len(new_rows)} new rows "
                         f"(total={total}, {elapsed:.0f}s)")
 
     conn.close()

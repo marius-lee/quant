@@ -53,7 +53,7 @@ def ensure_tables(conn: sqlite3.Connection):
             created_at TEXT DEFAULT (datetime('now','localtime')),
             PRIMARY KEY (symbol, stat_date)
         );
-        CREATE TABLE IF NOT EXISTS financial_cash_flow (
+        CREATE TABLE IF NOT EXISTS financial_cashflow (
             symbol TEXT NOT NULL,
             stat_date TEXT NOT NULL,
             pub_date TEXT,
@@ -68,7 +68,7 @@ def ensure_tables(conn: sqlite3.Connection):
         );
         CREATE INDEX IF NOT EXISTS idx_fin_balance_date ON financial_balance(stat_date);
         CREATE INDEX IF NOT EXISTS idx_fin_income_date ON financial_income(stat_date);
-        CREATE INDEX IF NOT EXISTS idx_fin_cashflow_date ON financial_cash_flow(stat_date);
+        CREATE INDEX IF NOT EXISTS idx_fin_cashflow_date ON financial_cashflow(stat_date);
     """)
     conn.commit()
 
@@ -115,7 +115,7 @@ def upsert_cash_flow(conn: sqlite3.Connection, rows: list[dict]):
         placeholders = ",".join(["?" for _ in cols])
         set_clause = ",".join([f"{c}=excluded.{c}" for c in cols])
         sql = (
-            f"INSERT INTO financial_cash_flow (symbol,stat_date,{','.join(cols)}) "
+            f"INSERT INTO financial_cashflow (symbol,stat_date,{','.join(cols)}) "
             f"VALUES (?,?,{placeholders}) "
             f"ON CONFLICT(symbol,stat_date) DO UPDATE SET {set_clause}"
         )

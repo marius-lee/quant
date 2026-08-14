@@ -58,7 +58,10 @@ class TaskSpec:
 _DAYLINE: list[TaskSpec] = [
     TaskSpec(
         name="signals", label="信号生成", schedule="08:30",
-        window=(time(8, 0), time(15, 30)),
+        # v487: 窗口左端 08:00→08:30 — schedule 仅为展示标签, 实际触发看 window;
+        # 原 08:00 起使 signals 抢跑 daily_repair (08:00-08:30) 之前,
+        # 违背 "daily_repair 在 signals 前完成 T+1 补拉" 意图 (08-14 实测 08:00:03 触发)
+        window=(time(8, 30), time(15, 30)),
         grace_s=1800, timeout_s=1800,
         mode="inline", group="盘中",
         desc="计算所有 using 因子，生成 Alpha 信号与目标持仓",

@@ -121,6 +121,17 @@ def _run(today: str):
                 error_msg = f"{name} crashed: {e}"
                 break
             st = _stage_status(today, name)
+            if st == "partial" and name == "daily_data":
+                # v487: daily_data=partial 不中止链 — partial 仅表示 aux 表
+                # (fund_flow/limit_down_pool/margin_detail 等) 审计失败,
+                # 核心 daily/valuation 主流程已 ok. 因子物化不依赖这些表
+                # (factor_cache 内 unavailable_factors 自动剪除超 SLO 因子),
+                # 继续链保证次日 signals 可用; aux 缺口由 08:00 daily_repair 补.
+                # (2026-08-14 实证: 东财源抖动 30 连败 → daily_data partial →
+                #  链中止 → factor_cache 未物化 → 次日 08:00 signals failed)
+                _log.warning(f"[{today}] evening chain: daily_data=partial (aux 表缺口), "
+                             f"链继续 — factor_cache/attribution 照跑")
+                continue
             if st != "ok":
                 error_msg = f"{name} status={st or 'no-record'}, chain aborted (后续阶段跳过)"
                 _log.error(f"[{today}] evening chain: {error_msg}")

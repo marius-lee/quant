@@ -9,10 +9,10 @@ baostock 免费, 无需 token, 逐股逐季查询.
 import os, sys, sqlite3, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import baostock as bs
 from quant.utils.logger import get_logger
 from quant.data.jq_financials import ensure_tables
 from quant.config.constants import _require_cfg
+from quant.utils.baostock_gate import bs_query, BaostockBlacklisted, BaostockQuotaExceeded
 
 logger = get_logger("backfill.financials_bs")
 DB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -23,13 +23,13 @@ DB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 # cash_flow: 2019-2023 全部季度 (历史完全缺失)
 TARGETS = {
     "financial_income": [(2023, q) for q in range(1, 5)],
-    "financial_cash_flow": [(y, q) for y in range(2019, 2024) for q in range(1, 5)],
+    "financial_cashflow": [(y, q) for y in range(2019, 2024) for q in range(1, 5)],
 }
 
-# baostock API name + 表名
+# baostock API name + 表名 (不直接调 bs.login/query — 统一走 BaostockGate 限速)
 API_MAP = {
     "financial_income": ("query_profit_data", "income"),
-    "financial_cash_flow": ("query_cash_flow_data", "cash_flow"),
+    "financial_cashflow": ("query_cash_flow_data", "cash_flow"),
 }
 
 # baostock → DB 字段映射 (通用, 保留所有 baostock 返回列)
@@ -55,7 +55,12 @@ def _bs_row_to_db(bs_row: list, symbol: str, year: int, quarter: int) -> dict:
 
 
 def main():
-    bs.login()
+    # 登录也走统一入口 (gate.acquire 限速 + 黑名单熔断)
+    try:
+        bs_query("login")
+    except (BaostockBlacklisted, BaostockQuotaExceeded) as e:
+        logger.error(f"baostock login blocked: {e}")
+        return 1
     logger.info("baostock login OK")
 
     conn = sqlite3.connect(DB, timeout=30)
@@ -73,18 +78,15 @@ def main():
     ).fetchall()]
     logger.info(f"symbols: {len(symbols)}")
 
-    _delay = _require_cfg("data.rate_limit.baostock_per_stock_sec")
-
     total = 0
     t0 = time.monotonic()
-    
+
     # 计算总工作量
     _total_quarters = sum(len(qs) for qs in TARGETS.values())
     _q_done = 0
 
     for tbl, quarters in TARGETS.items():
         api_fn_name, label = API_MAP[tbl]
-        api_fn = getattr(bs, api_fn_name)
         # 查询该表的实际列
         db_cols = set(r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall())
 
@@ -103,6 +105,7 @@ def main():
             batch = []
             n_total = len(symbols)
             n_done = 0
+            gate_blocked = False
             for symbol in symbols:
                 n_done += 1
                 if n_done % 500 == 0:
@@ -111,13 +114,11 @@ def main():
                     continue
                 bs_sym = _bs_code(symbol)
                 try:
-                    rs = api_fn(code=bs_sym, year=year, quarter=quarter)
+                    rs = bs_query(api_fn_name, code=bs_sym, year=year, quarter=quarter)
                     if rs.error_code != "0":
-                        time.sleep(_delay)
                         continue
                     data = rs.get_data()
                     if data.empty:
-                        time.sleep(_delay)
                         continue
                     # 只取最后一行 (合并报表)
                     row_data = data.iloc[-1].to_dict()
@@ -130,9 +131,19 @@ def main():
                         if k in db_cols:
                             db_row[k] = v
                     batch.append(db_row)
-                    time.sleep(_delay)  # baostock: 0.3s/只
+                except BaostockBlacklisted as e:
+                    logger.error(f"{tbl} {stat_date}: baostock IP 黑名单, 立即停止: {e}")
+                    gate_blocked = True
+                    break
+                except BaostockQuotaExceeded as e:
+                    logger.error(f"{tbl} {stat_date}: baostock 配额已尽, 停止本轮: {e}")
+                    gate_blocked = True
+                    break
                 except Exception:
-                    time.sleep(_delay)
+                    continue
+
+            if gate_blocked:
+                break
 
             if not batch:
                 logger.info(f"{tbl} {stat_date}: 0 new rows (baostock returned empty)")
@@ -154,10 +165,15 @@ def main():
             logger.info(f"{tbl} {stat_date}: {len(batch)} rows (total={total}, {elapsed:.0f}s)")
 
     conn.close()
-    bs.logout()
+    try:
+        import baostock as _bs
+        _bs.logout()
+    except Exception:
+        pass
     elapsed = time.monotonic() - t0
     logger.info(f"financials_bs backfill done: {total} rows in {elapsed/60:.1f}min")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

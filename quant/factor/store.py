@@ -1,11 +1,14 @@
-"""因子缓存存储 v470 — parquet 列式分区 + fork 共享内存 + checkpoint 续传。
+"""因子缓存存储 v480 — parquet 列式分区 + fork 共享内存 + checkpoint 续传。
 
 设计原则:
   - 存储布局: factor_cache/parquet_f/{factor}/{year}.parquet (因子×年分区)
   - 列: date_i16 (全局交易日序号), symbol_i16 (字典 idx), value_f32 (float32)
   - 压缩: zstd level 3 — 相比 v469 按日期分区, 减少文件数量 (1886 → ~300 文件)
   - 多进程: fork 模式, 一次性继承 data_full/prims/aux/fundamentals (COW),
-    单 Worker 顺序处理日期范围, 内存可控 (<3GB/worker)
+    单 Worker 顺序处理日期范围
+  - 结果装配 (v480): worker 返回紧凑 numpy 数组 (symbol_i16/value_f32),
+    父进程边收边写 — 消除 Python tuple 累积 + 全量 pickle 双份驻留
+    (2026-08-13 全量回填实测 40+GB 卡死 macOS → B 方案修复, 峰值 ≈10GB)
   - checkpoint: 记录 last_date + failed_dates, resume 时加回重试
   - manifest: 每日期×因子 source_hash, 细粒度失效
   - 零 fallback: 读失败即抛, 无旧格式回退
@@ -14,6 +17,7 @@
 """
 import os
 import json
+import time
 import hashlib
 import inspect
 import shutil
@@ -47,6 +51,11 @@ _PRIMS = None
 _AUX_FULL = None
 _FUNDAMENTALS = None
 _SYMBOLS = None
+
+# v483: 每日期待算缺失因子表 (fork COW 继承; worker 只算缺失因子, 杜绝整日期白算)
+_MISSING_MAP: dict[str, list[str]] = {}
+
+_BLOCKED_PATH = os.path.join(_CACHE_DIR, "blocked.json")
 
 # per-factor 源码 hash 缓存 (代码不变则 hash 不变, 进程内安全缓存)
 _SOURCE_HASH_CACHE: dict[str, str] = {}
@@ -179,7 +188,22 @@ class FactorStore:
                      date_list: list[str], symbol_map: dict[str, int],
                      date_to_idx: dict[str, int],
                      source_hash: str) -> dict:
-        """Worker 计算日期范围内的所有因子, 返回 {factor: {date_i16: [(symbol_i16, value_f32)]}}。"""
+        """Worker 计算日期范围内的所有因子。
+
+        返回 {factor: {date_i16: (symbol_i16 ndarray, value_f32 ndarray)}} —
+        紧凑数组而非 Python tuple 列表 (v480: 消除逐行对象开销与 pickle 膨胀)。
+
+        Args:
+            start_idx/end_idx: 本 worker 负责的日期区间 [start, end)
+            factor_names: 待算因子名列表
+            date_list: 全量日期列表 (按全局序号索引)
+            symbol_map: symbol → 全局 i16 序号 (跨运行持续累积)
+            date_to_idx: date → 全局交易日序号
+            source_hash: 因子源码 hash (透传回写)
+
+        Returns:
+            dict: {results, failed_dates, empty_factors, source_hash}
+        """
         import time as _time
         t0 = _time.time()
         global _DATA_FULL, _PRIMS, _AUX_FULL, _FUNDAMENTALS, _SYMBOLS
@@ -187,17 +211,29 @@ class FactorStore:
         if _DATA_FULL is None:
             raise RuntimeError("Worker: _DATA_FULL is None — fork failed")
 
-        results: dict[str, dict[int, list[tuple[int, np.float32]]]] = {}
+        results: dict[str, dict[int, tuple[np.ndarray, np.ndarray]]] = {}
         for fname in factor_names:
             results[fname] = {}
 
         failed_dates: list[str] = []
+        # v483: 空结果因子记录 (date, factor) — 父进程剔除 + 写 blocked, 不再静默 continue
+        empty_factors: list[tuple[str, str]] = []
 
         for i in range(start_idx, end_idx):
             date_str = date_list[i]
             try:
                 date_idx = date_to_idx[date_str]
                 d_idx = np.int16(date_idx)
+
+                # v483: todo 粒度为 (date, factor) — 只算 _MISSING_MAP 中该日期缺失的因子,
+                # 已物化因子 (不在此 map 中) 跳过不重算
+                missing = _MISSING_MAP.get(date_str)
+                if not missing:
+                    continue
+                if not set(missing).issubset(set(factor_names)):
+                    raise ValueError(
+                        f"date {date_str}: missing factors {set(missing) - set(factor_names)} "
+                        f"not in requested factor set")
 
                 aux_sliced = slice_aux_for_date(_AUX_FULL, date_str) if _AUX_FULL else {}
                 fund = _FUNDAMENTALS.get(date_str) if _FUNDAMENTALS else None
@@ -207,31 +243,42 @@ class FactorStore:
                     primitives=_PRIMS,
                     fundamentals=fund,
                     preloaded_aux_chunk=aux_sliced,
-                    factor_names=factor_names,
+                    factor_names=missing,          # v483: 只算缺失因子
                     status_filter=None,
                     factor_fail_fast=False,
                     quiet=True,
                     financials_cache={},
                 )
 
-                for fname, series in fv.items():
-                    if not isinstance(series, pd.Series) or series.dropna().empty:
+                for fname in missing:
+                    series = fv.get(fname)
+                    if not isinstance(series, pd.Series):
+                        empty_factors.append((date_str, fname))
                         continue
-                    rows = []
-                    for sym, val in series.dropna().items():
-                        if sym in symbol_map:
-                            rows.append((np.int16(symbol_map[sym]), np.float32(val)))
-                    if rows:
-                        results[fname][d_idx] = rows
+                    s = series.dropna()
+                    if s.empty:
+                        empty_factors.append((date_str, fname))
+                        continue
+                    # 向量化符号映射 (Index.map(dict) C 层 get_indexer), 替代逐行 items()
+                    sym_idx = np.asarray(s.index.map(symbol_map), dtype=np.float64)
+                    valid = ~np.isnan(sym_idx)
+                    if not valid.any():
+                        empty_factors.append((date_str, fname))
+                        continue
+                    sym_arr = sym_idx[valid].astype(np.int16)
+                    val_arr = s.to_numpy(dtype=np.float32)[valid]
+                    results[fname][d_idx] = (sym_arr, val_arr)
 
             except Exception as e:
                 import traceback
                 _log.error("Worker date %s failed for factor batch: %s", date_str, traceback.format_exc())
                 failed_dates.append(date_str)
 
-        _log.info("Worker %d-%d: computed %d dates in %.1fs (failed=%d)",
-                  start_idx, end_idx, end_idx - start_idx, _time.time() - t0, len(failed_dates))
-        return {"results": results, "failed_dates": failed_dates, "source_hash": source_hash}
+        _log.info("Worker %d-%d: computed %d dates in %.1fs (failed=%d, empty_factor_records=%d)",
+                  start_idx, end_idx, end_idx - start_idx, _time.time() - t0,
+                  len(failed_dates), len(empty_factors))
+        return {"results": results, "failed_dates": failed_dates,
+                "empty_factors": empty_factors, "source_hash": source_hash}
 
     def materialize(self,
                     date_range: list[str],
@@ -311,18 +358,26 @@ class FactorStore:
                 max_idx += 1
             self._save_symbol_map(sym_map)
 
-        # 0.4 确定待算 (日期, 缺失因子)
+        # 0.4 确定待算 (日期 → 缺失因子) — v483: todo 粒度为 (date, factor),
+        # 只重算缺失因子, 不整日期白算; 缺数据 (空结果) 因子记入 blocked 剔除,
+        # 防止反复重算永不收敛
         source_hash = _compute_factor_source_hash(set(factor_names))
-        todo: list[str] = []
+        blocked = self._load_blocked()
+        todo_map: dict[str, list[str]] = {}   # date → 待算缺失因子
         for date_str in sorted(date_range):
             if force:
-                todo.append(date_str)
+                missing = list(factor_names)
+            else:
+                missing = self._date_missing_factors(date_str, factor_names, source_hash)
+            if not missing:
                 continue
-            missing = self._date_missing_factors(date_str, factor_names, source_hash)
+            # v483-2: 剔除 blocked 因子 (上一轮已确认缺数据, 反复重算无意义)
+            bl = set(blocked.get(date_str, {}))
+            missing = [f for f in missing if f not in bl]
             if missing:
-                todo.append(date_str)
+                todo_map[date_str] = missing
 
-        if not todo:
+        if not todo_map:
             _log.info("factor_cache: all dates already fully materialized, skip")
             return {"n_dates": len(date_range), "n_factors": len(factor_names),
                     "n_symbols": len(symbols), "n_rows": 0, "elapsed_sec": 0,
@@ -333,10 +388,11 @@ class FactorStore:
         if _ckpt and _ckpt.get("last_date") and not force and _ckpt.get("source_hash") == source_hash:
             _resume_after = _ckpt["last_date"]
             _resume_retry = set(_ckpt.get("failed_dates") or [])
-            todo = [d for d in todo if d > _resume_after or d in _resume_retry]
+            todo_map = {d: v for d, v in todo_map.items()
+                        if d > _resume_after or d in _resume_retry}
             _log.info("factor_cache: checkpoint resume — %d pending dates after %s (%d failed retry)",
-                      len(todo), _resume_after, len(_resume_retry))
-            if not todo:
+                      len(todo_map), _resume_after, len(_resume_retry))
+            if not todo_map:
                 self._clear_checkpoint()
                 return {"n_dates": 0, "n_factors": len(factor_names),
                         "n_symbols": len(symbols), "n_rows": 0, "elapsed_sec": 0,
@@ -344,7 +400,10 @@ class FactorStore:
 
         # 0.6 准备共享数据 (按 chunk 分块装载 — 控制内存, M1 8GB 硬约束)
         eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(factor_names))
-        date_list = todo
+        date_list = sorted(todo_map.keys())
+        # v483: 全局缺失因子表 (fork COW 继承给 workers)
+        global _MISSING_MAP
+        _MISSING_MAP = todo_map
 
         _log.info("factor_cache: %d pending dates → %d workers × %dd lookback",
                   len(date_list), workers, eff_days)
@@ -424,35 +483,39 @@ class FactorStore:
                         (_ws, _we, factor_names, date_list, sym_map, date_to_idx, source_hash)
                     ))
 
-                chunk_results = [ar.get() for ar in async_results]
+                # v480: 边收边写 — 每收到一个 worker 结果立即消费落盘,
+                # 父进程峰值为单 worker 紧凑结果 (几十 MB), 不累积全 chunk
+                for ar in async_results:
+                    chunk_result = ar.get()
+                    _log.info("factor_cache: consumed worker result: %d rows, %d dates (%.1fs)",
+                              sum(len(v) for rr in chunk_result["results"].values()
+                                  for v in rr.values() if isinstance(v, tuple) and len(v) == 2),
+                              len({d for rr in chunk_result["results"].values() for d in rr}),
+                              _time.time() - t0)
+                    inc_rows, n_covered, part_seq, per_factor = self._consume_worker_result(
+                        chunk_result, idx_to_date, part_seq, source_hash, set(factor_names))
+                    total_rows += inc_rows
+                    n_dates_computed += n_covered
+                    failed_dates.extend(chunk_result.get("failed_dates", []))
+                    for fname, dset in per_factor.items():
+                        per_factor_dates.setdefault(fname, set()).update(dset)
 
-            for chunk_result in chunk_results:
-                for fname, date_rows in chunk_result["results"].items():
-                    if not date_rows:
-                        continue
-                    # 按 (factor, year) 分组待写 — rows: (date_i16, symbol_i16, value_f32)
-                    year_rows: dict[int, list[tuple[int, int, float]]] = {}
-                    covered_dates: list[str] = []
-                    for d_idx, rows in date_rows.items():
-                        yr = int(idx_to_date[d_idx][:4])
-                        year_rows.setdefault(yr, []).extend(
-                            (d_idx, sym_idx, val) for sym_idx, val in rows)
-                        covered_dates.append(idx_to_date[d_idx])
-                    for yr, rows in year_rows.items():
-                        self._write_factor_date_part(fname, yr, part_seq, rows)
-                        part_seq += 1
-                    self._update_factor_meta(fname, covered_dates,
-                                              source_hash, set(factor_names))
-                    per_factor_dates.setdefault(fname, set()).update(date_rows.keys())
-                inc_rows = sum(len(r) for rr in chunk_result["results"].values() for r in rr.values())
-                total_rows += inc_rows
-                _covered = set()
-                for _rr in chunk_result["results"].values():
-                    _covered.update(_rr.keys())
-                n_dates_computed += len(_covered)
-                failed_dates.extend(chunk_result.get("failed_dates", []))
+                    # v483-3: 空结果因子 → blocked 记录 (日志说明原因 + 后续轮次剔除,
+                    # 数据补齐后自动恢复: 因子能算出非空结果即不再进 todo)
+                    for _d, _f in chunk_result.get("empty_factors", []):
+                        if _d not in blocked:
+                            blocked[_d] = {}
+                        if _f not in blocked[_d]:
+                            blocked[_d][_f] = time.time()
+                            _log.warning(
+                                "factor_cache: factor %s blocked at %s — 计算为空结果 "
+                                "(依赖数据缺失/不足), 已剔除后续重算; 数据补齐后自动恢复",
+                                _f, _d)
+                    _n_blocked_new = sum(len(v) for v in blocked.values())
 
             self._write_checkpoint(chunk_dates[-1], ci + 1, n_chunks, list(failed_dates), source_hash)
+            if blocked:
+                self._save_blocked(blocked)
 
             # 释放 chunk 内存 (为下块腾空间)
             _DATA_FULL = _PRIMS = _AUX_FULL = _FUNDAMENTALS = _SYMBOLS = None
@@ -489,7 +552,10 @@ class FactorStore:
         if per_factor_dates:
             _log.info("factor_cache: per-factor dates covered: %s",
                       ", ".join(f"{k}={len(v)}" for k, v in sorted(per_factor_dates.items())))
-        _zero_coverage = [n for n in factor_names
+        # v483: 只报本次 todo 内 (缺失) 因子零覆盖 — 已物化因子不在 todo 属正常,
+        # 不计入 "ZERO dates" 误报
+        _todo_factors = {f for fs in todo_map.values() for f in fs}
+        _zero_coverage = [n for n in _todo_factors
                           if n not in per_factor_dates or not per_factor_dates[n]]
         if _zero_coverage:
             _log.error("factor_cache: %d factors produced ZERO dates this run: %s",
@@ -501,6 +567,12 @@ class FactorStore:
             _log.error("factor_cache: %d dates FAILED: %s", len(failed_dates),
                        ",".join(sorted(failed_dates)[:50]))
 
+        # v483: 汇报 blocked 摘要 (缺数据被剔除的因子, 便于数据补齐后关注)
+        _blocked_total = sum(len(v) for v in blocked.values()) if blocked else 0
+        if _blocked_total:
+            _log.warning("factor_cache: %d (date,factor) blocked (缺数据剔除) — 数据补齐后自动恢复",
+                         _blocked_total)
+
         return {"n_dates": n_dates_computed, "n_factors": len(factor_names),
                 "n_symbols": len(symbols), "n_rows": total_rows,
                 "elapsed_sec": round(elapsed, 1), "failed_dates": failed_dates}
@@ -510,29 +582,67 @@ class FactorStore:
         避免 trim_to_max_days/bulk_load 的 endswith('.parquet') 扫描误判)。"""
         return os.path.join(self._parquet_dir, factor_name, f"{year}.part{part_id}")
 
+    def _consume_worker_result(self, chunk_result: dict, idx_to_date: dict,
+                               part_seq: int, source_hash: str,
+                               factor_names: set[str]) -> tuple[int, int, int, dict[str, set]]:
+        """消费单个 worker 结果: 按 (factor, year) 分组直写 part + 更新 meta。
+
+        v480: 随收随写 — 不累积全 chunk 结果, 父进程峰值 = 单 worker 紧凑数组。
+
+        Args:
+            chunk_result: worker 返回值 {results: {factor: {date_i16: (sym, val)}}, ...}
+            idx_to_date: 全局序号 → 日期字符串
+            part_seq: 全局 part 序号 (跨 chunk/slice 递增, 防覆盖)
+            source_hash: 因子源码 hash
+            factor_names: 全量因子名集合 (meta 写入口径)
+
+        Returns:
+            tuple: (inc_rows, n_covered_dates, part_seq, per_factor_dates)
+        """
+        inc_rows = 0
+        covered: set[int] = set()
+        per_factor: dict[str, set[int]] = {}
+        for fname, date_rows in chunk_result["results"].items():
+            if not date_rows:
+                continue
+            year_parts: dict[int, list[tuple[np.ndarray, np.ndarray, np.ndarray]]] = {}
+            covered_dates: list[str] = []
+            for d_idx, (sym_arr, val_arr) in date_rows.items():
+                yr = int(idx_to_date[d_idx][:4])
+                d_arr = np.full(len(sym_arr), d_idx, dtype=np.int16)
+                year_parts.setdefault(yr, []).append((d_arr, sym_arr, val_arr))
+                covered_dates.append(idx_to_date[d_idx])
+                inc_rows += len(sym_arr)
+            for yr, parts in year_parts.items():
+                self._write_factor_date_part(fname, yr, part_seq, parts)
+                part_seq += 1
+            self._update_factor_meta(fname, covered_dates, source_hash, factor_names)
+            per_factor[fname] = set(date_rows.keys())
+            covered.update(date_rows.keys())
+        return inc_rows, len(covered), part_seq, per_factor
+
     def _write_factor_date_part(self, factor_name: str, year: int,
                                 part_id: int,
-                                rows: list[tuple[int, int, float]]) -> None:
+                                parts: list[tuple[np.ndarray, np.ndarray, np.ndarray]]) -> None:
         """写本 chunk 的 part 文件 (纯新增, 不读旧文件)。
 
-        rows: [(date_i16, symbol_i16, value_f32), ...]
+        parts: [(date_i16 数组, symbol_i16 数组, value_f32 数组), ...] —
+        单 (factor, year) 各日期紧凑数组直接拼接落盘, 无逐行 Python 对象。
         每 (factor, year, chunk) 一个独立 part; 全程结束后 _merge_pending_parts
         合并到主文件 {year}.parquet — 消除旧实现的整年度 read-modify-write 放大。
         """
-        if not rows:
+        if not parts:
             return
-        ppath = self._part_path(factor_name, year, part_id)
-        os.makedirs(os.path.dirname(ppath), exist_ok=True)
-
-        new_records = [{
-            'date_i16': np.int16(d_idx),
-            'symbol_i16': np.int16(sym_idx),
-            'value_f32': np.float32(val),
-        } for d_idx, sym_idx, val in rows]
-        new_df = pd.DataFrame(new_records)
+        new_df = pd.DataFrame({
+            'date_i16': np.concatenate([p[0] for p in parts]),
+            'symbol_i16': np.concatenate([p[1] for p in parts]),
+            'value_f32': np.concatenate([p[2] for p in parts]),
+        })
         new_df['date_i16'] = new_df['date_i16'].astype('int16')
         new_df['symbol_i16'] = new_df['symbol_i16'].astype('int16')
         new_df['value_f32'] = new_df['value_f32'].astype('float32')
+        ppath = self._part_path(factor_name, year, part_id)
+        os.makedirs(os.path.dirname(ppath), exist_ok=True)
         new_df.to_parquet(ppath, compression='zstd', compression_level=3, index=False)
 
     def _merge_pending_parts(self) -> int:
@@ -803,6 +913,57 @@ class FactorStore:
             _log.warning("factor_cache: failed to log materialization: %s", _e)
 
     # ── checkpoint ──
+
+    def _load_blocked(self) -> dict:
+        """读 blocked 记录 {date: {factor: ts}} — 缺数据空结果因子 (v483).
+
+        date1: 记录在因子缓存目录 blocked.json; TTL 过期自动解除 (数据补齐后
+        下一轮重算, 能算出非空结果即恢复正常); 零 fallback: 损坏按空处理。
+        """
+        if not os.path.exists(_BLOCKED_PATH):
+            return {}
+        try:
+            with open(_BLOCKED_PATH, "r") as f:
+                raw = json.load(f)
+        except Exception as e:
+            _log.warning("factor_cache: blocked.json unreadable, treating as empty: %s", e)
+            return {}
+        ttl = _require_cfg("factor.compute.cache_checkpoint_ttl_sec")   # 86400s = 1天
+        now = time.time()
+        out = {}
+        for d, facs in raw.items():
+            if not isinstance(facs, dict):
+                continue
+            alive = {f: ts for f, ts in facs.items()
+                     if isinstance(ts, (int, float)) and now - ts < ttl}
+            if alive:
+                out[d] = alive
+            else:
+                _log.info("factor_cache: blocked expired for %s (%d records) — 重试",
+                          d, len(facs) if isinstance(facs, dict) else 0)
+        return out
+
+    def _save_blocked(self, blocked: dict) -> None:
+        """持久化 blocked 记录 (chunk 结束后写, 崩溃可续)."""
+        try:
+            os.makedirs(os.path.dirname(_BLOCKED_PATH), exist_ok=True)
+            with open(_BLOCKED_PATH, "w") as f:
+                json.dump(blocked, f, indent=1)
+        except Exception as e:
+            _log.warning("factor_cache: blocked save failed (non-fatal): %s", e)
+
+    def _clear_blocked_for(self, date_str: str, factor_or_none: str = None) -> None:
+        """数据补齐后手动解除 blocked (因子能算出非空结果时将不再 blocked; 此方法供故障排查调用)."""
+        blocked = self._load_blocked()
+        if date_str not in blocked:
+            return
+        if factor_or_none is None:
+            blocked.pop(date_str, None)
+        else:
+            blocked.get(date_str, {}).pop(factor_or_none, None)
+            if not blocked.get(date_str):
+                blocked.pop(date_str, None)
+        self._save_blocked(blocked)
 
     def _write_checkpoint(self, last_date: str, chunk_done: int, n_chunks: int,
                           failed_dates: list[str], source_hash: str):

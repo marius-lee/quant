@@ -21,7 +21,27 @@ PYTHONPATH=. .venv/bin/python -c "from quant.backtest.loop import run_backtest; 
 
 # 测试 — 必须用 .venv (optuna/hmmlearn 在 .venv 中)
 PYTHONPATH=. .venv/bin/python -m pytest test/ -v
+
+# DuckDB 全量同步 (SQLite → DuckDB + 预聚合 + 校验, 幂等)
+bash scripts/duckdb_sync_all.sh
 ```
+
+## 工作习惯规则
+
+### 命令 → 脚本归档 (标准操作, 必守)
+
+1. **任何给用户的执行命令, 必须写成脚本** 存到 `scripts/`, 而不是裸 `python -c "..."` 命令
+2. 脚本命名: `scripts/<功能>.sh` (bash) 或 `scripts/<功能>.py` (python)
+3. 脚本头部注释: 用途、版本号、用法、幂等性说明
+4. 首次运行验证通过后, 更新 `scripts/README.md` 或 CLAUDE.md Commands 段登记
+5. **复用优先**: 后续同类操作直接 `bash scripts/<已有脚本>.sh`, 禁止重写
+6. 脚本变更必须像代码一样: 更新 HANDOFF.md、推进 VERSION、语法验证
+
+### 长耗时操作标准
+
+1. **进度日志必须有**: 每批/每阶段打点 (行数 + 耗时), 与已有迁移函数 (sync_table_full 每 50 万行) 风格一致
+2. **耗时统计必须有**: 阶段级和总计 `{:.1f}s`
+3. **不阻塞定位**: 卡住时先查 WAL 增长 / CPU / 锁, 判断是慢还是死, 再动手
 
 ## 每次改动后必做
 

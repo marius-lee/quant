@@ -1,8 +1,34 @@
-# HANDOFF — 盈迹 (quant) 项目变更日志
+### v495### v496 DuckDB 全量迁移完成 + 写入提速 5000x (2026-08-14)
 
-> **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
+**背景**: v495 迁移命令分步执行 (daily/valuation 成功, stocks 语法错误, refresh 卡死)。
+stocks 报 `INSERT ... CASE WHEN` — 转换表达式误用作 INSERT 列名 (SELECT 才需转换)。
+refresh 卡 16min/window — 实测根因: `executemany` 逐行参数绑定 34 万行需 200s,
+而 `register + INSERT..SELECT` 只要 0.03s (差 ~5000x)。
 
-### v495 DuckDB 锁死反模式修复 — 常驻 rw 连接 → 短命 RO/RW 连接 (2026-08-14)
+**修复 (duckdb_store.py)**:
+1. `_sync_table`: SELECT 用转换表达式 (col_str), INSERT 用纯列名 (insert_col_str)
+2. 新增 `_write_df` (register + INSERT..SELECT + ON CONFLICT), `_upsert_df`/
+   `sync_table_full`/`_sync_table`/backfill 全部改用它, 删除分批 executemany
+3. 连接模型: `_rw()`/`_ro()` 线程级复用 (threading.local), close()/sync 线程
+   finally 释放; 同文件所有连接必须同配置 (read_only=False), 否则 DuckDB 报
+   "different configuration" — 查询连接不再 read_only=True
+4. refresh_preaggregates: SELECT 补 high/low; 删除 max/min 块的 try/except 吞错
+   (零 fallback) — 之前 high 缺失被静默吞掉, daily_max/min 永远空表
+5. 进度日志: 每窗口每表打点 (rows + {:.1f}s) + done 汇总
+
+**性能对比 (真库实测)**:
+- daily 全量 949 万行: 2.4h → 100s
+- daily_valuation 全量 830 万行: 2.4h → 58s
+- refresh_preaggregates (6 窗口 × 6 指标 × 34 万行): 96min → 27s
+- verify_sync daily/valuation: match=True
+
+**遗留**: DuckDB 大批量 DELETE + 主键索引报 "Failed to delete all rows from
+index" (已知 bug) — 预聚合表清空勿用 DELETE, refresh 全量 UPSERT 即可覆盖。
+
+**验证**: 副本库 (独立进程) 全流程; MA5/RET/MIN5 与手工计算一致; 真库
+daily 9,493,457 / valuation 8,307,314 / stocks 5,525 / 预聚合 6 表 × 2,038,638。
+脚本: scripts/duckdb_sync_all.sh (幂等, ~2min)。
+ DuckDB 锁死反模式修复 — 常驻 rw 连接 → 短命 RO/RW 连接 (2026-08-14)
 
 **背景**: 用户报任何外部进程 (测试/回测/手工 backfill) 都被 DuckDB 拒
 (Conflicting lock, 持锁者 orchestrator PID 56715). 实测 DuckDB 1.5.5 多进程

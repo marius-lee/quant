@@ -317,6 +317,10 @@ class DuckDBManager:
 
         self._db_path = _DUCKDB_PATH
         self._thread_lock = threading.Lock()  # guard 短连接创建 (单例内串行)
+        # v496: 线程级 RW 连接复用 — 每次写入开新连接 (144 次开关) 是
+        # refresh_preaggregates 慢 16min/window 的元凶; 每线程持有一个
+        # 长期 RW 连接, 即写即提交, 退出时由 close() 统一释放.
+        self._thread_local = threading.local()
         self._sync_thread: Optional[threading.Thread] = None
         self._stop_sync = threading.Event()
         self._sqlite_conn = None
@@ -334,26 +338,61 @@ class DuckDBManager:
     # ── 短命连接 (v495 核心: 不持锁) ──
 
     def _open(self, read_only: bool):
-        """打开短命 DuckDB 连接 — 用完由调用方关闭."""
+        """打开 DuckDB 连接 (v496: 同文件所有连接必须同配置).
+
+        RW 连接线程级复用的前提: 不能再开 read_only=True 连接
+        (DuckDB 报 "different configuration than existing connections").
+        统一非只读连接, 查询连接不写即可; 多进程仍可共存 (文件级锁).
+        """
         c = duckdb.connect(
-            str(self._db_path), read_only=read_only,
+            str(self._db_path), read_only=False,
             config={"threads": _MAX_WORKERS,
                     "memory_limit": "4GB",
                     "preserve_insertion_order": "false"})
         return c
 
     def _ro(self):
-        """短命只读连接 — 多进程可共存, 不持锁.
+        """查询连接 — 线程级复用 (v496).
 
-        首次访问前确保文件/表结构存在 (ro 无法打开不存在的库).
+        同文件所有连接须同配置 (非只读), 查询连接不写数据即可.
         """
-        self._ensure_schema()
-        return self._open(read_only=True)
+        conn = getattr(self._thread_local, "ro_conn", None)
+        if conn is None:
+            self._ensure_schema()
+            conn = self._open(read_only=True)
+            self._thread_local.ro_conn = conn
+        return conn
+
+    def _close_ro_conn(self):
+        """关闭当前线程持有的 RO 连接."""
+        conn = getattr(self._thread_local, "ro_conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            finally:
+                self._thread_local.ro_conn = None
 
     def _rw(self):
-        """短命读写连接 — 仅在写入瞬间独占文件."""
-        self._ensure_schema()
-        return self._open(read_only=False)
+        """读写连接 — 线程级复用 (v496), 不再每次写入开新连接.
+
+        每线程首个连接仍走 _ensure_schema (进程内仅首次建表).
+        写事务由 DuckDB 自动提交; close() 时统一释放.
+        """
+        conn = getattr(self._thread_local, "rw_conn", None)
+        if conn is None:
+            self._ensure_schema()
+            conn = self._open(read_only=False)
+            self._thread_local.rw_conn = conn
+        return conn
+
+    def _close_rw_conn(self):
+        """关闭当前线程持有的 RW 连接 (close() 与 stop_sync() 调用)."""
+        conn = getattr(self._thread_local, "rw_conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            finally:
+                self._thread_local.rw_conn = None
 
     def _ensure_schema(self):
         """建表/建索引 — 幂等, 进程内仅首次 rw 时执行."""
@@ -374,30 +413,52 @@ class DuckDBManager:
             c.close()
 
     def _scalar(self, sql: str, params: tuple = ()):
-        """单值查询 (COUNT/MAX 等) — 只读短连接."""
+        """单值查询 — 复用线程级查询连接 (v496, 不再即查即关)."""
         c = self._ro()
         try:
             r = c.execute(sql, params).fetchone()
             return r[0] if r else None
-        finally:
-            c.close()
+        except duckdb.Error:
+            # 连接可能被并发线程 close() 关闭 — 重建一次后重试
+            self._close_ro_conn()
+            c = self._ro()
+            r = c.execute(sql, params).fetchone()
+            return r[0] if r else None
 
     def _write(self, sql: str, params: tuple = ()):
-        """单条写入 — 短命读写连接, 即写即关."""
+        """单条写入 — 复用线程级 RW 连接 (v496)."""
         c = self._rw()
-        try:
-            c.execute(sql, params)
-        finally:
-            c.close()
+        c.execute(sql, params)
 
     def _write_many(self, sql: str, rows: list) -> int:
-        """批量写入 (executemany) — 短命读写连接. 返回行数."""
+        """批量写入 (executemany) — 复用线程级 RW 连接 (v496). 返回行数.
+
+        注意: executemany 逐行参数绑定, 34 万行 ~200s (慢 5000x);
+        大表写入一律走 _write_df (register + INSERT..SELECT).
+        """
         c = self._rw()
+        c.executemany(sql, rows)
+        return len(rows)
+
+    _df_seq = 0
+
+    def _write_df(self, sql: str, df: pd.DataFrame) -> int:
+        """DataFrame 批量写入 — register + INSERT..SELECT (v496).
+
+        实测: 34 万行 ON CONFLICT UPSERT 0.03s (executemany 需 200s).
+        与 _write_many 同走线程级 RW 连接.
+        """
+        if df.empty:
+            return 0
+        type(self)._df_seq += 1
+        tmp_name = f"__df_{type(self)._df_seq}_{os.getpid()}"
+        c = self._rw()
+        c.register(tmp_name, df)
         try:
-            c.executemany(sql, rows)
-            return len(rows)
+            c.execute(sql.replace("__TMP_DF__", tmp_name))
         finally:
-            c.close()
+            c.unregister(tmp_name)
+        return len(df)
 
     def _create_indexes(self, conn):
         """创建常用查询索引 — 幂等 (IF NOT EXISTS)."""
@@ -440,20 +501,24 @@ class DuckDBManager:
             c.close()
 
     def query_df(self, sql: str, params: tuple = ()) -> pd.DataFrame:
-        """查询返回 DataFrame — 只读短连接."""
+        """查询返回 DataFrame — 复用线程级查询连接 (v496)."""
         c = self._ro()
         try:
             return c.execute(sql, params).df()
-        finally:
-            c.close()
+        except duckdb.Error:
+            self._close_ro_conn()
+            c = self._ro()
+            return c.execute(sql, params).df()
 
     def query_arrow(self, sql: str, params: tuple = ()) -> pa.Table:
-        """查询返回 Arrow Table (零拷贝) — 只读短连接."""
+        """查询返回 Arrow Table (零拷贝) — 复用线程级查询连接 (v496)."""
         c = self._ro()
         try:
             return c.execute(sql, params).arrow()
-        finally:
-            c.close()
+        except duckdb.Error:
+            self._close_ro_conn()
+            c = self._ro()
+            return c.execute(sql, params).arrow()
 
     # ── 同步相关 ──
     def start_sync(self):
@@ -473,12 +538,17 @@ class DuckDBManager:
 
     def _sync_loop(self):
         """同步循环: 定期从 SQLite 增量同步到 DuckDB."""
-        while not self._stop_sync.is_set():
-            try:
-                self._sync_incremental()
-            except Exception as e:
-                _log.error(f"sync loop error: {e}")
-            self._stop_sync.wait(_SYNC_INTERVAL_SEC)
+        try:
+            while not self._stop_sync.is_set():
+                try:
+                    self._sync_incremental()
+                except Exception as e:
+                    _log.error(f"sync loop error: {e}")
+                self._stop_sync.wait(_SYNC_INTERVAL_SEC)
+        finally:
+            # v496: 线程退出时释放自身持有的连接
+            self._close_rw_conn()
+            self._close_ro_conn()
 
     def _sync_incremental(self):
         """增量同步: 从 SQLite 读取新增/更新行 -> DuckDB UPSERT."""
@@ -521,6 +591,7 @@ class DuckDBManager:
             else:
                 select_parts.append(c)
         col_str = ", ".join(select_parts)
+        insert_col_str = ", ".join(cols)  # INSERT 用原始列名 (转换表达式仅限 SELECT)
         pk_col_str = ", ".join(f'"{c}"' for c in pk_cols)
         
         # ���� �� �� 增量策略: ��� � � 若存在 date 列, ��� � � 按 DuckDB MAX(date) vs SQLite MAX(date) 追���赶
@@ -552,22 +623,20 @@ class DuckDBManager:
             return
 
         # Build UPSERT SQL
-        placeholders = ", ".join(["?" for _ in cols])
         update_cols = [c for c in cols if c not in pk_cols]
         if len(update_cols) > 0:
             set_clause = ", ".join([f'"{c}" = EXCLUDED."{c}"' for c in update_cols])
+            # v496: register + INSERT..SELECT (executemany 34万行 200s → 0.03s)
             upsert_sql = f"""
-                INSERT INTO {table} ({col_str}) VALUES ({placeholders})
+                INSERT INTO {table} ({insert_col_str}) SELECT {insert_col_str} FROM __TMP_DF__
                 ON CONFLICT ({pk_col_str}) DO UPDATE SET {set_clause}
             """
         else:
-            upsert_sql = f"INSERT INTO {table} ({col_str}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"
+            upsert_sql = (f"INSERT INTO {table} ({insert_col_str}) "
+                          f"SELECT {insert_col_str} FROM __TMP_DF__ ON CONFLICT DO NOTHING")
 
-        # Batch execute
-        batch_size = _MIGRATION_BATCH_SIZE
-        for i in range(0, len(df), batch_size):
-            batch = df.iloc[i:i + batch_size]
-            self._write_many(upsert_sql, batch.values.tolist())
+        # v496: 一次性 register + INSERT..SELECT (原 executemany 分批 ~5000x 慢)
+        self._write_df(upsert_sql, df)
 
     def _sync_backfill_missing_dates(self, table: str = "daily",
                                       gap_threshold_days: int = 30,
@@ -608,9 +677,9 @@ class DuckDBManager:
         # 获取表的所有列
         cols_result = self._sqlite_conn.execute(f"PRAGMA table_info({table})").fetchall()
         cols = [row[1] for row in cols_result]
-        col_str = ", ".join(cols)
-        placeholders = ", ".join(["?"] * len(cols))
-        insert_sql = f"INSERT INTO {table} ({col_str}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"
+        col_str = ", ".join(f'"{c}"' for c in cols)
+        insert_sql = (f"INSERT INTO {table} ({col_str}) "
+                      f"SELECT {col_str} FROM __TMP_DF__ ON CONFLICT DO NOTHING")
         batch_size = _MIGRATION_BATCH_SIZE
         total_inserted = 0
         for i in range(0, len(missing_dates), batch_size):
@@ -620,7 +689,7 @@ class DuckDBManager:
             df = self._sqlite_conn.execute(sql).df()
             if df.empty:
                 continue
-            self._write_many(insert_sql, df[cols].values.tolist())
+            self._write_df(insert_sql, df)
             total_inserted += len(df)
         _log.info(f"backfill: {table} inserted {total_inserted} rows for {len(missing_dates)} dates")
 
@@ -674,31 +743,31 @@ class DuckDBManager:
         增量). 分批执行, 850 万行 ~1-2min.
         """
         update_cols = [c for c in cols if c not in pk_cols]
-        placeholders = ", ".join(["?" for _ in cols])
         pk_str = ", ".join(f'"{c}"' for c in pk_cols)
-        col_str = ", ".join(cols)
+        col_str = ", ".join(f'"{c}"' for c in cols)
         if update_cols:
             set_clause = ", ".join([f'"{c}" = EXCLUDED."{c}"' for c in update_cols])
             upsert_sql = f"""
-                INSERT INTO {table} ({col_str}) VALUES ({placeholders})
+                INSERT INTO {table} ({col_str}) SELECT {col_str} FROM __TMP_DF__
                 ON CONFLICT ({pk_str}) DO UPDATE SET {set_clause}
             """
         else:
-            upsert_sql = f"INSERT INTO {table} ({col_str}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"
+            upsert_sql = (f"INSERT INTO {table} ({col_str}) "
+                          f"SELECT {col_str} FROM __TMP_DF__ ON CONFLICT DO NOTHING")
         total = 0
         offset = 0
-        _BATCH = 50000
+        _BATCH = 500000
         t0 = time.time()
         while True:
             batch = self._sqlite_conn.execute(
                 f"SELECT {col_str} FROM {table} ORDER BY {pk_str} LIMIT ? OFFSET ?",
-                (_BATCH, offset)).fetchall()
-            if not batch:
+                (_BATCH, offset)).df()
+            if batch.empty:
                 break
-            self._write_many(upsert_sql, batch)
+            self._write_df(upsert_sql, batch)
             total += len(batch)
             offset += _BATCH
-            if offset % 500000 == 0:
+            if offset % 1000000 == 0:
                 _log.info(f"sync_table_full({table}): {total:,} rows ({time.time()-t0:.0f}s)")
         _log.info(f"sync_table_full({table}): done — {total:,} rows ({time.time()-t0:.0f}s)")
         return total
@@ -838,9 +907,11 @@ class DuckDBManager:
         self._write(sql, tuple(params))
 
     def close(self):
-        """关闭连接 (v495: 无常驻 DuckDB 连接, 仅关 SQLite 读连接)."""
+        """关闭连接 — 释放线程级 RW 连接 (v496) + SQLite 读连接."""
         if self._sync_thread:
             self.stop_sync()
+        self._close_rw_conn()
+        self._close_ro_conn()
         if self._sqlite_conn:
             self._sqlite_conn.close()
         _log.info("DuckDBManager closed")
@@ -867,6 +938,7 @@ class DuckDBManager:
             # 默认刷新最近 60 个交易日 (约 90 个日历日)
             start_date = (pd.Timestamp(end_date) - pd.Timedelta(days=90)).strftime("%Y-%m-%d")
         
+        t_start = time.time()
         _log.info(f"refresh_preaggregates: {start_date} → {end_date}, windows={windows}")
         
         # 1) 读取基础数据 (close, volume)
@@ -877,7 +949,7 @@ class DuckDBManager:
             params.extend(symbols)
         
         sql = f"""
-            SELECT date, symbol, close, volume
+            SELECT date, symbol, close, volume, high, low
             FROM daily
             WHERE date >= ? AND date <= ? {ph}
             ORDER BY symbol, date
@@ -890,12 +962,16 @@ class DuckDBManager:
         # 确保类型
         df["date"] = pd.to_datetime(df["date"])
         df = df.sort_values(["symbol", "date"])
+        # v495: rolling 前把 date 设为索引 — groupby.rolling 后 reset_index()
+        # 才能带出 date 列 (原 RangeIndex 会丢日期, KeyError: 'date')
+        df = df.set_index("date")
         
         # 2) 分组计算所有窗口
         for window in [5, 10, 20, 60, 120, 250]:
             _log.info(f"refresh_preaggregates: computing window={window}")
             
             # MA (close)
+            t_w0 = time.time()
             ma = df.groupby("symbol")["close"].rolling(window, min_periods=window).mean().reset_index()
             ma = ma.rename(columns={"close": "ma"})
             ma["window"] = window
@@ -906,18 +982,28 @@ class DuckDBManager:
                 ma_cols = ["date", "symbol", "window", "ma"]
                 ma = ma[ma_cols]
                 self._upsert_df("daily_ma", ma, ["date", "symbol", "window"])
+                _log.info(f"refresh_preaggregates: window={window} ma {len(ma):,} rows ({time.time()-t_w0:.1f}s)")
             
             # RET (pct_change)
-            ret = df.groupby("symbol")["close"].pct_change(window).reset_index()
-            ret = ret.rename(columns={"close": "ret"})
+            # v495: pandas 2.3 的 groupby.pct_change 返回 Series 不保留 group key,
+            # 需按位置对齐带出 symbol (groupby 保持原始行序)
+            t_ret = time.time()
+            _ret_ser = df.groupby("symbol")["close"].pct_change(window)
+            ret = pd.DataFrame({
+                "date": _ret_ser.index.values,
+                "symbol": df["symbol"].values,
+                "ret": _ret_ser.values,
+            })
             ret["window"] = window
             ret = ret[ret["date"] >= start_date]
             if not ret.empty:
                 ret_cols = ["date", "symbol", "window", "ret"]
                 ret = ret[ret_cols]
                 self._upsert_df("daily_ret", ret, ["date", "symbol", "window"])
+                _log.info(f"refresh_preaggregates: window={window} ret {len(ret):,} rows ({time.time()-t_ret:.1f}s)")
             
             # STD
+            t_std = time.time()
             std = df.groupby("symbol")["close"].rolling(window, min_periods=window).std().reset_index()
             std = std.rename(columns={"close": "std"})
             std["window"] = window
@@ -926,8 +1012,10 @@ class DuckDBManager:
                 std_cols = ["date", "symbol", "window", "std"]
                 std = std[std_cols]
                 self._upsert_df("daily_std", std, ["date", "symbol", "window"])
+                _log.info(f"refresh_preaggregates: window={window} std {len(std):,} rows ({time.time()-t_std:.1f}s)")
             
             # MA Volume
+            t_mv = time.time()
             ma_vol = df.groupby("symbol")["volume"].rolling(window, min_periods=window).mean().reset_index()
             ma_vol = ma_vol.rename(columns={"volume": "ma_volume"})
             ma_vol["window"] = window
@@ -936,57 +1024,55 @@ class DuckDBManager:
                 ma_vol_cols = ["date", "symbol", "window", "ma_volume"]
                 ma_vol = ma_vol[ma_vol_cols]
                 self._upsert_df("daily_ma_volume", ma_vol, ["date", "symbol", "window"])
+                _log.info(f"refresh_preaggregates: window={window} ma_volume {len(ma_vol):,} rows ({time.time()-t_mv:.1f}s)")
             
-            # MAX (high)
-            # 需要 high 列，如果没有则跳过
-            try:
-                max_df = df.groupby("symbol")["high"].rolling(window, min_periods=window).max().reset_index()
-                max_df = max_df.rename(columns={"high": "max_val"})
-                max_df["window"] = window
-                max_df = max_df[max_df["date"] >= start_date]
-                if not max_df.empty:
-                    max_cols = ["date", "symbol", "window", "max_val"]
-                    max_df = max_df[max_cols]
-                    self._upsert_df("daily_max", max_df, ["date", "symbol", "window"])
-            except Exception:
-                pass  # high 列可能不存在
+            # MAX (high) — v496: 去 try/except 吞错 (零 fallback), SELECT 显式含 high
+            t_max = time.time()
+            max_df = df.groupby("symbol")["high"].rolling(window, min_periods=window).max().reset_index()
+            max_df = max_df.rename(columns={"high": "max_val"})
+            max_df["window"] = window
+            max_df = max_df[max_df["date"] >= start_date]
+            if not max_df.empty:
+                max_cols = ["date", "symbol", "window", "max_val"]
+                max_df = max_df[max_cols]
+                self._upsert_df("daily_max", max_df, ["date", "symbol", "window"])
+                _log.info(f"refresh_preaggregates: window={window} max {len(max_df):,} rows ({time.time()-t_max:.1f}s)")
             
-            # MIN (low)
-            try:
-                min_df = df.groupby("symbol")["low"].rolling(window, min_periods=window).min().reset_index()
-                min_df = min_df.rename(columns={"low": "min_val"})
-                min_df["window"] = window
-                min_df = min_df[min_df["date"] >= start_date]
-                if not min_df.empty:
-                    min_cols = ["date", "symbol", "window", "min_val"]
-                    min_df = min_df[min_cols]
-                    self._upsert_df("daily_min", min_df, ["date", "symbol", "window"])
-            except Exception:
-                pass  # low 列可能不存在
+            # MIN (low) — v496: 去 try/except 吞错 (零 fallback), SELECT 显式含 low
+            t_min = time.time()
+            min_df = df.groupby("symbol")["low"].rolling(window, min_periods=window).min().reset_index()
+            min_df = min_df.rename(columns={"low": "min_val"})
+            min_df["window"] = window
+            min_df = min_df[min_df["date"] >= start_date]
+            if not min_df.empty:
+                min_cols = ["date", "symbol", "window", "min_val"]
+                min_df = min_df[min_cols]
+                self._upsert_df("daily_min", min_df, ["date", "symbol", "window"])
+                _log.info(f"refresh_preaggregates: window={window} min {len(min_df):,} rows ({time.time()-t_min:.1f}s)")
         
-        _log.info("refresh_preaggregates: done")
+        _log.info(f"refresh_preaggregates: done — {len(windows)} windows, "
+                  f"{end_date} ({time.time()-t_start:.1f}s total)")
     
     def _upsert_df(self, table: str, df: pd.DataFrame, pk_cols: list[str]):
         """DataFrame UPSERT 到 DuckDB 表."""
         if df.empty:
             return
         col_str = ", ".join(f'"{c}"' for c in df.columns)
-        placeholders = ", ".join(["?"] * len(df.columns))
         update_cols = [c for c in df.columns if c not in pk_cols]
         if update_cols:
             set_clause = ", ".join([f'"{c}" = EXCLUDED."{c}"' for c in update_cols])
             pk_col_str = ", ".join(f'"{c}"' for c in pk_cols)
+            # v496: register + INSERT..SELECT (executemany 34万行 200s → 0.03s)
             upsert_sql = f"""
-                INSERT INTO {table} ({col_str}) VALUES ({",".join(["?"]*len(df.columns))})
+                INSERT INTO {table} ({col_str})
+                SELECT {col_str} FROM __TMP_DF__
                 ON CONFLICT ({pk_col_str}) DO UPDATE SET {set_clause}
             """
         else:
-            upsert_sql = f"INSERT INTO {table} ({col_str}) VALUES ({','.join(['?']*len(df.columns))}) ON CONFLICT DO NOTHING"
-        
-        batch_size = _MIGRATION_BATCH_SIZE
-        for i in range(0, len(df), batch_size):
-            batch = df.iloc[i:i+batch_size]
-            self._write_many(upsert_sql, batch.values.tolist())
+            upsert_sql = (f"INSERT INTO {table} ({col_str}) "
+                          f"SELECT {col_str} FROM __TMP_DF__ "
+                          f"ON CONFLICT DO NOTHING")
+        self._write_df(upsert_sql, df)
 
 
 # ── 全局单例访问器 ──

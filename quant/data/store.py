@@ -753,7 +753,9 @@ class DataStore:
 
                 if rs.error_code != "0":
                     processed += 1
-                    continue  # 无因子记录 (如新股) — 静默跳过
+                    logger.warning(f"baostock adj_factor {bs_code}: error_code={rs.error_code} "
+                                   f"msg={rs.error_msg} — 该股跳过 (缺口由 audit/repair 可见)")
+                    continue
 
                 stock_rows = 0
                 while rs.next():
@@ -1036,6 +1038,8 @@ class DataStore:
                     continue
 
                 if rs.error_code != "0":
+                    logger.warning(f"baostock daily {bs_code}: error_code={rs.error_code} "
+                                   f"msg={rs.error_msg} — 该源本轮放弃 (后续源兜底)")
                     continue
 
                 while rs.next():
@@ -1415,7 +1419,8 @@ class DataStore:
                             "volume": int(c.volume), "amount": float(c.volume * (c.high + c.low + c.close) / 3) if c.amount == 0 else float(c.amount),
                             "turnover": None,
                         })
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"[longbridge] {sym} query failed: {e}, skip")
                     continue
         finally:
             try:
@@ -1574,6 +1579,8 @@ class DataStore:
                     logger.error(f"baostock backfill {sym}: {_e}; 停止本轮")
                     break
                 if rs.error_code != '0':
+                    logger.warning(f"baostock backfill {sym}: error_code={rs.error_code} "
+                                   f"msg={rs.error_msg} — 该股本轮跳过 (断点续跑可重试)")
                     continue
                 rows = []
                 while rs.next():
@@ -1716,7 +1723,9 @@ class DataStore:
                             break
                         # 非零 error_code: 退避重试; session 失效重登一次
                         if _retry < 2:
-                            if "登录" in _rs.error_msg:
+                            if "登录" in _rs.error_msg or any(
+                                    _kw in _rs.error_msg for _kw in
+                                    ("网络接收", "接收", "网络错误", "socket", "连接", "超时")):
                                 _bs.logout()
                                 _lg = _bs_query("login")
                                 if _lg.error_code != '0':
@@ -1965,7 +1974,7 @@ class DataStore:
                         raise RuntimeError(f"baostock re-login failed: {_lg2.error_msg}")
                     _bs_socket_timeout()
                 elif any(_kw in rs.error_msg for _kw in
-                         ("网络接收", "网络错误", "socket", "连接")):
+                         ("网络接收", "接收", "网络错误", "socket", "连接", "超时")):
                     # v489: 服务端断连 — 与 session 失效同层处理, 断连必须重建连接
                     # (2026-08-14: 09:10 起 Broken pipe/Connection reset 连发,
                     #  旧逻辑仅在"登录"关键词时重登, 断连重试 3 次全败)
@@ -2154,7 +2163,7 @@ class DataStore:
                         raise RuntimeError(f"baostock re-login failed: {_lg2.error_msg}")
                     _bs_socket_timeout()
                 elif any(_kw in rs.error_msg for _kw in
-                         ("网络接收", "网络错误", "socket", "连接")):
+                         ("网络接收", "接收", "网络错误", "socket", "连接", "超时")):
                     _bs.logout()
                     try:
                         _lg3 = _bs_query("login")
@@ -2484,13 +2493,11 @@ class DataStore:
                 all_sources.insert(0, ("tushare", lambda: self._fetch_batch_tushare(chunk, batch_start)))
             ordered = all_sources
             # v408: 数据源开关 — tencent/akshare IP封禁中, 跳过节省回退耗时
+            # v493: 去掉 try/except — 配置缺键应崩 (零 fallback), 不静默当启用
             _disabled = set()
-            try:
-                for _sn in ("tencent", "akshare"):
-                    if not _require_cfg(f"data.source_policy.enabled.{_sn}"):
-                        _disabled.add(_sn)
-            except Exception:
-                pass
+            for _sn in ("tencent", "akshare"):
+                if not _require_cfg(f"data.source_policy.enabled.{_sn}"):
+                    _disabled.add(_sn)
             for src_name, fetch_fn in ordered:
                 if src_name in _disabled:
                     continue

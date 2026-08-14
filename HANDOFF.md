@@ -2,6 +2,61 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+### v493b 零 fallback 执行纠偏 — 静默吞错全量清零 (2026-08-14)
+
+**背景**: 用户指出 CLAUDE.md 硬约束"零 fallback — try/except 不降级、不吞错"
+在上次审查中未作为核对标准逐条执行. 收到 backfill_amount 运行日志后按此标准
+全项目宽扫 except 静默点 (~60 处), 分类处理:
+
+**修复 (真吞错 → 加日志/去降级)**:
+1. `store.py` `_fetch_baostock_daily:1038` — `rs.error_code != "0": continue`
+   静默 → 加 warning (error_code+msg)
+2. `store.py` `_sync_adj_factor_baostock:754` — 同上 → 加 warning
+3. `store.py` `_backfill_via_baostock:1576` — 同上 → 加 warning
+4. `store.py` `_fetch_longbridge_daily:1422` — `except Exception: continue`
+   完全无日志 → 加 warning
+5. `store.py` `update_daily` source_policy 开关 — try/except pass 吞配置缺失
+   → 去掉 try, `_require_cfg` 缺即崩 (零 fallback)
+6. `store.py` 逐日 backfill_turnover:1729 — "接收数据异常" 不含"登录"关键词
+   → 不重登, 3 次慢重试后静默丢当日该股 → 断连关键词 (接收/超时/socket等)
+   合并进重登判定
+7. `stocks_snapshot.py:104` — query_profit_data error_code≠0 静默 → print 留痕
+8. `factor/store.py` `_read_checkpoint` — 损坏静默返 None (续传失效从头跑)
+   → 加 warning
+9. `attribution.py:566` — compute_rolling_metrics 失败 pass (归因日报静默缺
+   滚动指标) → 加 warning
+
+**核对后保留 (合理语义, 非吞错)**:
+- 坏行解析跳过 (ValueError/IndexError/KeyError: continue — 单行脏数据清洗,
+  store 1057/1964/2153, turnover.py, stocks_snapshot:114, sina:189,
+  fund_flow:203, weekly:285, state_machine:335)
+- DDL 幂等迁移 (sqlite3.OperationalError: pass "列已存在")
+- 可选依赖探测 (ImportError: return None/pass — baostock/akshare 未装)
+- 清理/关闭路径 (del/close 幂等, factor store 391/584/604/1069)
+- 设计回退 (backtest/loop.py:51 缓存 miss → DB path, 注释明确非错误)
+- 进程退出/队列空 (ProcessLookupError/queue.Empty — 正常语义)
+- 监控单项失败 (prometheus 单盘统计 pass — 不因单盘挂掉崩监控)
+
+**验证**: ast 全 OK; 6 处修复点 inspect 断言全 True; test_registry_smoke 通过.
+已提交 b6b4da1 之后的增量未提交 — 本批 (v493+v493b) 待提交.
+
+### v493 backfill 断连关键词收口 — '接收数据异常' 不再丢股 (2026-08-14)
+
+**背景**: backfill_amount full 运行日志出现 "timed out" / "接收数据异常，请稍后再试。" /
+"utf-8 decode 错误" / "logout success!" — 均为 baostock 断连类错误, 3 次重试 +
+断连重登已安全处理 (失败股跳过、断点续跑, 不崩溃); 但发现**丢股隐患**:
+断连判定关键词 ("网络接收","网络错误","socket","连接") 与实际错误
+"接收数据异常，请稍后再试。" 不匹配 (无"网络接收"前缀) → 不触发立即重登,
+而是 3 次慢重试后跳过该股 → 回填结果缺股 (下次重跑才补).
+
+**改动**: `quant/data/store.py` 两处 (turnover_full:1968 / amount_full:2157)
+断连关键词扩为 ("网络接收","接收","网络错误","socket","连接","超时") —
+"接收数据异常" 命中"接收" → 立即 logout+login 重登后重试, 不再丢股.
+verify 已确认: "接收数据异常，请稍后再试。" 命中 ✓
+
+**注意**: 当前 backfill_amount full 进度在断点文件 (.amount_full_progress.json,
+~500+/5208, ETA ~4h), 被杀/超时不影响已落库行; 重跑自动续.
+
 ### v492 数据拉取+物化缓存全链路 9 项修复 — 输入指纹失效 + DuckDB 同步收口 (2026-08-14)
 
 **背景**: v491 交付后全链路审查 (调度链 → 数据拉取 → DuckDB 同步 → 物化缓存 → 消费路径),

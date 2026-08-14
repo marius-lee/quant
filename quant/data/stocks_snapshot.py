@@ -102,6 +102,7 @@ def refresh_total_shares() -> int:
                 gate_blocked = True
                 break
             if rs.error_code != "0":
+                print(f"refresh_total_shares {code}: error_code={rs.error_code} msg={rs.error_msg} — 该年季跳过", flush=True)
                 continue
             while rs.next():
                 row = rs.get_row_data()

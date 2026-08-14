@@ -563,5 +563,5 @@ def _run(today: str):
     # v409: 每日更新滚动指标 (alpha/IR/beta)
     try:
         compute_rolling_metrics(window=60, strategy="quant")
-    except Exception:
-        pass
+    except Exception as e:
+        _log.warning(f"rolling metrics update failed: {e}")

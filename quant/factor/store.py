@@ -1059,7 +1059,8 @@ class FactorStore:
                 os.remove(self._checkpoint_path)
                 return None
             return data
-        except Exception:
+        except Exception as e:
+            _log.warning("factor_cache: checkpoint 读取失败, 续传失效从头跑: %s", e)
             return None
 
     def _clear_checkpoint(self):

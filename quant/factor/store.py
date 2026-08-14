@@ -496,7 +496,8 @@ class FactorStore:
             _log.info("factor_cache: loaded %d days × %d symbols (%.1fs)",
                       len(data_full), len(symbols), _time.time() - t0)
 
-            prims = precompute_primitives(data_full, factor_names=factor_names)
+            prims = precompute_primitives(data_full, factor_names=factor_names,
+                                          save_disk_cache=False)
             _log.info("factor_cache: primitives computed (%.1fs)", _time.time() - t0)
 
             try:

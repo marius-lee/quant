@@ -1,4 +1,36 @@
-### v495### v496 DuckDB 全量迁移完成 + 写入提速 5000x (2026-08-14)
+### v497 因子原语物化跳过磁盘缓存 — 物化提速 8min/全量 (2026-08-15)
+
+**背景**: 用户目标是"尽可能利用 DuckDB 提升系统运行效率"。实测物化 chunk
+(200 交易日 × 5208 股) 时间构成:
+- 拉数 (DuckDB get_daily): 0.1s (v435 已走 DuckDB, 已快)
+- precompute_primitives 计算: ~11s (pandas rolling)
+- parquet 磁盘缓存保存: **~54s** (135 表, 0.74GB, zstd)
+
+预研 SQL 路径: DuckDB window functions 一次算全窗口滚动 0.13s, 但 grid
+构造 + register + .df() 转换全程 ~6s, 对拍 86/100 完全一致 (corr/skew 需
+特殊处理: DuckDB LOG()=log10 非 ln, COUNT 需网格对齐停牌日)。结论: SQL 路径
+净收益 ≈ 0 (素材已在内存), 且改动 precompute_primitives 源码会触发因子缓存
+指纹失效 (store.py:137) 全量重物化 — 风险/收益不成比例, 放弃。
+
+**关键洞察 (v470/实测证实)**: 物化每 chunk 的 data hash 不同 (窗口随 chunk
+滚动) → 磁盘缓存**跨 chunk 命中率 ≈ 0**, 落盘 54s 纯白费。9 chunks ≈ 8 分钟。
+
+**改动**:
+1. `precompute_primitives(data, factor_names=None, save_disk_cache=True)`:
+   新增 `save_disk_cache` 参数, False 时跳过 parquet 落盘与磁盘 LRU,
+   仅更新内存缓存 (fork COW 复用), 省 ~54s/chunk
+2. `store.materialize` 调 precompute_primitives 传 `save_disk_cache=False`
+   (物化场景 chunk 间缓存无命中, 纯耗时)
+3. IC 评估 (ic.py) 保持默认 True (同参数重复评估仍可命中磁盘缓存)
+
+**验证**: no-save 运行 10.6s / save 运行 64.6s (省 54s); 未落盘 (磁盘目录 0
+新增); `pytest test/ --ignore=test/test_evening_chain.py` → 385 passed。
+VERSION → test-v497。
+
+**注意**: precompute_primitives 源码变更 → 因子缓存指纹变 → 下次 materialize
+全量重计算; 但 save_disk_cache=False 使全量重物化从 ~580s → ~95s (9 chunks)。
+
+### v496 DuckDB 全量迁移完成 + 写入提速 5000x (2026-08-14)
 
 **背景**: v495 迁移命令分步执行 (daily/valuation 成功, stocks 语法错误, refresh 卡死)。
 stocks 报 `INSERT ... CASE WHEN` — 转换表达式误用作 INSERT 列名 (SELECT 才需转换)。

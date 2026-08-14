@@ -188,12 +188,16 @@ def _ts_rank_vectorized(df: pd.DataFrame, window: int) -> pd.DataFrame:
 
 
 def precompute_primitives(data: pd.DataFrame,
-                          factor_names: list[str] | None = None) -> dict:
+                          factor_names: list[str] | None = None,
+                          save_disk_cache: bool = True) -> dict:
     """预计算所有价格因子共享的滚动统计量。
 
     Args:
         data: MultiIndex DataFrame (field, symbol), 含 close/open/high/low/volume/amount
         factor_names: 本次需要物化的因子名列表。None 时按原行为计算全部窗口。
+        save_disk_cache: False 时跳过磁盘 parquet 保存 (v497: 物化每 chunk 的
+            data hash 不同 → 落盘 ~0.7GB 但跨 chunk 命中率 ≈ 0, 纯耗时 60s+;
+            物化场景传 False 省时, IC/单次评估保持默认 True)。
 
     Returns:
         {primitive_name: DataFrame(date × symbol)}
@@ -436,6 +440,11 @@ def precompute_primitives(data: pd.DataFrame,
     _log.info(f"  primitives done: {len(prims)} tables in {elapsed:.1f}s")
     
     # ── 保存到缓存 (float32 parquet 目录) ──
+    if not save_disk_cache:
+        _PRIMITIVE_CACHE[cache_key] = prims
+        _evict_lru_if_needed()
+        _log.info(f"  primitives cache SKIP disk save (save_disk_cache=False): {cache_key}")
+        return prims
     try:
         os.makedirs(cache_dir, exist_ok=True)
         for name, df in prims.items():

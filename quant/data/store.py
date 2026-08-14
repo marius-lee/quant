@@ -1964,6 +1964,20 @@ class DataStore:
                     if _lg2.error_code != "0":
                         raise RuntimeError(f"baostock re-login failed: {_lg2.error_msg}")
                     _bs_socket_timeout()
+                elif any(_kw in rs.error_msg for _kw in
+                         ("网络接收", "网络错误", "socket", "连接")):
+                    # v489: 服务端断连 — 与 session 失效同层处理, 断连必须重建连接
+                    # (2026-08-14: 09:10 起 Broken pipe/Connection reset 连发,
+                    #  旧逻辑仅在"登录"关键词时重登, 断连重试 3 次全败)
+                    _bs.logout()
+                    try:
+                        _lg3 = _bs_query("login")
+                    except (BaostockBlacklisted, BaostockQuotaExceeded) as _e:
+                        raise RuntimeError(f"baostock re-login blocked: {_e}")
+                    if _lg3.error_code != "0":
+                        raise RuntimeError(f"baostock re-login failed: {_lg3.error_msg}")
+                    _bs_socket_timeout()
+                    last_err = RuntimeError(f"baostock {code}: 断连已重登: {rs.error_msg}")
                 else:
                     last_err = RuntimeError(f"baostock {code}: {rs.error_msg}")
                 _time.sleep(1.5 * (_attempt + 1))

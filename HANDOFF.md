@@ -2,6 +2,20 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+### v489 turnover full 断连自恢复 — Broken pipe 不再 3 次全败 (2026-08-14)
+
+**背景**: 09:08 起 baostock 服务端断连 (`Connection reset by peer`/`Broken pipe`/
+"网络接收错误"), 旧 `_fetch_turn` 仅对 error_msg 含"登录"关键词重登 — 网络断连
+不在其中 → 重试 3 次全败 → 688390 等后续股票白失败。断点 (486) 保证已存
+4900/5208 只, 剩 ~308 只; 但失败股票会重试重登, 白白烧 3 次查询。
+
+**改动** (`quant/data/store.py` `_fetch_turn`): error_msg 含 网络接收/网络错误/
+socket/连接 任一关键词 → 与 session 失效同层处理: logout + login 重建连接后重试
+(黑名单/配额异常同 _lg2 模式 raise RuntimeError)。
+
+**验证**: ast OK; 断点 4900 只, 剩 ~308 只待跑。用户重跑 `backfill_turnover.py`
+即自动跳过断点并续跑。
+
 ### v488 signals 窗口修正 08:00→08:30 (2026-08-14)
 
 **原因**: `manifest.py` signals `schedule="08:30"` 仅为展示标签, orchestrator 实际按

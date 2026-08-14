@@ -21,6 +21,7 @@ from datetime import date as _date
 
 from quant.config.paths import MARKET_DB as DB_PATH
 from quant.data.table_registry import REGISTRY, factors_for_tables
+from quant.utils.date import to_str
 
 # 兼容旧调用方: {table: slo} (事件型 slo=None → 不判 stale)
 SLOS = {name: s.slo_days for name, s in REGISTRY.items()}
@@ -52,7 +53,7 @@ def check_freshness(today: str = None, db_path: str = None) -> list[dict]:
             if slo is not None:
                 stale = True
                 if max_date:
-                    lag = (today_d - _date.fromisoformat(str(max_date)[:10])).days
+                    lag = (today_d - _date.fromisoformat(to_str(max_date))).days
                     stale = lag > slo
             results.append({"table": table, "max_date": max_date,
                             "lag_days": lag, "slo": slo, "stale": stale})

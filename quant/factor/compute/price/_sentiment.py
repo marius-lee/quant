@@ -5,6 +5,7 @@ v375: aux["news"] 预加载替代 per-date SQL (消除 4 SQL查询/日期).
 import numpy as np
 import pandas as pd
 
+from quant.utils.date import to_str
 from quant.factor.registry import _cs_zscore
 from quant.utils.logger import get_logger as _get_logger
 
@@ -20,7 +21,7 @@ def _news_from_aux(aux: dict, symbols: list, date: str, window_days: int):
     if news.empty or "date" not in news.columns:
         return sentiment, counts
 
-    ts = pd.Timestamp(str(date)[:10])
+    ts = pd.Timestamp(to_str(date))
     from_ts = ts - pd.Timedelta(days=window_days - 1)
     news_dates = pd.to_datetime(news["date"])
     mask = (news_dates >= from_ts) & (news_dates <= ts)
@@ -68,7 +69,7 @@ def compute_news_abnormal_20d(data, date, window=0, aux=None):
     if news.empty or "date" not in news.columns:
         return _cs_zscore(result, sparse=True).rename("news_abnormal_20d")
 
-    ts = pd.Timestamp(str(date)[:10])
+    ts = pd.Timestamp(to_str(date))
     news_dates = pd.to_datetime(news["date"])
     # Current: last 5 days avg
     cur_mask = (news_dates >= ts - pd.Timedelta(days=5)) & (news_dates <= ts)

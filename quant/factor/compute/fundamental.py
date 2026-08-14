@@ -57,6 +57,7 @@ import sqlite3
 import os as _os
 from typing import Optional
 
+from quant.utils.date import to_str
 from quant.config.constants import *
 from quant.factor.registry import _cs_zscore, _db_connect, _FIN_FACTORS
 from quant.factor.compute._shared import _market_db_path
@@ -154,7 +155,7 @@ def compute_margin_buy_ratio(fundamentals: "pd.DataFrame", date: str, aux=None) 
         return pd.Series(np.nan, index=fundamentals.index, name="margin_buy_ratio")
     # v477: 必须按当日过滤 + 对齐 symbols — 之前直接全量相除, 返回
     # 全 chunk 全市场非唯一 index Series, 物化端 reindex 对齐后全 NaN → 因子 0 行
-    date_str = str(date)[:10]
+    date_str = to_str(date)
     w = m[(m["date"].astype(str) == date_str) & m["margin_balance"].notna()
           & (m["margin_balance"] > 0) & m["margin_buy"].notna()]
     if w.empty:
@@ -783,7 +784,7 @@ def compute_sue(fundamentals, date, financials=None):
     _ph = ",".join(["?"] * len(_syms))
     # v477: 原实现 date 直接作 SQL 参数 — dispatch 传 Timestamp → 
     #       sqlite3 "type Timestamp is not supported" → 因子永远 0 行
-    date_str = str(date)[:10] if not isinstance(date, str) else date
+    date_str = to_str(date) if not isinstance(date, str) else date
 
     # 读取季度净利润 + 总股本
     rows = conn.execute(f"""
@@ -866,7 +867,7 @@ def compute_holder_reduction(fundamentals, date, financials=None):
     _syms = fundamentals.index.tolist()
     _ph = ",".join(["?"] * len(_syms))
     end_date = pd.Timestamp(date)
-    date_str = str(date)[:10] if not isinstance(date, str) else date
+    date_str = to_str(date) if not isinstance(date, str) else date
 
     vals = {r[0]: r[1] for r in rows if r[1] is not None}
     start_date = end_date - pd.DateOffset(days=60)
@@ -954,7 +955,7 @@ def compute_dividend_yield(fundamentals, date, financials=None):
     _ph = ",".join(["?"] * len(_syms))
 
     # 取最近12个月分红
-    date_str = str(date)[:10] if not isinstance(date, str) else date
+    date_str = to_str(date) if not isinstance(date, str) else date
     end_date = pd.Timestamp(date_str)
     start_date = end_date - pd.DateOffset(months=12)
 
@@ -1020,7 +1021,7 @@ def compute_ocfp(fundamentals, date, financials=None):
 
     syms = fundamentals.index.tolist()
     # v477: 原实现 date 直接作 SQL 参数 — dispatch 传 Timestamp 绑定异常 → 0 行
-    date_str = str(date)[:10] if not isinstance(date, str) else date
+    date_str = to_str(date) if not isinstance(date, str) else date
 
     # 金融/地产/银行剔除
     # 从 fundamentals 获取总市值和行业（无需重复查询 DB）
@@ -1135,7 +1136,7 @@ def compute_insider_cluster(data, date, window=60):
     rows = conn.execute(
         "SELECT symbol, holder_type, direction, change_ratio FROM holder_trade "
         "WHERE ann_date >= date(?, '-{} days') AND direction IN ('增加','增持','买入')".format(window),
-        (str(date)[:10],)
+        (to_str(date),)
     ).fetchall()
     if rows:
         import pandas as _pd5
@@ -1168,7 +1169,7 @@ def compute_earnings_upgrade(data, date, window=90):
         "SELECT symbol, buy_count, overweight_count, neutral_count, "
         "underweight_count, report_count FROM analyst_forecast "
         "WHERE sync_date <= ? ORDER BY sync_date DESC",
-        (str(date)[:10],)
+        (to_str(date),)
     ).fetchall()
     if rows:
         import pandas as _pd6

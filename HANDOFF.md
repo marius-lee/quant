@@ -2,6 +2,70 @@
 
 > **修改前**: `grep -rn "关键词" HANDOFF.md docs/adr/` 联动搜索，避免重复踩坑。
 
+### v495 DuckDB 锁死反模式修复 — 常驻 rw 连接 → 短命 RO/RW 连接 (2026-08-14)
+
+**背景**: 用户报任何外部进程 (测试/回测/手工 backfill) 都被 DuckDB 拒
+(Conflicting lock, 持锁者 orchestrator PID 56715). 实测 DuckDB 1.5.5 多进程
+行为: 多个 RO 连接可跨进程共存; 但**任何 RW 连接存在时连 RO 都无法打开**.
+原实现 DuckDBManager 单例持有常驻 `duckdb.connect(read_only=False)` 连接,
+orchestrator 进程 (restart.sh 拉起) 首次触发 get_duckdb_proxy() 后永久独占
+文件锁 → 锁死是设计反模式, 零收益.
+
+**附带发现 (重要)**: quant/data/market.duckdb 是空壳 — 21 张表全 0 行,
+1MB, 最后写入 8/13 07:24; SQLite 才是唯一真实数据源 (daily 948.8 万行,
+daily_valuation 830 万行, stocks 5525). store.get_daily 的 DuckDB 优先路径
+实际永远 fallback SQLite.
+
+**修复 (duckdb_store.py)**:
+1. `__init__` 不再持有常驻连接 — 删除 `_init_db` 的 rw connect + 常驻 sync 线程
+2. `_ro()` 短命只读连接: 查询路径 (query_df/query_arrow/_scalar/get_*)
+   → 用完即关, 不持锁, 任何人可查
+3. `_rw()` 短命读写连接: 写路径 (_write/_write_many/connection()/schema 建表)
+   → 仅在写入瞬间独占文件
+4. `_ensure_schema()` 幂等建表/建索引 (CREATE IF NOT EXISTS), 首次访问触发;
+   `_ro()` 前置 ensure (ro 无法打开不存在的库)
+5. 删除有缺陷的 `execute()` (游标存活于已关闭连接) — 内部调用点 8 处
+   迁移至 _scalar/_write/query_df/get_universe 用 query_df
+
+**验证**: 393 passed (全量 test/); 副本库断言: 无常驻连接属性 / schema 首次
+RO 自动 ensure / RW 写入读回 / stocks INSERT + list_date→DATE 转换; ast OK.
+
+**注意**: 现有 orchestrator 仍为旧代码持锁, 需重启 ref: `bash scripts/restart.sh`
+后才能释放旧锁并加载新代码. 空壳 DuckDB 层是否值得保留 (全部数据在 SQLite,
+DuckDB 零行) 待决策.
+
+### v494 日期格式全链路统一 ISO YYYY-MM-DD — baostock GBK 补丁 + list_date 修复 (2026-08-14)
+
+**背景**: 用户报 `_sync_table` 的 date_cols_int 转换 SQL 缺 `'-'` 分隔符
+(`date(substr(c,1,4)||'-'||substr(c,5,2)||substr(c,7,2))` → '2026-0605' 恒失败),
+且 tushare 返回 int 日期 (20260605) 与内部 ISO 标准冲突; baostock 服务端返回
+GBK 编码中文错误消息 ("接收数据异常") 被客户端 UTF-8 硬解码吞掉 → None →
+调用方 AttributeError.
+
+**修复**:
+1. `utils/date.py` — `to_str` 全类型覆盖 (str ISO/compact/datetime, int, float,
+   datetime/date/Timestamp/Period, None) 单点归一化; int/float compact 独立
+   `_compact_int_to_iso` (容忍浮点精度/7-9位噪音非静默, 抛 ValueError)
+2. `utils/baostock_gate.py` — 新增 `_patch_baostock_gbk()`: monkey-patch
+   `baostock.util.socketutil.send_msg` → UTF-8 解码失败回退 GB18030
+   (errors="replace"), 模块 import 即生效, 覆盖 store.py 裸 import baostock 路径
+3. `data/store.py` — list_date/delist_date 写入统一走 `to_str` (tushare int→ISO)
+4. `data/stocks_snapshot.py` — 同上
+5. 历史数据修正 — 5525 行 compact list_date (如 '19910403') 已一次性 UPDATE 为
+   ISO; 当前库 5208 ISO 非空 list_date, compact 残留 0
+6. `data/duckdb_store.py` `_sync_table` — date_cols_int 转换改为 CASE: 8位纯数字
+   → 拆分拼接 ('-' 已补), 否则 TRY_CAST ISO (空串/乱值不崩)
+7. `data/freshness.py` / `data/data_health.py` / `alpha/ml_common.py` /
+   `data/dividend.py` / factor/compute (fundamental/high_priority/price 下共 5 文件)
+   — `str(x)[:10]` 归一化点 → `to_str` (约 40 处)
+
+**验证**: 393 passed (全量 test/); baostock.send_msg 闭包内 `_decode_gbk` 实测
+GBK 中文 '接收数据异常' 解码成功、UTF-8 正常路径不受影响; SQLite 侧同款 CASE
+表达式对 ISO/compact/空值三态验证通过; ast 全 OK.
+
+**注意**: DuckDB 文件被运行中的 web 服务 (PID 56715) 持锁, 未实连验证——转换
+逻辑已在 SQLite 侧等效验证, 每晚调度链 sync 时会自动重推全表 (stocks 走全量).
+
 ### v493b 零 fallback 执行纠偏 — 静默吞错全量清零 (2026-08-14)
 
 **背景**: 用户指出 CLAUDE.md 硬约束"零 fallback — try/except 不降级、不吞错"

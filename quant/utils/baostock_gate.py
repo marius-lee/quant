@@ -186,13 +186,96 @@ class _NeedWait(Exception):
 gate = BaostockGate()
 
 
+# v494: baostock 客户端 socketutil.send_msg 硬编码 UTF-8 解码响应, 服务端
+# 返回 GBK 编码的中文错误消息 (如 "接收数据异常") 时抛 UnicodeDecodeError,
+# 被库内部吞掉 → 返回 None → 调用方拿到 None 再 AttributeError.
+# 一次性修补: 模块 import 即打补丁 (UTF-8 失败回退 GB18030), 全进程生效
+# (store.py 裸 import baostock 的路径同样覆盖).
+_PATCHED_BAOSTOCK = False
+
+
+def _patch_baostock_gbk() -> None:
+    """monkey-patch baostock.util.socketutil.send_msg — GBK 回退解码.
+
+    幂等 (全局标志); 库缺失/结构变化时静默跳过 (不影响非 baostock 路径).
+    """
+    global _PATCHED_BAOSTOCK
+    if _PATCHED_BAOSTOCK:
+        return
+    try:
+        from baostock.util import socketutil as _su
+    except Exception:
+        return
+    src = getattr(_su, "send_msg", None)
+    if src is None:
+        return
+
+    import inspect
+    try:
+        text = inspect.getsource(src)
+    except (OSError, TypeError):
+        return
+
+    # 定位 'bytes.decode(receive)' 调用 (两处: 压缩/非压缩分支)
+    if "bytes.decode(receive)" not in text:
+        return
+
+    def _send_msg_gbk(msg):
+        """send_msg 的 GBK 兼容版 — UTF-8 失败回退 GB18030 (v494)."""
+        import baostock.common.contants as _c
+        import baostock.common.context as _ctx
+        import socket as _sock
+        import zlib as _zlib
+        try:
+            default_socket = getattr(_ctx.context, "default_socket", None)
+            if default_socket is None:
+                return None
+            msg = msg + "\n"
+            default_socket.send(bytes(msg, encoding='utf-8'))
+            receive = b""
+            while True:
+                recv = default_socket.recv(8192)
+                receive += recv
+                if receive[-13:] == b"<![CDATA[]]>\n":
+                    break
+            head_bytes = receive[0:_c.MESSAGE_HEADER_LENGTH]
+            head_str = bytes.decode(head_bytes)
+            head_arr = head_str.split(_c.MESSAGE_SPLIT)
+            if head_arr[1] in _c.COMPRESSED_MESSAGE_TYPE_TUPLE:
+                head_inner_length = int(head_arr[2])
+                body = _zlib.decompress(
+                    receive[_c.MESSAGE_HEADER_LENGTH:_c.MESSAGE_HEADER_LENGTH + head_inner_length])
+                return head_str + _decode_gbk(body)
+            return _decode_gbk(receive)
+        except Exception as ex:
+            from quant.utils.logger import get_logger
+            get_logger("utils.baostock_gate").warning(f"baostock send_msg failed: {ex}")
+            return None
+
+    def _decode_gbk(raw: bytes) -> str:
+        try:
+            return bytes.decode(raw)
+        except UnicodeDecodeError:
+            return bytes.decode(raw, "gb18030", errors="replace")
+
+    _su.send_msg = _send_msg_gbk
+    _PATCHED_BAOSTOCK = True
+    from quant.utils.logger import get_logger
+    get_logger("utils.baostock_gate").info("baostock GBK 解码补丁已生效 (UTF-8→GB18030 回退)")
+
+
+# import 即打补丁 — 任何调用方 (store.py 裸 import baostock / 脚本) 都覆盖
+_patch_baostock_gbk()
+
+
 def bs_query(api_name: str, *args, **kwargs):
-    """baostock 查询统一入口 — 全局限速 + 黑名单熔断.
+    """baostock 查询统一入口 — 全局限速 + 黑名单熔断 + GBK 解码补丁.
 
     2026-08-14 设计: 所有 baostock 调用 (登录/日线/财务/复权因子) 必须经此,
     替代各点裸 sleep — 跨进程 (nightly + 手动回填) 共享 BaostockGate 令牌桶,
     杜绝同 IP 并发请求叠加触发封禁 (2026-08-13 实测被拉黑 error_code 10001011).
     """
+    _patch_baostock_gbk()
     import baostock as _bs
     gate.acquire()
     rs = getattr(_bs, api_name)(*args, **kwargs)

@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from quant.utils.logger import get_logger
+from quant.utils.date import to_str
 
 _log = get_logger("alpha.ml_common")
 
@@ -62,7 +63,7 @@ def split_train_oos(dates: list, oos_frac: float = 0.15) -> tuple[set, set]:
     if len(dates) == 0:
         return set(), set()
     n = max(int(len(dates) * (1 - oos_frac)), 1)
-    sorted_dates = sorted({str(d)[:10] for d in dates})
+    sorted_dates = sorted({to_str(d) for d in dates})
     train = set(sorted_dates[:n])
     oos = set(sorted_dates[n:])
     return train, oos
@@ -139,7 +140,7 @@ def build_train_matrices(
     X_oo, y_oo, d_oo = [], [], []
 
     for ts in fwd_dates:
-        ds = str(ts)[:10]
+        ds = to_str(ts)
         if ds not in tr_set and ds not in oo_set:
             continue
         bucket = "train" if ds in tr_set else "oos"

@@ -5,6 +5,7 @@ import pandas as pd
 import os as _os
 from typing import Optional
 
+from quant.utils.date import to_str
 from quant.config.constants import (
     _get_board_limit, _require_cfg,
     _LHB_WINDOW,
@@ -88,8 +89,8 @@ def compute_limit_up_streak(data: "pd.DataFrame", date: str, window: int = 0, au
     if aux is None or "stocks" not in aux:
         return None
 
-    date_str = str(date)[:10]
-    matched = [d for d in close.index if str(d)[:10] == date_str]
+    date_str = to_str(date)
+    matched = [d for d in close.index if to_str(d) == date_str]
     if not matched:
         return pd.Series(dtype=float, name="zt_streak")
 
@@ -133,8 +134,8 @@ def compute_dt_streak(data: "pd.DataFrame", date: str, window: int = 0, aux=None
     if aux is None or "stocks" not in aux:
         return None
 
-    date_str = str(date)[:10]
-    matched = [d for d in close.index if str(d)[:10] == date_str]
+    date_str = to_str(date)
+    matched = [d for d in close.index if to_str(d) == date_str]
     if not matched:
         return pd.Series(dtype=float, name="dt_streak")
 
@@ -180,9 +181,9 @@ def compute_lhb_net_buy(data: "pd.DataFrame", date: str, window: int = _LHB_WIND
     添加日期: 2026-07-03 — lhb_detail 表补齐后激活.
     """
     symbols = list(data["close"].columns)
-    date_str = date.strftime("%Y-%m-%d") if hasattr(date, "strftime") else str(date)[:10]
+    date_str = date.strftime("%Y-%m-%d") if hasattr(date, "strftime") else to_str(date)
 
-    all_dates = [str(d)[:10] for d in sorted(data.index)]
+    all_dates = [to_str(d) for d in sorted(data.index)]
     if date_str not in all_dates:
         return pd.Series(np.nan, index=symbols, name=f"lhb_net_buy_{window}d")
 
@@ -232,8 +233,8 @@ def compute_lhb_post_quality(data: "pd.DataFrame", date: str, window: int = 90, 
     """
     symbols = list(data["close"].columns)
 
-    all_dates = [str(d)[:10] for d in sorted(data.index)]
-    date_str = str(date)[:10]
+    all_dates = [to_str(d) for d in sorted(data.index)]
+    date_str = to_str(date)
     if date_str not in all_dates:
         return pd.Series(0.0, index=symbols, name="lhb_post_quality")
 
@@ -276,12 +277,12 @@ def compute_margin_balance_chg(data: "pd.DataFrame", date: str, window: int = 5,
     添加: 2026-07-03 — Phase 8 P2, margin_detail 表同步后激活.
     """
     symbols = list(data["close"].columns)
-    date_str = str(date)[:10]
+    date_str = to_str(date)
 
     all_dates = sorted(data.index)
     idx = None
     for i, d in enumerate(all_dates):
-        if str(d)[:10] == date_str:
+        if to_str(d) == date_str:
             idx = i
             break
     if idx is None or idx < window:
@@ -322,12 +323,12 @@ def compute_margin_buy_ratio_price(data: "pd.DataFrame", date: str, window: int 
     添加: 2026-07-03 — Phase 8 P2.
     """
     symbols = list(data["close"].columns)
-    date_str = str(date)[:10]
+    date_str = to_str(date)
 
     dates = []
     for d in sorted(data.index):
-        if str(d)[:10] < date_str:
-            dates.append(str(d)[:10])
+        if to_str(d) < date_str:
+            dates.append(to_str(d))
     if len(dates) < window:
         return pd.Series(0.0, index=symbols, name="margin_buy_ratio_5d")
     lookback_dates = dates[-window:]
@@ -355,12 +356,12 @@ def compute_main_flow_ratio(data: "pd.DataFrame", date: str, window: int = 5, au
     添加: 2026-07-03 — Phase 8 P2.
     """
     symbols = list(data["close"].columns)
-    date_str = str(date)[:10]
+    date_str = to_str(date)
 
     dates = []
     for d in sorted(data.index):
-        if str(d)[:10] < date_str:
-            dates.append(str(d)[:10])
+        if to_str(d) < date_str:
+            dates.append(to_str(d))
     if len(dates) < window:
         return pd.Series(0.0, index=symbols, name="main_flow_ratio")
     lookback_dates = dates[-window:]
@@ -391,7 +392,7 @@ def compute_fund_change(data: "pd.DataFrame", date: str, window: int = 0, aux=No
     添加: 2026-07-03 — Phase 9.
     """
     symbols = list(data["close"].columns)
-    date_str = str(date)[:10]
+    date_str = to_str(date)
 
     if aux is None or "fund_hold" not in aux:
         return None  # aux not preloaded'fund_hold']")
@@ -420,7 +421,7 @@ def compute_analyst_buy(data: "pd.DataFrame", date: str, window: int = 0, aux=No
     添加: 2026-07-03 — Phase 9.
     """
     symbols = list(data["close"].columns)
-    date_str = str(date)[:10]
+    date_str = to_str(date)
 
     if aux is None or "analyst" not in aux:
         return None  # aux not preloaded'analyst']")

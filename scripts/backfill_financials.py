@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""财务数据回填 — easy_tdx.sina 拉取 2019-2022 年三表, upsert 到 market.db。
+"""财务数据回填 — easy_tdx.sina 拉取 2019-2024 年三表, upsert 到 market.db。
 
-单股拉取 50 期 (2013→今), 只写入缺失年份。
+单股拉取 50 期 (2013→今), 只写入缺失季度 (2019-2024)。
 逐股串行 (Sina 接口无批量), 约 5000 股 × 3 报表 = 15000 次请求。
 
 运行:
   .venv/bin/python3 scripts/backfill_financials.py
 
-恢复/续跑: 自动跳过已有 stat_date, 安全重跑。
-"""
+恢复/续跑: 自动跳过已有 stat_date, 安全重跑。"""
 import os
 import sys
 import sqlite3
@@ -64,10 +63,11 @@ CASHFLOW_MAP = {
     "购建固定资产、无形资产和其他长期资产所支付的现金": "fix_intan_other_asset_acqui_cash",
 }
 
-# 只回填这些年份的季度 (已有的跳过)
+# 只回填这些年份的季度 (已有的跳过) — v490: 扩至 2024 (income/cashflow 2023+2024Q1/Q2/Q4 缺失,
+# balance 2024Q1/Q2/Q4 缺失; JQ 权限窗口仅 2025q2~2026q1, 历史季度拉不到)
 TARGET_QUARTERS = {
     f"{y}-{m:02d}-{d}"
-    for y in range(2019, 2024)
+    for y in range(2019, 2025)
     for m, d in [(3, 31), (6, 30), (9, 30), (12, 31)]
 }
 

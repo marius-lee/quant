@@ -18,6 +18,7 @@ import sqlite3
 import time as _time
 
 from quant.config.paths import MARKET_DB
+from quant.utils.date import to_str
 
 STOCK_BASIC_FIELDS = (
     "ts_code,symbol,name,area,industry,market,list_date,list_status,delist_date"
@@ -55,8 +56,8 @@ def sync_stock_basic() -> int:
     upd, ins = 0, 0
     for _, r in df.iterrows():
         sym = str(r["symbol"])
-        name, industry, list_date = r.get("name"), r.get("industry"), r.get("list_date")
-        list_status, delist_date = r.get("list_status"), r.get("delist_date")
+        name, industry, list_date = r.get("name"), r.get("industry"), to_str(r.get("list_date"))
+        list_status, delist_date = r.get("list_status"), to_str(r.get("delist_date"))
         if sym in existing:
             c.execute(
                 "UPDATE stocks SET name=?, industry=?, list_date=?, list_status=?, "

@@ -276,7 +276,8 @@ class DataStore:
                 if sym not in existing:
                     conn.execute(
                         "INSERT OR IGNORE INTO stocks(symbol,name,market,list_date) VALUES(?,?,?,?)",
-                        (sym, item.get("name", ""), item.get("market", ""), item.get("list_date", "")))
+                        (sym, item.get("name", ""), item.get("market", ""),
+                         to_str(item.get("list_date", ""))))
                     insert_count += 1
             conn.commit()
             total = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
@@ -304,7 +305,7 @@ class DataStore:
                     if sym not in existing:
                         conn.execute(
                             "INSERT OR IGNORE INTO stocks(symbol,name,market,list_date) VALUES(?,?,?,?)",
-                            (sym, row["name"], market, row.get("list_date", "")))
+                            (sym, row["name"], market, to_str(row.get("list_date", ""))))
                 conn.commit()
                 total = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
                 logger.info(f"stock list (tushare): {total} total")
@@ -369,7 +370,7 @@ class DataStore:
         for _, row in df.iterrows():
             sym = str(row.get("symbol", row.get("code", ""))).zfill(6)
             name = row.get("name", "")
-            delist_d = str(row.get("delist_date", row.get("delisting_date", "")))[:10]
+            delist_d = to_str(row.get("delist_date", row.get("delisting_date", "")))
             if len(sym) != 6 or sym in existing:
                 continue
             if sym.startswith(("6", "9", "68")):

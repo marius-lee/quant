@@ -11,7 +11,7 @@ from quant.config.constants import _require_cfg
 import pandas as pd
 import akshare as ak
 from quant.utils.logger import get_logger
-from quant.utils.date import validate_date_format
+from quant.utils.date import validate_date_format, to_str
 from quant.config.paths import MARKET_DB
 
 logger = get_logger("data.dividend")
@@ -109,12 +109,12 @@ def sync_range(start_date: str = None, end_date: str = None, conn=None) -> int:
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 sym,
-                str(ex_date)[:10],
+                to_str(ex_date),
                 int(ex_date.year),
                 cash_div,
                 stk_div,
-                str(record_date)[:10] if record_date else '',
-                str(ex_date)[:10],
+                to_str(record_date),
+                to_str(ex_date),
             ))
             total += 1
 

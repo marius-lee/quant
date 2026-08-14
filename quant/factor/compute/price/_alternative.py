@@ -8,6 +8,7 @@ import sqlite3
 import os as _os
 from typing import Optional
 
+from quant.utils.date import to_str
 from quant.config.constants import *
 from quant.factor.registry import _cs_zscore, _db_connect, _FIN_FACTORS, _shared_limit_conn
 from quant.factor.compute._shared import _market_db_path
@@ -105,7 +106,7 @@ def compute_ztd(data, date, window=250):
     # ── 优先使用预计算缓存 ──
     # v477: 缓存 key 为 str (preload_ztd_cache dates), dispatch 传入 Timestamp —
     #       Timestamp in dict 永远 False → 缓存永不命中 → 因子 0 行
-    key = str(date)[:10] if not isinstance(date, str) else date
+    key = to_str(date) if not isinstance(date, str) else date
     if key in _ztd_cache:
         import numpy as np
         ztd = _ztd_cache[key].reindex(_syms)
@@ -343,7 +344,7 @@ def compute_seal_turnover_ratio(data: "pd.DataFrame", date: str, window: int = 0
     来源: 国金证券(2016), 华安证券(2026).
     实证: >10→连板概率>60%; <1→警惕炸板. 正向因子(封成比大→买入).
     """
-    date_str = str(date)[:10]
+    date_str = to_str(date)
     df_up, _ = _get_limit_pool(date_str)
     symbols_all = list(data["close"].columns)
 
@@ -368,7 +369,7 @@ def compute_seal_time(data: "pd.DataFrame", date: str, window: int = 0) -> "pd.S
     来源: 国金证券(2016) — 封板时间与次日涨幅严格单调递减.
     公式: 1 - (first_time_min - 570) / 330 (9:30=570min, 15:00=900min)
     """
-    date_str = str(date)[:10]
+    date_str = to_str(date)
     df_up, _ = _get_limit_pool(date_str)
     symbols_all = list(data["close"].columns)
 
@@ -399,7 +400,7 @@ def compute_limit_touch_no_seal(data: "pd.DataFrame", date: str, window: int = 0
     来源: 东方证券 / 涨跌停溢出效应研究 — 触板未封 = 假突破, 次日往往回落.
     向量化实现: 一次性计算所有股票, 不再逐只 Python 循环.
     """
-    date_str = str(date)[:10]
+    date_str = to_str(date)
     if "high" not in data.columns or "close" not in data.columns:
         return pd.Series(0.0, index=list(data["close"].columns), name="limit_touch_no_seal")
 
@@ -450,7 +451,7 @@ def compute_net_limit_ratio(data: "pd.DataFrame", date: str, window: int = 0) ->
 
     来源: 开源证券 / DL合成因子 — 行业内涨跌停股净占比反映情绪溢出.
     """
-    date_str = str(date)[:10]
+    date_str = to_str(date)
     df_up, df_down = _get_limit_pool(date_str)
     symbols_all = list(data["close"].columns)
 
@@ -519,7 +520,7 @@ def compute_ideal_amplitude(data: "pd.DataFrame", date: str, window: int = 20) -
     if "high" not in data.columns or "low" not in data.columns:
         return pd.Series(0.0, index=symbols_all, name="ideal_amplitude")
 
-    ampl = ((data["high"] - data["low"]) / data["low"]).loc[:str(date)[:10]]
+    ampl = ((data["high"] - data["low"]) / data["low"]).loc[:to_str(date)]
     ampl = ampl.replace([np.inf, -np.inf], np.nan)
     recent = ampl.tail(window)
     arr = recent.to_numpy(dtype=float)            # (window, n_syms)
@@ -578,7 +579,7 @@ def compute_short_interest(data, date, window=20, aux=None):
             # 取 ≤date 的最新日期行
             if "date" in margin.columns:
                 margin_dates = pd.to_datetime(margin["date"])
-                ts = pd.Timestamp(str(date)[:10])
+                ts = pd.Timestamp(to_str(date))
                 latest_mask = margin_dates <= ts
                 if latest_mask.any():
                     latest_date = margin_dates[latest_mask].max()
@@ -600,7 +601,7 @@ def compute_short_interest(data, date, window=20, aux=None):
         "SELECT symbol, short_balance, margin_total FROM margin_detail "
         "WHERE date = (SELECT MAX(date) FROM margin_detail WHERE date <= ?) "
         "AND margin_total > 0",
-        (str(date)[:10],)
+        (to_str(date),)
     ).fetchall()
     conn.close()
     for sym, sb, mt in rows:
@@ -639,7 +640,7 @@ def compute_fund_flow_3m(data, date, window=60, aux=None):
         "SELECT symbol, change_ratio FROM fund_hold "
         "WHERE report_date >= date(?, '-{} days') AND change_ratio IS NOT NULL "
         "ORDER BY symbol, report_date DESC".format(window),
-        (str(date)[:10],)
+        (to_str(date),)
     ).fetchall()
     conn.close()
     if not rows:

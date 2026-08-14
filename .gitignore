@@ -48,3 +48,4 @@ quant/quant/
 quant/data/.fund_flow_cooldown
 quant/data/.baostock_state.json
 quant/data/.turnover_full_progress.json
+quant/data/.amount_full_progress.json

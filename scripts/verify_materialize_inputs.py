@@ -156,11 +156,16 @@ def check_benchmark(c) -> list:
         fails.append("[benchmark_daily] 000300 无数据")
         return fails
     # 找出工作日内 benchmark 缺失的连续段 (简化: 与 daily 对齐)
+    # v490: NOT EXISTS + GROUP BY 在 850 万行 daily 上全表扫描 → 120s+ 卡死;
+    # 改用 EXISTS + 索引: 逐日子查询走 benchmark_daily(date) PK, daily 侧仅扫日期列
+    # (scanned 日期数 = 1847 而非 850 万行)
     miss = c.execute(textwrap.dedent(f"""
-        SELECT d.date FROM daily d
-        WHERE d.date BETWEEN ? AND ?
-          AND NOT EXISTS (SELECT 1 FROM benchmark_daily b WHERE b.date = d.date)
-        GROUP BY d.date
+        SELECT date FROM (
+            SELECT DISTINCT d.date AS date FROM daily d
+            WHERE d.date BETWEEN ? AND ?
+        )
+        WHERE NOT EXISTS (SELECT 1 FROM benchmark_daily b WHERE b.date = date)
+        ORDER BY date
     """), (START_DATE, END_DATE)).fetchall()
     if miss:
         dates = sorted(r["date"] for r in miss)

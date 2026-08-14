@@ -290,7 +290,15 @@ _TABLE_SCHEMAS = {
 
 
 class DuckDBManager:
-    """DuckDB 连接管理器 — 单例模式, 线程安全."""
+    """DuckDB 连接管理器 — 单例模式, 线程安全.
+
+    v495: 不再持有常驻 rw 连接. 原实现进程存活期间独占 DuckDB 文件锁,
+    其他进程 (测试/回测/脚本/手工 backfill) 全部被拒 (Conflicting lock).
+    DuckDB 多进程模型实测 (1.5.5): 多个 RO 连接可跨进程共存; 但任何 RW
+    连接存在时, 连 RO 连接都无法打开. 因此:
+      - 查询路径 (_ro): 短命只读连接, 用完即关 — 不持锁, 任何人可查
+      - 写入路径 (_rw): 短命读写连接, 用完即关 — 仅在同步瞬间短暂独占
+    """
 
     _instance: Optional["DuckDBManager"] = None
     _lock = threading.Lock()
@@ -308,43 +316,91 @@ class DuckDBManager:
         self._initialized = True
 
         self._db_path = _DUCKDB_PATH
-        self._conn: Optional[duckdb.DuckDBPyConnection] = None
-        self._lock = threading.Lock()
+        self._thread_lock = threading.Lock()  # guard 短连接创建 (单例内串行)
         self._sync_thread: Optional[threading.Thread] = None
         self._stop_sync = threading.Event()
         self._sqlite_conn = None
+        self._schema_done = False
 
         # 确保目录存在
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self._init_db()
-        _log.info(f"DuckDBManager initialized: {self._db_path}")
-
-    def _init_db(self):
-        """初始化 DuckDB 连接并创建表."""
-        self._conn = duckdb.connect(str(self._db_path), read_only=False)
-        # 配置并行度
-        self._conn.execute(f"PRAGMA threads={_MAX_WORKERS}")
-        self._conn.execute("PRAGMA memory_limit='4GB'")
-        self._conn.execute("PRAGMA preserve_insertion_order=false")
-
-        # 创建所有表
-        for table_name, ddl in _TABLE_SCHEMAS.items():
-            try:
-                self._conn.execute(ddl)
-            except Exception as e:
-                _log.warning(f"create table {table_name} failed: {e}")
-
-        # 创建索引
-        self._create_indexes()
-
-        # 连接 SQLite (用于同步)
+        # 连接 SQLite (用于同步) — 只读, 与 DuckDB 文件锁无关
         from quant.config.paths import MARKET_DB as SQLITE_PATH
         self._sqlite_conn = duckdb.connect(str(SQLITE_PATH), read_only=True)
         # DuckDB 不支持 PRAGMA journal_mode=WAL，已移除
+        _log.info(f"DuckDBManager initialized: {self._db_path}")
 
-    def _create_indexes(self):
-        """创建常用查询索引."""
+    # ── 短命连接 (v495 核心: 不持锁) ──
+
+    def _open(self, read_only: bool):
+        """打开短命 DuckDB 连接 — 用完由调用方关闭."""
+        c = duckdb.connect(
+            str(self._db_path), read_only=read_only,
+            config={"threads": _MAX_WORKERS,
+                    "memory_limit": "4GB",
+                    "preserve_insertion_order": "false"})
+        return c
+
+    def _ro(self):
+        """短命只读连接 — 多进程可共存, 不持锁.
+
+        首次访问前确保文件/表结构存在 (ro 无法打开不存在的库).
+        """
+        self._ensure_schema()
+        return self._open(read_only=True)
+
+    def _rw(self):
+        """短命读写连接 — 仅在写入瞬间独占文件."""
+        self._ensure_schema()
+        return self._open(read_only=False)
+
+    def _ensure_schema(self):
+        """建表/建索引 — 幂等, 进程内仅首次 rw 时执行."""
+        if self._schema_done:
+            return
+        with self._thread_lock:
+            if self._schema_done:
+                return
+            c = self._open(read_only=False)
+            try:
+                for table_name, ddl in _TABLE_SCHEMAS.items():
+                    c.execute(ddl)
+            except Exception as e:
+                _log.warning(f"create table failed: {e}")
+                raise
+            self._create_indexes(c)
+            self._schema_done = True
+            c.close()
+
+    def _scalar(self, sql: str, params: tuple = ()):
+        """单值查询 (COUNT/MAX 等) — 只读短连接."""
+        c = self._ro()
+        try:
+            r = c.execute(sql, params).fetchone()
+            return r[0] if r else None
+        finally:
+            c.close()
+
+    def _write(self, sql: str, params: tuple = ()):
+        """单条写入 — 短命读写连接, 即写即关."""
+        c = self._rw()
+        try:
+            c.execute(sql, params)
+        finally:
+            c.close()
+
+    def _write_many(self, sql: str, rows: list) -> int:
+        """批量写入 (executemany) — 短命读写连接. 返回行数."""
+        c = self._rw()
+        try:
+            c.executemany(sql, rows)
+            return len(rows)
+        finally:
+            c.close()
+
+    def _create_indexes(self, conn):
+        """创建常用查询索引 — 幂等 (IF NOT EXISTS)."""
         indexes = [
             "CREATE INDEX IF NOT EXISTS idx_daily_date ON daily(date)",
             "CREATE INDEX IF NOT EXISTS idx_daily_symbol ON daily(symbol)",
@@ -372,31 +428,32 @@ class DuckDBManager:
             "CREATE INDEX IF NOT EXISTS idx_daily_std_symbol ON daily_std(symbol)",
         ]
         for idx_sql in indexes:
-            try:
-                self._conn.execute(idx_sql)
-            except Exception as e:
-                _log.warning(f"create index failed: {e}")
+            conn.execute(idx_sql)
 
     @contextmanager
     def connection(self) -> Iterator[duckdb.DuckDBPyConnection]:
-        """获取 DuckDB 连接 (线程安全)."""
-        with self._lock:
-            yield self._conn
-
-    def execute(self, sql: str, params: tuple = ()) -> Any:
-        """执行 SQL (线程安全)."""
-        with self._lock:
-            return self._conn.execute(sql, params)
+        """获取 DuckDB 连接 (写, 短命) — with 块结束后自动关闭."""
+        c = self._rw()
+        try:
+            yield c
+        finally:
+            c.close()
 
     def query_df(self, sql: str, params: tuple = ()) -> pd.DataFrame:
-        """查询返回 DataFrame."""
-        with self._lock:
-            return self._conn.execute(sql, params).df()
+        """查询返回 DataFrame — 只读短连接."""
+        c = self._ro()
+        try:
+            return c.execute(sql, params).df()
+        finally:
+            c.close()
 
     def query_arrow(self, sql: str, params: tuple = ()) -> pa.Table:
-        """查询返回 Arrow Table (零拷贝)."""
-        with self._lock:
-            return self._conn.execute(sql, params).arrow()
+        """查询返回 Arrow Table (零拷贝) — 只读短连接."""
+        c = self._ro()
+        try:
+            return c.execute(sql, params).arrow()
+        finally:
+            c.close()
 
     # ── 同步相关 ──
     def start_sync(self):
@@ -454,8 +511,13 @@ class DuckDBManager:
         select_parts = []
         for c in cols:
             if c in date_cols_int:
-                # Convert integer YYYYMMDD to DATE string 'YYYY-MM-DD'
-                select_parts.append(f"date(substr({c},1,4)||'-'||substr({c},5,2)||substr({c},7,2)) AS {c}")
+                # v494: SQLite 存 ISO 'YYYY-MM-DD' (list_date/delist_date 已统一),
+                # 兼容历史 compact 'YYYYMMDD' 残留: 8位纯数字走拆分拼接,
+                # 否则 TRY_CAST ISO. 修复旧 SQL 缺 '-' 分隔符导致 date() 恒失败.
+                select_parts.append(
+                    f"CASE WHEN length({c})=8 AND {c} NOT LIKE '%-%' "
+                    f"THEN date(substr({c},1,4)||'-'||substr({c},5,2)||'-'||substr({c},7,2)) "
+                    f"ELSE TRY_CAST({c} AS DATE) END AS {c}")
             else:
                 select_parts.append(c)
         col_str = ", ".join(select_parts)
@@ -466,8 +528,7 @@ class DuckDBManager:
         last_dk_date = None
         if has_date_col:
             try:
-                r = self.execute(f"SELECT MAX(date) FROM {table}").fetchone()
-                last_dk_date = r[0] if r and r[0] else None
+                last_dk_date = self._scalar(f"SELECT MAX(date) FROM {table}")
             except Exception:
                 last_dk_date = None
         if has_date_col and last_dk_date is not None:
@@ -506,8 +567,7 @@ class DuckDBManager:
         batch_size = _MIGRATION_BATCH_SIZE
         for i in range(0, len(df), batch_size):
             batch = df.iloc[i:i + batch_size]
-            with self._lock:
-                self._conn.executemany(upsert_sql, batch.values.tolist())
+            self._write_many(upsert_sql, batch.values.tolist())
 
     def _sync_backfill_missing_dates(self, table: str = "daily",
                                       gap_threshold_days: int = 30,
@@ -519,7 +579,7 @@ class DuckDBManager:
         max_backfill_days: 限制回补的最大历史天数, 仅回补 SQLite MAX(date) 往前 max_backfill_days 范围内的缺失日期.
         """
         # 比较 DuckDB vs SQLite 最大日期 (用于日志)
-        dk_max = self.execute(f"SELECT MAX(date) FROM {table}").fetchone()[0]
+        dk_max = self._scalar(f"SELECT MAX(date) FROM {table}")
         sq_max = self._sqlite_conn.execute(f"SELECT MAX(date) FROM {table}").fetchone()[0]
         if dk_max is None or sq_max is None:
             return  # 任一为空, 跳过 (首次同步)
@@ -534,9 +594,9 @@ class DuckDBManager:
         ).fetchdf()
         sq_dates_in_range = set(str(d)[:10] for d in sq_dates_raw["date"].tolist()) if not sq_dates_raw.empty else set()
         # 获取 DuckDB 已有的日期 (同范围) — DuckDB date 类型可能带时间, 截取前 10 位 (YYYY-MM-DD)
-        dk_dates_raw = self.execute(
+        dk_dates_raw = self.query_df(
             f"SELECT DISTINCT CAST(date AS VARCHAR) AS date FROM {table} WHERE date >= '{backfill_start.strftime('%Y-%m-%d')}'"
-        ).fetchdf()
+        )
         dk_dates_in_range = set(str(d)[:10] for d in dk_dates_raw["date"].tolist()) if not dk_dates_raw.empty else set()
         missing_dates = sorted(sq_dates_in_range - dk_dates_in_range, key=lambda d: str(d))
         if not missing_dates:
@@ -560,8 +620,7 @@ class DuckDBManager:
             df = self._sqlite_conn.execute(sql).df()
             if df.empty:
                 continue
-            with self._lock:
-                self._conn.executemany(insert_sql, df[cols].values.tolist())
+            self._write_many(insert_sql, df[cols].values.tolist())
             total_inserted += len(df)
         _log.info(f"backfill: {table} inserted {total_inserted} rows for {len(missing_dates)} dates")
 
@@ -571,9 +630,9 @@ class DuckDBManager:
         返回: {"sqlite_rows": int, "duckdb_rows": int, "sqlite_dates": int, "duckdb_dates": int, "match": bool}
         """
         sqlite_count = self._sqlite_conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        duckdb_count = self.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        duckdb_count = self._scalar(f"SELECT COUNT(*) FROM {table}")
         sqlite_dates = self._sqlite_conn.execute(f"SELECT COUNT(DISTINCT date) FROM {table}").fetchone()[0]
-        duckdb_dates = self.execute(f"SELECT COUNT(DISTINCT date) FROM {table}").fetchone()[0]
+        duckdb_dates = self._scalar(f"SELECT COUNT(DISTINCT date) FROM {table}")
         match = sqlite_count == duckdb_count and sqlite_dates == duckdb_dates
         # v491: 值一致性校验 — 增量同步只追新日期 (date > MAX), 历史行的
         # UPDATE (turnover/amount 回填) 永不进 DuckDB, 而因子物化/回测
@@ -592,8 +651,8 @@ class DuckDBManager:
             for col, cond in sign_cols:
                 sq = self._sqlite_conn.execute(
                     f"SELECT COUNT(*) FROM {table} WHERE {cond}").fetchone()[0]
-                dk = self.execute(
-                    f"SELECT COUNT(*) FROM {table} WHERE {cond}").fetchone()[0]
+                dk = self._scalar(
+                    f"SELECT COUNT(*) FROM {table} WHERE {cond}")
                 if sq != dk:
                     match = False
                     _log.warning(f"verify_sync: {table} {col} 值级不一致 sqlite={sq} duckdb={dk} — "
@@ -636,8 +695,7 @@ class DuckDBManager:
                 (_BATCH, offset)).fetchall()
             if not batch:
                 break
-            with self._lock:
-                self._conn.executemany(upsert_sql, batch)
+            self._write_many(upsert_sql, batch)
             total += len(batch)
             offset += _BATCH
             if offset % 500000 == 0:
@@ -732,7 +790,7 @@ class DuckDBManager:
                        n_stocks: int, is_ir: float = None, oos_ir: float = None,
                        scope: str = "live"):
         """写入因子 IC."""
-        self.execute(
+        self._write(
             "INSERT OR REPLACE INTO factor_ic_daily "
             "(date, factor_name, ic_value, n_stocks, is_ir, oos_ir, scope) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -745,8 +803,8 @@ class DuckDBManager:
             SELECT symbol FROM stocks
             WHERE market != ? AND list_date <= ? AND (delist_date IS NULL OR delist_date > ?)
         """
-        rows = self.execute(sql, (exclude_market, date, date)).fetchall()
-        return [r[0] for r in rows]
+        df = self.query_df(sql, (exclude_market, date, date))
+        return df["symbol"].tolist() if not df.empty else []
 
     # ── 因子注册表操作 ──
 
@@ -761,7 +819,7 @@ class DuckDBManager:
 
     def register_factor(self, name: str, expression: str, source: str,
                         direction: str, category: str, status: str = "evaluating"):
-        self.execute(
+        self._write(
             "INSERT OR REPLACE INTO factor_registry "
             "(name, expression, source, direction, category, status) "
             "VALUES (?, ?, ?, ?, ?, ?)",
@@ -777,14 +835,12 @@ class DuckDBManager:
             params.append(retry_count)
         sql += " WHERE name = ?"
         params.append(name)
-        self.execute(sql, tuple(params))
+        self._write(sql, tuple(params))
 
     def close(self):
-        """关闭连接."""
+        """关闭连接 (v495: 无常驻 DuckDB 连接, 仅关 SQLite 读连接)."""
         if self._sync_thread:
             self.stop_sync()
-        if self._conn:
-            self._conn.close()
         if self._sqlite_conn:
             self._sqlite_conn.close()
         _log.info("DuckDBManager closed")
@@ -930,8 +986,7 @@ class DuckDBManager:
         batch_size = _MIGRATION_BATCH_SIZE
         for i in range(0, len(df), batch_size):
             batch = df.iloc[i:i+batch_size]
-            with self._lock:
-                self._conn.executemany(upsert_sql, batch.values.tolist())
+            self._write_many(upsert_sql, batch.values.tolist())
 
 
 # ── 全局单例访问器 ──
@@ -998,6 +1053,6 @@ if __name__ == "__main__":
     mgr.start_sync()
     time.sleep(5)
     print("DuckDB initialized and sync started")
-    print(f"Tables: {mgr.execute('SHOW TABLES').df()}")
+    print(f"Tables: {mgr.query_df('SHOW TABLES')}")
     mgr.stop_sync()
     mgr.close()

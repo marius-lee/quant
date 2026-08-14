@@ -4,6 +4,7 @@
 """
 import numpy as np
 import pandas as pd
+from quant.utils.date import to_str
 from quant.factor.registry import _cs_zscore
 from quant.utils.logger import get_logger
 
@@ -19,7 +20,7 @@ def compute_seasonality_12m_1m(data, date, window=None):
     数据: daily.close.
     """
     close = data["close"]
-    ts = pd.Timestamp(str(date)[:10])
+    ts = pd.Timestamp(to_str(date))
     if ts not in close.index:
         return pd.Series(np.nan, index=close.columns, name="seasonality_12m_1m")
     idx = close.index.get_loc(ts)
@@ -41,7 +42,7 @@ def compute_tail_risk(data, date, window=252):
     """
     import numpy as np
     close = data["close"]
-    ts = pd.Timestamp(str(date)[:10])
+    ts = pd.Timestamp(to_str(date))
     if ts not in close.index:
         return pd.Series(np.nan, index=close.columns, name="tail_risk")
     idx = close.index.get_loc(ts)
@@ -76,7 +77,7 @@ def compute_industry_momentum(data, date, window=63, aux=None):
         return pd.Series(np.nan, index=data["close"].columns, name="industry_momentum")
     
     close = data["close"]
-    ts = pd.Timestamp(str(date)[:10])
+    ts = pd.Timestamp(to_str(date))
     if ts not in close.index:
         return pd.Series(np.nan, index=close.columns, name="industry_momentum")
     

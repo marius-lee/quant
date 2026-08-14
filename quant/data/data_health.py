@@ -17,6 +17,7 @@ import sqlite3
 from datetime import datetime, date as _date, timedelta as _td
 
 from quant.config.paths import MARKET_DB
+from quant.utils.date import to_str
 from quant.utils.logger import get_logger
 from quant.data.table_registry import TableSpec, REGISTRY
 
@@ -65,9 +66,9 @@ def audit_table(conn: sqlite3.Connection, spec: TableSpec,
             if mx is None:
                 out.append(("freshness", "fail", "空表"))
             else:
-                lag = (_date.fromisoformat(today) - _date.fromisoformat(str(mx)[:10])).days
+                lag = (_date.fromisoformat(today) - _date.fromisoformat(to_str(mx))).days
                 status = "ok" if lag <= spec.slo_days else "fail"
-                out.append(("freshness", status, f"max={str(mx)[:10]} lag={lag}d slo={spec.slo_days}d"))
+                out.append(("freshness", status, f"max={to_str(mx)} lag={lag}d slo={spec.slo_days}d"))
     elif not has_table:
         out.append(("freshness", "fail", f"表 {spec.table} 不存在"))
 

@@ -1,3 +1,293 @@
+### v505 因子平台并回因子 Tab — 统一真相源 factor_registry (2026-08-15)
+
+**背景**: 用户指出因子 Tab 与因子平台 Tab( v503 加)重复。分析证实更深的问题:
+**因子平台 Tab 是空壳** — 它读 `factor_metadata`(factor_registry.db)表,**0 行,
+从未被填充**; 而真实驱动数据在 `factor_registry`(market.db, 116 行:
+状态机/IC/策展/因子名全在这)。平台页顶部 KPI 全 0、表格空, 只有
+`state_probation`(来自 state_machine → market.db)是真的。
+
+**决策 (方案 C, 彻底合一)**:
+- 唯一真相源 = `factor_registry`(market.db)。废弃 platform 空壳线
+  (factor_metadata / factor_registry.db — 该表不被任何消费方读取)。
+- 因子平台功能并入因子 Tab, 删除独立平台 Tab + 路由 + 侧边栏按钮。
+
+**后端改动**:
+1. `web/admin_services.py`:
+   - 重写 `factor_platform_snapshot()` → 用 `FactorRepo.get_all_factors()` +
+     补充 `compute_fn/academic_source/direction/formula/updated_at`, 不再 import
+     platform.FactorRegistry (空壳)。返回 `{factors: [116], state: {active,
+     probation, evaluating, archived}, counts}`。
+   - `_derive_lineage()` 血缘: compute_fn/formula 提取基础数据列 token
+     (`close/volume/...`) 或归属族回退标签; downstream 全量扫描引用词边界匹配。
+     实测: upstream 64/116, downstream epds→epd 真实。
+   - `factor_lineage()` 改为从统一 registry 实时推导 (不再读空壳 metadata)。
+2. `web/app.py`:
+   - 重写 `/api/factors` → 统一复合 payload: registry(116 全字段+血缘) +
+     state + counts + stats(ic/decay/corr 来自 factor_snapshot, 24h TTL)。
+   - 删 `/api/platform/factors`、`/api/platform/factors/lineage`
+     路由 → 新单一路由 `/api/factors/lineage`。移除 `_factor_platform` import。
+
+**前端改动**:
+- index.html: 删除 tab-platform section + sidebar platform 按钮(嵌 SVG 残留清过);
+  因子 Tab 加「因子注册表」表格 + 血缘面板 (table-registry / lineage-panel)。
+- app.js: 删 `loadPlatform()` 和 `_tabLabels.platform`, showTab 删 platform 分支;
+  新 `renderRegistry()`(116 行表格, IC/IR/方向/来源/状态 badge + 血缘按钮) +
+  `showLineage(name)`(fetch /api/factors/lineage → 上游/下游列)。loadFactors 加
+  `renderRegistry(fd)`。
+- style.css: 补 `.badge-purple`, **修复历史排版 bug** — `.badge-gray` 声明原被
+  换行拆成两行, 花括号跑到 `.trunc-reason em` 之后致其样式失效。
+
+**测试**: 全路由冒烟 200 (`/api/factors` `/api/factors/lineage` `/metrics` 等),
+旧 `/api/platform/*` 404; lineage miss→404, epds→downstream ['epd'] 真实;
+KPI/chart 字段齐全且兼容 loadFactors; pytest 353 passed 无回归。
+
+**注意**: 前端 factor tab 首次会渲染 116 行注册表 + 血缘按钮 (DOM 较重但单页完整)。
+
+### v504 修复侧栏 hover 提示消失 (2026-08-15)
+
+**背景**: v503 给 `.sidebar-tabs` 加 `overflow-y: auto` (8 tab 可滚动) 后,
+自定义 tooltip (`.sidebar-tab::after`, `left:54px` 伸到侧栏外) 被滚动容器裁切
+(CSS 规范: overflow-y 非 visible 时 overflow-x 强制 auto) → hover 提示消失.
+
+**修复**: 侧栏 tab 改用原生 `title` 属性 (不受 overflow 裁切), style.css 移除
+`.sidebar-tab::after` 规则; 不受滚动影响的 `.theme-toggle` 保留自定义 tooltip.
+冒烟: 8 tab title 齐全, / 渲染 200.
+
+### v503 后台管理界面接入 — 7 大未接入模块 → SPA 管理页 (2026-08-15)
+
+**背景**: 审计发现 7 个代码就绪的后端模块完全未接入 web 界面: 因子平台
+(platform.py)、多策略 (strategy/)、另类数据 (alternative.py)、分布式回测
+(distributed.py)、模型服务 (model_serving.py)、Prometheus 监控 (prometheus.py)。
+按现有 SPA 模式 (index.html 多 tab) 接入, 新增 3 个 sidebar icon tab.
+
+**新增后端** — `web/admin_services.py` (服务层, 复用 web/services.py 约定):
+- `factor_platform_snapshot()` — FactorRegistry.list + 状态机 active/probation
+- `factor_lineage(name)` — 因子血缘 (upstream/downstream)
+- `strategy_summary()/strategy_detail()/strategy_action()` — 多策略总览/详情/启停
+- `alternative_sources()` — 另类数据源列表 + factor 行数
+- `dist_submit()/_GridWorker/dist_status()` — 分布式网格后台线程 + 进度轮询
+- `model_serving_info()` — MLflow 模型列表 (lazy import 防启动崩溃)
+- `prometheus_metrics()` / `grafana_status()` — Prometheus 文本 + Grafana 端口探测
+
+**新增路由** — `web/app.py` 10 个:
+`/api/platform/factors` `/api/platform/factors/lineage` `/api/strategy/summary`
+`/api/strategy/<name>` `/api/strategy/<name>/action` (POST)
+`/api/alternative/sources` `/api/backtest/dist/submit` (POST) `/api/backtest/dist/status`
+`/api/model/serving` `/api/monitoring/grafana` `/metrics` (Prometheus 文本).
+写操作均带 `_require_token()` 鉴权; 错误信封统一 `_api_response`.
+
+**修复 bug**:
+1. `quant/backtest/distributed.py` — `run_grid_search()` 便捷函数原为
+   `run_grid_search({}, {})` placeholder (丢入参 + BacktestParamSet 必填字段缺失
+   TypeError) → 转发真实入参 + start/end_date 必填校验.
+2. 同上 `save_results()` — 原建同名字段不同的 `backtest_runs` 表 (与 web
+   BacktestService 冲突) → 改造兼容现有 22 列 schema, strategy=run_id,
+   分布式结果与历史页打通.
+3. `ads admin_services._GridWorker` — params["strategy"] 不存在的字段 (运行中
+   发现并移除).
+4. state_machine 引用: `get_active_factors/get_probation_factors` 是实例方法
+   非模块函数 → 经 `FactorStateMachine()` 实例调用.
+
+**前端** — `web/templates/index.html` + `web/static/app.js` + `style.css`:
+- sidebar + 3 tabs: platform (因子平台) / strategies (策略) / systems (系统).
+- systems tab 聚合: 另类数据源表 + 分布式回测网格 (提交/进度/最近结果) +
+  模型服务状态 + Grafana/Prometheus 状态.
+- 渲染: loadPlatform/loadStrategies/loadSystems + submitDistGrid (POST body JSON),
+  15s 轮询 (进 tab 才启).
+- style.css: `.sidebar-tabs` overflow-y auto (8 tab 防溢出) + 管理页 td 截断.
+
+**测试**: Flask test_client 全路由冒烟 (7 新 GET + 2 POST + /metrics 全 200);
+`347 passed` pytest 无回归; 分布式网格端到端闭环验证
+(提交 → worker → save_results → dist_status recent) 通过 (回测 error 由
+factor cache 缺失引起 — 行业 PIT 重物化未跑, 属前置依赖).
+
+**注意**: 分布式网格真实跑需 factor cache 已物化 (行业 PIT 生效后跑
+`rematerialize_industry_pit.sh`). 管理页对未生效状态显示 null, 不造假.
+
+**当前状态**: 后台行业 PIT 同步 + 编排 (industry_pit_activate.sh) 仍在运行.
+web 管理页上线需重启 (`bash scripts/restart.sh`) 由用户执行.
+
+### v502 行业 PIT 历史同步 (industry_history 表) — 数据缺口闭环 (2026-08-15)
+
+**背景**: v501 #2 识别 `stocks.industry` 当前快照被历史读取 → 前视污染。
+行业分类随证监会半年度/年度调整批量变更, 历史任意日期须用 PIT 行业。
+
+**根治**: 新表 `industry_history(symbol, effective_from, industry)` (主键
+symbol+effective_from), 每股一条 "自 effective_from 起行业为 X"; PIT 读取取
+`effective_from <= T` 最大行. 同步自 baostock `query_stock_industry` (逐股,
+单次无 code 只返回前 500 只).
+
+**同步算法 (锚点 + 全局变更日剪枝)** — `quant/data/industry_history.py`:
+1. 两端探测: `probe(start)` vs `probe(today)` + 中点回归验证 → **86% 单段股 3
+   次查询完成** (实测 145 股 avg 1.16 段).
+2. 变更股走半年度锚点扫描 → 相邻锚点不同用**全局变更日剪枝** (变更日跨全市场,
+   首只股确认后累计进 global_days, 后续股命中免二分).
+3. 左端无记录 (上市/退市) 二分定位上市日.
+实测: 200 只 = 1459 查询 (7.3/股), 全量 5557 只 ≈ 4万查询 < 日配额 5万;
+速率 gate 0.5s/次 → 全量约 7-8h (后台夜间跑, 断点续跑).
+
+**健壮性**:
+- 免费 baostock session 极短 (实测 ~32s/168 次过期): `_Prober` 每 40 次强制
+  重登 + 遇 "未登录" 自动重登重试.
+- scheduler weekly 长事务并存: 连接 busy_timeout=120s + `_insert_with_retry`
+  写锁重试 (最多 ~2min, 仍锁则 fail-fast — 已提交批次断点续跑不丢).
+
+**同步接入**: `quant/factor/store.py` `_build_fundamentals_panel` 每日构建覆盖
+`industry` 列 (取 <=ts 的最大段) — 行业 PIT 生效点 (v501 #2 落地).
+
+**消费端审计** (v502 完成): 所有历史/回测/物化路径已接 PIT —
+`store.py` fundamentals 面板、`_preload.py` aux["stocks"]、`loop.py` industry
+pivot (dtype 修复: index 转 datetime64, 原字符串 index 与 pipeline
+`pd.Timestamp` 切片会崩)、`pipeline.py` 中性化。实时 live 路径 (rotation 轮动 /
+state_broker 持仓 / attribution 日报) 用当前快照, 合理不改.
+
+**一键生效链**: `scripts/industry_pit_activate.sh [--skip-wait]` —
+等后台同步完成 → `verify_industry_pit.sh` (5557 只覆盖校验 + smoke 回测)
+→ `rematerialize_industry_pit.sh` (force 重物化 2020 起) → 提示用户
+`bash scripts/restart.sh` 重启 (CLAUDE.md 约定重启由用户执行).
+
+**当前状态**: 表已有 200+ 只 (含 000009/000017/000032 已知变更股全部对拍一致);
+后台全量续跑中 (幂等, 预计数小时). 完成后跑 `industry_pit_activate.sh` 生效.
+
+### v501 回测 PIT 正确性修复 — 3 项落地 + 1 项数据缺口 (2026-08-15)
+
+**背景**: 系统性审查回测策略业务逻辑, 发现 4 处前视/语义问题。采取"逐项
+隔离 + 对拍"法验证, 凡能修即修, 数据不存在的如实标注 (零 fallback 精神).
+
+**#1 (已修) 首日 IC 前视** — `quant/backtest/loop.py`:
+原 `compute_backtest_ic(start_date=trading_days[0])` → run_oos_check 的 OOS
+窗口延伸到回测首日 T0, 末样本配对 `ret(T0→T1)` (T1=回测第二日收盘) —
+生成 T0 信号时用了未来收益。改为找 `trading_days[0]` 的前一交易日作
+train_end (回测首日前的 PIT), 窗口止于 T0-1, 末样本 `ret(T0-1→T0)` 在
+T0 信号前已知。实测间隔打点: `PIT IC train_end=2024-12-31`.
+
+**#3 (已修) market_cap 回退快照前视** — `quant/pipeline.py` 三处:
+1) fundamentals 组装: 原 `_dyn = {pe_ttm/pb/market_cap: 股票快照}` + pivot
+   当日覆盖 → 回退路径保留 stocks 现值 (未来数据). 改为仅取 ≤date_str 的
+   PIT pivot 最近行 (`_avail[-1]`), 无 PIT 则列缺失 (不落快照).
+2) Step3 因子中性化市值: `_mcap_col` 删 total_mv 回退, 只允许 PIT market_cap.
+3) Step4 alpha 中性化市值: 同样删 total_mv 回退; 缺失日 `fillna(price*1e8)`
+   为当日 PIT 收盘价 (非未来). neutralize 内部对 NaN 有 dropna 安全处理
+   (`_joint_neutralize`/`_apply_neutralize_batch`), 缺失股自动剔除, 不崩.
+
+**#4 (已修) 短回测全程 sleeve 语义失效** — `quant/backtest/loop.py`:
+`warmup_days = factor.evaluation.lookback` (252) > 回测天数 → 永不切
+ic_weighted, 3 个月回测无法验证加权合成. 改为回测长度自适应:
+`warmup_days = min(252, len(trading_days)//3)`, 1/3 期后切 ic_weighted.
+
+**对拍隔离矩阵** (2025-Q1, 57 天, 同 mock 排除 3 缺失因子, avg_sig≈1.8 稳定):
+| IC | combine | CAGR |
+|----|---------|------|
+| 含前视 | 全程 sleeve (原基线) | 118.7% |
+| 含前视 | 后半 ic_weighted | 305.2% |
+| 无前视 (#1) | 全程 sleeve | -29.0% |
+| 无前视 (#1) | 后半 ic_weighted (#1+#4) | 15.7% |
+
+结论: #1 移除前视后收益剧烈缩水 (118.7→-29.0), 证明原回测收益大部分是
+首日 IC 前视泡沫; "含前视 + ic_weighted" 放大假收益至 305% 亦自洽。
+avg_signals 稳定 (1.8↔1.9) → 信号生成未破坏。测试 33 项通过。
+
+**#2 (数据缺口, 未改) industry/roe 快照非 PIT**:
+系统性查证 — DB (market.db) **无任何历史行业表**: stocks.industry (当前
+快照, 121 行业) 是唯一来源; 无 daily_industry/industry_history 等. roe
+同样仅 stocks 当前值. 行业中性化 (因子层 + alpha 层) 均依赖它 → 行业在
+回测期内的历史重分类会构成前视. **无法在现有数据下重建 PIT 行业** —
+需新增每日行业快照同步 (数据源 baostock/外部), 属数据工程新项, 未敢
+伪造修复. 已作为已知限制记录, 待引入行业历史数据后可落地.
+
+### v500 回测性能诊断 + 2 处"消除重复 IO"落地 (2026-08-15)
+
+**背景**: 依物化 v497 思路 (消除重复计算/重复 IO), 分析回测全链路瓶颈并落地。
+全程用 cProfile 实证 (interval=2025-01-01..03-31, 57 交易天 800 股)。
+
+**诊断 (实测数据**):
+- 整次回测: 预加载命中缓存后主循环 34.4s; 一次性成本 ~20s (bulk_load 预加载
+  6.0s + IC 覆盖检查 8.6s + 单次数据指纹 6.2s + data_cache save parquet +
+  诊断监控)
+- 主循环 generate_signals 占 **74% (25.4s tottime)** — 非单点热点, 全为分散
+  pandas 数据操作 (每日取因子/对齐/index 切片/双重中性化 O(n²)), 无银弹函数
+- 一次性项中 `_get_existing_factors` 239 次 (IC 检查逐日 os.listdir + 逐因子
+  重复读 metadata/*.json + 单次 6.2s 数据指纹)
+
+**落地 (均纯性能, 不动信号/指标, 对拍一致**):
+1. `quant/backtest/data_cache.py` — 修 `all_symbols` 缺失 bug: 回测第二次命中
+   缓存时 data_cache KeyError (entries 无 all_symbols 键)
+2. `quant/factor/store.py` — `_load_factor_meta` 进程内缓存 `self._meta_cache`:
+   IC 覆盖检查 239 天 × ~95 因子重复磁盘 JSON 读 → 内存复用; `_save_factor_meta`
+   物化后失效对应键 (同进程 freshness 不破)
+
+**验证**: `scripts/bench_backtest.py 2025-01-01 2025-03-31` 对拍 — 指标逐位一致
+(CAGR=118.7% Sharpe=2.464 MDD=-12.5% avg_signals=1.8); meta 缓存后
+`_get_existing_factors` tottime 0.845→0.369s; 净收益被单次 6.2s 数据指纹
+(每日 COUNT 全表, 进程内仅一次, 不可避免) 掩盖, 同进程多回测受益。
+
+**双重中性化"消除"已被 A/B 实证证伪 — 不可落地 (2026-08-15)**:
+
+粗看 factor 层 `neutralize_factors_batch` + risk 段 `neutralize(alpha)` 像双重
+冗余 (combine 为线性 → 疑似可消)。**实测推翻**: 中间隔着 `AlphaModel.rank()`
+= sigmoid 软截止 (model.py:156, nonlinear) — sigmoid 逐元素变换破坏中性子空间,
+step4 第二遍 neutralize 是必要的再投影。A/B 对拍 (2025-Q1, 57 天, monkeypatch
+step4 恒等):
+- normal:  CAGR=+184.6%  Sharpe=2.388  MDD=-27.5%  avg_sig=2.0
+- identity: CAGR=-28.7%   Sharpe=-2.149  MDD=-16.7%  avg_sig=1.6
+删除即毁灭业绩。故该优化**明确不可做**; 若未来再议须先对拍而非数学推导。
+generate_signals 25s 真实热点为分散 pandas 操作 (step2.3 过滤器/mana 切片/
+每日 DataFrame 组装), 非中性化。
+
+**环境备注**: 回测须 mock 排除 3 因子 (dt_streak/smart_money_20d/wq_alpha_006) 因
+数据缺口, 已封装进 `scripts/bench_backtest.py`; 诊断中途停过 web/orchestrator,
+已用 `bash scripts/restart.sh` 恢复。data_cache 命中键含 data_hash/因子集, 因子
+重物化后缓存失效属预期。
+
+### v499 新增 DuckDB 文件收缩脚本 (重建法) — 预聚合 DROP 后空间回收 (2026-08-15)
+
+**背景**: v498 已 DROP 预聚合 8 表 (1.2 亿行), 但实测 market.duckdb 2.3G
+**不收缩** — DuckDB 追加式存储: DROP 后空间标记 free block 优先复用, 文件
+永不自动缩小。实测 CHECKPOINT (0.02s) 仅合并 WAL, VACUUM (0.0s) 仅重算统计,
+均无效。唯一收缩方法 = 拷数据重建文件。
+
+**改动**: 新增 `scripts/duckdb_rebuild.sh` —
+1. 优雅停机 (复用 restart.sh 的 TERM/KILL 两段式, 防文件锁)
+2. ATTACH 建 market.duckdb.new → 13 张表 DDL (保留主键, _upsert_df
+   ON CONFLICT 依赖) → 逐表 INSERT..SELECT (DuckDB 内部拷贝, 949万+830万
+   行 ~1min, 不落内存) → 逐表行数断言校验 (不等即崩, 零 fallback)
+3. 原子替换: 旧库 → market.duckdb.bak (留作回滚) → .new → market.duckdb
+4. 新库走 manager 初始化自动补建辅助索引, 复验总行数
+5. 失败/中断时 .new 删除、旧库分毫未动 — 幂等可重跑
+
+**执行**: `bash scripts/duckdb_rebuild.sh` → `bash scripts/restart.sh`
+**实测 (v499 首跑)**: 2.27G → 1.37G, 释放 0.90G (即预聚合表压缩后实际占用;
+基础库 daily 949万 + valuation 830万 + stocks 5525 共 17,806,296 行全匹配)。
+注意 INSERT..SELECT 的 rowcount 恒为 -1 (客户端特性, 非错误 — 真实计数由
+逐表 COUNT 断言保证); 新库初始化自动补建 17 条索引; verify_sync 与 SQLite
+全 match=True。旧库留 market.duckdb.bak 供回滚, 确认后可 rm。
+
+### v498 清除预聚合表死冗余 — 8 张表 DROP, 晚间链省 27s (2026-08-15)
+
+**背景**: 预聚合表 (daily_ma/ret/std/zscore/ma_volume/max/min/rank) 是
+v4xx 时代的"供因子原语直接查询"设计。全面调查后确认**零消费方**:
+- 唯一读取代码 `_get_preagg_table` (factor/compute/_primitives.py) 死代码,
+  全项目无任何调用
+- 写入方仅晚间链 refresh_preaggregates (daily_data.py) + sync 脚本
+- 8 张 DDL 中 zscore/rank 从未写入 (0 行), 实际数据 6 表 × 203 万行
+  ≈ 1.2 亿行, 占 market.duckdb 2.3G 的大部分
+- v497 已实测 SQL 全窗口 rolling 路径净收益 ≈ 0, 未来消费路径也不成立
+- 顺带清除 v496 遗留隐藏 bug: refresh_preaggregates 的 windows 参数被
+  硬编码循环忽略 (duckdb_store.py:970)
+
+**改动**:
+1. `duckdb_store.py`: _TABLE_SCHEMAS 删 8 张预聚合表 DDL、_create_indexes
+   删 6 条预聚合索引、删整个 refresh_preaggregates 函数 (~135 行)
+2. `_primitives.py`: 删 _get_preagg_table 死代码 (~40 行)
+3. `daily_data.py`: 删晚间链 refresh_preaggregates() 调用 (省 27s/晚)
+4. `scripts/duckdb_sync_all.sh`: refresh 段改为幂等 DROP TABLE IF EXISTS
+   8 张 (v498 后 DDL 已删, 每次跑 sync 清理历史遗留, 可重复)
+
+**验证**: 385 passed; bash scripts/duckdb_sync_all.sh 后预聚合表残留 0 张,
+剩余 13 表; daily/valuation 同步与校验 match=True; market.duckdb 体积
+2.3G → 应随下一次 CHECKPOINT/VACUUM 释放 (未主动做, 观察即可)。
+VERSION → test-v498。
+
 ### v497 因子原语物化跳过磁盘缓存 — 物化提速 8min/全量 (2026-08-15)
 
 **背景**: 用户目标是"尽可能利用 DuckDB 提升系统运行效率"。实测物化 chunk

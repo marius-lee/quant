@@ -183,30 +183,92 @@ def factor_lineage(name: str, version: Optional[str] = None) -> dict:
 # ═══════════════════════════════════════════════════════════
 
 def strategy_summary() -> dict:
-    """多策略全局总览 (get_global_metrics 兼容空态)."""
-    from quant.strategy import get_strategy_manager
-    mgr = get_strategy_manager()
+    """多策略全局总览 — 真实账户数据 (v506 fix: 原读空内存 StrategyManager → 全 0).
+
+    数据源: 唯一真相源 trades.db (strategy_config + sim_trades) + 最新收盘价估值,
+    经 PositionService.get_portfolio_summary 聚合. StrategyManager 纯内存空壳
+    (无人 register) 不作为数据源.
+    """
+    from quant.core.state_broker import broker
+    from web.services import PositionService
+
+    strats = {}
+    names = []
+    # 真实在用的策略名: strategy_config 表里 initialized 的策略; broker positions
+    # 的 strategy 字段为兜底 (运行时实际持仓归属)
     try:
-        return mgr.get_global_metrics()
-    except Exception as _e:  # pragma: no cover
-        logger.warning("strategy global metrics unavailable: %s", _e)
-        return {"total_equity": 0, "cash": 0, "pnl": 0, "capital_utilization": 0,
-                "active_strategies": 0, "strategies": {}}
+        from quant.data.repos import TradeRepo
+        repo = TradeRepo()
+        conn = repo._conn()
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT strategy FROM strategy_config WHERE COALESCE(initialized,0)=1"
+            ).fetchall()
+            names = [r[0] for r in rows] or ["quant"]
+        finally:
+            conn.close()
+    except Exception:
+        names = ["quant"]
+
+    state = broker.get()
+    pos_by_strat = {}
+    for p in state.get("positions", []):
+        pos_by_strat.setdefault(p.get("strategy", "quant"), []).append(p)
+    names = sorted(set(names) | set(pos_by_strat.keys()))
+
+    total_asset = total_cash = total_pnl = total_pos = 0.0
+    for n in names:
+        try:
+            summ = PositionService.get_portfolio_summary(n)
+            pos_list = pos_by_strat.get(n, [])
+            total_asset += summ.get("total_asset", 0) or 0
+            total_cash += summ.get("cash", 0) or 0
+            total_pos += summ.get("position_value", 0) or 0
+            total_pnl += summ.get("total_pnl", 0) or 0
+            strats[n] = {
+                "status": "active",
+                "metrics": {
+                    "position_value": summ.get("position_value", 0) or 0,
+                    "available_cash": summ.get("cash", 0) or 0,
+                    "total_pnl": summ.get("total_pnl", 0) or 0,
+                    "positions": len(pos_list),
+                },
+            }
+        except Exception as _e:
+            logger.warning("strategy_summary[%s] unavailable: %s", n, _e)
+            strats[n] = {"status": "unknown", "metrics": {}}
+
+    return {
+        "total_asset": round(total_asset, 2),
+        "total_cash": round(total_cash, 2),
+        "total_pnl": round(total_pnl, 2),
+        "capital_utilization": (total_pos / max(total_asset, 1)),
+        "active_strategies": len(strats),
+        "strategies": strats,
+        "source": "trades.db + 收盘价估值",
+    }
 
 
 def strategy_detail(name: str) -> dict:
-    """单个策略详情 + 指标 + 风控检查."""
+    """单个策略详情 — 真实账户指标 + StrategyManager 状态交叉."""
+    from web.services import PositionService
+    summ = PositionService.get_portfolio_summary(name)
     from quant.strategy import get_strategy_manager
     mgr = get_strategy_manager()
     inst = mgr.get(name)
-    if inst is None:
-        raise KeyError(f"strategy {name} not found")
-    out = {"name": name, "status": getattr(inst, "status", "unknown")}
-    try:
-        out["metrics"] = inst.get_metrics()
-    except Exception as _e:
-        out["metrics"] = {}
-    return out
+    status = getattr(inst, "status", "active") if inst is not None else "active"
+    return {
+        "name": name,
+        "status": status,
+        "metrics": {
+            "portfolio_value": summ.get("total_asset", 0),
+            "available_cash": summ.get("cash", 0),
+            "total_pnl": summ.get("total_pnl", 0),
+            "position_value": summ.get("position_value", 0),
+            "initial_capital": summ.get("initial_capital", 0),
+            "positions": len(PositionService.get_live_positions(name)),
+        },
+    }
 
 
 def strategy_action(name: Optional[str], action: str) -> dict:
@@ -435,15 +497,31 @@ def prometheus_metrics() -> bytes:
     return m.get_metrics()
 
 
+def prometheus_status() -> dict:
+    """Prometheus 指标摘要: 系列数 + 头发采样值 (系统页 KPI 用)."""
+    text = prometheus_metrics().decode("utf-8", "replace")
+    series = [l for l in text.splitlines() if l and not l.startswith("#")]
+    names = [s.split()[0] for s in series]
+    return {
+        "count": len(series),
+        "families": sorted(set(n.split("{", 1)[0] for n in names)),
+        "samples": [s.split()[0] + "=" + s.split()[1] for s in series[:3]],
+    }
+
+
 def grafana_status() -> dict:
-    """Grafana 端口探测 (仅状态, 不在 web 进程内起任何服务)."""
+    """Grafana/Prometheus 端口探测 (仅状态, 不在 web 进程内起任何服务)."""
     import socket
-    alive = False
-    try:
-        port = 3000
-        with socket.create_connection(("127.0.0.1", port), timeout=1):
-            alive = True
-    except OSError:
-        alive = False
-    return {"running": alive, "url": "http://localhost:3000" if alive else None,
+
+    def _probe(port: int) -> bool:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                return True
+        except OSError:
+            return False
+
+    p3000 = _probe(3000)
+    return {"running": p3000, "url": "http://localhost:3000" if p3000 else None,
+            "prometheus_running": _probe(9090),
+            "prometheus_url": "http://localhost:9090",
             "hint": "Grafana 未运行 — 如需接入请先启动 (默认端口 3000)"}

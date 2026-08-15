@@ -43,6 +43,65 @@ KPI/chart 字段齐全且兼容 loadFactors; pytest 353 passed 无回归。
 
 **注意**: 前端 factor tab 首次会渲染 116 行注册表 + 血缘按钮 (DOM 较重但单页完整)。
 
+### v506 修复多策略页全 0 + 系统页 Prometheus/Grafana 显示异常 (2026-08-15)
+
+**背景**: 用户实测两个 Tab 异常 — ①「多策略隔离」数据全为 0;②「系统」页
+Prometheus / Grafana「好像出错」。
+
+**① 多策略页全 0 双根因**:
+- 后端 `strategy_summary()` 读 `StrategyManager.get_global_metrics()` — 该管理器是
+  **纯内存空壳** (启动时无人 `register()`), 恒定返回 `total_strategies: 0` → KPI 全 0。
+- 就算有数据, 前端 `loadStrategies()` 表格列用 `position_value`, 而
+  `StrategyInstance.get_metrics()` 实际返回键是 `portfolio_value` — 键名错位 → undefined。
+- **真实数据源**: trades.db (`strategy_config` 9 个策略全部 initialized) +
+  `PositionService.get_portfolio_summary()` (现金+持仓收盘价估值+PnL) — 唯一真相源。
+
+**修复**:
+1. `web/admin_services.py` `strategy_summary()` 重写 → 读 `strategy_config` 各策略 +
+   broker positions 的 strategy 归属, 经 `PositionService.get_portfolio_summary()`
+   聚合真实账户数据 (total_asset / total_cash / total_pnl / capital_utilization /
+   strategies[] 含 position_value/available_cash/total_pnl/positions)。
+   `strategy_detail()` 同样改写真实数据 + StrategyManager 状态交叉 (不再 KeyError)。
+2. `web/static/app.js` `loadStrategies()`: 键对齐 `total_asset ?? total_equity`.
+3. **实测**: 9 策略全出真实数据 — quant 持仓 4220 + 现金 134.49 + PnL -645.51,
+   其余 _t_ 系列回测壳策略无持仓; 全局 total_asset 369700.89。
+
+**② 系统页 Prometheus/Grafana「出错」假象**:
+- 根因: `loadSystems()` 用 `setText()` (`textContent`) 往 `mon-metrics` 塞
+  HTML 链接 `<a href="/metrics">` → **以纯文本渲染出 `<a href=...>` 标签**,
+  看起来像页面坏了。Grafana「未运行」本是如实状态 (端口探测没起服务是真没起)。
+
+**修复**:
+- 后端 `grafana_status()` 补 `prometheus_running` (探测 9090) + `prometheus_url`;
+  新增 `prometheus_status()` (序列数/族列表/采样前3) → `/api/monitoring/prometheus`。
+- 前端改 `innerHTML` 渲染: Grafana ●运行中/未运行 + Prometheus「N 条指标序列 · Prom
+  9090 运行中/未运行」+ 查看链接。不再出现裸 `<a>` 文本。
+
+**测试**: 393 passed 无回归; 路由冒烟: `/api/strategy/summary`
+(active_strategies:9 真实) `/api/strategy/quant` `/api/monitoring/grafana`
+`/api/monitoring/prometheus` `/metrics` 全 200。
+
+**注意**:
+- `capital_utilization` 定义为 `持仓市值/总资产` (真实投入率), 全策略并集下仅 quant
+  有持仓 → ~1.1%, 符合 9 个 shell 策略无持仓的实况。
+- `/metrics` 当前仅回 2 系列 (CPU/内存 0.0) — 业务指标由 MetricsCollector 收集,
+  web 进程内未常驻, 属正常; 系统页已如实显示「2 条指标序列」。
+
+### v507 修复刷新后因子页内容叠在概览下方 (2026-08-15)
+
+**背景**: 刷新后因子 Tab 内容显示在概览页下方; 点击因子 Tab 再回概览,
+因子内容消失。
+
+**根因**: `web/templates/index.html` 里 `tab-overview`(line 59) 和
+`tab-factors`(line 88) **两处都带 `class="tab-content active"`** — 页面加载时两个
+section 同时 display:block 叠排; 之后点击任意 Tab 触发 `showTab()` 只保留一个
+`active`, 于是因子内容随 active 移除而消失 (看似"切走即没")。
+
+**修复**: `tab-factors` 移除多余的 `active`, 仅 `tab-overview` 默认激活
+(侧栏按钮本就只有 overview 带 active, 与 section 对齐)。
+
+**验证**: grep `class="tab-content` 确认仅 overview 带 active; 语法/JS 校验通过。
+
 ### v504 修复侧栏 hover 提示消失 (2026-08-15)
 
 **背景**: v503 给 `.sidebar-tabs` 加 `overflow-y: auto` (8 tab 可滚动) 后,

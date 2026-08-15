@@ -16,7 +16,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v505"
+VERSION = "test-v507"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 
@@ -1089,6 +1089,12 @@ def api_model_serving():
 @app.route("/api/monitoring/grafana")
 def api_monitoring_grafana():
     return _api_response(data=_grafana_status())
+
+
+@app.route("/api/monitoring/prometheus")
+def api_monitoring_prometheus():
+    from web.admin_services import prometheus_status as _prom_status
+    return _api_response(data=_prom_status())
 
 
 @app.route("/metrics")

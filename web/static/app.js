@@ -819,7 +819,7 @@ async function showLineage(name) {
 async function loadStrategies() {
   try {
     const g = await fetchJSON('/api/strategy/summary');
-    setText('st-total', fmtMoney(g.total_equity || 0));
+    setText('st-total', fmtMoney(g.total_asset ?? g.total_equity ?? 0));
     setText('st-cash', fmtMoney(g.total_cash ?? g.cash ?? 0));
     setText('st-pnl', fmtMoney(g.total_pnl ?? g.pnl ?? 0));
     setText('st-util', ((g.capital_utilization || 0) * 100).toFixed(1) + '%');
@@ -884,9 +884,21 @@ async function loadSystems() {
 
   try {
     const g = await fetchJSON('/api/monitoring/grafana');
-    setText('mon-grafana', g.running ? '<span style="color:var(--up)">● 运行中</span>' : '<span style="color:var(--text3)">● 未运行</span>');
-    setText('mon-metrics', '<a href="/metrics" target="_blank" style="color:var(--accent)">打开 /metrics</a>');
+    const gEl = document.getElementById('mon-grafana');
+    if (gEl) gEl.innerHTML = g.running
+      ? '<span style="color:var(--up)">● 运行中</span>'
+      : '<span style="color:var(--text3)">● 未运行</span>';
     setText('mon-hint', g.hint || '');
+    let prom = null;
+    try { prom = await fetchJSON('/api/monitoring/prometheus'); } catch (e) { /* stats optional */ }
+    const mEl = document.getElementById('mon-metrics');
+    if (mEl) {
+      const p3000 = g.prometheus_running;
+      const status = prom
+        ? `${prom.count} 条指标序列` + (p3000 ? ' · Prom 9090 运行中' : ' · Prom 9090 未运行')
+        : (p3000 ? 'Prom 9090 运行中' : 'Prom 9090 未运行');
+      mEl.innerHTML = `${escapeHtml(status)} <a href="/metrics" target="_blank" style="color:var(--accent)">查看</a>`;
+    }
   } catch (e) { /* ignore */ }
 }
 

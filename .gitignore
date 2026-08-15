@@ -25,6 +25,7 @@ logs/
 # 因子缓存数据 (不跟踪)
 quant/data/factor_cache/
 quant/data/primitive_cache/
+quant/data/backtest_cache/
 
 # 模型二进制 (不跟踪)
 quant/data/models/

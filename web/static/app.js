@@ -59,6 +59,44 @@ function toggleTheme() {
   localStorage.setItem('theme', next);
 }
 
+// ── Sidebar tooltip (v504: 自定义即时提示, 替代被 overflow 裁切的 ::after) ──
+const _tabLabels = {
+  overview: '概览', factors: '因子', portfolio: '持仓', performance: '绩效',
+  scheduler: '调度', strategies: '策略', systems: '系统'
+};
+let _tooltipEl = null;
+function _ensureTooltip() {
+  if (!_tooltipEl) {
+    _tooltipEl = document.createElement('div');
+    _tooltipEl.className = 'sidebar-tooltip';
+    _tooltipEl.hidden = true;
+    document.body.appendChild(_tooltipEl);
+  }
+  return _tooltipEl;
+}
+function _showTooltip(btn) {
+  const tp = _ensureTooltip();
+  const tab = btn.getAttribute('data-tab');
+  const label = tab ? (_tabLabels[tab] || '') : (btn.title || btn.getAttribute('aria-label') || '');
+  if (!label) return;
+  tp.textContent = label;
+  tp.hidden = false;
+  const r = btn.getBoundingClientRect();
+  const tw = tp.offsetWidth || 60;
+  tp.style.left = (r.right + 10) + 'px';
+  tp.style.top = (r.top + r.height / 2 - tp.offsetHeight / 2) + 'px';
+}
+function _hideTooltip() { if (_tooltipEl) _tooltipEl.hidden = true; }
+function initSidebarTooltip() {
+  document.querySelector('.sidebar').addEventListener('pointerover', (e) => {
+    const b = e.target.closest('.sidebar-tab, .theme-toggle');
+    if (b) _showTooltip(b);
+  });
+  document.querySelector('.sidebar').addEventListener('pointerout', (e) => {
+    if (!e.target.closest('.sidebar-tab, .theme-toggle')) _hideTooltip();
+  });
+}
+
 // ── Sidebar ──
 function showTab(name) {
   $$('.tab-content').forEach(t => t.classList.remove('active'));
@@ -90,6 +128,10 @@ function showTab(name) {
   if (activeTab === 'overview' && window._perfData) {
     renderPNLChart();
   }
+  if (activeTab === 'strategies') { loadStrategies(); }
+  if (activeTab === 'systems') { loadSystems();
+    if (!_systemsTimer) { _systemsTimer = setInterval(loadSystems, 15000); }
+  } else if (_systemsTimer) { clearInterval(_systemsTimer); _systemsTimer = null; }
 }
 
 $$('.sidebar-tab').forEach(b => {
@@ -312,6 +354,7 @@ async function loadFactors() {
       renderICDecay(fd);
       renderCorrelation(fd);
     }
+    if (fd && fd.registry) renderRegistry(fd);
   } catch (e) { console.warn('factors error:', e.message); }
 }
 
@@ -721,9 +764,156 @@ function renderXGB(d) {
   }
 }
 
+// ── 因子注册表 (v505: 合并原因子平台) ──
+function _statusBadge(s) {
+  const cls = s === 'active' ? 'badge' :
+    s === 'probation' ? 'badge badge-blue' :
+    s === 'evaluating' ? 'badge badge-purple' : 'badge badge-gray';
+  return `<span class="${cls}">${escapeHtml(s)}</span>`;
+}
+function renderRegistry(d) {
+  setText('meta-registry', `${d.registry.length} 因子 · 唯一真相源 factor_registry (market.db)`);
+  renderTable('table-registry', d.registry, [
+    { label: '因子', key: 'name' },
+    { label: '分类', key: 'category' },
+    { label: '状态', key: 'status' },
+    { label: '方向', key: 'direction' },
+    { label: 'IC', key: 'ic_mean' },
+    { label: 'IC_IR', key: 'ic_ir' },
+    { label: '来源', key: 'academic_source' },
+    { label: '更新时间', key: 'updated_at' },
+    { label: '', key: '_lineage_btn' },
+  ], {
+    fmtMap: {
+      status: v => _statusBadge(v),
+      ic_mean: v => v == null ? '—' : fmtNum(v, 4),
+      ic_ir: v => v == null ? '—' : fmtNum(v, 2),
+      direction: v => v == null ? '—' : (v === 'positive' ? '正向' : v === 'negative' ? '负向' : escapeHtml(v)),
+      academic_source: v => v ? `<span title="${escapeHtml(v)}">${escapeHtml(String(v).slice(0, 24))}${String(v).length > 24 ? '…' : ''}</span>` : '—',
+      updated_at: v => v ? String(v).slice(0, 16) : '—',
+      _lineage_btn: (raw, r) => `<button onclick="showLineage('${r.name}')" style="padding:3px 8px;font-size:0.75rem;background:var(--accent-dim);border:1px solid var(--border);border-radius:4px;color:var(--accent);cursor:pointer">血缘</button>`,
+    },
+  });
+}
+async function showLineage(name) {
+  const panel = document.getElementById('lineage-panel');
+  try {
+    const d = await fetchJSON('/api/factors/lineage?name=' + encodeURIComponent(name));
+    const up = (d.lineage.upstream || []).map(u =>
+      `<li>${u.type === 'data' ? '📊' : '🏷️'} <code>${escapeHtml(u.label || u.ref || '')}</code></li>`).join('');
+    const down = (d.lineage.downstream || []).map(x => `<li><code>${escapeHtml(x)}</code></li>`).join('');
+    panel.innerHTML = `
+      <div class="section-header"><h3>血缘: ${escapeHtml(name)}</h3><span class="meta">via fetch /api/factors/lineage</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px">
+        <div><div style="font-size:0.8rem;color:var(--text2);margin-bottom:4px">上游 (数据依赖)</div>
+          <ul style="margin:0;padding-left:18px;font-size:0.85rem;color:var(--text)">${up || '<li style="color:var(--text3)">无推导</li>'}</ul></div>
+        <div><div style="font-size:0.8rem;color:var(--text2);margin-bottom:4px">下游 (使用方)</div>
+          <ul style="margin:0;padding-left:18px;font-size:0.85rem;color:var(--text)">${down || '<li style="color:var(--text3)">无下游</li>'}</ul></div>
+      </div>`;
+  } catch (e) {
+    panel.innerHTML = `<div class="empty" style="color:var(--text3);font-size:12px">血缘查询失败: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+// ── 多策略 (v502) ──
+async function loadStrategies() {
+  try {
+    const g = await fetchJSON('/api/strategy/summary');
+    setText('st-total', fmtMoney(g.total_equity || 0));
+    setText('st-cash', fmtMoney(g.total_cash ?? g.cash ?? 0));
+    setText('st-pnl', fmtMoney(g.total_pnl ?? g.pnl ?? 0));
+    setText('st-util', ((g.capital_utilization || 0) * 100).toFixed(1) + '%');
+    const acts = g.active_strategies || 0;
+    setText('st-active', acts);
+    setText('meta-strategies', `${acts} active`);
+    const rows = Object.entries(g.strategies || {}).map(([name, m]) => ({
+      name, status: m.status, ...(m.metrics || {})
+    }));
+    renderTable('table-strategies', rows, [
+      { label: '策略', key: 'name' }, { label: '状态', key: 'status' },
+      { label: '持仓市值', key: 'position_value' }, { label: '现金', key: 'available_cash' },
+      { label: '日 PnL', key: 'daily_pnl' }, { label: '总 PnL', key: 'total_pnl' },
+    ], { fmtMap: { status: v => `<span class="badge">${escapeHtml(v)}</span>`,
+                   position_value: v => fmtMoney(v), available_cash: v => fmtMoney(v),
+                   daily_pnl: v => fmtMoney(v), total_pnl: v => fmtMoney(v) } });
+  } catch (e) { setText('meta-strategies', '加载失败'); }
+}
+
+// ── 系统: 另类/分布式回测/模型/监控 (v502) ──
+async function loadSystems() {
+  try {
+    const alt = await fetchJSON('/api/alternative/sources');
+    setText('meta-alt', `${alt.sources.length} sources · ${alt.factor_rows} factor rows`);
+    renderTable('table-alt-sources', alt.sources, [
+      { label: '数据源', key: 'name' }, { label: '类型', key: 'source_type' },
+      { label: '频率', key: 'frequency' }, { label: '启停', key: 'enabled' },
+      { label: '优先级', key: 'priority' }, { label: '日期范围', key: 'range' },
+    ], { fmtMap: { enabled: v => v ? '<span style="color:var(--up)">● 启用</span>' : '<span style="color:var(--text3)">● 停用</span>',
+                   range: (raw, r) => `${escapeHtml(r.start_date || '?')} ~ ${escapeHtml(r.end_date || '?')}` } });
+  } catch (e) { setText('meta-alt', '加载失败'); }
+
+  try {
+    const d = await fetchJSON('/api/backtest/dist/status');
+    setText('meta-dist', d.recent ? `${d.recent.length} recent` : '—');
+    setText('dist-state', d.running ? '<span style="color:var(--up)">运行中</span>' : '空闲');
+    setText('dist-progress', `${d.done}/${d.total}`);
+    setText('dist-runid', d.run_id || '—');
+    setText('dist-err', d.error ? escapeHtml(d.error) : '—');
+    renderTable('table-dist-results', d.recent || [], [
+      { label: 'run_id', key: 'run_id' }, { label: '区间', key: 'range' },
+      { label: '本金', key: 'capital' }, { label: 'Sharpe', key: 'sharpe' },
+      { label: 'CAGR', key: 'cagr' }, { label: 'MDD', key: 'mdd' },
+      { label: '终值', key: 'equity' }, { label: '耗时', key: 'elapsed' },
+    ], { fmtMap: { range: (raw, r) => `${escapeHtml(r.start)} ~ ${escapeHtml(r.end)}`,
+                   capital: v => fmtMoney(v), equity: v => fmtMoney(v),
+                   sharpe: v => v == null ? '—' : Number(v).toFixed(3),
+                   cagr: v => v == null ? '—' : Number(v).toFixed(1) + '%',
+                   mdd: v => v == null ? '—' : Number(v).toFixed(1) + '%',
+                   elapsed: v => v == null ? '—' : Number(v).toFixed(0) + 's' } });
+  } catch (e) { setText('meta-dist', '加载失败'); }
+
+  try {
+    const m = await fetchJSON('/api/model/serving');
+    document.getElementById('model-serving-state').innerHTML =
+      m.available
+        ? `<div class="empty">MLflow 可用 · ${m.models.length} 个模型 ${m.reason ? '· ' + escapeHtml(m.reason) : ''}</div>`
+        : `<div class="empty">${escapeHtml(m.reason || '模型服务不可用')}</div>`;
+  } catch (e) {
+    document.getElementById('model-serving-state').innerHTML = '<div class="empty">模型服务查询失败</div>';
+  }
+
+  try {
+    const g = await fetchJSON('/api/monitoring/grafana');
+    setText('mon-grafana', g.running ? '<span style="color:var(--up)">● 运行中</span>' : '<span style="color:var(--text3)">● 未运行</span>');
+    setText('mon-metrics', '<a href="/metrics" target="_blank" style="color:var(--accent)">打开 /metrics</a>');
+    setText('mon-hint', g.hint || '');
+  } catch (e) { /* ignore */ }
+}
+
+async function submitDistGrid() {
+  const raw = document.getElementById('dist-cfg').value.trim();
+  let grid = {};
+  if (raw) { try { grid = JSON.parse(raw); } catch (e) {
+    document.getElementById('dist-msg').textContent = 'JSON 解析失败: ' + e.message; return; } }
+  const payload = {
+    param_grid: grid,
+    fixed_params: { start_date: '2024-01-01', end_date: '2025-12-31', capital: 5000, universe_size: 100, retrain_freq: 20, combine_mode: 'ic_weighted', method: 'ic_weighted' },
+    backend: 'thread', n_workers: 2,
+  };
+  const r = await fetch('/api/backtest/dist/submit', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const body = await r.json();
+  document.getElementById('dist-msg').textContent = body.error
+    ? '✗ ' + body.error.message : `已提交 ${body.data.run_id} · 共 ${body.data.total} 组`;
+  if (!body.error) setTimeout(loadSystems, 3000);
+}
+
 // ── Init ──
 document.addEventListener('DOMContentLoaded', async () => {
   initTheme();
+  initSidebarTooltip();
   // version already rendered by server-side template — no JS needed
   document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
   connectSSE();

@@ -16,7 +16,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v497"
+VERSION = "test-v505"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 
@@ -298,44 +298,46 @@ def api_backtest_history():
 
 @app.route("/api/factors")
 def api_factors():
-    """因子评估数据 — 为前端因子分析 Tab 提供 IC/IR/衰减/相关性。
+    """因子统一视图 (v505 合并: 原评估线 + 原因子平台线).
 
-    数据来源: factor_snapshot 表 (24h 过期自动重算)
-    首次访问时自动计算 (约 30s), 后续 24h 内秒出。
-    ?refresh=true 强制重新计算。
+    返回:
+      - registry: factor_registry (market.db, 唯一真相源) 全因子元数据 + 血缘
+      - state: 状态机分布 (active/probation/evaluating/archived)
+      - stats: IC/IR/衰减/相关性 (factor_snapshot, 24h TTL)
+    ?refresh=true 强制重算统计快照。
     """
     from flask import request
     from quant.factor.stats_cache import get_cached_factor_stats
+    from web.admin_services import factor_platform_snapshot
     force = request.args.get("refresh", "false").lower() == "true"
     try:
         stats = get_cached_factor_stats(force_refresh=force)
-        # 补充 factor_registry 总/有效计数
-        try:
-            from quant.data.repos import FactorRepo
-            repo = FactorRepo()
-            dist = repo.status_distribution()
-            stats["n_total"] = repo.count_total()
-            stats["n_active"] = dist.get("active", 0)
-            stats["n_probation"] = dist.get("probation", 0)
-            stats["n_evaluating"] = dist.get("evaluating", 0)
-            stats["n_archived"] = dist.get("archived", 0)
-            stats["n_registered"] = stats["n_total"] - stats["n_active"] - stats["n_probation"] - stats["n_evaluating"] - stats["n_archived"]
-            stats["n_evaluated"] = repo.count_with_ic()
-            # Use the same variable name for the except handler
-            c = None  # no longer needed
-        except Exception:
-            logger.warning("api_factors: factor_registry query failed", exc_info=True)
-            stats["n_total"] = 0
-            stats["n_registered"] = 0
-            stats["n_active"] = 0
-            stats["n_probation"] = 0
-            stats["n_evaluating"] = 0
-            stats["n_archived"] = 0
-            stats["n_evaluated"] = 0
-        return _api_response(data=stats)
+        platform = factor_platform_snapshot()
+        dist = {item["status"]: 0 for item in platform["factors"]}
+        for item in platform["factors"]:
+            dist[item["status"]] = dist.get(item["status"], 0) + 1
+        registry = platform["factors"]
+        return _api_response(data={
+            "registry": registry,
+            "state": platform["state"],
+            "counts": platform["counts"],
+            "n_total": len(registry),
+            "n_active": dist.get("active", 0),
+            "n_probation": dist.get("probation", 0),
+            "n_evaluating": dist.get("evaluating", 0),
+            "n_archived": dist.get("archived", 0),
+            "n_evaluated": sum(1 for f in registry if f.get("ic_mean") is not None),
+            "ic": stats.get("ic", []),
+            "ic_ir": stats.get("ic_ir", []),
+            "factor_keys": stats.get("factor_keys", []),
+            "decay": stats.get("decay", {}),
+            "corr": stats.get("corr", []),
+            "meta": stats.get("meta", {}),
+            "cached_at": stats.get("cached_at"),
+        })
     except Exception as e:
         from quant.utils.logger import get_logger
-        get_logger("web.app").warning(f"Factor stats failed: {e}")
+        get_logger("web.app").warning(f"Factor unified failed: {e}", exc_info=True)
         return _api_response(error={"code": "FACTOR_ERROR", "message": str(e)})
 
 
@@ -974,6 +976,131 @@ def api_benchmark():
     ).fetchall()
     conn.close()
     return _api_response(data=[dict(r) for r in rows])
+
+
+# ═══════════════════════════════════════════════════════════
+# 管理后台 API (v505 refactor: 因子平台已并入 /api/factors) — 多策略 / 另类 /
+# 分布式回测 / 模型服务 / 监控
+# ═══════════════════════════════════════════════════════════
+from web.admin_services import (
+    alternative_sources as _alt_sources,
+    dist_status as _dist_status,
+    dist_submit as _dist_submit,
+    factor_lineage as _factor_lineage,
+    grafana_status as _grafana_status,
+    model_serving_info as _model_info,
+    prometheus_metrics as _prom_metrics,
+    strategy_action as _strategy_action,
+    strategy_detail as _strategy_detail,
+    strategy_summary as _strategy_summary,
+)
+
+@app.route("/api/factors/lineage")
+def api_factor_lineage():
+    """单因子血缘 (v505: 统一入 /api/factors 族)."""
+    from flask import request
+    name = request.args.get("name", "")
+    if not name:
+        return _api_response(error={"code": "INVALID_PARAMETER",
+                                    "message": "name required"}), 400
+    try:
+        return _api_response(data=_factor_lineage(name))
+    except KeyError as e:
+        return _api_response(error={"code": "NOT_FOUND", "message": str(e)}), 404
+    except Exception as e:
+        logger.warning(f"factor lineage failed: {e}")
+        return _api_response(error={"code": "INTERNAL",
+                                    "message": "因子血缘查询失败"}), 500
+
+
+@app.route("/api/strategy/summary")
+def api_strategy_summary():
+    return _api_response(data=_strategy_summary())
+
+
+@app.route("/api/strategy/<name>")
+def api_strategy_detail(name):
+    try:
+        return _api_response(data=_strategy_detail(name))
+    except KeyError as e:
+        return _api_response(error={"code": "NOT_FOUND", "message": str(e)}), 404
+    except Exception as e:
+        return _api_response(error={"code": "INTERNAL",
+                                    "message": "策略详情查询失败"}), 500
+
+
+@app.route("/api/strategy/<name>/action", methods=["POST"])
+def api_strategy_action(name):
+    """策略启停/调仓. body: {"action": start|stop|pause|resume|rebalance}"""
+    from flask import request
+    _auth = _require_token()
+    if _auth:
+        return _auth
+    payload = request.get_json(silent=True) or {}
+    action = payload.get("action", "")
+    try:
+        return _api_response(data=_strategy_action(name, action))
+    except ValueError as e:
+        return _api_response(error={"code": "INVALID_PARAMETER", "message": str(e)}), 400
+    except Exception as e:
+        return _api_response(error={"code": "INTERNAL", "message": str(e)}), 500
+
+
+@app.route("/api/alternative/sources")
+def api_alternative_sources():
+    try:
+        return _api_response(data=_alt_sources())
+    except Exception as e:
+        return _api_response(error={"code": "INTERNAL",
+                                    "message": "另类数据查询失败"}), 500
+
+
+@app.route("/api/backtest/dist/submit", methods=["POST"])
+def api_backtest_dist_submit():
+    """提交分布式网格回测. body: {param_grid, fixed_params, backend, n_workers}"""
+    from flask import request
+    _auth = _require_token()
+    if _auth:
+        return _auth
+    payload = request.get_json(silent=True) or {}
+    param_grid = payload.get("param_grid") or {}
+    fixed = payload.get("fixed_params") or {}
+    backend = payload.get("backend", "thread")
+    n_workers = int(payload.get("n_workers", 4))
+    try:
+        result = _dist_submit(param_grid, fixed, backend, n_workers)
+        return _api_response(data=result)
+    except RuntimeError as e:
+        return _api_response(error={"code": "CONFLICT", "message": str(e)}), 409
+    except Exception as e:
+        return _api_response(error={"code": "INTERNAL", "message": str(e)}), 500
+
+
+@app.route("/api/backtest/dist/status")
+def api_backtest_dist_status():
+    return _api_response(data=_dist_status())
+
+
+@app.route("/api/model/serving")
+def api_model_serving():
+    return _api_response(data=_model_info())
+
+
+@app.route("/api/monitoring/grafana")
+def api_monitoring_grafana():
+    return _api_response(data=_grafana_status())
+
+
+@app.route("/metrics")
+def metrics_endpoint():
+    """Prometheus 文本格式指标 (探针/采集器消费)."""
+    from flask import Response
+    try:
+        return Response(_prom_metrics(), mimetype="text/plain; version=0.0.4")
+    except Exception as e:
+        logger.warning(f"/metrics failed: {e}")
+        return _api_response(error={"code": "INTERNAL",
+                                    "message": "Prometheus 指标生成失败"}), 500
 
 
 if __name__ == "__main__":

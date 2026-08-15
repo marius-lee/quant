@@ -80,8 +80,10 @@ body {
 }
 .sidebar-tabs {
   display: flex; flex-direction: column; gap: 6px;
-  flex: 1;
+  flex: 1; min-height: 0; overflow-y: auto;
+  scrollbar-width: none;
 }
+.sidebar-tabs::-webkit-scrollbar { display: none; }
 .sidebar-tab {
   width: 40px; height: 40px;
   border: none; background: none; border-radius: var(--radius);
@@ -114,19 +116,19 @@ body {
   font-weight: 700; margin-top: 4px;
 }
 
-/* Tooltip on sidebar items */
-.sidebar-tab::after, .theme-toggle::after {
-  content: attr(aria-label);
-  position: absolute; left: 54px;
+/* Tooltip: v504 用 JS 在 body 层渲染 (fixed 定位), 不受 .sidebar-tabs
+   overflow-y:auto 裁切; 原 ::after 方案已被滚动容器裁掉 */
+.sidebar-tooltip {
+  position: fixed;
+  z-index: 500;
   background: var(--bg2);
   border: 1px solid var(--border);
   color: var(--text);
   font-size: .78rem; padding: 4px 10px; border-radius: var(--radius);
-  white-space: nowrap; pointer-events: none; opacity: 0;
-  transition: opacity 120ms;
-  z-index: 300;
+  white-space: nowrap; pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0,0,0,.35);
 }
-.sidebar-tab:hover::after, .theme-toggle:hover::after { opacity: 1; }
+.sidebar-tooltip[hidden] { display: none; }
 
 /* ── Main ── */
 .main-wrap {
@@ -331,6 +333,10 @@ td.down { color: var(--down); }
 
 /* ── Scheduler status ── */
 .status-running { color: var(--accent); font-weight: 600; }
+/* v502: 管理页长文本 cell 截断 */
+#tab-platform table td, #tab-systems table td, #tab-strategies table td {
+  max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .status-error  { color: var(--up); font-weight: 600; }
 .status-waiting { color: var(--text2); }
 .status-sleep  { color: var(--text3); }
@@ -348,9 +354,9 @@ td.down { color: var(--down); }
 .badge-blue   { background: #3b82f622; color: #3b82f6; }
 .badge-yellow { background: #eab30822; color: #b45309; }
 .badge-red    { background: #dc262622; color: #dc2626; }
-.badge-gray
+.badge-gray   { background: #6b728022; color: #6b7280; }
+.badge-purple { background: #8b5cf622; color: #8b5cf6; }
 .trunc-reason em { font-style: normal; color: var(--text3); font-size: 0.75rem; }
-   { background: #6b728022; color: #6b7280; }
 
 .scheduler-group-label {
   font-size: 0.8rem;

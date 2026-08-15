@@ -5,7 +5,7 @@
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>盈迹 — A股量化选股系统</title>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v={{ version }}">
 </head>
 <body>
 
@@ -27,6 +27,12 @@
   </button>
   <button class="sidebar-tab" data-tab="scheduler" aria-label="调度">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+  </button>
+  <button class="sidebar-tab" data-tab="strategies" aria-label="策略">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3H5a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/><path d="M19 3h-4a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/><path d="M9 15H5a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-4a2 2 0 0 0-2-2z"/><path d="M19 15h-4a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-4a2 2 0 0 0-2-2z"/></svg>
+  </button>
+  <button class="sidebar-tab" data-tab="systems" aria-label="系统">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="4"/><rect x="6" y="6" width="12" height="6" rx="1"/><line x1="9" y1="15" x2="9" y2="18"/><line x1="15" y1="15" x2="15" y2="18"/></svg>
   </button>
 </div>
   <div class="sidebar-bottom">
@@ -79,7 +85,7 @@
 </section>
 
 <!-- ════════════ TAB: 因子 ════════════ -->
-<section class="tab-content" id="tab-factors">
+<section class="tab-content active" id="tab-factors">
 
   <div style="display:flex;justify-content:center;padding:14px 18px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:4px">
     <div class="kpi"><div class="label">总计</div><div class="value" id="kpi-ntotal">—</div></div>
@@ -92,6 +98,16 @@
     <div class="kpi"><div class="label">已评估</div><div class="value" id="kpi-nevaluated">—</div></div>
     <div class="kpi"><div class="label">均值 |IC|</div><div class="value" id="kpi-ic-mean">—</div></div>
     <div class="kpi"><div class="label">均值 IC_IR</div><div class="value" id="kpi-ic-ir">—</div></div>
+  </div>
+
+  <!-- 因子注册表 (v505: 唯一真相源 factor_registry, 合并原因子平台) -->
+  <div class="section">
+    <div class="section-header">
+      <h2>因子注册表</h2>
+      <span class="meta" id="meta-registry">—</span>
+    </div>
+    <div id="table-registry"></div>
+    <div id="lineage-panel" style="margin-top:10px"></div>
   </div>
 
   <!-- Factor heatmap (signature: 研报页) -->
@@ -219,6 +235,69 @@
     </div>
     <div id="recon-summary" class="recon-summary"></div>
     <div id="table-recon"></div>
+  </div>
+</section>
+
+<!-- ════════════ TAB: 策略 (v502) ════════════ -->
+<section class="tab-content" id="tab-strategies">
+  <div class="section">
+    <div class="section-header">
+      <h2>多策略隔离</h2>
+      <span class="meta" id="meta-strategies">—</span>
+    </div>
+    <div class="kpi-strip" id="kpi-strategies" style="grid-template-columns:repeat(5,1fr)">
+      <div class="kpi"><div class="label">总资产</div><div class="value" id="st-total">—</div></div>
+      <div class="kpi"><div class="label">可用现金</div><div class="value" id="st-cash">—</div></div>
+      <div class="kpi"><div class="label">累计 PnL</div><div class="value" id="st-pnl">—</div></div>
+      <div class="kpi"><div class="label">资金利用率</div><div class="value" id="st-util">—</div></div>
+      <div class="kpi"><div class="label">激活策略</div><div class="value" id="st-active">—</div></div>
+    </div>
+    <div id="table-strategies"></div>
+  </div>
+</section>
+
+<!-- ════════════ TAB: 系统 (v502) — 另类/分布式回测/模型/Prometheus ════════════ -->
+<section class="tab-content" id="tab-systems">
+  <div class="section">
+    <div class="section-header">
+      <h2>另类数据源</h2>
+      <span class="meta" id="meta-alt">—</span>
+    </div>
+    <div id="table-alt-sources"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-header">
+      <h2>分布式回测网格</h2>
+      <span class="meta" id="meta-dist">—</span>
+    </div>
+    <div class="kpi-strip" id="kpi-dist" style="grid-template-columns:repeat(4,1fr)">
+      <div class="kpi"><div class="label">任务状态</div><div class="value" id="dist-state">—</div></div>
+      <div class="kpi"><div class="label">完成 / 总量</div><div class="value" id="dist-progress">—</div></div>
+      <div class="kpi"><div class="label">当前 run_id</div><div class="value" id="dist-runid">—</div></div>
+      <div class="kpi"><div class="label">错误</div><div class="value" id="dist-err">—</div></div>
+    </div>
+    <div id="table-dist-results"></div>
+    <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap">
+      <input id="dist-cfg" placeholder='{"capital":[5000],"universe_size":[100]}' style="flex:1;min-width:280px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:monospace">
+      <button onclick="submitDistGrid()" style="padding:8px 16px;background:var(--accent);border:none;border-radius:4px;color:#fff;cursor:pointer">提交网格</button>
+      <span id="dist-msg" style="font-size:0.85rem"></span>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="section">
+      <div class="section-header"><h2>模型服务</h2></div>
+      <div id="model-serving-state"></div>
+    </div>
+    <div class="section">
+      <div class="section-header"><h2>Prometheus / Grafana</h2></div>
+      <div class="kpi-strip" id="kpi-mon" style="grid-template-columns:repeat(2,1fr)">
+        <div class="kpi"><div class="label">Grafana</div><div class="value" id="mon-grafana">—</div></div>
+        <div class="kpi"><div class="label">/metrics</div><div class="value" id="mon-metrics">—</div></div>
+      </div>
+      <div style="margin-top:8px;font-size:0.8rem;color:var(--text2)" id="mon-hint"></div>
+    </div>
   </div>
 </section>
 

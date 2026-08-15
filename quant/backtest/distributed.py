@@ -258,35 +258,52 @@ class DistributedBacktestEngine:
             )
 
     def save_results(self, results: List[BacktestResult]):
-        """保存结果到 backtest_runs 表."""
+        """保存结果到 backtest_runs 表 (复用现有 22 列 schema, 与 web /api/backtest/history 打通).
+
+        strategy 列 = run_id (分布式网格任务标识), 现有历史页可见.
+        """
         import sqlite3
         conn = sqlite3.connect(BACKTEST_DB)
+        conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS backtest_runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_id TEXT UNIQUE,
-                params_json TEXT,
-                metrics_json TEXT,
-                equity_json TEXT,
-                diagnosis_json TEXT,
-                elapsed_sec REAL,
-                status TEXT,
-                error TEXT,
-                created_at TEXT DEFAULT (datetime('now','localtime'))
+                strategy TEXT NOT NULL,
+                started_at TEXT,
+                start_date TEXT,
+                end_date TEXT,
+                initial_capital REAL,
+                sharpe REAL, cagr_pct REAL, max_dd_pct REAL,
+                sortino REAL, calmar REAL, win_rate REAL,
+                alpha REAL, info_ratio REAL, beta REAL,
+                final_equity REAL, total_return_pct REAL, n_days INTEGER,
+                avg_signals REAL, errors INTEGER, elapsed_sec REAL,
+                diagnosis_json TEXT, dsr REAL
             )
         """)
         for r in results:
+            p = r.params.to_dict()
+            m = r.metrics or {}
             conn.execute(
                 "INSERT OR REPLACE INTO backtest_runs "
-                "(run_id, params_json, metrics_json, equity_json, diagnosis_json, elapsed_sec, status, error) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (r.run_id, json.dumps(r.params.to_dict()), json.dumps(r.metrics),
-                 json.dumps(r.equity_curve), json.dumps(r.diagnosis),
-                 r.elapsed_sec, r.status, r.error)
+                "(strategy, started_at, start_date, end_date, initial_capital, "
+                " sharpe, cagr_pct, max_dd_pct, sortino, calmar, win_rate, "
+                " alpha, info_ratio, beta, final_equity, total_return_pct, n_days, "
+                " avg_signals, errors, elapsed_sec, diagnosis_json, dsr) "
+                "VALUES (?, datetime('now','localtime'), ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                "        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (r.run_id, p.get("start_date"), p.get("end_date"), p.get("capital"),
+                 m.get("sharpe"), m.get("cagr_pct"), m.get("max_drawdown_pct"),
+                 m.get("sortino"), m.get("calmar"), m.get("win_rate"),
+                 m.get("alpha"), m.get("info_ratio"), m.get("beta"),
+                 m.get("final_equity"), m.get("total_return_pct"), m.get("n_days"),
+                 m.get("avg_signals_per_day") if m.get("avg_signals_per_day") is not None else p.get("universe_size"),
+                 0 if r.status == "ok" else 1, r.elapsed_sec,
+                 json.dumps(r.diagnosis or {}), m.get("dsr"))
             )
         conn.commit()
         conn.close()
-        _log.info(f"Saved {len(results)} backtest results to {BACKTEST_DB}")
+        _log.info(f"Saved {len(results)} distributed backtest results to {BACKTEST_DB}")
 
 
 # ── 便捷函数 ──
@@ -305,13 +322,18 @@ def run_grid_search(
         results = run_grid_search(
             param_grid={"capital": [5000, 10000], "universe_size": [100, 200]},
             fixed_params={"start_date": "2020-01-01", "end_date": "2024-12-31"},
-            backend="ray", n_workers=4
+            backend="thread", n_workers=4
         )
     """
-    engine = DistributedBacktestEngine(backend=backend, n_workers=n_workers)
+    # v502 fix: 便捷函数应转发真实入参 (原实现 run_grid_search({}, {}) 丢参且
+    # BacktestParamSet 必填字段缺失抛 TypeError). 开始/结束日期缺失时报错 (fail-fast).
+    if not fixed_params.get("start_date") or not fixed_params.get("end_date"):
+        raise ValueError("run_grid_search: fixed_params 必须含 start_date/end_date")
+    engine = DistributedBacktestEngine(backend=backend, n_workers=n_workers,
+                                       max_concurrent=max_concurrent)
     try:
         engine.start()
-        return engine.run_grid_search({}, {}, lambda r: None)  # placeholder
+        return engine.run_grid_search(param_grid, fixed_params, result_callback)
     finally:
         engine.stop()
 

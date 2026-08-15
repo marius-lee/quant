@@ -227,7 +227,7 @@ def _patch_baostock_gbk() -> None:
         import socket as _sock
         import zlib as _zlib
         try:
-            default_socket = getattr(_ctx.context, "default_socket", None)
+            default_socket = getattr(_ctx, "default_socket", None)
             if default_socket is None:
                 return None
             msg = msg + "\n"

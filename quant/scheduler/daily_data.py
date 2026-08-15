@@ -67,7 +67,7 @@ def _run(today: str):
     #   - materialize() 走 DuckDB 优先, 获取不到新增日期数据 -> cache 短 fewer
     #   - 手动补数: 同步缺失日期 2025-06-01..2026-08-10 (1575017 行)
     # v453: 增加历史回填 + 同步验证 (backfill -> incremental -> verify)
-    # v456: 增加预聚合表刷新 (daily_ma, daily_ret, daily_std 等)
+    # v498: 预聚合表刷新已删 (零消费方, DROP 8 表 — 见 scripts/duckdb_sync_all.sh)
     try:
         from quant.data.duckdb_store import get_duckdb_proxy
         proxy = get_duckdb_proxy()
@@ -99,8 +99,7 @@ def _run(today: str):
                     _log.info(f"[{today}] DuckDB {table} 全量重同步: {n} rows")
                 except Exception as _se:
                     _log.error(f"[{today}] DuckDB 全量重同步失败: {_tb.format_exc()}")
-        # 4) 刷新预聚合表 (最近 60 个交易日)
-        proxy._duckdb.refresh_preaggregates()
+        # 4) 预聚合表刷新已删除 (v498: 零消费方, DROP 8 表 — 见 duckdb_sync_all.sh)
     except Exception:
         _log.warning(f"[{today}] DuckDB sync failed: {_tb.format_exc()}")
 

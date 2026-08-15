@@ -213,79 +213,6 @@ _TABLE_SCHEMAS = {
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """,
-    # ── 预聚合表 (供因子原语直接查询，避免重复滚动计算) ──
-    "daily_ma": """
-        CREATE TABLE IF NOT EXISTS daily_ma (
-            date DATE NOT NULL,
-            symbol VARCHAR(10) NOT NULL,
-            "window" INTEGER NOT NULL,
-            ma DOUBLE,
-            PRIMARY KEY (date, symbol, "window")
-        )
-    """,
-    "daily_ret": """
-        CREATE TABLE IF NOT EXISTS daily_ret (
-            date DATE NOT NULL,
-            symbol VARCHAR(10) NOT NULL,
-            "window" INTEGER NOT NULL,
-            ret DOUBLE,
-            PRIMARY KEY (date, symbol, "window")
-        )
-    """,
-    "daily_std": """
-        CREATE TABLE IF NOT EXISTS daily_std (
-            date DATE NOT NULL,
-            symbol VARCHAR(10) NOT NULL,
-            "window" INTEGER NOT NULL,
-            std DOUBLE,
-            PRIMARY KEY (date, symbol, "window")
-        )
-    """,
-    "daily_zscore": """
-        CREATE TABLE IF NOT EXISTS daily_zscore (
-            date DATE NOT NULL,
-            symbol VARCHAR(10) NOT NULL,
-            "window" INTEGER NOT NULL,
-            zscore DOUBLE,
-            PRIMARY KEY (date, symbol, "window")
-        )
-    """,
-    "daily_ma_volume": """
-        CREATE TABLE IF NOT EXISTS daily_ma_volume (
-            date DATE NOT NULL,
-            symbol VARCHAR(10) NOT NULL,
-            "window" INTEGER NOT NULL,
-            ma_volume DOUBLE,
-            PRIMARY KEY (date, symbol, "window")
-        )
-    """,
-    "daily_max": """
-        CREATE TABLE IF NOT EXISTS daily_max (
-            date DATE NOT NULL,
-            symbol VARCHAR(10) NOT NULL,
-            "window" INTEGER NOT NULL,
-            max_val DOUBLE,
-            PRIMARY KEY (date, symbol, "window")
-        )
-    """,
-    "daily_min": """
-        CREATE TABLE IF NOT EXISTS daily_min (
-            date DATE NOT NULL,
-            symbol VARCHAR(10) NOT NULL,
-            "window" INTEGER NOT NULL,
-            min_val DOUBLE,
-            PRIMARY KEY (date, symbol, "window")
-        )
-    """,
-    "daily_rank": """
-        CREATE TABLE IF NOT EXISTS daily_rank (
-            date DATE NOT NULL,
-            symbol VARCHAR(10) NOT NULL,
-            "window" INTEGER NOT NULL,
-            rank DOUBLE,
-            PRIMARY KEY (date, symbol, "window")
-        )
-    """,
 }
 
 
@@ -318,7 +245,7 @@ class DuckDBManager:
         self._db_path = _DUCKDB_PATH
         self._thread_lock = threading.Lock()  # guard 短连接创建 (单例内串行)
         # v496: 线程级 RW 连接复用 — 每次写入开新连接 (144 次开关) 是
-        # refresh_preaggregates 慢 16min/window 的元凶; 每线程持有一个
+        # 同步慢的元凶; 每线程持有一个
         # 长期 RW 连接, 即写即提交, 退出时由 close() 统一释放.
         self._thread_local = threading.local()
         self._sync_thread: Optional[threading.Thread] = None
@@ -480,13 +407,6 @@ class DuckDBManager:
             "CREATE INDEX IF NOT EXISTS idx_daily_equity_date ON daily_equity(date)",
             "CREATE INDEX IF NOT EXISTS idx_factor_ic_daily_date ON factor_ic_daily(date)",
             "CREATE INDEX IF NOT EXISTS idx_factor_ic_daily_factor ON factor_ic_daily(factor_name)",
-            # 预聚合表索引
-            "CREATE INDEX IF NOT EXISTS idx_daily_ma_date ON daily_ma(date)",
-            "CREATE INDEX IF NOT EXISTS idx_daily_ma_symbol ON daily_ma(symbol)",
-            "CREATE INDEX IF NOT EXISTS idx_daily_ret_date ON daily_ret(date)",
-            "CREATE INDEX IF NOT EXISTS idx_daily_ret_symbol ON daily_ret(symbol)",
-            "CREATE INDEX IF NOT EXISTS idx_daily_std_date ON daily_std(date)",
-            "CREATE INDEX IF NOT EXISTS idx_daily_std_symbol ON daily_std(symbol)",
         ]
         for idx_sql in indexes:
             conn.execute(idx_sql)
@@ -916,143 +836,6 @@ class DuckDBManager:
             self._sqlite_conn.close()
         _log.info("DuckDBManager closed")
 
-    # ── 预聚合表刷新 ──
-    def refresh_preaggregates(self, start_date: str = None, end_date: str = None, 
-                               windows: list[int] = None, symbols: list[str] = None):
-        """增量刷新预聚合表 (daily_ma, daily_ret, daily_std 等)。
-
-        Args:
-            start_date: 起始日期 (含), 默认最近 60 个交易日
-            end_date: 结束日期 (含), 默认今天
-            windows: 滚动窗口列表, 默认 [5, 10, 20, 60, 120, 250]
-            symbols: 股票代码列表, 默认全部
-        """
-        import pandas as pd
-        from datetime import datetime, timedelta
-        
-        if windows is None:
-            windows = [5, 10, 20, 60, 120, 250]
-        if end_date is None:
-            end_date = datetime.now().strftime("%Y-%m-%d")
-        if start_date is None:
-            # 默认刷新最近 60 个交易日 (约 90 个日历日)
-            start_date = (pd.Timestamp(end_date) - pd.Timedelta(days=90)).strftime("%Y-%m-%d")
-        
-        t_start = time.time()
-        _log.info(f"refresh_preaggregates: {start_date} → {end_date}, windows={windows}")
-        
-        # 1) 读取基础数据 (close, volume)
-        ph = ""
-        params = [start_date, end_date]
-        if symbols:
-            ph = f" AND symbol IN ({','.join(['?']*len(symbols))})"
-            params.extend(symbols)
-        
-        sql = f"""
-            SELECT date, symbol, close, volume, high, low
-            FROM daily
-            WHERE date >= ? AND date <= ? {ph}
-            ORDER BY symbol, date
-        """
-        df = self.query_df(sql, tuple(params))
-        if df.empty:
-            _log.warning("refresh_preaggregates: no data in range")
-            return
-        
-        # 确保类型
-        df["date"] = pd.to_datetime(df["date"])
-        df = df.sort_values(["symbol", "date"])
-        # v495: rolling 前把 date 设为索引 — groupby.rolling 后 reset_index()
-        # 才能带出 date 列 (原 RangeIndex 会丢日期, KeyError: 'date')
-        df = df.set_index("date")
-        
-        # 2) 分组计算所有窗口
-        for window in [5, 10, 20, 60, 120, 250]:
-            _log.info(f"refresh_preaggregates: computing window={window}")
-            
-            # MA (close)
-            t_w0 = time.time()
-            ma = df.groupby("symbol")["close"].rolling(window, min_periods=window).mean().reset_index()
-            ma = ma.rename(columns={"close": "ma"})
-            ma["window"] = window
-            # 只保留日期在范围内的
-            ma = ma[ma["date"] >= start_date]
-            if not ma.empty:
-                # UPSERT
-                ma_cols = ["date", "symbol", "window", "ma"]
-                ma = ma[ma_cols]
-                self._upsert_df("daily_ma", ma, ["date", "symbol", "window"])
-                _log.info(f"refresh_preaggregates: window={window} ma {len(ma):,} rows ({time.time()-t_w0:.1f}s)")
-            
-            # RET (pct_change)
-            # v495: pandas 2.3 的 groupby.pct_change 返回 Series 不保留 group key,
-            # 需按位置对齐带出 symbol (groupby 保持原始行序)
-            t_ret = time.time()
-            _ret_ser = df.groupby("symbol")["close"].pct_change(window)
-            ret = pd.DataFrame({
-                "date": _ret_ser.index.values,
-                "symbol": df["symbol"].values,
-                "ret": _ret_ser.values,
-            })
-            ret["window"] = window
-            ret = ret[ret["date"] >= start_date]
-            if not ret.empty:
-                ret_cols = ["date", "symbol", "window", "ret"]
-                ret = ret[ret_cols]
-                self._upsert_df("daily_ret", ret, ["date", "symbol", "window"])
-                _log.info(f"refresh_preaggregates: window={window} ret {len(ret):,} rows ({time.time()-t_ret:.1f}s)")
-            
-            # STD
-            t_std = time.time()
-            std = df.groupby("symbol")["close"].rolling(window, min_periods=window).std().reset_index()
-            std = std.rename(columns={"close": "std"})
-            std["window"] = window
-            std = std[std["date"] >= start_date]
-            if not std.empty:
-                std_cols = ["date", "symbol", "window", "std"]
-                std = std[std_cols]
-                self._upsert_df("daily_std", std, ["date", "symbol", "window"])
-                _log.info(f"refresh_preaggregates: window={window} std {len(std):,} rows ({time.time()-t_std:.1f}s)")
-            
-            # MA Volume
-            t_mv = time.time()
-            ma_vol = df.groupby("symbol")["volume"].rolling(window, min_periods=window).mean().reset_index()
-            ma_vol = ma_vol.rename(columns={"volume": "ma_volume"})
-            ma_vol["window"] = window
-            ma_vol = ma_vol[ma_vol["date"] >= start_date]
-            if not ma_vol.empty:
-                ma_vol_cols = ["date", "symbol", "window", "ma_volume"]
-                ma_vol = ma_vol[ma_vol_cols]
-                self._upsert_df("daily_ma_volume", ma_vol, ["date", "symbol", "window"])
-                _log.info(f"refresh_preaggregates: window={window} ma_volume {len(ma_vol):,} rows ({time.time()-t_mv:.1f}s)")
-            
-            # MAX (high) — v496: 去 try/except 吞错 (零 fallback), SELECT 显式含 high
-            t_max = time.time()
-            max_df = df.groupby("symbol")["high"].rolling(window, min_periods=window).max().reset_index()
-            max_df = max_df.rename(columns={"high": "max_val"})
-            max_df["window"] = window
-            max_df = max_df[max_df["date"] >= start_date]
-            if not max_df.empty:
-                max_cols = ["date", "symbol", "window", "max_val"]
-                max_df = max_df[max_cols]
-                self._upsert_df("daily_max", max_df, ["date", "symbol", "window"])
-                _log.info(f"refresh_preaggregates: window={window} max {len(max_df):,} rows ({time.time()-t_max:.1f}s)")
-            
-            # MIN (low) — v496: 去 try/except 吞错 (零 fallback), SELECT 显式含 low
-            t_min = time.time()
-            min_df = df.groupby("symbol")["low"].rolling(window, min_periods=window).min().reset_index()
-            min_df = min_df.rename(columns={"low": "min_val"})
-            min_df["window"] = window
-            min_df = min_df[min_df["date"] >= start_date]
-            if not min_df.empty:
-                min_cols = ["date", "symbol", "window", "min_val"]
-                min_df = min_df[min_cols]
-                self._upsert_df("daily_min", min_df, ["date", "symbol", "window"])
-                _log.info(f"refresh_preaggregates: window={window} min {len(min_df):,} rows ({time.time()-t_min:.1f}s)")
-        
-        _log.info(f"refresh_preaggregates: done — {len(windows)} windows, "
-                  f"{end_date} ({time.time()-t_start:.1f}s total)")
-    
     def _upsert_df(self, table: str, df: pd.DataFrame, pk_cols: list[str]):
         """DataFrame UPSERT 到 DuckDB 表."""
         if df.empty:

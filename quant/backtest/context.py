@@ -29,6 +29,7 @@ class ExecutionContext:
     fund_val_piv: Optional["pd.DataFrame"] = None     # daily_valuation pivot (date×symbol×field)
     fund_close_piv: Optional["pd.DataFrame"] = None   # close pivot (复用 data_full["close"])
     fund_high_52w: Optional["pd.DataFrame"] = None    # 52 周新高
+    industry_piv: Optional["pd.DataFrame"] = None     # industry_history PIT pivot (date×symbol industry) v502
 
     # ── 因子缓存 ──
     factor_cache: Optional[object] = None             # _FactorCache 实例

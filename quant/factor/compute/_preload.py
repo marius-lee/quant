@@ -75,7 +75,23 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
         result["stocks"] = pd.DataFrame(
             columns=["symbol", "market", "name", "total_mv", "industry"]).set_index("symbol")
 
-    # margin_detail: 60-day window for all margin-based factors
+    # v502 (PIT industry): 单日路径同 chunk 处理 — industry_history PIT 覆盖当前快照
+    try:
+        ih = pd.read_sql_query(
+            "SELECT symbol, effective_from, industry FROM industry_history "
+            "WHERE symbol IN (" + ph + ") AND effective_from <= ? "
+            "GROUP BY symbol HAVING effective_from = MAX(effective_from)",
+            conn, params=symbols + [date]
+        )
+        if not ih.empty:
+            ind_series = ih.set_index("symbol")["industry"]
+            stk = result["stocks"]
+            if "industry" in stk.columns:
+                stk = stk.copy()
+                stk["industry"] = stk.index.map(ind_series)
+            result["stocks"] = stk
+    except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
+        pass
     # ADR-043 layer1: +margin_total for compute_short_interest
     try:
         margin_max_date = pd.read_sql_query(
@@ -197,6 +213,19 @@ def preload_aux_data_chunk(symbols: list, date_from: str, date_to: str,
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
         result["stocks"] = pd.DataFrame(
             columns=["symbol", "market", "name", "total_mv", "industry"]).set_index("symbol")
+
+    # v502 (PIT industry): industry_history 全部变更段, slice 时按日期取
+    # effective_from<=date 的最大段 — 替代 stocks.industry 当前快照 (历史后视).
+    try:
+        ih = pd.read_sql_query(
+            "SELECT symbol, effective_from, industry FROM industry_history "
+            "WHERE symbol IN (" + ph + ") AND effective_from <= ? ORDER BY effective_from",
+            conn, params=symbols + [date_to]
+        )
+        result["industry_history"] = ih  # columns: symbol, effective_from, industry
+    except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
+        result["industry_history"] = pd.DataFrame(
+            columns=["symbol", "effective_from", "industry"])
 
     # margin_detail: chunk 范围 + 65d 前置窗口 (ADR-043 layer1: +margin_total)
     margin_start = (pd.Timestamp(date_from) - pd.Timedelta(days=65)).strftime("%Y-%m-%d")
@@ -342,6 +371,20 @@ def slice_aux_for_date(aux_full: dict, date: str) -> dict:
     for key in ["stocks", "analyst"]:
         if key in aux_full:
             result[key] = aux_full[key]
+
+    # v502 (PIT industry): 用 industry_history 全部段按 date 求 effective_from<=date
+    # 的最大段, 覆盖 stocks.industry (当前快照 → PIT). 无段记录股票置 NaN.
+    if "industry_history" in aux_full:
+        ih = aux_full["industry_history"]
+        if not ih.empty:
+            ih = ih[pd.to_datetime(ih["effective_from"]) <= ts]
+            ih = ih.sort_values("effective_from").groupby("symbol", as_index=False).tail(1)
+            ind_series = ih.set_index("symbol")["industry"]
+            stk = result["stocks"]
+            if "industry" in stk.columns:
+                stk = stk.copy()
+                stk["industry"] = stk.index.map(ind_series)
+            result["stocks"] = stk
 
     # margin: 取 ≤date 的最新日期，往前 65d 窗口
     margin = aux_full.get("margin", pd.DataFrame())

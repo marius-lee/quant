@@ -163,11 +163,22 @@ def load_backtest_cache(cache_key: str) -> Optional[Dict[str, Any]]:
         with open(paths["meta"], "rb") as f:
             meta = pickle.load(f)
         
+        # v500 (perf fix): 磁盘缓存不含 all_symbols — loader 的内存 dict 有,
+        # 但磁盘缓存 load 丢失它, loop 用 cached_data["all_symbols"] 在缓存
+        # 命中时 KeyError (缓存命中即报错的老 bug)。此处从 data_full 恢复:
+        # 列是 (field, symbol) MultiIndex, 去重取 symbol 即全 symbols。
+        if isinstance(data_full.columns, pd.MultiIndex):
+            _syms = sorted(data_full.columns.get_level_values(1).unique().tolist())
+        else:
+            _syms = []  # 单列/空: 无法恢复, 由调用方 (loop) 兜底
+        meta["all_symbols"] = _syms
+        
         return {
             "data_full": data_full,
             "benchmark": benchmark,
             "fundamentals": fundamentals,
             "meta": meta,
+            "all_symbols": _syms,
         }
     except Exception as e:
         from quant.utils.logger import get_logger

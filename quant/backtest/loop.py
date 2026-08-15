@@ -519,6 +519,28 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             _val_df["date"] = pd.to_datetime(_val_df["date"])
             _val_piv = _val_df.pivot(index="date", columns="symbol",
                                      values=["pe_ttm", "pb", "market_cap"]).ffill()
+
+        # v502 (PIT industry): industry_history → date×symbol industry pivot.
+        # 取代 stocks.industry 当前快照 (tushare 申万口径 + 后视).
+        # 面板仅保留变更日行, 由 pipeline 按日前向填充; 消费端用
+        # industry_piv.loc[:date].iloc[-1] 切片 (不引入未来).
+        _industry_piv = None
+        try:
+            from quant.data.industry_history import _build_table as _ih_build
+            _ih_build(_mconn)
+            _ih_df = pd.read_sql_query(
+                "SELECT symbol, effective_from, industry FROM industry_history "
+                "WHERE effective_from <= ? ORDER BY effective_from",
+                _mconn, params=(end_date,))
+            if not _ih_df.empty:
+                _industry_piv = _ih_df.pivot(
+                    index="effective_from", columns="symbol",
+                    values="industry").sort_index()
+                _industry_piv.index = pd.to_datetime(_industry_piv.index)
+                _log.info("backtest: industry PIT pivot — %d dates x %d symbols",
+                          len(_industry_piv), len(_industry_piv.columns))
+        except Exception as _ihe:
+            _log.warning("backtest: industry PIT pivot build failed: %s", _ihe)
         # close pivot + 52w high 复用 data_full
         _close_piv_fund = data_full["close"] if "close" in data_full.columns.levels[0] else None
         _high_52w_fund = _close_piv_fund.rolling(244, min_periods=60).max() if _close_piv_fund is not None else None
@@ -552,8 +574,22 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
         _factor_cache = _FactorCache(_factor_cache_raw)
         _log.info("backtest: factor cache ready - %d dates in memory (DataFrame compact)", len(_factor_cache))
 
+        # v501 (PIT fix): 初始 IC train_end 用回测首日的"前一交易日", 而非首日本身。
+        # 原用 trading_days[0] → run_oos_check 的 OOS 窗口延伸到 T0, 末样本配对
+        # ret(T0→T1) (T1=回测第二日收盘) → 生成 T0 信号时用了未来收益 (前视).
+        # 改传前一交易日 → 窗口止于 T0-1, 末样本 ret(T0-1→T0) 在 T0 信号前已知.
+        _ics_cursor = pd.Timestamp(trading_days[0])
+        _ics_prev = None
+        for _ in range(14):
+            _ics_cursor -= pd.Timedelta(days=1)
+            if is_trading_day(_ics_cursor.date()):
+                _ics_prev = _ics_cursor.strftime("%Y-%m-%d")
+                break
+        if _ics_prev is None:
+            raise RuntimeError("cannot find previous trading day for PIT IC train_end")
+        _log.info(f"backtest: PIT IC train_end={_ics_prev} (prev of {trading_days[0]})")
         _current_ic_map = compute_backtest_ic(
-            start_date=trading_days[0],
+            start_date=_ics_prev,
             n_train_days=ic_lookback,
             status_filter=factor_status_filter or "backtesting",
             factor_cache=_factor_cache,
@@ -572,6 +608,13 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
 
         # ── Combine mode: warmup with sleeve, switch to ic_weighted after lookback ──
         warmup_days = _require_cfg("factor.evaluation.lookback")
+        # v501 (fix #4): 短回测 (天数 < lookback) 永不达到 warmup → 全程 sleeve,
+        # 3个月/半年回测无法验证 ic_weighted 合成. 回测长度为上限自适应:
+        # 最多用 1/3 回测期做 sleeve 热身, 之后切 ic_weighted (IC 每日已有).
+        if warmup_days > len(trading_days) // 3:
+            warmup_days = max(len(trading_days) // 3, 1)
+            _log.info(f"backtest: short window — warmup_days capped to {warmup_days} "
+                      f"({len(trading_days)} trading days)")
 
         # ── rebalance_freq: weekly → 仅调仓日生成信号+再平衡, 非调仓日只跑风控 ──
         _rebalance_freq = _require_cfg("optimizer.rebalance_freq")
@@ -633,6 +676,7 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             data_full=data_full, all_symbols=_all_symbols,
             fund_stocks_df=_stocks_df, fund_val_piv=_val_piv,
             fund_close_piv=_close_piv_fund, fund_high_52w=_high_52w_fund,
+            industry_piv=_industry_piv,
             factor_cache=_factor_cache, factor_store=_fstore,
             stock_names=_stock_names, preloaded_seal_ratios=_preloaded_seal,
             turnover_amount_roll=_amount_roll, bm_returns=_bm_returns_full,

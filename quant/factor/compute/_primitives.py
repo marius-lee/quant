@@ -16,48 +16,6 @@ from typing import Optional
 from quant.utils.logger import get_logger
 from quant.config.constants import _require_cfg
 
-# DuckDB 预聚合表查询辅助
-def _get_preagg_table(table: str, date: str, window: int, symbols: list[str] = None) -> pd.Series:
-    """从 DuckDB 预聚合表读取单日、单窗口的数据，返回 Series(index=symbol, value=col)."""
-    try:
-        from quant.data.duckdb_store import get_duckdb_proxy
-        proxy = get_duckdb_proxy()
-        mgr = proxy._duckdb
-        
-        # 表列映射
-        col_map = {
-            "daily_ma": "ma",
-            "daily_ret": "ret",
-            "daily_std": "std",
-            "daily_zscore": "zscore",
-            "daily_ma_volume": "ma_volume",
-            "daily_max": "max_val",
-            "daily_min": "min_val",
-            "daily_rank": "rank",
-        }
-        val_col = {"daily_ma": "ma", "daily_ret": "ret", "daily_std": "std",
-                   "daily_zscore": "zscore", "daily_ma_volume": "ma_volume",
-                   "daily_max": "max_val", "daily_min": "min_val", "daily_rank": "rank"}[table]
-        
-        ph = ""
-        params = [date, window]
-        symbols_list = []
-        # 注意：_get_preagg_table 不接受 symbols 参数，直接查询所有 symbol
-        # 如果需要过滤，在上层做
-        sql = f"""
-            SELECT symbol, {val_col}
-            FROM {table}
-            WHERE date = ? AND "window" = ?
-        """
-        df = mgr.query_df(sql, (date, window))
-        if df.empty:
-            return pd.Series(dtype=float)
-        return df.set_index("symbol")[val_col]
-    except Exception as e:
-        import traceback
-        _log.debug(f"preagg query failed for {table} date={date} window={window}: {e}")
-        return pd.Series(dtype=float)
-
 _log = get_logger("factor.primitives")
 
 # ── 缓存目录 (v476: 原 join 多套一层 "quant" → 写进 quant/quant/data/

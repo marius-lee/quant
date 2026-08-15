@@ -188,6 +188,10 @@ class FactorStore:
             self._cache_dir = _CACHE_DIR
         self._parquet_dir = os.path.join(self._cache_dir, "parquet_f")
         os.makedirs(self._parquet_dir, exist_ok=True)
+        # v500 (perf): 因子 meta JSON 进程内缓存 — IC 覆盖检查逐日 os.listdir +
+        # 逐因子读 metadata/*.json (重复磁盘 IO, ~95 因子 × 数百日期)。物化进程
+        # 每次物化后 _save_factor_meta 会失效对应键, 本进程内跨日期复用。
+        self._meta_cache: dict[str, dict] = {}
 
     # ── 元数据 ──
 
@@ -219,10 +223,17 @@ class FactorStore:
         self._save_json(self._metadata_path("trading_days"), {"dates": dates})
 
     def _load_factor_meta(self, factor_name: str) -> dict:
-        return self._load_json(self._metadata_path(f"factor_{factor_name}"))
+        # v500 (perf): 进程内缓存, 避免 IC 覆盖检查/逐日缺失判定重复磁盘 JSON 读
+        if factor_name in self._meta_cache:
+            return self._meta_cache[factor_name]
+        meta = self._load_json(self._metadata_path(f"factor_{factor_name}"))
+        self._meta_cache[factor_name] = meta
+        return meta
 
     def _save_factor_meta(self, factor_name: str, meta: dict):
         self._save_json(self._metadata_path(f"factor_{factor_name}"), meta)
+        # 物化更新 meta 后失效缓存, 保证同进程后续读到新值
+        self._meta_cache[factor_name] = meta
 
     def _build_symbol_map(self, symbols: list[str]) -> dict[str, int]:
         return {s: i for i, s in enumerate(sorted(set(symbols)))}
@@ -1126,6 +1137,19 @@ class FactorStore:
         _fallback = {c: stocks_df[c] for c in ("pe_ttm", "pb", "market_cap")
                      if c in stocks_df.columns}
 
+        # v502 (PIT industry): industry_history → per-date 最大段 Series.
+        # 静态 stocks_df["industry"] (tushare 申万当前快照) 为后视, 逐日替换.
+        _ih_static = None
+        try:
+            _ih_rows = pd.read_sql_query(
+                "SELECT symbol, effective_from, industry FROM industry_history "
+                "WHERE effective_from <= ? ORDER BY effective_from",
+                mconn, params=(val_end,))
+            if not _ih_rows.empty:
+                _ih_static = _ih_rows.set_index(["symbol", "effective_from"])["industry"]
+        except Exception:
+            _ih_static = None
+
         result = {}
         for date_str in chunk_dates:
             ts = pd.Timestamp(date_str)
@@ -1143,6 +1167,15 @@ class FactorStore:
                 _dyn["high_52w"] = high_52w.loc[ts].reindex(_static_index)
 
             df = pd.DataFrame({**_static_cols, **_dyn}, index=_static_index)
+
+            # v502: industry PIT — 取该日期 effective_from<=ts 的最大段, 覆盖静态列
+            if _ih_static is not None:
+                try:
+                    _sel = _ih_static[_ih_static.index.get_level_values("effective_from") <= ts.strftime("%Y-%m-%d")]
+                    _last = _sel.groupby(level=0).last()
+                    df["industry"] = df.index.map(_last.get)
+                except Exception:
+                    pass
 
             null_roe = df["roe"].isna() | (df["roe"] <= 0)
             if null_roe.any():

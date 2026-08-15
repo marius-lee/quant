@@ -182,6 +182,14 @@ class DataStore:
                 PRIMARY KEY (symbol, date)
 
             );
+            CREATE TABLE IF NOT EXISTS industry_history (
+                symbol        TEXT NOT NULL,
+                effective_from TEXT NOT NULL,
+                industry      TEXT NOT NULL,
+                PRIMARY KEY (symbol, effective_from)
+            );
+            CREATE INDEX IF NOT EXISTS idx_industry_history_ef
+                ON industry_history(effective_from);
         """)
         conn.commit()
         # 为基本面因子添加列 (安全迁移, 列已存在时不报错)

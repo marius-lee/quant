@@ -76,6 +76,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     stock_names = preloaded_seal_ratios = None
     prebuilt_engine = prebuilt_cost_model = prebuilt_constructor = None
     fund_stocks_df = fund_val_piv = fund_close_piv = fund_high_52w = None
+    industry_piv = None
     all_symbols = None
 
     # ── ExecutionContext 解包 — 覆盖所有兼容参数 ──
@@ -98,6 +99,7 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         fund_val_piv = ctx.fund_val_piv
         fund_close_piv = ctx.fund_close_piv
         fund_high_52w = ctx.fund_high_52w
+        industry_piv = ctx.industry_piv
         all_symbols = ctx.all_symbols
         ic_map = ctx.ic_map if ctx.ic_map is not None else ic_map
         combine_mode = ctx.combine_mode if ctx.combine_mode is not None else combine_mode
@@ -190,14 +192,19 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     # 存 pivot 而非 dict-of-DF: 全量回测 ~400MB, 每日期组装 O(1) 切片
     if fund_stocks_df is not None:
         _ts = pd.Timestamp(date_str)
-        # 回退值: stocks 静态列, PIT val_piv 不可用时用这个
-        _dyn = {c: fund_stocks_df[c] for c in ("pe_ttm", "pb", "market_cap")
-                if c in fund_stocks_df.columns}
-        if fund_val_piv is not None and _ts in fund_val_piv.index:
-            _row = fund_val_piv.loc[_ts]  # Series with MultiIndex (field, symbol)
-            for _col in ["pe_ttm", "pb", "market_cap"]:
-                if _col in _row.index.get_level_values(0):
-                    _dyn[_col] = _row.loc[_col]  # PIT 覆盖回退值
+        # v501 (PIT fix): 估值列只允许来自 ≤ date_str 的 PIT pivot 行.
+        # 原实现先塞 stocks 当前快照 (pe_ttm/pb/market_cap, 未来数据→前视)
+        # 再在 pivot 有当日时覆盖. 现剔除该回退路径: pivot 无可用 PIT → 列缺失,
+        # 下游 neutralize 自动降级 (industry-only 或跳过市值), 不引入未来.
+        _dyn = {}
+        if fund_val_piv is not None and len(fund_val_piv):
+            _avail = fund_val_piv.index[fund_val_piv.index <= _ts]
+            if len(_avail):
+                _row = fund_val_piv.loc[_avail[-1]]
+                _lv0 = _row.index.get_level_values(0)
+                for _col in ("pe_ttm", "pb", "market_cap"):
+                    if _col in _lv0:
+                        _dyn[_col] = _row.loc[_col]
         if fund_close_piv is not None and _ts in fund_close_piv.index:
             _dyn["close_latest"] = fund_close_piv.loc[_ts]
         if fund_high_52w is not None and _ts in fund_high_52w.index:
@@ -395,14 +402,29 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     # Barra USE4 标准: 每个原始因子独立做行业+市值中性化，消除风格偏差。
     # P1 优化: 用 neutralize_factors_batch() 预构建一次投影矩阵 P, 30 因子共享,
     # 避免逐因子 lstsq → ~30x 加速。
+    # v502 (PIT industry): industry_history pivot → 当日 PIT 行业 Series.
+    # stocks.industry (tushare 申万口径 + 当前快照) 为后视, 不再用于历史路径.
+    # industry_piv 仅含行业变更日行, 取 ≤date 的最后一行 = effective_from<=T 的最大段
+    # (与 v501 market_cap 的 PIT 切片同构, 不引入未来).
+    _industry_pt = None
+    if industry_piv is not None and len(industry_piv):
+        _avail = industry_piv.index[industry_piv.index <= pd.Timestamp(date_str)]
+        if len(_avail):
+            _industry_pt = industry_piv.loc[_avail[-1]].dropna()
+
     try:
-        _ind_info = fundamentals["industry"].reindex(factor_values[next(iter(factor_values))].index) \
-            if "industry" in fundamentals.columns else None
+        _ind_info = None
+        if _industry_pt is not None:
+            _ind_info = _industry_pt.reindex(factor_values[next(iter(factor_values))].index)
+        else:
+            _ind_info = fundamentals["industry"].reindex(factor_values[next(iter(factor_values))].index) \
+                if "industry" in fundamentals.columns else None
         # test-v466 (BT-1): 市值用 PIT market_cap (fund_val_piv 覆盖), 
         # 原 fundamentals["total_mv"] 为 stocks 表当前快照 — 回测历史日期隐含前视
-        _mcap_col = "market_cap" if "market_cap" in fundamentals.columns else "total_mv"
-        _mcap_info = fundamentals[_mcap_col].reindex(factor_values[next(iter(factor_values))].index) \
-            if _mcap_col in fundamentals.columns else None
+        # v501: 只允许 PIT market_cap 列, 禁止回退 total_mv (当前快照=前视);
+        # 当日无 PIT 市值 → 该列缺失, neutralize 内部 dropna 剔除缺失股.
+        _mcap_info = fundamentals["market_cap"].reindex(factor_values[next(iter(factor_values))].index) \
+            if "market_cap" in fundamentals.columns else None
         if _ind_info is not None or _mcap_info is not None:
             from quant.risk.neutralize import neutralize_factors_batch
             factor_values = neutralize_factors_batch(
@@ -459,10 +481,16 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     risk_date = actual_date if actual_date in close_df.index[:end_idx+1] else close_df.index[end_idx].strftime("%Y-%m-%d")
     prices = close_df.loc[risk_date].dropna()
     # test-v466 (BT-1): 市值用 PIT market_cap — 原 total_mv 为 stocks 当前快照 (前视)
-    _mcap_col = "market_cap" if "market_cap" in fundamentals.columns else "total_mv"
-    mcap_real = fundamentals[_mcap_col].reindex(prices.index)
-    mcap_real = mcap_real.fillna(prices * 1e8)
-    industries = fundamentals["industry"].reindex(prices.index) if "industry" in fundamentals.columns else None
+    # v501: 只允许 PIT market_cap, 禁 total_mv (当前快照=前视). 缺失日由
+    # fillna(price*1e8) 兜底 — prices 为当日 PIT 收盘价, 非未来数据.
+    mcap_real = fundamentals["market_cap"].reindex(prices.index) \
+        if "market_cap" in fundamentals.columns else None
+    if mcap_real is not None:
+        mcap_real = mcap_real.fillna(prices * 1e8)
+    if _industry_pt is not None:
+        industries = _industry_pt.reindex(prices.index)
+    else:
+        industries = fundamentals["industry"].reindex(prices.index) if "industry" in fundamentals.columns else None
     industry_min = _require_cfg("risk.neutralize.min_common_stocks")
     if industries is not None and industries.notna().sum() < industry_min:
         industries = None

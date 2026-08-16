@@ -3,8 +3,8 @@
   "display_name": "alpha055_pos_vol",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0086,
-  "icir_12m": 0.1678,
+  "ic_mean_12m": 0.0077,
+  "icir_12m": 0.1077,
   "last_evaluated": "auto",
-  "n_obs": 93
+  "n_obs": 130
 }

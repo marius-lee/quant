@@ -46,6 +46,7 @@ class FactorEvent:
     COMPILE_OK = "COMPILE_OK"
     COMPILE_FAIL = "COMPILE_FAIL"
     EVAL_OK = "EVAL_OK"
+    EVAL_PASS = "EVAL_PASS"  # v519: phase5b 综合裁决 (p2+p3+p4 全 pass + DSR 显著) → active
     EVAL_MARGINAL = "EVAL_MARGINAL"
     EVAL_FAIL = "EVAL_FAIL"
 
@@ -81,6 +82,7 @@ _TRANSITIONS: dict[tuple[str, str], str] = {
     ("evaluating",  FactorEvent.COMPILE_OK): "evaluating",  # 编译通过，继续评估
     ("evaluating",  FactorEvent.COMPILE_FAIL): "archived",  # 编译失败 → 归档
     ("evaluating",  FactorEvent.EVAL_OK):       "active",
+    ("evaluating",  FactorEvent.EVAL_PASS):     "active",  # v519: 修复 phase5b 死路径 — 完整评估通过即晋升
     ("evaluating",  FactorEvent.EVAL_MARGINAL): "probation",
     ("evaluating",  FactorEvent.EVAL_FAIL):      "archived",
 

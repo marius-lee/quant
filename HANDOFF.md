@@ -1,3 +1,610 @@
+# HANDOFF
+
+## 2026-08-17 深夜-凌晨: v522/v523 物化加速 + 配置事故恢复 (test-v523)
+
+### v522: 分片调度 (半成品v521 之后)
+
+- 物化 worker 由 50 天/片 → 25 天/片 (4 workers), 每 10 天进度打点,
+  治 fork 后 swap 抖动 (M1 8G)。
+- `store.py:2837` "cash_flow"→"cashflow" 表名修复已在 v521 段记录,
+  v522/v523 无回归。
+
+### v523: 财务因子 aux 预载快路径
+
+- `_preload.py`: chunk 级预载 aux panel (financial_income/balance/cashflow
+  窗口 = financial_lookback_days 下界 + stocks.total_shares), 每 worker
+  一次加载 ~2.6s; `compute_sue`/`compute_financial_anomaly`/
+  `compute_asset_growth` 快路径按 symbol loc 取数, 消灭 37 因子/日 ×
+  裸 SQL IN-大查询。
+- 一致性回归 `test/test_factor_aux_consistency.py` (3 passed):
+  - asset_growth: RankIC=1.0 maxdiff=0
+  - financial_anomaly: RankIC=1.0, slow-only 35 只 = 1100d 窗口外
+    老/退市票 (放宽断言)
+  - sue: RankIC=0.983, bigdiff(>0.5)≈1150 只 — **口径定论**: 次新股
+    (301/688/603 板) 招股书期 EPS (股本小→超大离群) 在窗口外, fast
+    tail(8)=上市后连续报告, 比 fallback 全史 (含 IPO 前不可比期) 更
+    符合 SUE 定义; docstring 已注明。
+- 42 只 slow-only = 全市场摘牌/退市财务残留 (financial_income/balance/
+  cashflow 三表各 42, stocks 表无对应), 查证 DB 确认, 函数尾部 reindex
+  已剔除, 不影响因子值 (用户确认 normal)。
+
+### 配置事故 (自纠)
+
+- 改 `financial_lookback_days` 用 yaml.safe_dump 重写 → 全文件注释丢失
+  (grep '#' = 0)。恢复: `git show 9170174:config.yaml` (v488 带注释版)
+  为基座 + 补回 7 键 (attribution.promotion_min_days/ic_tolerance、
+  data.rate_limit.baostock_ip_probe_url、monitor.serverchan_sendkey、
+  prometheus.collector_interval/data_rows_interval、lookback 730→990→1100)。
+  验证: 7 键全 OK + 注释保留。教训: 注释版 YAML 单值修改用 re.sub/Edit,
+  禁 safe_dump 全量重写 (除非转存注释)。
+- 窗口 730→990→1100 天 (v523-A2/A2b): sue 需 8 季度 std + 去年同期 YoY
+  ≈9 季度; 1100 = 3 年覆盖 2022 末上市票招股书单期。
+
+### 交付状态
+
+- 全量 `pytest test/` **407 passed** (2m32s, 破前 404)。
+- VERSION test-v523 (web/app.py)。
+- 遗留: holder_reduction UnboundLocalError (preload 缺列, 单因子 skip);
+  earnings_decay 35 因子标量循环可向量化 (未做, 非阻塞)。
+
+---
+
+## 2026-08-17: 手动重评事故与修复 (test-v521)
+
+用户拍板立即重评 (不等周六)。23:45 手动执行 `scripts/reevaluate_now.py`
+(物化 2025-08-04..2026-08-14 → Phase1-5 → 状态报告), 结果 108 archived /
+6 evaluating / 2 probation / active 0, 其中 52 个 REJECTED 永久淘汰。
+
+### 事故链条 (已修复)
+
+1. **物化 502 个 worker 全失败**: `store.py:2837` 拼 `financial_{tbl}` 时
+   "cash_flow" → 表名 `financial_cash_flow`, 实际表 `financial_cashflow`
+   (tushare 接口命名, 与 `_dispatch.py:219` 一致)。9 因子老物化前从未
+   触发 (池内无财务因子) → 测评窗口 2025-08+ 缓存零写盘 (2020-2024
+   parquet 为 6 月旧物化产物)。
+2. **compute_ic 全 IC=0**: 评估窗口缓存缺失 → FactorStore.load 空 →
+   `n_valid=0` → 98 因子被误归档 (52 个累计 3 次 → REJECTED)。
+3. **修复**: `store.py` "cash_flow"→"cashflow"; 新增
+   `scripts/undo_reevaluate.py` v1.0 逆向恢复 (touch 名单 updated_at ≥
+   23:47, notes 含 `| undo |` 标记幂等跳过; probation5/evaluating4/
+   复活97 三通道恢复; retry-1; 恢复后分布 verified: evaluating 101 /
+   probation 5 / archived 10)。
+
+### 性能优化 (物化单日 240s → 125.5s, 全量 404 passed)
+
+- `compute_cf_roa` (high_priority.py): 5208 次 `cf[cf['symbol']==sym]`
+  object 比较 (11 亿次, 95s/日) → `set_index("symbol")` + `loc[[sym]]`
+  (<1s)。结果保真: 5203 非 NaN。
+- `compute_asset_growth` / `compute_sue` (fundamental.py): 同模式
+  (56s/17s) 同法修复。
+- cProfile 显示 133s 的 object 数组比较已消除; 剩余慢项 (SQL fetchall
+  7.4s×37、piotroski iterrows 13.8s、dispatch earnings-decay 35 因子
+  Python 标量循环) 留待后续评估。
+
+### 进行中
+
+- 01:07 重启 `scripts/reevaluate_now.py` (pid 58476, 日志
+  /tmp/reevaluate_now_v522.log): chunk1 4 slices 运行中, 预计物化
+  ~2h (4 workers × 50 天 × 125.5s) + 评估 ~5min。
+- 遗留: holder_reduction UnboundLocalError (preload 数据缺列, 单因子
+  skip 不阻断); blocked.json 含 2020 老记录 (无碍); 物化性能可再压
+  (earnings_decay 向量化)。
+
+## 2026-08-16: 归档因子批量复活重评 (test-v520)
+
+用户拍板 (基于 v519 归档分类表): C1(Phase2 IC/ICIR 不达标) + C2(实盘
+DSR 衰减) + C3(重评失败/marginal) 全部迁移回 evaluating 开始自动重评。
+v519 后重评即完整流程: 周六 weekly_eval 物化 → p2 IC/ICIR →
+p3 CPCV/PBO → p4 成本 → phase5b 综合裁决 (p2+p3+p4+DSR 显著才 active;
+未显著 → probation 半权观察; 再败 → archived)。
+
+### 数据现状 (迁移后)
+
+- **evaluating 101** (原 4 + 复活 97) / **probation 5** / **archived 10** / active 0
+- 复活 97 = C1 64 + C2 18 + C3 15 (5 Phase3/4 失败 + 4 marginal retry=18 +
+  6 全 0 IC)
+- 保持 archived 10: DATA_SPARSE 5 (limit_up_prox_5d/ztd/day_night/
+  lhb_net_buy_20d/insider_cluster) + DATA_DEAD 2 (northbound_20d/
+  northbound_streak, 北向按用户意愿排除) + [OPS] 2 (fund_flow_3m 用户
+  拍板搁置/short_interest 用户拍板搁置) + abn_turnover (截面不足)
+- 4 个 rejected 因子 (vp_divergence/idio_vol_60d/trend_strength/
+  liquidity_shock, retry_count=18≥max_retries 3) 一并复活 —
+  RETRY_RESTORE 无 retry 上限检查, 给一次机会: 下轮再败 retry 19 ≥ 3
+  立即永久 rejected。
+
+### 脚本
+
+- `scripts/reevaluate_archived_factors.py` v1.0: 幂等 (非 archived 跳过)、
+  --dry-run 预览 / --execute 迁移、分类统计、进度打点、耗时统计。
+  判据: status_reason 关键词 (below all thresholds / IC_PERSISTENT+DSR /
+  marginal|reeval|Phase 3|Phase 4; DATA_DEAD|DATA_SPARSE|[OPS] 排除)。
+
+### 验证
+
+- dry-run 名单核对 (97 vs 10 排除) → --execute 执行 ok=97, failed=0 (0.1s)。
+- 涉及状态机变更必须走 FactorStateMachine.transition (RETRY_RESTORE) 单一入口。
+
+### 后续注意
+
+- 周一晚间链物化池 9 → 106 因子 (evaluating 101 + probation 5): 首次
+  物化 97 个新因子全历史 (1728 天), 晚间链时长可能大幅上升;
+  LightGBM 训练特征维度 +~93。
+- 周六 weekly_eval 首次以 v519 单一裁决跑 ~101 因子评估 — 评估结果
+  自会分流 (active/probation/archived), 无需干预。
+
+---
+# HANDOFF
+
+## 2026-08-16: 因子晋升单一裁决入口 + 模拟盘期四重门槛 (test-v519)
+
+用户质疑: "因子在哪步转 active 都不知道" + "回测通过是否应转 active"。
+核实后发现 phase5b 完整评估 (p2+p3+p4) 晋升路径是**死路径** —
+`EVAL_PASS` 不在状态机转移表, batch_transition 静默跳过,
+实际生效的只有仅查 IC/ICIR/half-life 三指标的轻量 Phase 0。
+业界标准 (De Prado 2018 Ch.7-8 / WorldQuant 模拟盘期) 对齐落地。
+
+### 现状 vs 业界 (改动前)
+
+| 路径 | 判定 | 改动前 |
+|---|---|---|
+| weekly.py Phase 0 | 仅 IC/ICIR/half-life | ✅ 唯一生效晋升 (轻量抢先) |
+| phase5b 综合裁决 | p2+p3+p4 全 pass | ❌ EVAL_PASS 非法事件, 静默跳过 |
+| attribution D2 | 滚动 IC 稳定 10 天 | ✅ DSR 只写 reason 不入门槛 |
+
+### 改动 (Fix 1-5)
+
+1. **Fix 1 状态机** `quant/factor/state_machine.py`: 新增 `FactorEvent.EVAL_PASS`
+   + `("evaluating", EVAL_PASS) → active` — 修复 phase5b 死路径。
+2. **Fix 3 Phase 0 只读** `quant/scheduler/weekly.py`:
+   `reevaluate_evaluating_factors` 不再物化+即时算+直接 transition, 改为读
+   上一轮 phase2 快照输出 would-be verdict 预判报告 (report-only),
+   状态变更收敛到 phase5b 单一裁决入口。周六 Phase 0 不再全量物化 (省时)。
+3. **Fix 5 DSR 硬门槛** `quant/evaluation/phase5_monitor.py`:
+   certified_active 需 p2+p3+p4 全 pass **且 DSR significant**
+   (Bailey & López de Prado 2014, factor_ic_daily 滚动 IC → CPCV+DSR 现算);
+   三阶段全 pass 但 DSR 未显著 → probation 半权观察 (模拟盘期), 不直升。
+   EVAL_PASS/EVAL_MARGINAL 只发 evaluating 因子; 实盘 probation 因子归
+   attribution 日频通道 (消除 batch_transition 噪声)。
+4. **Fix 4 模拟盘期** `quant/scheduler/attribution.py` D2:
+   probation→active 四重门槛 `_promotion_eligible` (纯函数):
+   观察期 ≥ promotion_min_days 交易日 (updated_at→today) +
+   滚动 IC 稳定 + DSR verdict significant + live consistency
+   (|实盘滚动 IC − eval ic_mean| ≤ tolerance 且同号, 防泄漏/实现偏差)。
+   新增 `_count_trading_days` (calendar.is_trading_day 计数)。
+5. **config** `quant/config/config.yaml`: `attribution.promotion_min_days: 20`
+   (WorldQuant 模拟盘 20-60 交易日取下限), `promotion_ic_tolerance: 0.02`
+   (与 ic_threshold 0.02 同量级)。
+6. **Fix 2 回归测试** `test/test_v519_factor_promotion.py` (10 项):
+   转移表/phase5 落库 active/DSR 门槛→probation/probation 不被裁决/
+   Phase 0 不动状态/_promotion_eligible 四重门槛/交易日计数。
+
+### 新晋升规则 (v519 起)
+
+```
+evaluating --(p2+p3+p4 全 pass + DSR significant)--> active   (phase5b, 周六)
+evaluating --(三阶段全 pass 但 DSR 未显著)--> probation 半权  (phase5b, 周六)
+evaluating --(p2/p3/p4 任一 fail)--> archived                  (phase5b, 周六)
+probation  --(观察期≥20交易日 + IC稳定 + DSR significant
+              + live consistency)--> active                    (attribution, 每日)
+active     --(IC_DEGRADED/冗余/数据死)--> probation/archived   (不变)
+```
+
+### 验证
+
+- 新增 10 测试全过; 全量 **404 passed** (45.7s)。
+- 集成实测: EVAL_PASS 落库 (status_reason 含 DSR significant)、
+  DSR degraded → EVAL_MARGINAL → probation。
+- 注: fund_flow_3m 复活本次**不做** (用户拍板: 500 只覆盖+7 个月历史,
+  评估口径与实盘 universe 不一致, 等 B/C 方案另行排期)。
+
+---
+# HANDOFF
+
+## 2026-08-16: 等待式换热点检测 — 达上限自动轮询续跑 (test-v518)
+
+用户点名: v513 实现是**触发式** (task_scope 进入时探测), 达上限后任务停止、
+探测休眠, 需手动重跑 resume — 未实现其要求的"达上限→自动等待检测→换热点
+自动续跑"全自动方案。本次落地。
+
+### 设计
+
+- resume_industry_sync.sh 达上限分支由 `exit 2` 改为**等待循环**:
+  - 每 30s 探测一次公网 IP (probe_and_reset_if_rotated, urllib→myip.ipip.net)
+  - 日志去重: 仅"进入等待模式"写一条 + "未变化期间不再刷日志"一条,
+    检测到变化各写一条 — 无 per-30s 刷屏
+  - 三分支: rotated (IP 变 → 自动清零+解除黑名单+clear alert) / reset
+    (新的一天配额恢复) / wait (继续等)
+  - Ctrl+C 可退出; 探测失败降级为 wait 不阻断
+- 跨天自动续跑: 等待中跨过 0 点 → day_limit_reached 变 False → reset 分支
+  自动续跑 (避免用户白等一夜次日还要手动)
+
+### 改动
+
+- `scripts/resume_industry_sync.sh`: 达上限分支替换 (exit 2 移除)。
+- `quant/utils/baostock_gate.py`: 无改动 (复用 probe_and_reset_if_rotated)。
+
+### 验证
+
+- bash -n 语法 OK。
+- wait 分支: 未达上限/IP 未变 → 'wait'。
+- rotated 分支: 模拟旧 IP (203.0.113.99) → 探测到真实 IP 变化 → 自动清零
+  (day_count 0) + 解除黑名单 (blacklisted_at None) + last_ip 更新 — 实测通过。
+- gate 相关单测 18 passed (376 deselected)。
+- VERSION: test-v517 → test-v518 (re.sub)。
+
+## 2026-08-16: zt/dt_streak 无事件日 blocked 修复 (test-v517)
+
+### 症状
+
+行业 PIT 重物化后 verify smoke 回测仍报 `factor cache missing for 1 IC lookback
+dates (2025-07-24)` — 重物化日志 `447 (date,factor) blocked (缺数据剔除)`.
+
+### 根因
+
+- 2025-07-24 全市场无跌停事件 → dt_streak 全 0 → `_cs_zscore` MAD=0 → std=0
+  → 返回全 NaN → 物化空结果 → v483 机制写 blocked 剔除 → 该日缓存缺 dt_streak.
+- test_v305 早有注释点名此陷阱 ("全零日 zscore -> NaN -> 永不齐"), 靠测试构造
+  涨跌停日规避 — 但真实数据无事件日必现.
+
+### 修复
+
+- `quant/factor/compute/price/_event.py`: compute_limit_up_streak /
+  compute_dt_streak — 无事件日 (全 0) 直接返回全 0 序列, 跳过 zscore 除零
+  (0 = 无信号中性, 语义正确).
+- blocked.json 清除 zt_streak/dt_streak 全部记录 (447 → 248 条; 保留
+  wq_alpha_006/smart_money_20d 数据起点 blocked, 位于 2020 年, 不影响 IC 窗口).
+- 测试: test_v305 新增 `test_no_event_day_streak_factors_materialize` —
+  纯普通日物化 7 因子产行 + 全 0 断言 (红→绿).
+
+### 验证
+
+- test_v305: 6 passed (新增测试含在内).
+- 全量重物化已启动 (21:44, /tmp/industry_rematerialize2.log, ~31min) —
+  因子代码变 → source_hash 变 → 全量 force 必须.
+- **回测 universe 空列表问题 (verify smoke 第二层)**:
+  - 症状: `WHERE symbol IN ()` + `pre-loaded 0 days x 0 symbols` +
+    `'RangeIndex' object has no attribute 'levels'` (loop.py:437).
+  - 根因: stocks.delist_date 全为**空串 '' 而非 NULL** (5557/5557),
+    `delist_date > strftime('%Y%m%d', ?)` 对空串恒 False → 带日期参数的
+    get_symbols 永远返回 0 — 存量 bug (带日期路径此前未触发).
+  - 修复: quant/data/repos/universe_repo.py 两个 delist 分支豁免 `= ''`.
+  - 验证: 带日期 get_symbols 5208 (2024-25 窗口 5176); smoke 回测过.
+- **verify_industry_pit.sh 最终 PASS** (22:19): 39 天 smoke, Sharpe=0.716,
+  CAGR=9.2%, MDD=-42.2%, errors=0 — 行业 PIT 全链激活完成.
+- 全量测试: 394 passed (含 test_no_event_day_streak_factors_materialize).
+- VERSION: test-v516 → test-v517 (re.sub).
+
+## 2026-08-16: 行业同步收尾 — 北交所 920 段数据源缺失 skip 机制 (test-v516)
+
+### 实证根因 (解决"338 只永不进展")
+
+- pending 338 只 = 336 只北交所 920 段 + 301717/688828 (次新 2026-08-11 上市).
+- **baostock query_stock_industry 不收录北交所 920 段**: 抽查 5 只×3 种前缀
+  (sh./sz./bj.) 全部 rows=0, 且上市日从 2020 到 2026 都有 — 数据源缺失,
+  非格式/网络/封禁问题 (day_count 6741 正常, 无黑名单).
+- 此前"零进展"真相: 每股空探测全套 (快速路径 4 查 + 全区间二分 12 查 ≈
+  30-60s/只), 338 只 ≈ 4h 空转, 无 DB 写入所以 COUNT 不动.
+- 已同步 5219 只 = 0/6/3 开头全覆盖 (主板 2319 + 深市 1498 + 创业/科创 1402),
+  北交所从未同步成功过 (被这 336 只永久卡住).
+
+### 设计
+
+1. `industry_history_skip` 表 (symbol PK, reason, created_at) — 数据源缺失
+   标记, 同步 pending 计算排除 (done ∪ skip), 同步即可完成.
+2. `scripts/mark_industry_skip.py` (幂等, --dry-run): 预置两类 —
+   A. 920 段 → reason "baostock_920段无行业数据(2026-08-16实证)"
+   B. 上市 < 30 天次新 → reason "次新数据滞后, 待baostock收录后重试"
+      (日后重试: DELETE FROM industry_history_skip WHERE symbol='...')
+3. verify_industry_pit.sh 更新: 覆盖判定 done+skip >= total; 零段统计排除 skip.
+
+### 改动
+
+- `quant/data/industry_history.py`: _build_table 建 skip 表; pending 过滤排除 skip.
+- `scripts/mark_industry_skip.py`: 新增 (338 只已预置: 336 920段 + 2 次新).
+- `scripts/verify_industry_pit.sh`: 覆盖判定 + 零段统计兼容 skip.
+
+### 验证
+
+- 同步重跑: 0 symbols pending, 0.5s 完成 (5557 = 5219 + 338 全覆盖).
+- neutralize 缺行业安全: NaN 组 len<3 → 原样保留不崩 (risk/neutralize.py).
+- **重物化已启动** (20:49, nohup, /tmp/industry_rematerialize.log, 预计 1-2h):
+  2020 起 force — 顺带修复 smoke 回测发现的历史缓存 239 天过期
+  (2025-06-06..2026-06-01, source/data_hash 校验失效, 晚间链增量只覆盖近期).
+  完成后跑 verify_industry_pit.sh (smoke 回测需缓存就绪).
+- VERSION: test-v515 → test-v516 (re.sub).
+
+## 2026-08-16: Server酱³ 通知通道 — 个人微信必达 (test-v515)
+
+用户不考虑 Telegram; 企微 webhook 需企业微信组织, 个人微信不可用 → 选
+Server酱³ (微信服务号模板消息, 国内直连, 一个 SendKey 即可).
+
+### 改动
+
+- `quant/monitor/notify.py`: 新增 `_serverchan_send()` — POST
+  `https://sctapi.ftqq.com/<key>.send` (title/desp), 10s 超时, HTTP 非 200 或
+  code != 0 记日志返回 False; 未配置 key 静默跳过 (与既有通道同风格).
+  `send_alert` 通道顺序: macOS → **Server酱** → Telegram → 企微 → 日志兜底.
+- `quant/config/config.yaml`: `monitor.serverchan_sendkey` 填入用户 SendKey
+  (yaml roundtrip 写入).
+- **敏感信息防护**: config.yaml 原被 git 跟踪且历史已 push GitHub — 本次
+  `git rm --cached` + .gitignore 追加 `quant/config/config.yaml`
+  (含 token 的生产配置不再进版本库; 文件保留在本地, 不影响运行).
+- `scripts/notify_test.sh`: 新增通道连通测试 (幂等, --no-macos 只测远程,
+  --title 自定义标题).
+- `scripts/README.md`: 登记 notify_test.sh.
+
+### 验证
+
+- notify.py ast 语法 OK.
+- 真实推送成功 (20:21:34): macOS 通知 + 提示音 + ServerChan alert sent —
+  用户微信服务号收到同一消息.
+- VERSION: test-v514 → test-v515 (re.sub).
+
+## 2026-08-16: 达上限提醒机制 — macOS 通知 + Web 横幅闪烁 (test-v514)
+
+用户选择方案 A (macOS 通知+提示音) + C (Web 横幅闪烁) 落地; B (Telegram/企微)
+保留可选 — config.yaml 填入 token 即自动激活, 未填则跳过。
+
+### 设计
+
+1. **达上限触发链**: industry_history 每股循环前检查 day_limit_reached →
+   达限 → `send_baostock_quota_alert(count, limit, pending)` (macOS 通知 + 提示音
+   + Telegram/企微, 最后日志兜底) + `push_baostock_quota_alert` 写入 bridge overlay
+   "alerts" 键 (跨进程: 同步进程 → web SSE) → 优雅 break。
+2. **恢复清除**: gate.py IP 变化自动恢复分支调 `clear_baostock_quota_alert()`
+   移除横幅 + 覆盖恢复通知。
+3. **Web 展示**: SSE 消费 `state.alerts` 渲染红色闪烁横幅 (顶部告警条,
+   alert-flash 动画), 轮询兜底; 可手动关闭。
+
+### 改动
+
+- `quant/monitor/notify.py`: `_macos_notify()` (osascript display notification +
+  Glass 提示音)、`_macos_sound()` (afplay)、`send_baostock_quota_alert()`;
+  `send_alert` 通道顺序 macOS → Telegram → 企微 → 日志兜底。
+- `quant/monitor/alerts.py`: `push_baostock_quota_alert()` / `clear_baostock_quota_alert()`。
+- `quant/core/state_broker.py`: bridge overlay 键加 "alerts" (两处 for 循环)。
+- `quant/data/industry_history.py`: 达上限分支触发 notify + push。
+- `quant/utils/baostock_gate.py`: IP 变化恢复分支 clear 告警。
+- `web/templates/index.html` / `web/static/style.css` / `web/static/app.js`:
+  `#alert-banner` 容器 + 红色闪烁动画 + `renderAlerts()` (SSE + 初始轮询)。
+  (⚠️ 需重启 web 生效 — 用户手动 `bash scripts/restart.sh`)
+
+### 验证
+
+- python / node --check 语法全部通过。
+- 链路单测: push → bridge → get 横幅内容 OK; clear 后为空 OK;
+  notify 全通道失败返回 False 写日志兜底 OK; macOS 通道成功 OK。
+- 真实 macOS 通知 + 提示音触发成功 (19:46:16)。
+- 393 项全量测试通过。
+- VERSION: test-v513 → test-v514 (re.sub)。
+
+## 2026-08-16: 日请求软上限 + 换热点自动检测 (test-v513)
+
+用户决策 (取消 v511 硬配额后): 保留软上限设计 — 到达 5 万/日请求上限时
+优雅停止任务 + 提示换热点; 检测到公网 IP 变化后自动清零计数重新开始。
+
+### 实证背景 (修正 v511 错误结论)
+
+- v511 认为 "baostock 无官方日配额" — **被 2026-08-16 实证推翻**:
+  day_count=52956 时服务端直接拉黑 ("黑名单用户，请与管理员联系",
+  IP 冷却 ~24h)。服务端存在 ~5 万/日软限制。
+- 因此 v511 删除配额是错误决策 (拆了保护壳撞服务端真实限制), v513 恢复
+  日上限但改为**软上限** (不硬拦截抛错, 由任务层优雅停止)。
+
+### 设计 (用户确认)
+
+1. **计数**: 每次 baostock 请求经 gate 记入状态文件 day_count (已有)。
+2. **达上限**: `day_limit_reached()` 返回 (reached, count, limit); 行业同步
+   每股循环前检查, 达限 → 打 warning 优雅 break (不崩溃, 不硬拦截)。
+3. **IP 检测**: 公网 IP 探测 myip.ipip.net (IPv4 优先, IPv6 回退) —
+   `_probe_public_ip()`; 仅 task_scope **最外层**进入时探测一次 (嵌套重入不重复)。
+4. **IP 变化自动重置**: `probe_and_reset_if_rotated()` — last_ip 与当前 IP
+   不同 → 清零 day_count + 解除 blacklisted_at (新 IP 不承继旧封禁) + 更新 last_ip。
+   首次探测 (无基线) → 建立基线并解除存量黑名单 (若服务端仍封将再次标记, 无副作用)。
+   探测失败 (超时/解析) → 降级不重置, 不阻断任务。
+5. **守护退出**: resume_industry_sync.sh 每轮开头检测日上限 → 提示换热点退出
+   (exit 2), 不再 20 轮空转重试。
+6. **兜底**: scripts/reset_baostock_day.sh 手动清零 (IP 探测不可用时)。
+
+### 改动
+
+- `quant/utils/baostock_gate.py`: `_per_day` 配置读取; `day_limit_reached()`;
+  `_probe_public_ip()` (urllib + 正则, IPv4/IPv6); `ip_rotated()`;
+  `probe_and_reset_if_rotated()` (首次基线 + 变化自动重置 + 失败降级);
+  `reset_day()` 保留; task_scope 最外层进入时探测; 文档字符串更新 (v511 结论已修正)。
+- `quant/data/industry_history.py`: 每股循环前检查 day_limit_reached → 优雅停止
+  + 提示换热点续跑命令。
+- `scripts/resume_industry_sync.sh`: 每轮开头日上限检测 → 提示退出 (exit 2)。
+- `scripts/reset_baostock_day.sh`: 新增手动兜底 (幂等)。
+- `quant/config/config.yaml`: `baostock_calls_per_day: 50000` +
+  `baostock_ip_probe_url` (注释带实证来源)。
+- `scripts/README.md`: 登记新脚本与行为。
+
+### 验证
+
+- 单测 7 项: 达上限检测 / reset_day / 探测失败降级 / IP 变化自动清零 /
+  task_scope 嵌套仅探测 1 次 / 换热点首探 (基线+解除+清零) / 幂等 — 全过。
+- 393 项全量测试通过。
+- 真实场景: 用户换热点 → 首探建立基线 2409:8907:... → 黑名单解除 → day_count
+  清零 → 守护重启 → 520 只 pending 正常续跑。
+
+### 效果
+
+- 换热点后无人工干预自动恢复拉取; 达 5 万/日优雅停止并明确提示,
+  不再撞服务端封禁。
+
+## 2026-08-16: 回退批量快照方案 — baostock 服务端翻页 bug 实证 (test-v512)
+
+**v511 调研结论被推翻**: `query_stock_industry(code="", date=D)` 批量翻页
+实测失效 — `rs.next()` 恒 True 且 `cur_page_num` 恒定不变 (60 页 bad=59, 0.6s
+无进展), 只返回首页 500 只。while rs.next() 循环 → rows 无限增长 → **内存爆掉
+进程被系统强杀, 无 traceback 静默死亡** (4 次 480s 内无声消失的根因)。
+批量快照方案废弃。
+
+### 改动
+
+- `quant/data/industry_history.py`:
+  - `_BatchProber` 类重命名为 `_BatchProberUnused` (废弃警示, 含实测证据注释),
+    `probe = _Prober(_relogin)` 恢复逐股探测。
+  - 模块 docstring 数据源段更正: 原"仅返回前 500 只是页容量"说法已被翻页
+    实证推翻, 改为"全市场查询翻页失效必须逐股"。
+- 修 `bs_task` 装饰器插入位置 bug: 原实现把 `_jittered_interval` 吸进
+  `bs_task` 函数体 (0 缩进插在类体中间), 调用时
+  `AttributeError: 'BaostockGate' object has no attribute '_jittered_interval'`
+  — 已移至模块级 (类外)。
+- 验证: 逐股版端到端恢复 (5 只/415 查询/238s, 含 10 次 session re-login 正常);
+  互斥 4 项单测重跑全过; 393 项测试全过。
+
+### 效果
+
+- 行业同步逐股版已恢复可用, 无配额拦截, 可续跑剩 630 只。
+
+--- 以下为 v511 记录 (批量方案已废弃, 保留待考) ---
+
+## 2026-08-16: 取消 baostock 日配额 + 任务级互斥防并行 (test-v511)
+
+用户反馈: 日配额 (50000/天) 是自设的瞎设计 — baostock 无官方日配额, 真正的
+封禁根因是并行任务请求叠加 (2026-08-13 黑名单事件)。要求取消配额 + 避免并行。
+
+### 关键调研结论 (实证, 非猜测)
+
+1. **行业 PIT 拉取是逐股设计** (industry_history.py 二分探测, 每股 ~5-27 次查询,
+   全量 2.8万~15万次) — 但 baostock `query_stock_industry(code="", date=D)`
+   **支持全市场批量 + 历史日期** (实证: 2025-06-30 全市场 15500 行 31 页 4.7s)。
+   原注释"无 code 仅返回前 500 只"是误读 — 那是页容量, `rs.next()` 手工翻页即可全量。
+   → **未来可将行业 PIT 改为按日期批量快照 (查询量降 3 个数量级)**, 本次未做 (待评估)。
+   ⚠️ 已被 v512 推翻: 服务端翻页 bug, 批量不可行, 见上方 v512 记录。
+2. 日线/复权/财务/股本仍是逐只 (baostock API 限制, 每只 1 次查询拉全区间)。
+
+### 改动
+
+- `quant/utils/baostock_gate.py`:
+  - **删除日配额**: `_per_day`/`quota_exhausted()`/day_count 拦截全部移除;
+    day_count 仅作统计留存。BaostockQuotaExceeded 类保留仅为兼容旧 except, 不再抛。
+  - **新增任务级互斥** (防并行叠加 — 封禁根因): `BaostockTaskBusy` +
+    `task_scope(owner)` contextmanager + `bs_task(owner)` 装饰器;
+    跨进程原子锁文件 `.baostock_task.busy`; 同进程嵌套重入安全 (深度计数);
+    崩溃残留锁自动接管 (owner pid 探活, os.kill(pid,0))。
+  - 保留: 黑名单熔断 + 0.5s 跨进程最小间隔 + 每分钟 120 上限 (防封核心)。
+- `quant/data/industry_history.py`: `sync_history` 外包 `task_scope("industry_pit")`
+  (拆出 `_sync_history_inner`), 并行任务抛 BaostockTaskBusy fail-fast。
+- `quant/data/store.py`: `_fetch_baostock_daily`/`_backfill_via_baostock`/
+  `_sync_adj_factor_baostock`/`backfill_turnover`/`_backfill_turnover_full`/
+  `_backfill_amount_full` 加 `@bs_task(...)` (baostock 专属函数; 混合源
+  tushare 主路径不占锁)。
+- `quant/data/stocks_snapshot.py`: `refresh_total_shares` 包 task_scope
+  (拆 `_refresh_total_shares_inner`)。
+- `quant/config/config.yaml`: 删 `baostock_calls_per_day` (yaml 校验通过)。
+- `scripts/resume_industry_sync.sh`: 删配额耗尽分支 (配额已取消, 恢复纯网络重试)。
+- 验证: 互斥 5 项单测 (单任务/嵌套重入/并行拒绝/残留接管/锁释放) 全过;
+  get_factor_names 门面实测 using=5 / backtesting=9; 393 项测试全过。
+
+### 效果
+
+- 行业同步不再被 50000/天腰斩 — 可连续跑完全量 5557 (剩 630 只, ~3.9h)。
+- 任何时刻至多一个 baostock 长任务在跑; 并行触发直接 BaostockTaskBusy 拒绝,
+  不会请求叠加 → 从源头防 IP 封禁。
+- VERSION: test-v510 → test-v511 (re.sub)。
+
+## 2026-08-16: 同步守护修复 — 配额耗尽不再空转重试 (test-v510)
+
+- 背景: 16:21 同步达 4927/5557 时 baostock 当日配额 (50000) 耗尽, resume_industry_sync.sh
+  将其误判为"网络波动"空转重试 20 轮 (每轮都被 gate 拒绝), 达上限退出。
+- `quant/utils/baostock_gate.py`: 新增只读 `BaostockGate.quota_exhausted()` (无状态副作用/不 acquire,
+  读 .baostock_state.json 判断当日 day_count ≥ per_day)。
+- `scripts/resume_industry_sync.sh`: 失败分支先检查配额 — 耗尽立即明确退出 (提示明日重跑),
+  否则才按网络波动 10s 续跑。
+- 验证: bash -n + ast 语法通过; 真实现状 quota_exhausted()=True; 未来日期模拟=False。
+- 剩余进度: 4927/5557, 剩 630 — 明日配额重置后 `bash scripts/resume_industry_sync.sh` 续跑 (~3.9h),
+  完成后 `bash scripts/industry_pit_activate.sh`。
+- VERSION: test-v509 → test-v510 (re.sub)
+
+## 2026-08-16: 因子状态池/数据核查结论固化 (test-v509, 纯文档+版本号)
+
+- 用户要求: 不再重复分析已核实结论; 把 using/backtesting 使用逻辑与空/旧表结论写入显著位置。
+- 新增 `docs/architecture/factor-status-pools.md` (**权威参考**):
+  - 四态枚举 (evaluating/active/probation/archived) — active 当前 0 实例但状态机路径存活 (EVAL_OK→active, IC_RECOVERED→active), 非失效
+  - using=('active','probation') 实盘池, backtesting=('evaluating','probation') 回测池, 物化池=并集=9 因子 — **过滤器仍在用, 非弃用**; 逐一列出 8 处使用点
+  - **ADR-041 文档-实现分歧**: 文档写 backtesting 含 archived, 实现 (registry.py:52-53) 不含 — 实现为准
+  - 数据核查: check_freshness 14 表全绿; 空/旧表 (daily_basic/derived_daily/analyst_forecast/pledge_stat) 不影响物化 (附核实方法); "92 因子"=83 archived 残留+9 池内, 2025/2026 文件数少不是缺失
+- `CLAUDE.md` 已知事项段加醒目条目指向该文档 (含"不再重复排查/报重大发现")
+- `DATA_DICTIONARY.md` factor_registry.status 字段描述从五态旧枚举改为四态, 指向权威文档
+- VERSION: test-v508 → test-v509 (re.sub)
+
+## 2026-08-16: 行业同步网络中断 + 守护续跑 (v508)
+
+- 09:00 同步在 3509/5557 崩溃: baostock 10002007 网络接收错误 (Connection reset + Broken pipe),
+  fail-fast 退出 (设计行为, 不吞错)。pit_activate 正常 ABORT。
+- 新增 `scripts/resume_industry_sync.sh` (守护续跑): 循环重启 sync (幂等断点), 每轮进度打点,
+  网络错误 10s 后自动重试, 全量 5557 完成或达 max_retries 退出。已注册 scripts/README.md。
+- 已在后台启动 (PID 20239, 日志 /tmp/industry_sync4.log)。
+
+## 2026-08-16: Prometheus/Grafana 深度接入 (test-v508) — 埋点激活 + 仪表盘
+
+- `quant/monitoring/prometheus.py`:
+  - MetricsCollector 间隔参数迁入 config.yaml (prometheus.collector_interval=30s / data_rows_interval=600s, 来源注释已写)
+  - 模板 5: 大表 (daily 9.5M/daily_valuation 8.3M) 行数采集 COUNT(*) 全扫 1-2.4s → MAX(rowid) 索引 2ms + 10min 低频, 消除每 30s WAL 压力 (实测对比 2026-08-16)
+  - 业务指标接入: daily_equity 最新行 → TOTAL_EQUITY/CASH_BALANCE/POSITION_VALUE/DRAWDOWN; backtest_runs 最近成功 run → BACKTEST_SHARPE/CAGR/MAX_DD/DSR
+  - 高基数修复: BACKTEST_* 标签 run_id → strategy (无限系列膨胀, 违反模板 5)
+  - MonitoringPlatform.start(): pushgateway 未配置不再起 60s 空转 push 线程
+  - GrafanaDashboardBuilder: 老 graph 面板 (Grafana 13 已移除) → timeseries/stat; 输出改为 provisioning 兼容格式 (schemaVersion 39, datasource uid 引用)
+  - 修复: 顶层缺 `import json` (原 export_all 从未运行过, NameError)
+- `web/app.py`: main() 启动时 init_monitoring() 激活采集器; 新增 /api/monitoring/datasources (Prometheus/Grafana 端口摘要)
+- `web/static/app.js`: 系统 Tab — Grafana 运行中点绿时变为可点击链接 (打开面板), 新增 面板/Prom 快捷链接
+- `scripts/export_grafana_dashboards.sh` (新): 一键导出 3 张 dashboard (overview/factors/risk) 到 Grafana provisioning 目录
+- `/opt/homebrew/etc/grafana/provisioning/dashboards/quant-dashboards.yml`: file provider, 30s 自动 reload
+- 验证: 3 张 dashboard 已由 Grafana 加载 (quant 文件夹); 独立进程单轮采集各指标有值 (CPU 7.1%, equity 4724.49, sharpe 2.896)
+- **待用户执行**: `bash scripts/restart.sh` 重启 web 使采集器生效; Prometheus 15s 后可见新指标
+
+## 2026-08-16: 安装 Prometheus + Grafana (监控栈落地)
+
+- `brew install prometheus grafana` 装好 (prometheus 3.13.2), `brew services start` 常驻。
+- `/opt/homebrew/etc/prometheus.yml`: 增加 quant job 抓取 `localhost:8521/metrics` (web 内置端点, 15s 间隔)。
+- Grafana: 启用 `provisioning = /opt/homebrew/etc/grafana/provisioning` (grafana.ini), 数据源
+  `quant-prometheus.yml` 指向 localhost:9090, isDefault, 已验证 proxy 查询 up{job=quant}=1。
+- 端口约定与 config.yaml 一致 (prometheus 9090 / grafana 3000, 默认 admin/admin 首次登录改密)。
+- web `/api/monitoring/prometheus` 动态探测两个端口, 无需重启 web。
+- 无项目代码改动, 无 VERSION 推进。
+
+## 2026-08-16: 行业同步续跑 + PIT 激活链重启 (后台进行中)
+
+- 续跑 `sync_industry_history.sh` (PID 13866, 日志 /tmp/industry_sync3.log): 08-16 配额已重置
+  (day_count=408/50000), 断点续跑从 3390/5557 继续, 实测 ~22s/股 (gate 硬限速 120/min),
+  ETA ≈ 13h (2167 only pending)。
+- 已启动编排链 `industry_pit_activate.sh` (PID 14352, 日志 /tmp/pit_activate2.log):
+  自动轮询等待同步 → verify_industry_pit(覆盖校验+smoke) → rematerialize(2020 起 force 重物化 1-2h)
+  → 提示用户手动 restart.sh。全程后台, 无需干预。
+- 进度核对: `tail /tmp/industry_sync3.log` | `tail /tmp/pit_activate2.log`。
+
+## 2026-08-16: CLAUDE.md 增加 Agent 身份段落
+
+- `CLAUDE.md` 新增 "Agent 身份" 段: 资深系统架构师 / 骨灰级软件开发专家 / 资深量化开发专家
+  三重角色定位与职责, 执行任务不降级交付。纯文档改动, 不涉及代码, VERSION 不推进。
+
+## ⚠️ 当前进行中 (重启 opencode 后续工作起点) — 2026-08-15 22:5x
+
+**后台任务: 行业历史同步 + PIT 激活链 (未完成)**
+
+1. **状态**: 行业历史同步 (`bash scripts/sync_industry_history.sh`) 在 **3390/5557** 停止,
+   原因为 **baostock 当日配额耗尽** (`BaostockQuotaExceeded`, `data.rate_limit.baostock_calls_per_day=50000`,
+   gate 见 `quant/utils/baostock_gate.py:140`, 状态文件 `quant/data/.baostock_state.json`)。
+   属正常保护, 非故障。断点续跑内置 (`quant/data/industry_history.py:342` 表内已同步符号自动跳过), 重跑不丢进度。
+2. **已尝试续跑**: 用户更换热点后我执行 `nohup bash scripts/sync_industry_history.sh > /tmp/industry_sync2.log &`
+   **因是同日 08-15 且配额按日计数 (本机文件计数, 与出口 IP 无关), 预计仍会被 gate 立刻拒绝**。
+   **下次续跑应在跨天后 (2026-08-16) 再执行**, 或确认热点是否重置了 baostock 服务端侧配额。
+3. **队列任务 (等同步完成后)**: `bash scripts/industry_pit_activate.sh` — 校验 industry_history 覆盖 +
+   smoke 回测 + 重物化。它会在同步未完成时 ABORT (正常)。
+4. **进度核对途径**: `tail /tmp/industry_sync.log` / `/tmp/industry_sync2.log` (新), `/tmp/pit_activate.log`。
+
+**本轮已完成并提交 (v506/v507, 已 push origin/main, commit c4d1fe1)**:
+- v506 多策略页真实账户数据源 (弃空内存 StrategyManager, 改读 trades.db strategy_config +
+  PositionService), 系统页 Prometheus 显示修复 (setText 塞 HTML 修复为 innerHTML + 新增
+  /api/monitoring/prometheus 摘要); v507 修复刷新后因子页叠概览下方 (tab-factors 多余 active 移除)。
+- 全部已提交并 push, 工作区当时干净。`web/app.py VERSION = "test-v507"`。
+- 若本次会话还有未提交改动 (e.g. 新探针脚本皆在 /tmp, 不影响; 无 repo 内改动), 重启后先 `git status` 核对。
+
+**提醒**: 探针脚本 `/tmp/probe_bs.py`, 状态快照 `/tmp/status_snapshot.txt` 为排查残留, 无 repo 污染。
+
 ### v505 因子平台并回因子 Tab — 统一真相源 factor_registry (2026-08-15)
 
 **背景**: 用户指出因子 Tab 与因子平台 Tab( v503 加)重复。分析证实更深的问题:

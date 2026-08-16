@@ -37,6 +37,10 @@ bash scripts/eval_standard.sh      # 五阶段标准评估 (CPCV+walk-forward+PB
 | 脚本 | 用途 |
 |------|------|
 | `sync_industry_history.sh [batch]` | 同步 baostock 行业 PIT 历史 → industry_history 表 (幂等断点续跑) |
+| `resume_industry_sync.sh [max_retries]` | 同步守护续跑 — 网络中断 (10002007) 自动重启, 断点续跑; 达 5 万/日上限自动进入等待模式每 30s 探测公网 IP, 换热点自动清零续跑 (v508+v513+v518) |
+| `reset_baostock_day.sh` | 兜底: 手动清零 baostock 日计数 + 解除黑名单 (v513; 通常换热点后自动处理, 无需手动) |
+| `notify_test.sh [--no-macos] [--title T]` | 通知通道连通测试 (macOS 弹窗+提示音 / Server酱 / Telegram / 企微, 幂等) (v515) |
+| `mark_industry_skip.py [--dry-run]` | 行业数据源缺失标记 — 北交所 920 段 + <30 天次新 → skip 表, 同步剔除 (幂等) (v516) |
 | `industry_pit_activate.sh [--skip-wait]` | 一键顺序链: 等后台同步完成 → 校验 → 重物化 (v502) |
 | `verify_industry_pit.sh` | 校验 industry_history 覆盖 + smoke 回测验证 PIT 中性化不崩 |
 | `rematerialize_industry_pit.sh` | 同步完成后重物化 2020 起因子缓存 (行业 PIT 生效) |

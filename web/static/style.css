@@ -158,6 +158,30 @@ main {
 .status-bar .dot.off { background: var(--text3); }
 .status-bar .spacer { flex: 1; }
 
+/* ⚠ 告警横幅 (v513) — 红色高亮闪烁, 常驻至告警解除 */
+.alert-banner {
+  background: linear-gradient(90deg, #7f1d1d, #991b1b);
+  border-bottom: 2px solid #f87171;
+  color: #fecaca;
+  padding: 12px var(--gap);
+  font-size: .92rem;
+  font-weight: 600;
+  text-align: center;
+  animation: alert-flash 1.2s ease-in-out infinite;
+}
+@keyframes alert-flash {
+  0%, 100% { background-color: #7f1d1d; }
+  50% { background-color: #b91c1c; }
+}
+.alert-banner .alert-close {
+  float: right;
+  cursor: pointer;
+  opacity: .7;
+  padding: 0 6px;
+  font-size: 1rem;
+}
+.alert-banner .alert-close:hover { opacity: 1; }
+
 /* ── Factor scan line (signature: Theme A) ── */
 .factor-scan {
   height: 10px;

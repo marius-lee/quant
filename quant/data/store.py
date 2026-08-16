@@ -22,7 +22,10 @@ logger = get_logger("data.store")
 _TICKFLOW_BATCH_NO_PERM = False
 
 from quant.data.cache import get_backend, DataCache, RateLimiter
-from quant.utils.baostock_gate import gate as _bs_gate, bs_query as _bs_query, BaostockBlacklisted, BaostockQuotaExceeded
+from quant.utils.baostock_gate import (gate as _bs_gate,
+                                        bs_query as _bs_query,
+                                        bs_task as _bs_task_deco,
+                                        BaostockBlacklisted, BaostockQuotaExceeded)
 from quant.config.loader import load as _load_config
 from quant.config.constants import _require_cfg
 from quant.data.repos._base import DatabaseManager
@@ -676,6 +679,7 @@ class DataStore:
                 "rate_limited": rate_limited, "remaining": max(remaining, 0),
                 "source": source_used}
 
+    @_bs_task_deco("sync_adj_factor_baostock")
     def _sync_adj_factor_baostock(self, conn, symbols: list, start: str) -> tuple:
         """baostock (证券宝) 复权因子同步 — 逐只拉取, 无公开限流.
 
@@ -995,6 +999,7 @@ class DataStore:
             _time.sleep(_require_cfg("data.rate_limit.sina_per_stock_sec"))
         return rows
 
+    @_bs_task_deco("fetch_baostock_daily")
     def _fetch_baostock_daily(self, symbols: list, start_date: str) -> list:
         """baostock (证券宝) 日线: qfq 前复权, vol=股→手, amt=元→千元, turnover✅.
 
@@ -1566,6 +1571,7 @@ class DataStore:
         logger.info(f"backfill_range: {start}→{end} — {len(symbols)} stocks")
         return self._backfill_via_baostock(symbols, start, end)
 
+    @_bs_task_deco("backfill_via_baostock")
     def _backfill_via_baostock(self, symbols: list, start: str, end: str):
         """baostock 逐只拉取历史 K 线并写入 daily 表 (test-v351)."""
         import baostock as bs
@@ -1618,6 +1624,7 @@ class DataStore:
         logger.info(f"baostock backfill done: {len(symbols)} stocks, {total} new rows")
         return total
 
+    @_bs_task_deco("backfill_turnover")
     def backfill_turnover(self, date: str = None, full: bool = False):
         """回填换手率 — baostock 逐只拉取 K 线, 取 turn 字段 UPDATE daily。
 
@@ -1877,6 +1884,7 @@ class DataStore:
         logger.info(f"turnover backfill (tickflow): {total_updated} stocks for {date}")
         return total_updated
 
+    @_bs_task_deco("backfill_turnover_full")
     def _backfill_turnover_full(self) -> int:
         """存量 turnover 全量模式 — 每 symbol 一次 baostock 查询拉全区间, 只更新差异行.
 
@@ -2071,6 +2079,7 @@ class DataStore:
                     f"{' (resumed from checkpoint)' if _resumed else ''}")
         return total_upd
 
+    @_bs_task_deco("backfill_amount_full")
     def _backfill_amount_full(self) -> int:
         """存量 daily.amount 全量回填 — 每 symbol 一次 baostock 查询, 只补缺失行.
 
@@ -2825,7 +2834,8 @@ class DataStore:
         placeholders = ",".join("?" * len(symbols))
         df = pd.DataFrame()
 
-        for tbl in ["balance", "income", "cash_flow"]:
+        # 表名与 tushare 接口名一致: financial_cashflow (无下划线, 2026-08-17 修复)
+        for tbl in ["balance", "income", "cashflow"]:
             sub = pd.read_sql_query(f"""
                 SELECT * FROM financial_{tbl}
                 WHERE (symbol, stat_date) IN (

@@ -120,6 +120,10 @@ def compute_limit_up_streak(data: "pd.DataFrame", date: str, window: int = 0, au
     scores_arr[~is_limit_up.iloc[-1].values] = 0.0
 
     result = pd.Series(scores_arr, index=symbols).fillna(0.0)
+    # v517: 无事件日 (全 0) 直接返回 — zscore 会 MAD=0→std=0→全 NaN→
+    # 空结果→blocked 剔除→缓存缺因子 (2026-08-16 实证 2025-07-24 缺 dt_streak)
+    if (result == 0).all():
+        return result.rename("zt_streak")
     return _cs_zscore(result).rename("zt_streak")
 
 
@@ -163,6 +167,9 @@ def compute_dt_streak(data: "pd.DataFrame", date: str, window: int = 0, aux=None
     scores_arr[~is_limit_down.iloc[-1].values] = 0.0
 
     result = pd.Series(scores_arr, index=symbols).fillna(0.0)
+    # v517: 同 zt_streak — 无跌停日全 0 直接返回, 防 zscore 除零 blocked 剔除
+    if (result == 0).all():
+        return result.rename("dt_streak")
     return _cs_zscore(result).rename("dt_streak")
 
 

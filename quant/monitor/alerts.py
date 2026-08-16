@@ -96,3 +96,27 @@ def push_alerts(alerts: list[dict]):
     _LAST_ALERT_KEYS = current_keys
 
     broker.update({"alerts": alerts})
+
+
+# ── v513: baostock 日上限横幅告警 (跨进程: 行业同步进程 → web SSE) ──
+
+def push_baostock_quota_alert(count: int, limit: int, pending: int):
+    """推送 baostock 日上限横幅告警到 web 界面 (SSE)。
+
+    达上限时在 web 顶部显示红色闪烁横幅, 提示换热点; IP 变化自动恢复后
+    调用 clear_baostock_quota_alert() 清除横幅.
+    """
+    from quant.core.state_broker import broker
+    broker.update({"alerts": [{
+        "rule": "baostock_daily_quota",
+        "level": "critical",
+        "msg": (f"baostock 今日请求已达上限 {count}/{limit} — 行业 PIT 同步已停止, "
+                f"剩余 {pending} 只. 请更换网络热点 (新公网 IP) 后自动续跑 "
+                f"(系统自动检测 IP 变化并清零计数)."),
+    }]})
+
+
+def clear_baostock_quota_alert():
+    """IP 变化恢复后清除横幅告警 (恢复为空告警集, 前端横幅消失)."""
+    from quant.core.state_broker import broker
+    broker.update({"alerts": []})

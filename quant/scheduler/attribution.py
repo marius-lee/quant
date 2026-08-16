@@ -45,6 +45,56 @@ def _tier_label(tier: str) -> str:
     return {"nano": "精简模式 (Nano)", "micro": "标准模式 (Micro)", "small": "严格模式 (Small)"}[tier]
 
 
+def _count_trading_days(start_date: str, end_date: str) -> int:
+    """统计 [start_date, end_date] 区间内交易日数 (含两端)."""
+    from quant.execution.calendar import is_trading_day
+    from datetime import datetime as _dt, timedelta as _td
+    d0 = _dt.strptime(start_date[:10], "%Y-%m-%d").date()
+    d1 = _dt.strptime(end_date[:10], "%Y-%m-%d").date()
+    n = 0
+    cur = d0
+    while cur <= d1:
+        if is_trading_day(cur):
+            n += 1
+        cur += _td(days=1)
+    return n
+
+
+def _promotion_eligible(
+    *,
+    n_trading_days: int | None,
+    min_days: int,
+    live_ic_mean: float | None,
+    eval_ic: float | None,
+    tolerance: float,
+    dsr_verdict: str | None,
+    stable: bool,
+) -> tuple[bool, str]:
+    """probation→active 晋升资格判定 (v519, 业界模拟盘期四重门槛).
+
+    业界标准 (WorldQuant/AQR 模拟盘期; De Prado 2018 Ch.7):
+      1) 观察期下限 — 半权实盘观察至少 min_days 交易日;
+      2) 稳定性 — 滚动 IC 无急剧偏离 (原 PROMOTION_STABILITY_DAYS 检查);
+      3) DSR 显著 — Bailey & López de Prado (2014) Deflated Sharpe Ratio;
+      4) live consistency — 实盘滚动 IC 与评估 IC 同号且偏差 ≤ tolerance
+         (防数据泄漏/实现偏差, 对标 Pesaran & Timmermann 2000 预测一致性框架).
+    """
+    if n_trading_days is not None and n_trading_days < min_days:
+        return False, f"observation {n_trading_days}d < {min_days}d required"
+    if not stable:
+        return False, "rolling IC unstable"
+    if dsr_verdict != "significant":
+        return False, f"DSR verdict={dsr_verdict} not significant"
+    if eval_ic is not None and abs(eval_ic) > 1e-9:
+        if live_ic_mean is None:
+            return False, "no live IC mean available"
+        if live_ic_mean * eval_ic <= 0:
+            return False, f"live IC sign flipped (live {live_ic_mean:+.4f} vs eval {eval_ic:+.4f})"
+        if abs(live_ic_mean - eval_ic) > tolerance:
+            return False, f"live IC {live_ic_mean:+.4f} deviates from eval {eval_ic:+.4f} by >{tolerance}"
+    return True, "eligible"
+
+
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
@@ -340,8 +390,10 @@ def _run(today: str):
             _log.warning(f"[{today}] {name}: active → probation ({source})")
             _m.inc("scheduler.attribution.ic_degraded", 1)
 
-    # D2: probation → active (recovery confirmed)
+    # D2: probation → active (v519: 观察期 + live consistency + DSR + 稳定性 四重门槛)
     probation_factors = f_repo.get_all_by_status(('probation',))
+    _promo_min_days = _require_cfg("attribution.promotion_min_days")
+    _promo_ic_tol = _require_cfg("attribution.promotion_ic_tolerance")
     for pf in probation_factors:
         pname = pf["name"]
         if pname not in recovery_candidates:
@@ -364,12 +416,42 @@ def _run(today: str):
             abs((v - longer_mean) / max(abs(longer_mean), 1e-10)) < IC_DEGRADATION_THRESHOLD
             for v in recent_vals
         )
-        if stable:
-            _v = cpcv_verdicts.get(pname, {})
-            fsm.transition(pname, "IC_RECOVERED",
-                reason=f"[LIVE] probation→active: DSR significant (DSR={_v.get('dsr')}, stable for {PROMOTION_STABILITY_DAYS}d)")
-            _log.info(f"[{today}] {pname}: probation → active (DSR significant, {PROMOTION_STABILITY_DAYS}d stable)")
-            _m.inc("scheduler.attribution.promoted", 1)
+        if not stable:
+            _log.info(f"[{today}] {pname}: probation→active held — rolling IC unstable")
+            continue
+
+        # ── v519 晋升资格: 观察期 + live consistency + DSR + 稳定性 ──
+        _v = cpcv_verdicts.get(pname, {})
+        dsr_verdict = _v.get("verdict")
+        entered_at = f_repo.get_factor_updated_at(pname)
+        n_trading_days = None
+        if entered_at:
+            try:
+                n_trading_days = _count_trading_days(str(entered_at)[:10], today)
+            except Exception as e:
+                _log.warning(f"[{today}] {pname}: trading-day count failed: {e}")
+        obs_window = min(_promo_min_days, len(longer_vals))
+        live_ic_mean = sum(longer_vals[-obs_window:]) / obs_window
+        eval_ic = pf.get("ic_mean")
+        eligible, why = _promotion_eligible(
+            n_trading_days=n_trading_days,
+            min_days=_promo_min_days,
+            live_ic_mean=live_ic_mean,
+            eval_ic=eval_ic,
+            tolerance=_promo_ic_tol,
+            dsr_verdict=dsr_verdict,
+            stable=True,
+        )
+        if not eligible:
+            _log.info(f"[{today}] {pname}: probation→active held ({why}; "
+                      f"DSR={_v.get('dsr')}, eval_IC={eval_ic}, live_IC={live_ic_mean:+.4f})")
+            continue
+        fsm.transition(pname, "IC_RECOVERED",
+            reason=f"[LIVE] probation→active: DSR significant (DSR={_v.get('dsr')}), "
+                   f"live-consistency |ΔIC|≤{_promo_ic_tol}, obs={n_trading_days}d")
+        _log.info(f"[{today}] {pname}: probation → active "
+                  f"(obs={n_trading_days}d, live_IC={live_ic_mean:+.4f} vs eval {eval_ic}, DSR significant)")
+        _m.inc("scheduler.attribution.promoted", 1)
 
     # D3: probation → archived (persistent decay, ADR-040: rolling t-test 替代硬时间阈值)
     for pf in probation_factors:

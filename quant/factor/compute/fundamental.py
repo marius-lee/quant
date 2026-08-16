@@ -266,7 +266,7 @@ def compute_gross_margin_diff(fundamentals: "pd.DataFrame", date: str) -> "pd.Se
     return diff.dropna().rename("gross_margin_diff")
 
 
-def compute_financial_anomaly(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
+def compute_financial_anomaly(fundamentals: "pd.DataFrame", date: str, aux=None) -> "pd.Series":
     """财务异常复合: 4 子因子等权 (申万宏源 2018, IC=6.79%, ICIR~1.5).
 
     六因子简化版（缺预付款、销售费用）:
@@ -279,11 +279,19 @@ def compute_financial_anomaly(fundamentals: "pd.DataFrame", date: str) -> "pd.Se
     数据源: financial_balance (inventories, account_receivable) + financial_income.
     来源: 申万宏源《财务异常综合评分体系》2018.06.
     """
-    df_inc = _get_financial_historical("financial_income", date)
-    df_bal = _get_financial_historical("financial_balance", date)
+    # v523: aux 快路径 — chunk 级预载两表, 消除每日 2× 400k 行全表查询
+    if aux is not None and "financial_income" in aux and "financial_balance" in aux:
+        date_ts = pd.Timestamp(to_str(date)) if not isinstance(date, str) else pd.Timestamp(date)
+        df_inc = aux["financial_income"][aux["financial_income"]["stat_date"] <= date_ts]
+        df_bal = aux["financial_balance"][aux["financial_balance"]["stat_date"] <= date_ts]
+        if df_inc.empty or df_bal.empty:
+            return pd.Series(dtype=float, name="financial_anomaly")
+    else:
+        df_inc = _get_financial_historical("financial_income", date)
+        df_bal = _get_financial_historical("financial_balance", date)
 
-    if df_inc.empty or df_bal.empty:
-        return pd.Series(dtype=float, name="financial_anomaly")
+        if df_inc.empty or df_bal.empty:
+            return pd.Series(dtype=float, name="financial_anomaly")
 
     rev_col = "total_operating_revenue" if "total_operating_revenue" in df_inc.columns else "operating_revenue"
 
@@ -655,7 +663,7 @@ def compute_accruals(fundamentals, date, financials=None):
 #    总资产增速与未来收益负相关 (过度投资假说).
 # ═══════════════════════════════════════════════════════════
 
-def compute_asset_growth(fundamentals, date, financials=None):
+def compute_asset_growth(fundamentals, date, financials=None, aux=None):
     """资产增长率: (TA_t - TA_{t-4q}) / TA_{t-4q}, 取负号.
 
     Cooper, Gulen & Schill (2008): 资产快速扩张→未来低收益.
@@ -666,6 +674,25 @@ def compute_asset_growth(fundamentals, date, financials=None):
     若去年同期数据缺失, 返回 NaN.
     """
     import sqlite3, os
+
+    # v523: aux 快路径 — chunk 级预载 financial_balance, 消除每日裸 SQL 大查询
+    # (IN 5208 全表扫, 物化实测单日 56s→~0.3s)
+    if aux is not None and "financial_balance" in aux:
+        fb = aux["financial_balance"]
+        if not fb.empty and "total_assets" in fb.columns:
+            date_ts = pd.Timestamp(to_str(date)) if not isinstance(date, str) else pd.Timestamp(date)
+            sub = fb[fb["stat_date"] <= date_ts].copy()
+            if not sub.empty:
+                sub["stat_date"] = pd.to_datetime(sub["stat_date"])
+                results = _asset_growth_from_rows(sub.sort_values("stat_date"),
+                                                  fundamentals.index)
+                if results:
+                    ag_series = pd.Series(results, name="asset_growth")
+                    ag_series = ag_series.replace([np.inf, -np.inf], np.nan)
+                    ag_series = ag_series.where((ag_series > -1) & (ag_series < 10))
+                    return _cs_zscore(-ag_series, sparse=True).rename("asset_growth")
+                return pd.Series(np.nan, index=fundamentals.index, name="asset_growth")
+
     fin = financials
     if fin is None:
         from quant.data.store import DataStore
@@ -697,9 +724,24 @@ def compute_asset_growth(fundamentals, date, financials=None):
     df_hist['stat_date'] = pd.to_datetime(df_hist['stat_date'])
     df_hist = df_hist.sort_values('stat_date')
 
+    results = _asset_growth_from_rows(df_hist, fundamentals.index)
+
+    ag_series = pd.Series(results, name="asset_growth")
+    ag_series = ag_series.replace([np.inf, -np.inf], np.nan)
+    ag_series = ag_series.where((ag_series > -1) & (ag_series < 10))
+    conn.close()
+    # 高资产增速→低收益: 取负号 (IC为负)
+    return _cs_zscore(-ag_series, sparse=True).rename("asset_growth")
+
+
+def _asset_growth_from_rows(df_hist: "pd.DataFrame", symbols) -> dict:
+    """按每股计算资产增长率 YoY (aux 快路径 + SQL fallback 共用)."""
     results = {}
-    for sym in fundamentals.index:
-        sym_data = df_hist[df_hist['symbol'] == sym].drop_duplicates(subset=['stat_date'], keep='last')
+    df_hist_idx = df_hist.set_index("symbol")
+    for sym in symbols:
+        if sym not in df_hist_idx.index:
+            continue
+        sym_data = df_hist_idx.loc[[sym]].drop_duplicates(subset=['stat_date'], keep='last')
         if len(sym_data) < 2:
             continue
         # 最新季度
@@ -716,13 +758,7 @@ def compute_asset_growth(fundamentals, date, financials=None):
         if ta_prev and ta_prev > 0 and ta_now and ta_now > 0:
             ag = (ta_now - ta_prev) / ta_prev
             results[sym] = ag
-
-    ag_series = pd.Series(results, name="asset_growth")
-    ag_series = ag_series.replace([np.inf, -np.inf], np.nan)
-    ag_series = ag_series.where((ag_series > -1) & (ag_series < 10))
-    conn.close()
-    # 高资产增速→低收益: 取负号 (IC为负)
-    return _cs_zscore(-ag_series, sparse=True).rename("asset_growth")
+    return results
 
 
 # ═══════════════════════════════════════════════════════════
@@ -765,7 +801,7 @@ def compute_gp_ta(fundamentals, date, financials=None):
 #    高停牌比率=流动性差=折价.
 # ═══════════════════════════════════════════════════════════
 
-def compute_sue(fundamentals, date, financials=None):
+def compute_sue(fundamentals, date, financials=None, aux=None):
     """标准化未预期盈余: (EPS_latest - EPS_yoy) / std(EPS_8q).
 
     Bernard & Thomas (1989): 盈余公告后漂移(PEAD).
@@ -774,8 +810,30 @@ def compute_sue(fundamentals, date, financials=None):
     数据源: financial_income.net_profit / stocks.total_shares = 季度EPS.
     需要 total_shares 列 (Step 2 新增, 通过 fundamental.py 同步自 stock_value_em).
     若 total_shares 为空则返回 NaN.
+
+    口径 (v523-A2/A2b 定论): aux 快路径窗口 = financial_lookback_days (1100d);
+    次新股 (301/688/603 等新板) 的招股书期 EPS (股本小 → 超大离群值) 常在窗口外,
+    tail(8) 只涵盖上市后连续报告 — 比 fallback 全史 SQL (含 IPO 前不可比期) 更符合
+    SUE 定义. 两径横截面序一致 (RankIC>=0.97), 差异票均为次新股, 见
+    test/test_factor_aux_consistency.py.
     """
     import sqlite3, pandas as pd, numpy as np
+
+    # v523: aux 快路径 — chunk 级预载 financial_income + stocks.total_shares,
+    # 消除每日裸 SQL 大查询 (IN 5208 + JOIN + 每股循环, 物化实测单日 16.7s→~0.3s)
+    if aux is not None and "financial_income" in aux and "stocks" in aux:
+        fi = aux["financial_income"]
+        stk = aux["stocks"]
+        if not fi.empty and "total_shares" in stk.columns and "net_profit" in fi.columns:
+            date_ts = pd.Timestamp(to_str(date)) if not isinstance(date, str) else pd.Timestamp(date)
+            sub = fi[fi["stat_date"] <= date_ts].copy()
+            if not sub.empty:
+                sub["eps"] = sub["net_profit"] / sub["symbol"].map(stk["total_shares"])
+                sub = sub[sub["eps"].notna()]
+                results = _sue_from_rows(sub, fundamentals.index)
+                if results:
+                    return _cs_zscore(pd.Series(results, name="sue"), sparse=True).rename("sue")
+                return pd.Series(np.nan, index=fundamentals.index, name="sue")
 
     db = _market_db_path()
     conn = _db_connect()
@@ -806,9 +864,29 @@ def compute_sue(fundamentals, date, financials=None):
     df['stat_date'] = pd.to_datetime(df['stat_date'])
     df['eps'] = df['net_profit'] / df['total_shares']
 
+    results = _sue_from_rows(df, fundamentals.index)
+    if not results:
+        return pd.Series(np.nan, index=fundamentals.index, name="sue")
+
+    sue_series = pd.Series(results, name="sue")
+    sue_series = sue_series.replace([np.inf, -np.inf], np.nan)
+    sue_series = sue_series.clip(-5, 5)
+    # 高SUE→高分
+    conn.close()
+    return _cs_zscore(sue_series, sparse=True).rename("sue")
+
+
+def _sue_from_rows(df: "pd.DataFrame", symbols) -> dict:
+    """按每股计算 SUE: (eps_latest - eps_yoy) / std(eps_8q).
+
+    与 compute_sue 共用 (aux 快路径 + SQL fallback 同语义).
+    """
     results = {}
-    for sym in fundamentals.index:
-        sym_data = df[df['symbol'] == sym].sort_values('stat_date', ascending=True)
+    df_idx = df.set_index("symbol")
+    for sym in symbols:
+        if sym not in df_idx.index:
+            continue
+        sym_data = df_idx.loc[[sym]].sort_values('stat_date', ascending=True)
         if len(sym_data) < 3:
             continue  # 需要至少3个季度数据
 
@@ -833,13 +911,7 @@ def compute_sue(fundamentals, date, financials=None):
         if eps_std > 0:
             sue = (eps_latest - eps_yoy) / eps_std
             results[sym] = sue
-
-    sue_series = pd.Series(results, name="sue")
-    sue_series = sue_series.replace([np.inf, -np.inf], np.nan)
-    sue_series = sue_series.clip(-5, 5)
-    # 高SUE→高分
-    conn.close()
-    return _cs_zscore(sue_series, sparse=True).rename("sue")
+    return results
 
 
 

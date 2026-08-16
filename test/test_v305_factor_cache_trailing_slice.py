@@ -219,3 +219,27 @@ def test_materialize_window_factors_produce_rows(tmp_path, stub_market_conn):
         assert n >= 30, f"{f}: {n} rows < 30"
     fs.close()
     ds.close()
+
+
+def test_no_event_day_streak_factors_materialize(tmp_path, stub_market_conn):
+    """v517: 无涨/跌停日 (zt/dt_streak 全 0) 也必须产行 — 不再 zscore 除零变 全 NaN
+    导致 blocked 剔除, 缓存缺因子 (2026-08-16 实证 2025-07-24 缺 dt_streak)."""
+    dates = pd.bdate_range("2025-06-02", periods=300)
+    data = _wide(dates, seed=7)  # 全部普通日, 无涨/跌停事件
+
+    ds = DataStore(db_path=str(tmp_path / "market.db"))
+    _seed_market_db(ds, dates, data)
+
+    fs = FactorStore(db_path=str(tmp_path / "factor_cache.db"))
+    t_str = str(dates[-1])[:10]
+    res = fs.materialize([t_str], ["dt_streak", "zt_streak"], SYMS, store=ds)
+
+    assert res["n_rows"] > 0, "全零事件日修复前 0 rows (zscore 除零 → blocked)"
+    existing = fs._get_existing_factors(t_str)
+    missing = {"dt_streak", "zt_streak"} - existing
+    assert not missing, f"全零日仍缺: {missing}"
+    data = fs.load(t_str, factor_names=["dt_streak", "zt_streak"])
+    for f in ("dt_streak", "zt_streak"):
+        assert (data[f].fillna(0.0) == 0).all(), f"{f}: 无事件日应为全 0"
+    fs.close()
+    ds.close()

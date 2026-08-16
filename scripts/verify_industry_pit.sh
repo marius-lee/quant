@@ -17,14 +17,16 @@ conn = sqlite3.connect(MARKET_DB)
 total = conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
 synced = conn.execute("SELECT COUNT(DISTINCT symbol) FROM industry_history").fetchone()[0]
 segments = conn.execute("SELECT COUNT(*) FROM industry_history").fetchone()[0]
+skipped = conn.execute("SELECT COUNT(*) FROM industry_history_skip").fetchone()[0]
 
-print(f"industry_history: {synced}/{total} symbols, {segments} segments")
-if synced < total:
-    raise SystemExit(f"ABORT: 同步未完成 ({synced}/{total}) — 请先等后台同步跑完再验证")
+print(f"industry_history: {synced}/{total} symbols ({skipped} skipped), {segments} segments")
+if synced + skipped < total:
+    raise SystemExit(f"ABORT: 同步未完成 ({synced}+{skipped}/{total}) — 请先等后台同步跑完再验证")
 zero_seg = conn.execute(
     "SELECT COUNT(*) FROM stocks s LEFT JOIN industry_history h ON s.symbol=h.symbol "
-    "WHERE h.symbol IS NULL").fetchone()[0]
-print(f"零段股票 (无任何行业段): {zero_seg}")
+    "LEFT JOIN industry_history_skip k ON s.symbol=k.symbol "
+    "WHERE h.symbol IS NULL AND k.symbol IS NULL").fetchone()[0]
+print(f"零段且未标记跳过股票: {zero_seg}")
 conn.close()
 EOF
 

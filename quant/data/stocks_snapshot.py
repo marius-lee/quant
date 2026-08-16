@@ -81,6 +81,12 @@ def refresh_total_shares() -> int:
 
     报告优先级: 2026Q2 → 2026Q1 → 2025Q4 (最新已披露). 返回更新数。
     """
+    from quant.utils.baostock_gate import gate as _gate
+    with _gate.task_scope("refresh_total_shares"):
+        return _refresh_total_shares_inner()
+
+
+def _refresh_total_shares_inner() -> int:
     import baostock as bs
     c = _conn()
     syms = [r[0] for r in c.execute(

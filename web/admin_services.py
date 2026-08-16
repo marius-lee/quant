@@ -521,7 +521,10 @@ def grafana_status() -> dict:
             return False
 
     p3000 = _probe(3000)
+    _p9090 = _probe(9090)
+    hint = "Grafana 未运行 — 如需接入请先启动 (默认端口 3000)" if not p3000 \
+        else (f"运行中 — http://localhost:3000 | Prometheus {'已接入 9090' if _p9090 else '9090 未运行'}")
     return {"running": p3000, "url": "http://localhost:3000" if p3000 else None,
-            "prometheus_running": _probe(9090),
+            "prometheus_running": _p9090,
             "prometheus_url": "http://localhost:9090",
-            "hint": "Grafana 未运行 — 如需接入请先启动 (默认端口 3000)"}
+            "hint": hint}

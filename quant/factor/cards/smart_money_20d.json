@@ -3,8 +3,8 @@
   "display_name": "smart_money_20d",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0051,
-  "icir_12m": 0.0443,
+  "ic_mean_12m": -0.034,
+  "icir_12m": -0.2168,
   "last_evaluated": "auto",
-  "n_obs": 93
+  "n_obs": 130
 }

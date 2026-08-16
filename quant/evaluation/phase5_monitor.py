@@ -101,6 +101,24 @@ def sync_factor_status() -> dict:
 
     # 对每个 backtesting 池中的因子逐个裁决
     all_evaluated = p2_active | p2_probation | p2_archived
+
+    # ── v519: DSR 显著性是晋升硬门槛 (Bailey & López de Prado 2014; De Prado 2018 Ch.7) ──
+    # 数据源与日频 attribution 一致: factor_ic_daily 滚动 IC 序列 → CPCV+DSR 判读。
+    # DSR 未显著的三阶段全 pass 因子 → probation 半权观察 (业界模拟盘期), 不直升 active。
+    from quant.data.repos import FactorRepo
+    from quant.evaluation.cpcv_dsr import evaluate_factor as _eval_dsr
+    _fr = FactorRepo()
+    dsr_verdicts = {}
+    for fname in sorted(all_evaluated):
+        try:
+            ic_vals = [r["ic_value"] for r in _fr.get_ic_rolling(
+                fname, _require_cfg("attribution.ic_rolling_window"))
+                if r["ic_value"] is not None]
+            if len(ic_vals) >= 3:
+                _v = _eval_dsr(ic_vals, n_trials=max(len(all_evaluated), 1))
+                dsr_verdicts[fname] = _v.get("verdict")
+        except Exception as e:
+            _log.warning(f"phase5: DSR computation failed for {fname}: {e}")
     reasons = {}  # factor_name → reason_str
     for fname in sorted(all_evaluated):
         # 跳过 diagnostics 排除的因子 (保留原状态)
@@ -128,9 +146,17 @@ def sync_factor_status() -> dict:
                 f"[EVAL] Phase 3: OOS validation skipped — IC history too short for CPCV. "
                 f"IC={p2_ic_vals.get(fname, 0):+.4f}. Awaiting more data for re-evaluation."
             )
-        elif p2_status == "pass" and p3_status == "pass" and p4_status == "pass":
+        elif p2_status == "pass" and p3_status == "pass" and p4_status == "pass" \
+                and dsr_verdicts.get(fname) == "significant":
             certified_active.add(fname)
-            reasons[fname] = "[EVAL] passed Phase 2+3+4 (full evaluation)"
+            reasons[fname] = "[EVAL] passed Phase 2+3+4 + DSR significant (full evaluation)"
+        elif p2_status == "pass" and p3_status == "pass" and p4_status == "pass":
+            # v519: 三阶段全 pass 但 DSR 未显著 → 半权观察 (业界模拟盘期)
+            factors_to_probation.add(fname)
+            reasons[fname] = (
+                f"[EVAL] passed Phase 2+3+4 but DSR={dsr_verdicts.get(fname)} not "
+                f"significant — routed to observation (probation half-weight)"
+            )
         elif p2_status == "fail":
             factors_to_archived.add(fname)
             reasons[fname] = f"[EVAL] Phase 2: IC/ICIR below all thresholds"
@@ -180,17 +206,30 @@ def sync_factor_status() -> dict:
         "SELECT name FROM factor_registry WHERE status='active'"
     ).fetchall())
 
+    # v519: 仅 evaluating 因子由 phase5b 裁决升降; 实盘 probation 因子归
+    # attribution.py 日频 IC 恢复通道管理 — 状态机无 (probation, EVAL_*) 转移,
+    # 避免 batch_transition 每次静默跳过产生噪声。
+    evaluating_names = set(r[0] for r in conn.execute(
+        "SELECT name FROM factor_registry WHERE status='evaluating'"
+    ).fetchall())
+
     # 不碰 active 因子 (实盘模块 management — attribution.py)
-    active_to_update = certified_active - current_active
-    monitoring_to_update = factors_to_probation - current_active
+    active_to_update = (certified_active & evaluating_names) - current_active
+    monitoring_to_update = (factors_to_probation & evaluating_names) - current_active
     retired_to_update = factors_to_archived - factors_permanent - current_active
     rejected_to_update = factors_permanent - current_active
 
     # ── 通过 StateManager 转换 (零 fallback: 非法转换→ValueError) ──
-    active_ok = fsm.batch_transition(
-        list(active_to_update), "EVAL_PASS",
-        reason="[EVAL] passed Phase 2+3+4 (full evaluation)"
-    )
+    # v519: 逐因子携带 reasons[name] (含 DSR 判读), 弃硬编码 reason
+    active_ok = 0
+    for name in sorted(active_to_update):
+        try:
+            fsm.transition(
+                name, "EVAL_PASS",
+                reasons.get(name, "[EVAL] passed Phase 2+3+4 + DSR significant (full evaluation)"))
+            active_ok += 1
+        except Exception as e:
+            _log.warning("sync_factor_status: %s EVAL_PASS failed: %s", name, e)
     monitoring_ok = 0
     for name in monitoring_to_update:
         try:

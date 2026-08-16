@@ -319,7 +319,8 @@ class InProcessBroker:
             _conn.close()
             if _row and _row["payload"]:
                 _bridge_data = _json.loads(_row["payload"])
-                for k in ("signals", "progress", "mood", "trace_id", "timestamp"):
+                # v513: alerts 并入桥接 (行业同步进程→web SSE 跨进程告警)
+                for k in ("signals", "progress", "mood", "trace_id", "timestamp", "alerts"):
                     if k in _bridge_data:
                         cached[k] = _bridge_data[k]
         except Exception as _br_err:
@@ -327,7 +328,8 @@ class InProcessBroker:
             logging.getLogger("web.state_broker").warning(
                 f"get(): state_bridge 读取失败: {_br_err}")
         # pipeline 进度/信号 overlay (signals/progress/mood/trace_id/timestamp)
-        for k in ("signals", "progress", "mood", "trace_id", "timestamp"):
+        # v513: + alerts (跨进程告警 — 行业同步每日上限等)
+        for k in ("signals", "progress", "mood", "trace_id", "timestamp", "alerts"):
             if k in cached:
                 state[k] = cached[k]
         # Dynamically inject trading period status

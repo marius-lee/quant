@@ -16,7 +16,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v507"
+VERSION = "test-v523"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 
@@ -1109,7 +1109,25 @@ def metrics_endpoint():
                                     "message": "Prometheus 指标生成失败"}), 500
 
 
+@app.route("/api/monitoring/datasources")
+def api_monitoring_datasources():
+    """Grafana 数据源摘要 — 供系统页判断 Prometheus 是否接入."""
+    from quant.config.loader import get as _cfg
+    return _api_response(data={
+        "prometheus": {
+            "url": f"http://localhost:{_cfg('prometheus.port')}",
+            "configured": bool(_cfg("prometheus.enabled")),
+        },
+        "grafana": {
+            "url": f"http://localhost:{_cfg('grafana.port')}",
+            "configured": bool(_cfg("grafana.enabled")),
+        },
+    })
+
+
 if __name__ == "__main__":
     port = int(_require_cfg("web.port"))
+    from quant.monitoring.prometheus import init_monitoring
+    init_monitoring()  # 启动 MetricsCollector (30s 系统指标 + 低频行数) — 模板 9
     logger.info(f"Web 服务启动于端口 {port}")
     app.run(host="0.0.0.0", port=port, debug=False)

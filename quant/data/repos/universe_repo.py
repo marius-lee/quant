@@ -121,10 +121,12 @@ class UniverseRepo:
             params.append(end_date)
 
         if start_date:
-            sql += " AND (s.delist_date IS NULL OR s.delist_date > strftime('%Y%m%d', ?))"
+            sql += (" AND (s.delist_date IS NULL OR s.delist_date = '' "
+                    "OR s.delist_date > strftime('%Y%m%d', ?))")
             params.append(start_date)
         elif end_date:
-            sql += " AND (s.delist_date IS NULL OR s.delist_date > strftime('%Y%m%d', ?))"
+            sql += (" AND (s.delist_date IS NULL OR s.delist_date = '' "
+                    "OR s.delist_date > strftime('%Y%m%d', ?))")
             params.append(end_date)
 
         rows = query_all(conn, sql, tuple(params))

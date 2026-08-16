@@ -224,6 +224,7 @@ async function pollOverview() {
     renderKPIs(perf);
     renderSignals(state);
     updateStatusBar(state);
+    renderAlerts(state.alerts);   // v513: 初始横幅 (SSE 断线/刷新兜底)
     if (lgb) renderLGB(lgb);
     if (xgb) renderXGB(xgb);
   } catch (e) { console.warn('poll error:', e.message); }
@@ -679,6 +680,22 @@ async function submitCurator() {
 // SSE
 // ═══════════════════════════════════════════
 let _sseRetry = 0, _sseConn = null;
+
+// ⚠ 告警横幅 (v513) — brokers/alerts SSE 推送, 红色闪烁常驻至解除
+function renderAlerts(alerts) {
+  const banner = document.getElementById('alert-banner');
+  if (!banner) return;
+  const list = Array.isArray(alerts) ? alerts.filter(a => a && a.msg) : [];
+  if (!list.length) { banner.hidden = true; banner.innerHTML = ''; return; }
+  const items = list.map(a => {
+    const cls = a.level === 'critical' ? 'alert-critical' : 'alert-warn';
+    return `<span class="${cls}">⚠ ${a.msg}</span>`;
+  }).join(' &nbsp;|&nbsp; ');
+  banner.innerHTML = items + '<span class="alert-close" title="暂时隐藏">✕</span>';
+  banner.hidden = false;
+  banner.querySelector('.alert-close').addEventListener('click', () => { banner.hidden = true; });
+}
+
 function connectSSE() {
   if (_sseConn) _sseConn.close();
   _sseConn = new EventSource(API + '/stream');
@@ -689,6 +706,7 @@ function connectSSE() {
       if (state) {
         renderSignals(state);
         updateStatusBar(state);
+        renderAlerts(state.alerts);
         window._stateData = state;
       }
     } catch (_) {}
@@ -886,7 +904,7 @@ async function loadSystems() {
     const g = await fetchJSON('/api/monitoring/grafana');
     const gEl = document.getElementById('mon-grafana');
     if (gEl) gEl.innerHTML = g.running
-      ? '<span style="color:var(--up)">● 运行中</span>'
+      ? `<a href="${g.url}" target="_blank" style="color:var(--up)">● 运行中</a>`
       : '<span style="color:var(--text3)">● 未运行</span>';
     setText('mon-hint', g.hint || '');
     let prom = null;
@@ -895,9 +913,12 @@ async function loadSystems() {
     if (mEl) {
       const p3000 = g.prometheus_running;
       const status = prom
-        ? `${prom.count} 条指标序列` + (p3000 ? ' · Prom 9090 运行中' : ' · Prom 9090 未运行')
-        : (p3000 ? 'Prom 9090 运行中' : 'Prom 9090 未运行');
-      mEl.innerHTML = `${escapeHtml(status)} <a href="/metrics" target="_blank" style="color:var(--accent)">查看</a>`;
+        ? `${prom.count} 条指标序列` + (p3000 ? ' · Prometheus 9090 运行中' : ' · Prometheus 9090 未运行')
+        : (p3000 ? 'Prometheus 9090 运行中' : 'Prometheus 9090 未运行');
+      const links = g.running
+        ? ` <a href="${g.url}" target="_blank" style="color:var(--accent)">面板</a> · <a href="http://localhost:9090" target="_blank" style="color:var(--accent)">Prometheus</a>`
+        : '';
+      mEl.innerHTML = `${escapeHtml(status)} <a href="/metrics" target="_blank" style="color:var(--accent)">查看</a>${links}`;
     }
   } catch (e) { /* ignore */ }
 }

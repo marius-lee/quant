@@ -66,14 +66,14 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
     # ADR-043 layer1: +total_mv+industry for abn_turnover/str market-cap neutralization
     try:
         df = pd.read_sql_query(
-            "SELECT symbol, market, name, total_mv, industry FROM stocks WHERE symbol IN (" + ph + ")",
+            "SELECT symbol, market, name, total_mv, industry, total_shares FROM stocks WHERE symbol IN (" + ph + ")",
             conn, params=symbols
         )
         result["stocks"] = df.set_index("symbol") if not df.empty else pd.DataFrame(
-            columns=["symbol", "market", "name", "total_mv", "industry"]).set_index("symbol")
+            columns=["symbol", "market", "name", "total_mv", "industry", "total_shares"]).set_index("symbol")
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
         result["stocks"] = pd.DataFrame(
-            columns=["symbol", "market", "name", "total_mv", "industry"]).set_index("symbol")
+            columns=["symbol", "market", "name", "total_mv", "industry", "total_shares"]).set_index("symbol")
 
     # v502 (PIT industry): 单日路径同 chunk 处理 — industry_history PIT 覆盖当前快照
     try:
@@ -141,13 +141,21 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
         result["fund_hold"] = pd.DataFrame(columns=["symbol", "fund_count", "change_ratio"]).set_index("symbol")
 
-    # financial tables: TTM data
+    # financial tables: TTM data (v523: +symbol 过滤/financial_lookback_days 下界,
+    # 与单日版对齐 — 全历史全表 220k 行×3 曾造成 worker fork 内存过剩)
+    fin_start = (pd.Timestamp(date_from)
+                 - pd.Timedelta(days=_require_cfg("factor.compute.financial_lookback_days"))
+                 ).strftime("%Y-%m-%d")
     for tbl in ["financial_income", "financial_balance", "financial_cashflow"]:
         try:
             df = pd.read_sql_query(
-                f"SELECT * FROM {tbl} WHERE stat_date <= ? ORDER BY stat_date",
-                conn, params=(date,)
+                f"SELECT * FROM {tbl} WHERE symbol IN ({ph}) "
+                f"AND stat_date >= ? AND stat_date <= ? ORDER BY stat_date",
+                conn, params=symbols + [fin_start, date_to]
             )
+            # v523: stat_date 统一 datetime — 下游因子过滤免 3 亿次 object 比较
+            if not df.empty and "stat_date" in df.columns:
+                df["stat_date"] = pd.to_datetime(df["stat_date"]).dt.date.astype("datetime64[ns]")
             result[tbl] = df if not df.empty else pd.DataFrame(columns=df.columns)
         except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
             result[tbl] = pd.DataFrame(columns=["symbol", "stat_date"])
@@ -205,14 +213,14 @@ def preload_aux_data_chunk(symbols: list, date_from: str, date_to: str,
     # stocks: 单日快照，全量返回 (ADR-043 layer1: +total_mv+industry)
     try:
         df = pd.read_sql_query(
-            "SELECT symbol, market, name, total_mv, industry FROM stocks WHERE symbol IN (" + ph + ")",
+            "SELECT symbol, market, name, total_mv, industry, total_shares FROM stocks WHERE symbol IN (" + ph + ")",
             conn, params=symbols
         )
         result["stocks"] = df.set_index("symbol") if not df.empty else pd.DataFrame(
-            columns=["symbol", "market", "name", "total_mv", "industry"]).set_index("symbol")
+            columns=["symbol", "market", "name", "total_mv", "industry", "total_shares"]).set_index("symbol")
     except (pd.io.sql.DatabaseError, sqlite3.OperationalError):
         result["stocks"] = pd.DataFrame(
-            columns=["symbol", "market", "name", "total_mv", "industry"]).set_index("symbol")
+            columns=["symbol", "market", "name", "total_mv", "industry", "total_shares"]).set_index("symbol")
 
     # v502 (PIT industry): industry_history 全部变更段, slice 时按日期取
     # effective_from<=date 的最大段 — 替代 stocks.industry 当前快照 (历史后视).
@@ -288,6 +296,8 @@ def preload_aux_data_chunk(symbols: list, date_from: str, date_to: str,
                 f"AND stat_date >= ? AND stat_date <= ? ORDER BY stat_date",
                 conn, params=symbols + [fin_start, date_to]
             )
+            if not df.empty and "stat_date" in df.columns:
+                df["stat_date"] = pd.to_datetime(df["stat_date"]).dt.date.astype("datetime64[ns]")
             result[tbl] = df if not df.empty else pd.DataFrame(
                 columns=["symbol", "stat_date"])
         except (pd.io.sql.DatabaseError, sqlite3.OperationalError):

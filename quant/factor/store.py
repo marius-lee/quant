@@ -292,6 +292,11 @@ class FactorStore:
 
         for i in range(start_idx, end_idx):
             date_str = date_list[i]
+            # v522: 进度埋点 — 每 10 天打点, 防止长 slice 完全静默 (5.5h 盲等事故)
+            if (i - start_idx) % 10 == 0:
+                _log.info("Worker [%s..%s]: %d/%d dates done (%.1fs elapsed)",
+                          date_list[start_idx], date_str, i - start_idx, end_idx - start_idx,
+                          _time.time() - t0)
             try:
                 date_idx = date_to_idx[date_str]
                 d_idx = np.int16(date_idx)
@@ -358,7 +363,8 @@ class FactorStore:
                     store=None,
                     force: bool = False,
                     chunk_days: int = 200,
-                    workers: int = None) -> dict:
+                    workers: int = None,
+                    max_slice_days: int = None) -> dict:
         """批量物化因子值: fork pool + parquet column 分区写入。
 
         Args:
@@ -535,8 +541,13 @@ class FactorStore:
             _SYMBOLS = symbols
 
             # 本块内按日期分片分配给 workers (每个 worker 连续日期段)
+            # v522: max_slice_days 限制单片天数 — worker 内 results 随天数线性累积,
+            # 4×50 天在 8GB 机器上打爆 swap (5h+ 零产出, 实测 294s/日 抖动)。
+            # 25 天/片 → 单 worker 峰值内存减半, 波次推进 (2 波).
             dates_in_chunk = chunk_dates
-            n_worker_slices = min(workers, len(dates_in_chunk))
+            slice_cap = max_slice_days or len(dates_in_chunk)
+            n_worker_slices = min(
+                max(1, -(-len(dates_in_chunk) // slice_cap)), len(dates_in_chunk))
             slice_size = -(-len(dates_in_chunk) // n_worker_slices)  # ceil 除, 覆盖全部日期
             slices = []
             for wi in range(n_worker_slices):

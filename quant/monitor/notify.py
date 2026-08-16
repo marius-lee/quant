@@ -1,8 +1,8 @@
-"""告警通知通道 — Telegram / 企业微信 / 本地日志。
+"""告警通知通道 — macOS 系统通知 / Telegram / 企业微信 / 本地日志。
 
-依赖: requests (已安装), 无需额外 pip.
+依赖: requests (已安装), 无需额外 pip. macOS 通知用 osascript (本机弹窗+提示音).
 配置: config.yaml monitor.telegram_bot_token / telegram_chat_id / wechat_webhook
-无配置时退化到本地 logger.warning (不阻塞).
+无配置时通道静默跳过 (不阻塞), 兜底 logger.warning 必达.
 
 Usage:
     from monitor.notify import send_alert
@@ -26,6 +26,9 @@ def _telegram_chat_id():
 
 def _wechat_webhook():
     return cfg("monitor.wechat_webhook") or ""
+
+def _serverchan_sendkey():
+    return cfg("monitor.serverchan_sendkey") or ""
 
 
 def _telegram_send(text: str) -> bool:
@@ -55,6 +58,63 @@ def _wechat_send(text: str) -> bool:
     return resp.status_code == 200
 
 
+def _serverchan_send(text: str, title: str = "量化告警") -> bool:
+    """通过 Server酱³ (微信服务号推送) 发送消息 — v515, 个人微信可达.
+
+    API: POST https://sctapi.ftqq.com/<SendKey>.send, 参数 title/desp.
+    需要 SendKey 已配置 (monitor.serverchan_sendkey); 未配置静默跳过.
+    国内直连, 微信服务号必达.
+    """
+    key = _serverchan_sendkey()
+    if not key:
+        return False
+    try:
+        resp = requests.post(
+            f"https://sctapi.ftqq.com/{key}.send",
+            data={"title": title, "desp": text},
+            timeout=10)
+        if resp.status_code != 200:
+            _log.warning(f"serverchan HTTP {resp.status_code}: {resp.text[:200]}")
+            return False
+        return resp.json().get("code") == 0
+    except Exception as _e:
+        _log.warning(f"serverchan send failed: {_e}")
+        return False
+
+
+def _macos_notify(title: str, body: str) -> bool:
+    """macOS 系统通知 + 提示音 (osascript, 本机桌面弹窗, v513).
+
+    仅 darwin 生效; 弹窗 Retry/Report 按钮静默 (display notification 无按钮).
+    """
+    import platform, subprocess
+    if platform.system() != "Darwin":
+        return False
+    try:
+        body_esc = body.replace("\\", "\\\\").replace('"', '\\"')
+        subprocess.run(
+            ["osascript", "-e",
+             f'display notification "{body_esc}" with title "{title}" sound name "Glass"'],
+            timeout=8, capture_output=True)
+        return True
+    except Exception:
+        return False
+
+
+def _macos_sound() -> bool:
+    """macOS 提示音 (afplay 内置提示音, 即使弹窗被系统静音也可听, v513)."""
+    import platform, subprocess
+    if platform.system() != "Darwin":
+        return False
+    try:
+        subprocess.Popen(
+            ["afplay", "/System/Library/Sounds/Glass.aiff"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return False
+
+
 def send_alert(alert: dict) -> bool:
     """发送告警到所有已配置通道.
 
@@ -71,6 +131,12 @@ def send_alert(alert: dict) -> bool:
     text = f"*[{level}] {title}*\n{body}"
 
     sent = False
+    if _macos_notify(title, text):
+        sent = True
+        _log.info(f"macOS notification sent: {title}")
+    if _serverchan_send(text, title):
+        sent = True
+        _log.info(f"ServerChan alert sent: {title}")
     if _telegram_send(text):
         sent = True
         _log.info(f"Telegram alert sent: {title}")
@@ -104,4 +170,20 @@ def send_error_alert(component: str, error: str) -> bool:
         "level": "CRITICAL",
         "title": f"组件错误: {component}",
         "body": error,
+    })
+
+
+def send_baostock_quota_alert(count: int, limit: int, pending: int) -> bool:
+    """baostock 日请求上限告警 (v513) — macOS 通知+提示音 + 可选 IM 通道.
+
+    达 5 万/日软上限: 任务优雅停止, 需用户换热点续跑 (IP 变化自动检测恢复).
+    """
+    _macos_sound()   # 提示音独立于弹窗 (系统勿扰模式也发声)
+    return send_alert({
+        "level": "CRITICAL",
+        "title": "⚠ baostock 今日请求已达上限",
+        "body": (f"今日 {count}/{limit} 次 — 行业 PIT 同步已停止, "
+                 f"剩余 {pending} 只未同步. 请更换网络热点 (新公网 IP) "
+                 f"后重跑 scripts/resume_industry_sync.sh, 系统自动检测 IP "
+                 f"变化并清零计数续跑."),
     })

@@ -2,6 +2,16 @@
 
 A股量化选股系统。Grinold & Kahn 7 层架构：数据 → 因子 → Alpha → 风控 → 优化 → 执行 → 监控。¥5,000 起步。
 
+## Agent 身份
+
+本项目 Agent 的角色定位（用户指定，写入本文档）：
+
+- **资深系统架构师**: 从整体架构视角做决策，遵循 Grinold & Kahn 7 层架构与模板 2/2a 分层原则，变更前先考虑架构影响（数据流、依赖方向、可扩展性）
+- **骨灰级软件开发专家**: 以最高工程标准交付代码——防御性编程、性能基线（模板 5）、可观测性埋点（模板 9）、TDD（模板 3）、代码审查（模板 10）逐项合规
+- **资深量化开发专家**: 熟悉因子模型、组合优化、风控、回测方法学；所有参数必须有文献/数据来源依据并写入 config.yaml，禁止凭空设定阈值
+
+执行任何任务时，以上述三重身份的标准自我要求，不降级交付。
+
 ## Commands
 
 ```bash
@@ -97,3 +107,4 @@ quant/
 - optuna / hmmlearn 在 `.venv` 中，测试和脚本须用 `.venv/bin/python`
 - 因子缓存 gzip CSV ≈ 1.5GB / 6年，无需裁剪（`factor_cache_max_days: 2000`）
 - `factor_fail_fast=False` — 单因子失败不阻断整批物化
+- **因子状态池/数据核查结论已固化**: `docs/architecture/factor-status-pools.md` 是权威 — using=active+probation(实盘), backtesting=evaluating+probation(回测), 物化池=两者并集(现 9 因子); 空表 (daily_basic/derived_daily/analyst_forecast/pledge_stat) 不影响物化; check_freshness 14 表全绿。**这些已核实完毕, 不再重复排查/报"重大发现"**

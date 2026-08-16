@@ -20,143 +20,92 @@ _log = get_logger(__name__)
 # ════════════════════════════════════════════════════════════
 
 def reevaluate_evaluating_factors(today: str) -> dict:
-    """重新评估所有 evaluating 状态的因子, 根据 IC/ICIR 触发状态晋升/归档.
+    """复查所有 evaluating 状态的因子, 输出晋升预判报告 (v519: 不再直接改状态).
+
+    v519 变更 (业界标准对齐, De Prado 2018 Ch.7-8 多阶段过滤):
+      原实现用 stats_cache 即时计算 IC/ICIR 并直接 transition — 与完整评估管线
+      (Phase 2-4 + phase5b 综合裁决) 并行且抢先, 导致轻量关卡先行晋升、
+      phase5b 的 CPCV/PBO/成本验证结论永不作用于已升因子。
+      现改为只读上一轮 Phase 2 快照做预判报告 (would-be verdict),
+      状态变更统一收敛到 phase5b 单一裁决入口。
 
     Returns:
-        dict with keys: reevaluated, promoted_active, promoted_probation, archived, errors
+        dict with keys: evaluated, would_active, would_probation, would_archived,
+        note (预判仅供参考, 实际裁决由 phase5b 执行)
     """
     from quant.data.repos import FactorRepo
-    from quant.factor.state_machine import FactorStateMachine
-    from quant.factor.stats_cache import compute_factor_stats
-    from quant.factor.store import FactorStore
+    from quant.evaluation.run_store import load_latest
     from quant.config.constants import _require_cfg
 
     repo = FactorRepo()
-    fsm = FactorStateMachine()
 
     # Get all evaluating factors
     evaluating_factors = repo.get_all_by_status(("evaluating",))
     if not evaluating_factors:
         _log.info("reevaluate_evaluating_factors: no evaluating factors to re-evaluate")
-        return {"reevaluated": 0, "promoted_active": 0, "promoted_probation": 0, "archived": 0, "errors": 0}
+        return {"evaluated": 0, "would_active": 0, "would_probation": 0, "would_archived": 0, "note": "no evaluating factors"}
 
     factor_names = [f["name"] for f in evaluating_factors]
-    _log.info(f"reevaluate_evaluating_factors: re-evaluating {len(factor_names)} evaluating factors")
+    p2 = load_latest("phase2")
+    if not p2:
+        _log.warning("reevaluate_evaluating_factors: no Phase 2 snapshot yet — verdict deferred to phase5b")
+        return {"evaluated": len(factor_names), "would_active": 0, "would_probation": 0,
+                "would_archived": 0, "note": "no phase2 snapshot — verdict deferred to phase5b"}
 
-    # Load evaluation config
+    # Load evaluation config thresholds
     min_abs_ic = _require_cfg("factor.evaluation.ic_threshold")
     min_icir = _require_cfg("factor.evaluation.icir_threshold")
     min_half_life = _require_cfg("factor.evaluation.min_half_life")
     monitoring_min_ic = _require_cfg("factor.evaluation.monitoring_min_abs_ic")
     monitoring_min_icir = _require_cfg("factor.evaluation.monitoring_min_icir")
-    n_days = _require_cfg("factor.evaluation.n_days")
-    lookback = _require_cfg("factor.evaluation.lookback")
-    n_symbols = _require_cfg("factor.evaluation.n_symbols")
 
-    # Materialize factor cache for evaluating factors first
-    _log.info("reevaluate_evaluating_factors: materializing factor cache for evaluating factors...")
-    fs = FactorStore()
-    from quant.data.repos.universe_repo import UniverseRepo
-    from quant.data.store import DataStore
-    from quant.factor.compute import get_factor_names
+    meta = p2.get("meta", {}) if isinstance(p2.get("meta"), dict) else {}
+    decay = p2.get("decay", {}) if isinstance(p2.get("decay"), dict) else {}
 
-    store = DataStore()
-    _latest = store._connect().execute(
-        'SELECT MAX(date) FROM daily').fetchone()[0]
-    # Need lookback + n_days days of factor data for IC computation
-    total_lookback = lookback + n_days
-    actual_end = min(today, _latest) if _latest else today
-    start_date = (pd.Timestamp(actual_end) - pd.Timedelta(days=total_lookback)).strftime('%Y-%m-%d')
-    dates = [r[0] for r in store._connect().execute(
-        'SELECT DISTINCT date FROM daily WHERE date >= ? AND date <= ? ORDER BY date',
-        (start_date, actual_end)).fetchall()]
-    symbols = UniverseRepo().get_symbols(exclude_market='BJ')
-    store.close()
-
-    # Materialize factor cache for evaluating factors
-    fs.materialize(
-        date_range=dates,
-        factor_names=factor_names,
-        symbols=symbols,
-        force=True,
-    )
-
-    # Compute factor stats for evaluating factors
-    stats = compute_factor_stats(
-        n_symbols=n_symbols if n_symbols > 0 else None,
-        lookback=lookback,
-        factor_names=factor_names,
-    )
-
-    factor_names = stats["factor_keys"]
-    ic_means = dict(zip(factor_names, stats["ic"]))
-    ic_irs = dict(zip(factor_names, stats["ic_ir"]))
-    decay = stats.get("decay", {})
-    meta = stats.get("meta", {})
-
-    promoted_active = 0
-    promoted_probation = 0
-    archived = 0
-    errors = 0
-
+    would_active, would_probation, would_archived = [], [], []
     for name in factor_names:
-        try:
-            mean_ic = ic_means.get(name, 0.0)
-            mean_icir = ic_irs.get(name, 0.0)
-            abs_ic = abs(mean_ic)
-            abs_icir = abs(mean_icir)
-            reasons = []
+        mean_ic = p2.get("ic_means", {}).get(name, 0.0) or 0.0
+        mean_icir = p2.get("ic_irs", {}).get(name, 0.0) or 0.0
+        abs_ic = abs(mean_ic)
+        abs_icir = abs(mean_icir)
+        reasons = []
 
-            # Evaluate based on thresholds
-            if abs_ic < min_abs_ic:
-                reasons.append(f"|IC|={abs_ic:.4f}<{min_abs_ic}")
-            if abs_icir < min_icir:
-                reasons.append(f"ICIR={abs_icir:.2f}<{min_icir}")
+        if abs_ic < min_abs_ic:
+            reasons.append(f"|IC|={abs_ic:.4f}<{min_abs_ic}")
+        if abs_icir < min_icir:
+            reasons.append(f"ICIR={abs_icir:.2f}<{min_icir}")
 
-            # Check half-life
-            decay_vals = decay.get(meta.get(name, {}).get("display", name), [0.0, 0.0, 0.0])
-            ic_1d = abs(decay_vals[0]) if len(decay_vals) > 0 else 0.0
-            ic_20d = abs(decay_vals[2]) if len(decay_vals) > 2 else 0.0
-            half_life_est = None
-            if ic_1d > 0.001 and ic_20d > 0:
-                ratio_20 = ic_20d / ic_1d
-                if 0 < ratio_20 < 1.0:
-                    half_life_est = int(-19 * np.log(2) / np.log(ratio_20))
-            if half_life_est is not None and half_life_est < min_half_life and ic_1d >= min_abs_ic:
-                reasons.append(f"half-life={half_life_est}d<{min_half_life}")
+        # half-life check (与原实现同一口径)
+        decay_vals = decay.get(meta.get(name, {}).get("display", name), [0.0, 0.0, 0.0])
+        ic_1d = abs(decay_vals[0]) if len(decay_vals) > 0 else 0.0
+        ic_20d = abs(decay_vals[2]) if len(decay_vals) > 2 else 0.0
+        half_life_est = None
+        if ic_1d > 0.001 and ic_20d > 0:
+            ratio_20 = ic_20d / ic_1d
+            if 0 < ratio_20 < 1.0:
+                half_life_est = int(-19 * np.log(2) / np.log(ratio_20))
+        if half_life_est is not None and half_life_est < min_half_life and ic_1d >= min_abs_ic:
+            reasons.append(f"half-life={half_life_est}d<{min_half_life}")
 
-            # Determine verdict and transition
-            if not reasons:
-                # EVAL_OK -> active
-                fsm.transition(name, "EVAL_OK", reason=f"reeval: IC={abs_ic:.4f} IR={abs_icir:.2f}")
-                promoted_active += 1
-            elif abs_icir >= monitoring_min_icir and abs_ic >= monitoring_min_ic:
-                # EVAL_MARGINAL -> probation
-                fsm.transition(name, "EVAL_MARGINAL", reason=f"reeval: IC={abs_ic:.4f} IR={abs_icir:.2f} marginal")
-                promoted_probation += 1
-            else:
-                # EVAL_FAIL -> archived
-                fsm.transition(name, "EVAL_FAIL", reason=f"reeval: IC={abs_ic:.4f} IR={abs_icir:.2f} failed; {'; '.join(reasons)}")
-                archived += 1
+        if not reasons:
+            would_active.append(name)
+        elif abs_icir >= monitoring_min_icir and abs_ic >= monitoring_min_ic:
+            would_probation.append(name)
+        else:
+            would_archived.append(name)
 
-        except Exception as e:
-            _log.error(f"reevaluate {name} failed: {e}")
-            errors += 1
+    _log.info("reevaluate_evaluating_factors (v519 report-only): phase2-snapshot verdicts → "
+              f"active={sorted(would_active)}, probation={sorted(would_probation)}, "
+              f"archived={sorted(would_archived)}")
+    if would_active:
+        _log.info("  → promoted to active by phase5b ONLY if Phase 2+3+4 all pass + DSR significant")
+    for name in sorted(would_archived):
+        _log.warning(f"  ✗ {name}: Phase 2 snapshot already below thresholds — likely archived this cycle")
 
-    _log.info(f"reevaluate_evaluating_factors done: promoted_active={promoted_active}, "
-              f"promoted_probation={promoted_probation}, archived={archived}, errors={errors}")
-    return {
-        "reevaluated": len(factor_names),
-        "promoted_active": promoted_active,
-        "promoted_probation": promoted_probation,
-        "archived": archived,
-        "errors": errors,
-    }
+    return {"evaluated": len(factor_names), "would_active": len(would_active),
+            "would_probation": len(would_probation), "would_archived": len(would_archived),
+            "note": "report-only; actual transitions executed by phase5b (p2+p3+p4+DSR)"}
 
-
-# ═════════════════════════════════════════════════════════════
-# Phase 1-5: 完整评估管线 (原 eval_standard.sh)
-# ═════════════════════════════════════════════════════════════
 
 def _run_phase(name: str, today: str, fn, grace: int = 3600) -> bool:
     """运行单个评估阶段, 写 task_runs. 返回 True=成功."""

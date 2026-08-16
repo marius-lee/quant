@@ -50,3 +50,6 @@ quant/data/.fund_flow_cooldown
 quant/data/.baostock_state.json
 quant/data/.turnover_full_progress.json
 quant/data/.amount_full_progress.json
+
+# 敏感信息: 本机生产配置含密钥 (serverchan/telegram token), 不提交
+quant/config/config.yaml

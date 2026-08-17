@@ -27,7 +27,7 @@ bash scripts/eval_standard.sh      # 五阶段标准评估 (CPCV+walk-forward+PB
 | `reset_rejected.sh` | 重置 rejected → retired |
 | `generate_factor_cards.py` | 生成因子卡片 JSON |
 | `materialize_factors.py` | 全量物化因子值到 factor_cache.db |
-| `materialize_full.sh` | 全量重建因子缓存 (force=True, 整段覆盖) |
+| `materialize_full.sh` | 全量重建因子缓存 (force=True, 整段覆盖; 物化起点 2020-01-01, v473 约定勿改) |
 | `materialize_range.sh` | 按日期区间补齐因子缓存 (幂等, 只补缺失) |
 | `rematerialize_industry_pit.sh` | 行业 PIT 生效后重物化 2020 起因子缓存 (v502) |
 | `rebuild_factor_cache.py` | 重建 factor_cache.json |

@@ -941,7 +941,6 @@ def compute_holder_reduction(fundamentals, date, financials=None):
     end_date = pd.Timestamp(date)
     date_str = to_str(date) if not isinstance(date, str) else date
 
-    vals = {r[0]: r[1] for r in rows if r[1] is not None}
     start_date = end_date - pd.DateOffset(days=60)
 
     rows = conn.execute(f"""

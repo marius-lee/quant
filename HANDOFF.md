@@ -1,3 +1,65 @@
+## 2026-08-17: v526 物化起点文档对齐 — 全面防误设 (test-v526)
+
+### 背景
+
+`scripts/materialize_full.sh` 仍用 2019-01-01 起点 (v470 误设,
+v473 只修复了 materialize_full.py 的 START, sh 版未同步), 且
+`config.yaml backtest.factor_cache_start=2019-01-01` 被晚间链
+(evening.py:114) 每晚用作增量区间起点 → 每晚扫描 2019 半脏区。
+
+### 修改 (物化起点统一 2020-01-01, 数据备齐 2019-01-01 语义不变)
+
+| 文件 | 改动 |
+|------|------|
+| `quant/config/config.yaml` | `backtest.factor_cache_start: '2019-01-01'` → `'2020-01-01'` + 约定注释 (唯一运行时消费方 evening.py) |
+| `scripts/materialize_full.sh` | 日期窗 2019 → 2020 + 头部约定注释; 保持不注入 store (v525) |
+| `scripts/patch_2019h1.sh` | 标记已废止 (v473 约定, 2019 不物化) |
+| `scripts/run_factor_cache_chunk1.py` | docstring 标记已废止 (v470 一次性任务) |
+| `scripts/benchmark_factor_cache.py` | 基准窗口 2019-06-03 → 2020-01-01 (对齐约定) |
+| `scripts/README.md` | materialize_full.sh 条目注明起点 2020-01-01 |
+| `CLAUDE.md` | 已知事项固化物化起点约定 (单一真相源: config `factor_cache_start` + `data.start_date`) |
+
+### 语义分工 (防再误设)
+
+- **数据备齐起点 2019-01-01**: verify_materialize_inputs / backfill_* / smoke_*
+- **物化起点 2020-01-01**: materialize_full.{sh,py} / 晚间链 factor_cache / benchmark
+- 2019 残留半脏缓存按 v473 决定不清理; 晚间链不再扫描 2019
+
+# HANDOFF
+
+## 2026-08-17: v525 物化架构重构 — 弃 fork+Pool 共享内存, 改独立 subprocess 段并行 (test-v525)
+
+### 背景: v522/v523 分片调度治标不治本
+
+fork+Pool+大 DataFrame COW 在 8GB M1 上反复 309 jetsam kill (OOM) 与
+DuckDB AfterFork 线程死循环, 评估反复卡死/零产出。
+
+### v525 方案 (用户拍板: 分片 subprocess 并行)
+
+- 新增 `quant/factor/materialize_segment.py`: 独立段进程入口
+  (`python -m quant.factor.materialize_segment --seg <json> --out <pickle>`),
+  段进程自载数据 (段首-`data_start` 统一为 todo 首日-eff_days, 跨段一致),
+  自算 prims/aux/fundamentals, 复算 `_worker_main` 计算循环 → 紧凑 pickle
+  交回主进程 → 既有 `_consume_worker_result` 落盘 (一行未动)。
+- `store.py` materialize: 删除 fork/Pool/全局共享数据构建; 主进程仅调度
+  (切片 → 派发 subprocess → 边收边消费 → checkpoint); workers 默认 3。
+- `scripts/reevaluate_now.py`: 撤 workers 参数 (用默认 3)。
+- store 注入 (测试/mock) 时降级 `_materialize_sync`: 主进程同步直算,
+  语义与 v525 前一致 (subprocess 无法继承内存数据源)。
+
+### 验证
+
+- 端到端: 3 天 × 5 因子 × 5208 股 subprocess 段并行, 35.9s, part merge ✓,
+  增量幂等跳过 ✓, blocked 记录 ✓。
+- 确定性: 同段两次直跑 maxdiff=0 (3 因子)。
+- 一致性: 直跑 vs 物化落盘 gap_5d corr=0.9986 (段边界首日 rolling 微差,
+  IC 用 rank 可忽略), max_ret_20d=1.0。
+- 测试: test_v472_factor_cache_materialize + test_factor_aux_consistency
+  11 passed (store 注入降级路径)。
+- 已知: sqlite daily symbol 无后缀 ('600000'), DuckDB market.duckdb 仅
+  部分范围 — DataStore.get_daily 空回退 sqlite, 生产 symbols 来自
+  UniverseRepo 无后缀, 段进程正常。
+
 # HANDOFF
 
 ## 2026-08-17 深夜-凌晨: v522/v523 物化加速 + 配置事故恢复 (test-v523)
@@ -48,6 +110,22 @@
   earnings_decay 35 因子标量循环可向量化 (未做, 非阻塞)。
 
 ---
+
+## 2026-08-17 上午: holder_reduction 幽灵行修复 + 评估重启确认 (test-v524)
+
+- **holder_reduction UnboundLocalError 根治**: `fundamental.py:944` — 粘贴残留:
+   `vals = {r[0]: r[1] for r in rows ...}` 置于 `rows = conn.execute(...)` 定义
+   之前 → 每 worker 每日期必炸, 被 fail_fast=False 吞为 skip (评估 101 因子池
+   里唯一持续报错项)。修: 该行移至 rows 之后。冒烟: 表空 → 正常返回全 NaN
+   (docstring 语义), 无异常。
+- 注意: 07:01 启动的评估 (pid 69633) 的 workers 为 fork 时旧代码 — 本轮
+  评估仍 skip holder_reduction; 下轮评估 (或补物化) 自动用新代码生效。
+- **后台健康确认 (用户问"是不是崩了")**: 4 workers 100% CPU ×14min 无打点
+  = 25 天 slice 长任务首次打点前静默 (正常, v523 单日 ~60-125s); 全程
+  物理 RSS 合计仅 ~124MB 驻留, **无内存问题**; swap 3.6GB = 凌晨 5.5h
+  死锁期历史残留 (macOS swap 不自动清算), 非当前占用。
+- 变更: 仅 fundamental.py (1 行移动) + VERSION。
+
 
 ## 2026-08-17: 手动重评事故与修复 (test-v521)
 

@@ -104,6 +104,12 @@ quant/
 
 ## 已知事项
 
+- **物化起点约定 (v473, 勿改)**: 数据备齐 2019-01-01, **因子物化从 2020-01-01 起**
+  (2018 年 daily 仅 ~354 只子集, 2019 起点会拉 2018 残缺 lookback 产生半脏缓存)。
+  单一真相源 = `config.yaml` 的 `backtest.factor_cache_start: '2020-01-01'` + `data.start_date: '2020-01-01'`。
+  回填/数据验证脚本的 2019-01-01 属"数据备齐"正确, 勿当物化起点误改。
+- **全量物化** = `bash scripts/materialize_full.sh` (v525: 不传 store, subprocess 段并行默认 3 并发; store 注入会退化为无并行同步路径)
+
 - optuna / hmmlearn 在 `.venv` 中，测试和脚本须用 `.venv/bin/python`
 - 因子缓存 gzip CSV ≈ 1.5GB / 6年，无需裁剪（`factor_cache_max_days: 2000`）
 - `factor_fail_fast=False` — 单因子失败不阻断整批物化

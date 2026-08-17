@@ -40,8 +40,9 @@ def main():
 
     store = DataStore()
     try:
-        # chunk 1: 2019-06-03 -> 2020-03-26 (约 200 交易日)
-        start = "2019-06-03"
+        # 基准窗口 (历史 benchmark 用 2019-06-03 起 — 物化起点约定 v473:
+        # 数据备齐 2019-01-01, 物化起点 2020-01-01; 本窗口仅测速, 用 2020)
+        start = "2020-01-01"
         end = "2020-03-26"
         dates = [
             r[0] for r in store._connect().execute(

@@ -383,8 +383,8 @@ class FactorStore:
         from quant.data.store import DataStore
 
         if workers is None:
-            workers = min(mp.cpu_count(), 4)
-            workers = max(2, workers)
+            # v525: 并发段进程数 — 每段峰值 ~1.5GB, 8GB 机器 3 并发 ≈ 5GB 总量
+            workers = min(3, max(2, mp.cpu_count() // 2))
 
         _store_owned = store is None
         if store is None:
@@ -475,12 +475,18 @@ class FactorStore:
                         "n_symbols": len(symbols), "n_rows": 0, "elapsed_sec": 0,
                         "skipped": True, "failed_dates": []}
 
-        # 0.6 准备共享数据 (按 chunk 分块装载 — 控制内存, M1 8GB 硬约束)
+        # 0.6 执行: 归一 subprocess 段并行; store 注入 (测试/mock) 时降级
+        # 主进程同步直算 — subprocess 无法继承内存数据源
+        if not _store_owned:
+            return self._materialize_sync(
+                store=store, date_list=sorted(todo_map.keys()),
+                factor_names=factor_names, symbols=symbols, todo_map=todo_map,
+                source_hash=source_hash, blocked=blocked, chunk_days=chunk_days,
+                date_to_idx=date_to_idx, sym_map=sym_map)
+
+        # 0.7 准备共享数据 (按 chunk 分块装载 — 控制内存, M1 8GB 硬约束)
         eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(factor_names))
         date_list = sorted(todo_map.keys())
-        # v483: 全局缺失因子表 (fork COW 继承给 workers)
-        global _MISSING_MAP
-        _MISSING_MAP = todo_map
 
         _log.info("factor_cache: %d pending dates → %d workers × %dd lookback",
                   len(date_list), workers, eff_days)
@@ -491,7 +497,6 @@ class FactorStore:
         per_factor_dates: dict[str, set] = {}
 
         n_chunks = max(1, (len(date_list) + chunk_days - 1) // chunk_days)
-        ctx = mp.get_context('fork')
         idx_to_date = {i: d for d, i in date_to_idx.items()}
         part_seq = 0  # 全局递增 part 序号 — 同 chunk 内多 slice 各自独立 part, 避免覆盖
 
@@ -504,46 +509,11 @@ class FactorStore:
             _log.info("factor_cache: chunk %d/%d — %s .. %s (%d dates)",
                       ci + 1, n_chunks, chunk_dates[0], chunk_dates[-1], len(chunk_dates))
 
-            # 本块最早需数据起始日期 (含 lookback)
-            earliest_date = chunk_dates[0]
-            data_start = (pd.Timestamp(earliest_date) - pd.Timedelta(days=eff_days)).strftime("%Y-%m-%d")
-            latest_date = chunk_dates[-1]
-
-            data_full = store.get_daily(symbols, start=data_start, end=latest_date)
-            _log.info("factor_cache: loaded %d days × %d symbols (%.1fs)",
-                      len(data_full), len(symbols), _time.time() - t0)
-
-            prims = precompute_primitives(data_full, factor_names=factor_names,
-                                          save_disk_cache=False)
-            _log.info("factor_cache: primitives computed (%.1fs)", _time.time() - t0)
-
-            try:
-                bm_ret = store.get_benchmark("000300", start=data_start)
-                if not bm_ret.empty:
-                    prims["benchmark_ret"] = bm_ret
-            except Exception as _e:
-                _log.warning("factor_cache: benchmark_ret not available (%s)", _e)
-
-            preload_ztd_cache(chunk_dates, symbols)
-
-            aux_full = preload_aux_data_chunk(symbols, earliest_date, latest_date)
-            _log.info("factor_cache: aux data loaded (%.1fs)", _time.time() - t0)
-
-            _fund_shards = self._build_fundamentals_panel(store, symbols, chunk_dates, data_full=data_full)
-            _log.info("factor_cache: fundamentals panel built (%.1fs)", _time.time() - t0)
-
-            # 设置全局共享数据 (fork COW 继承给 workers)
-            global _DATA_FULL, _PRIMS, _AUX_FULL, _FUNDAMENTALS, _SYMBOLS
-            _DATA_FULL = data_full
-            _PRIMS = prims
-            _AUX_FULL = aux_full
-            _FUNDAMENTALS = _fund_shards
-            _SYMBOLS = symbols
-
-            # 本块内按日期分片分配给 workers (每个 worker 连续日期段)
-            # v522: max_slice_days 限制单片天数 — worker 内 results 随天数线性累积,
-            # 4×50 天在 8GB 机器上打爆 swap (5h+ 零产出, 实测 294s/日 抖动)。
-            # 25 天/片 → 单 worker 峰值内存减半, 波次推进 (2 波).
+            # 本块内按日期分片分配给段进程 (每个段进程自载数据)
+            # v525: 弃 fork+Pool+共享 DataFrame (COW 写风暴 + duckdb 线程
+            # AfterFork 死循环 → 8GB 机上 309 jetsam kill 反复), 改
+            # 独立 subprocess 段并行 — 每段 25 天数据自载, 峰值 ~1.5GB/段,
+            # 并发 workers(默认3) ≈ 5GB 总量 < 8GB 墙.
             dates_in_chunk = chunk_dates
             slice_cap = max_slice_days or len(dates_in_chunk)
             n_worker_slices = min(
@@ -556,56 +526,100 @@ class FactorStore:
                 if _ws < _we:
                     slices.append((s + _ws, s + _we, wi, n_worker_slices))
 
-            with ctx.Pool(processes=workers) as pool:
-                async_results = []
-                for _ws, _we, wi, total_slices in slices:
-                    _log.info("factor_cache: slice %d/%d (dates %s → %s, %d dates)",
-                              wi + 1, total_slices, date_list[_ws], date_list[_we - 1], _we - _ws)
-                    async_results.append(pool.apply_async(
-                        self._worker_main,
-                        (_ws, _we, factor_names, date_list, sym_map, date_to_idx, source_hash)
-                    ))
+            import subprocess
+            import sys as _sys
+            import tempfile
+            import json as _json
+            import pickle as _pickle
+            import os as _os
+            seg_tmp = tempfile.mkdtemp(prefix="factor_seg_")
+            pending = []
+            for _ws, _we, _wi, _ns in slices:
+                _log.info("factor_cache: segment %d/%d (dates %s → %s, %d dates)",
+                          _wi + 1, _ns, date_list[_ws], date_list[_we - 1], _we - _ws)
+                seg_meta = {
+                    "start_idx": _ws, "end_idx": _we, "date_list": date_list,
+                    "factor_names": factor_names, "symbols": symbols,
+                    "eff_days": eff_days, "source_hash": source_hash,
+                    "cache_dir": self._cache_dir,
+                    "data_start": (pd.Timestamp(date_list[0])
+                                   - pd.Timedelta(days=eff_days)).strftime("%Y-%m-%d"),
+                    "missing": {d: todo_map[d] for d in date_list[_ws:_we] if d in todo_map},
+                }
+                sj = _os.path.join(seg_tmp, f"seg_{_ws}_{_we}.json")
+                oj = _os.path.join(seg_tmp, f"seg_{_ws}_{_we}.pkl")
+                oj_log = _os.path.join(seg_tmp, f"seg_{_ws}_{_we}.log")
+                with open(sj, "w") as _f:
+                    _json.dump(seg_meta, _f)
+                pending.append((sj, oj, oj_log, _ws, _we))
 
-                # v480: 边收边写 — 每收到一个 worker 结果立即消费落盘,
-                # 父进程峰值为单 worker 紧凑结果 (几十 MB), 不累积全 chunk
-                for ar in async_results:
-                    chunk_result = ar.get()
-                    _log.info("factor_cache: consumed worker result: %d rows, %d dates (%.1fs)",
-                              sum(len(v) for rr in chunk_result["results"].values()
-                                  for v in rr.values() if isinstance(v, tuple) and len(v) == 2),
-                              len({d for rr in chunk_result["results"].values() for d in rr}),
-                              _time.time() - t0)
-                    inc_rows, n_covered, part_seq, per_factor = self._consume_worker_result(
-                        chunk_result, idx_to_date, part_seq, source_hash, set(factor_names))
-                    total_rows += inc_rows
-                    n_dates_computed += n_covered
-                    failed_dates.extend(chunk_result.get("failed_dates", []))
-                    for fname, dset in per_factor.items():
-                        per_factor_dates.setdefault(fname, set()).update(dset)
+            def _consume_result_file(oj: str, oj_log: str, ws: int, we: int) -> None:
+                """读取段结果并落盘 (逻辑同 v480 边收边写)."""
+                nonlocal total_rows, n_dates_computed, part_seq
+                if not _os.path.exists(oj):
+                    _log.error("factor_cache: segment %d-%d no result file — 查看 %s",
+                               ws, we, oj_log)
+                    failed_dates.extend(date_list[ws:we])
+                    return
+                try:
+                    with open(oj, "rb") as _f:
+                        chunk_result = _pickle.load(_f)
+                except Exception as _e:
+                    _log.error("factor_cache: segment %d-%d pickle fail: %s (日志 %s)",
+                               ws, we, _e, oj_log)
+                    failed_dates.extend(date_list[ws:we])
+                    return
+                _log.info("factor_cache: consumed segment result: %d dates (%.1fs)",
+                          len({d for rr in chunk_result["results"].values() for d in rr}),
+                          _time.time() - t0)
+                inc_rows, n_covered, part_seq, per_factor = self._consume_worker_result(
+                    chunk_result, idx_to_date, part_seq, source_hash, set(factor_names))
+                total_rows += inc_rows
+                n_dates_computed += n_covered
+                failed_dates.extend(chunk_result.get("failed_dates", []))
+                for fname, dset in per_factor.items():
+                    per_factor_dates.setdefault(fname, set()).update(dset)
+                for _d, _f in chunk_result.get("empty_factors", []):
+                    if _d not in blocked:
+                        blocked[_d] = {}
+                    if _f not in blocked[_d]:
+                        blocked[_d][_f] = time.time()
+                        _log.warning(
+                            "factor_cache: factor %s blocked at %s — 计算为空结果 "
+                            "(依赖数据缺失/不足), 已剔除后续重算; 数据补齐后自动恢复",
+                            _f, _d)
 
-                    # v483-3: 空结果因子 → blocked 记录 (日志说明原因 + 后续轮次剔除,
-                    # 数据补齐后自动恢复: 因子能算出非空结果即不再进 todo)
-                    for _d, _f in chunk_result.get("empty_factors", []):
-                        if _d not in blocked:
-                            blocked[_d] = {}
-                        if _f not in blocked[_d]:
-                            blocked[_d][_f] = time.time()
-                            _log.warning(
-                                "factor_cache: factor %s blocked at %s — 计算为空结果 "
-                                "(依赖数据缺失/不足), 已剔除后续重算; 数据补齐后自动恢复",
-                                _f, _d)
-                    _n_blocked_new = sum(len(v) for v in blocked.values())
+            _env = dict(_os.environ)
+            _env["PYTHONPATH"] = _os.getcwd()
+            active = []  # (proc, oj, oj_log, ws, we)
+            try:
+                for sj, oj, oj_log, ws, we in pending:
+                    while len(active) >= workers:
+                        _proc, _oj, _ojl, _ws, _we = active.pop(0)
+                        _rc = _proc.wait()
+                        if _rc != 0:
+                            _log.error("factor_cache: segment %d-%d exited rc=%d (日志 %s)",
+                                       _ws, _we, _rc, _ojl)
+                        _consume_result_file(_oj, _ojl, _ws, _we)
+                    with open(oj_log, "wb") as _lof:
+                        _proc = subprocess.Popen(
+                            [_sys.executable, "-m", "quant.factor.materialize_segment",
+                             "--seg", sj, "--out", oj],
+                            env=_env, stdout=_lof, stderr=subprocess.STDOUT)
+                    active.append((_proc, oj, oj_log, ws, we))
+                while active:
+                    _proc, _oj, _ojl, _ws, _we = active.pop(0)
+                    _rc = _proc.wait()
+                    if _rc != 0:
+                        _log.error("factor_cache: segment %d-%d exited rc=%d (日志 %s)",
+                                   _ws, _we, _rc, _ojl)
+                    _consume_result_file(_oj, _ojl, _ws, _we)
+            finally:
+                clear_ztd_cache()
 
             self._write_checkpoint(chunk_dates[-1], ci + 1, n_chunks, list(failed_dates), source_hash)
             if blocked:
                 self._save_blocked(blocked)
-
-            # 释放 chunk 内存 (为下块腾空间)
-            _DATA_FULL = _PRIMS = _AUX_FULL = _FUNDAMENTALS = _SYMBOLS = None
-            try:
-                del data_full, prims, aux_full, _fund_shards
-            except Exception:
-                pass
             gc.collect()
 
         elapsed = _time.time() - t0
@@ -659,6 +673,94 @@ class FactorStore:
         return {"n_dates": n_dates_computed, "n_factors": len(factor_names),
                 "n_symbols": len(symbols), "n_rows": total_rows,
                 "elapsed_sec": round(elapsed, 1), "failed_dates": failed_dates}
+
+    def _materialize_sync(self, store, date_list: list, factor_names: list,
+                          symbols: list, todo_map: dict, source_hash: str,
+                          blocked: dict, chunk_days: int,
+                          date_to_idx: dict, sym_map: dict) -> dict:
+        """v525: store 注入时的降级路径 — 主进程同步直算 (无 subprocess).
+
+        测试/mock 数据源无法跨 subprocess 继承, 语义与 v525 前 fork 版一致
+        (每 chunk 装载数据 → _worker_main → consume 落盘), 仅无并行。
+        """
+        import time as _time
+        from quant.factor.compute._preload import preload_aux_data_chunk
+        from quant.factor.compute._primitives import precompute_primitives
+        from quant.factor.compute.price._alternative import clear_ztd_cache, preload_ztd_cache
+
+        t0 = _time.time()
+        eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(factor_names))
+        global _DATA_FULL, _PRIMS, _AUX_FULL, _FUNDAMENTALS, _SYMBOLS, _MISSING_MAP
+        _log.info("factor_cache: sync (store 注入) — %d dates × %dd lookback",
+                  len(date_list), eff_days)
+
+        total_rows = 0
+        n_dates_computed = 0
+        failed_dates: list[str] = []
+        per_factor_dates: dict[str, set] = {}
+
+        n_chunks = max(1, (len(date_list) + chunk_days - 1) // chunk_days)
+        idx_to_date = {i: d for d, i in date_to_idx.items()}
+        part_seq = 0
+
+        for ci in range(n_chunks):
+            s = ci * chunk_days
+            e = min((ci + 1) * chunk_days, len(date_list))
+            if s >= len(date_list):
+                continue
+            chunk_dates = date_list[s:e]
+            _log.info("factor_cache: chunk %d/%d — %s .. %s (%d dates)",
+                      ci + 1, n_chunks, chunk_dates[0], chunk_dates[-1], len(chunk_dates))
+
+            data_start = (pd.Timestamp(chunk_dates[0]) - pd.Timedelta(days=eff_days)).strftime("%Y-%m-%d")
+            _DATA_FULL = store.get_daily(symbols, start=data_start, end=chunk_dates[-1])
+            _PRIMS = precompute_primitives(_DATA_FULL, factor_names=factor_names,
+                                           save_disk_cache=False)
+            try:
+                bm_ret = store.get_benchmark("000300", start=data_start)
+                if bm_ret is not None and not bm_ret.empty:
+                    _PRIMS["benchmark_ret"] = bm_ret
+            except Exception as _e:
+                _log.warning("factor_cache: benchmark_ret unavailable (%s)", _e)
+
+            preload_ztd_cache(chunk_dates, symbols)
+            _AUX_FULL = preload_aux_data_chunk(symbols, chunk_dates[0], chunk_dates[-1])
+            _FUNDAMENTALS = self._build_fundamentals_panel(
+                store, symbols, chunk_dates, data_full=_DATA_FULL)
+            _SYMBOLS = symbols
+            _MISSING_MAP = {d: todo_map.get(d, []) for d in chunk_dates}
+
+            chunk_result = self._worker_main(
+                s, e, factor_names, date_list, sym_map, date_to_idx, source_hash)
+            inc_rows, n_covered, part_seq, per_factor = self._consume_worker_result(
+                chunk_result, idx_to_date, part_seq, source_hash, set(factor_names))
+            total_rows += inc_rows
+            n_dates_computed += n_covered
+            failed_dates.extend(chunk_result.get("failed_dates", []))
+            for fname, dset in per_factor.items():
+                per_factor_dates.setdefault(fname, set()).update(dset)
+            for _d, _f in chunk_result.get("empty_factors", []):
+                blocked.setdefault(_d, {})[_f] = _time.time()
+
+            self._write_checkpoint(chunk_dates[-1], ci + 1, n_chunks, list(failed_dates), source_hash)
+            if blocked:
+                self._save_blocked(blocked)
+            clear_ztd_cache()
+            gc.collect()
+
+        if not failed_dates:
+            self._clear_checkpoint()
+        _merged = self._merge_pending_parts()
+        if _merged:
+            _log.info("factor_cache: merged %d part groups to main parquet", _merged)
+        clear_ztd_cache()
+        gc.collect()
+
+        _log.info("factor_cache: materialized %d dates × %d factors → %d rows in %.1fs (sync)",
+                  n_dates_computed, len(factor_names), total_rows, _time.time() - t0)
+        return {"n_dates": n_dates_computed, "n_factors": len(factor_names),
+                "n_symbols": len(symbols), "n_rows": total_rows,
+                "elapsed_sec": round(_time.time() - t0, 1), "failed_dates": failed_dates}
 
     def _part_path(self, factor_name: str, year: int, part_id: int) -> str:
         """part 文件路径: {factor}/{year}.part{part_id} (无 .parquet 后缀,

@@ -68,7 +68,7 @@ def _materialize_eval_window(dates: list[str]) -> dict:
           flush=True)
     fs = FactorStore()
     r = fs.materialize(date_range=dates, factor_names=names, symbols=symbols,
-                       max_slice_days=25)
+                       max_slice_days=25, workers=2)
     _log_stage("物化", t, f"rows={r.get('n_rows')} dates={r.get('n_dates')} factors={r.get('n_factors')}")
     return r
 

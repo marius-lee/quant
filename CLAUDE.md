@@ -113,4 +113,4 @@ quant/
 - optuna / hmmlearn 在 `.venv` 中，测试和脚本须用 `.venv/bin/python`
 - 因子缓存 gzip CSV ≈ 1.5GB / 6年，无需裁剪（`factor_cache_max_days: 2000`）
 - `factor_fail_fast=False` — 单因子失败不阻断整批物化
-- **因子状态池/数据核查结论已固化**: `docs/architecture/factor-status-pools.md` 是权威 — using=active+probation(实盘), backtesting=evaluating+probation(回测), 物化池=两者并集(现 9 因子); 空表 (daily_basic/derived_daily/analyst_forecast/pledge_stat) 不影响物化; check_freshness 14 表全绿。**这些已核实完毕, 不再重复排查/报"重大发现"**
+- **因子状态池/数据核查结论已固化**: `docs/architecture/factor-status-pools.md` 是权威 — using=active+probation(实盘), backtesting=evaluating+probation(回测), **物化池=并集=104 因子** (v520 复活 97 后); 空/晚覆盖表 (analyst_forecast 仅 2 期快照、fund_hold 2024-12 起、holder_trade 2025-01 起) 导致早于覆盖起点的日期 blocked — **属正常机制, 非数据缺失, 勿报"重大发现"也勿触发补数流程**。**这些已核实完毕, 不再重复排查**

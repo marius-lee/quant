@@ -1,19 +1,19 @@
 # 因子状态池与物化范围 (权威参考)
 
 > 目的: 固化"因子状态池 (using/backtesting) 语义"与"空/旧表对物化无影响"两个
-> 已核实结论, 防止后续会话重复分析。最后核实: 2026-08-16。
+> 已核实结论, 防止后续会话重复分析。最后核实: 2026-08-17 (v526 更新)。
 > 本文件是**唯一权威** — 若与 DATA_DICTIONARY.md 或 ADR-041 冲突, 以本文件为准。
 
 ## 1. 状态枚举 (实现为准, 非文档)
 
 `quant/factor/state_machine.py:71-76` 定义**四态**:
 
-| 状态 | 含义 | 当前实例数 (2026-08-16) |
+| 状态 | 含义 | 当前实例数 (2026-08-17) |
 |------|------|------------------------|
-| `evaluating` | 待评估 (原 candidate), 新因子入口 | 4 (macro_cpi_yoy / macro_m2_yoy / macro_pmi_diff / macro_rate_10y) |
+| `evaluating` | 待评估 (原 candidate), 新因子入口 | 101 (v520 复活 97 后, 均含于物化池) |
 | `active` | 通过完整评估+IC 未衰减 → 实盘全权重 | **0** — 当前库中无实例, 但状态机路径存活 (见下) |
 | `probation` | IC 衰减观察期 (原 monitoring), 衰减权重 | 5 (dt_streak / wq_alpha_006 / alpha002_vol_div / alpha055_pos_vol / smart_money_20d) |
-| `archived` | 归档 (原 retired+rejected 合并), status_reason 区分原因 | 83 (已物化目录中) — 全库 107 |
+| `archived` | 归档 (原 retired+rejected 合并), status_reason 区分原因 | 10 (DATA_SPARSE 5 / DATA_DEAD 2 / [OPS] 2 / 截面不足 1) — 全库 116 |
 
 **为什么 active 当前为 0**: 状态机转换路径全部存活 —
 `evaluating --EVAL_OK--> active` (weekly.py:131), `probation --IC_RECOVERED--> active` (attribution.py:369)。
@@ -27,8 +27,8 @@
 | 过滤器 | 解析为 | 语义 | 当前有效因子 |
 |--------|--------|------|--------------|
 | `using` | `('active', 'probation')` | 实盘信号池 — 归因/实盘 OOS | 5 (probation) |
-| `backtesting` | `('evaluating', 'probation')` | 回测/评估池 — 训练、物化、回测 OOS | 9 (4 evaluating + 5 probation) |
-| 物化池 | `backtesting ∪ using` (factor_cache.py:50-51) | 因子缓存的物化范围 | 9 |
+| `backtesting` | `('evaluating', 'probation')` | 回测/评估池 — 训练、物化、回测 OOS | 104 (99 evaluating 可用 + 5 probation) |
+| 物化池 | `backtesting ∪ using` (factor_cache.py:50-51) | 因子缓存的物化范围 | 104 (同 backtesting) |
 
 ### 全部使用点 (scheduler/manifest 链)
 
@@ -57,16 +57,22 @@ down_pool / benchmark_daily / divided / stocks 均 2026-08-14 (周六正常 lag2
 财务三表 2026-06-30 (半年报正常); macro_indicator 2026-06 (月度正常)。
 **无数据缺失, 每日拉取增量闭环正常** (store.py:2392 精准缺口分析)。
 
-### 3.2 空/旧表不影响因子物化 — 无须补数, 勿报"重大发现"
+### 3.2 空/旧表与晚覆盖表的物化语义 — 无须补数, 勿报"重大发现"
 
-| 表 | 状态 | 为什么不影响物化 |
-|----|------|------------------|
+| 表 | 状态 | 物化语义 |
+|----|------|----------|
 | `daily_basic` | 空 (0 行) | 因子层读 `daily_valuation` (综合估值/行情面) 与 `adj_factor`; daily_basic 无因子依赖 |
 | `derived_daily` | 空 (0 行) | 因子计算不走它, 数据源是 daily_valuation |
-| `analyst_forecast` | 旧 (7 月最后窗口) | 仅 archived 因子 (如 short_interest 类) 用 — archived 不在物化池 9 因子中 |
-| `pledge_stat` | 旧 | v376 已移除其因子依赖, 当前物化池无引用 |
+| `pledge_stat` | 2294 行 (旧) | v376 已移除其因子依赖, 当前物化池无引用 |
+| `analyst_forecast` | 4722 行, **仅 2 期覆盖式快照** (2026-07-03 / 07-12) | analyst_consensus / earnings_revision / earnings_upgrade 取 `sync_date ≤ 物化日` → **早于 2026-07 的日期空结果 → blocked (正常机制)** |
+| `fund_hold` | 23,051 行, 覆盖 2024-12-31 → 2025-12-31 | ihn 取 `report_date ≤ 物化日` → **2024-12 前空结果 → blocked; 2025 年正常出值** |
+| `holder_trade` | 21,616 行, 覆盖 2025-01-01 → 2026-07-01 | insider_increase 取 90 天窗口 → **2025-01 前空结果 → blocked; 2025+ 正常出值** |
 
-**核实方法** (重复验证用): 物化池 9 因子依赖 — dt_streak→limit_down_pool (已绿);
+**结论**: 以上 3 张表(晚覆盖)与 3 张空表因子的 blocked 记录是**数据可用范围
+早于表覆盖起点的正常表现, 非数据缺失事故** — 机制 (v483-3) 自动剔除, 不阻断
+其余 99 因子物化, 数据补录后自动恢复。**勿再报"数据缺失", 勿再触发补数流程**。
+
+**核实方法** (重复验证用): 物化池 104 因子依赖 — dt_streak→limit_down_pool (已绿);
 4 个 macro_* → macro_indicator (2026-06 月度正常); smart_money_20d 等纯价量 →
 daily/benchmark_daily (已绿)。**任何依赖源均在 SLO 内**。
 

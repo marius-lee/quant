@@ -23,6 +23,6 @@ factor_names = get_factor_names(status_filter='backtesting')
 symbols = UniverseRepo().get_symbols(exclude_market='BJ')
 
 print(f'{len(date_strs)} dates x {len(factor_names)} factors x {len(symbols)} symbols')
-fs.materialize(date_strs, factor_names, symbols, force=True)
+fs.materialize(date_strs, factor_names, symbols, force=True, max_slice_days=25)
 print('DONE')
 "

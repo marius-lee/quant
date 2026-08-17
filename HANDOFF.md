@@ -1,3 +1,17 @@
+### v526b: 因子池文档对齐 (物化中实测触发)
+
+全量物化实测 5 因子 blocked (analyst_consensus/earnings_revision/earnings_upgrade/
+ihn/insider_increase, 2020 日期) — 查证非数据缺失:
+
+- `analyst_forecast`: 4722 行, 仅 2 期覆盖式快照 (2026-07-03/12) → 早于 2026-07 空
+- `fund_hold`: 2024-12-31 → 2025-12-31 → ihn 早于 2024-12 空
+- `holder_trade`: 2025-01-01 → 2026-07-01 → insider_increase 早于 2025-01 空
+
+根因: v520 复活 97 因子后物化池 9 → 104 (evaluating 101 + probation 5),
+上述晚覆盖因子重回池内; CLAUDE.md / factor-status-pools.md 的 "9 因子"
+固化结论过期。已更新两文档 (104 因子 + 晚覆盖表 blocked 正常语义),
+与实时 registry 对齐 (evaluating 101 / probation 5 / archived 10)。
+
 ## 2026-08-17: v526 物化起点文档对齐 — 全面防误设 (test-v526)
 
 ### 背景

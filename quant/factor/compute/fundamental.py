@@ -332,6 +332,8 @@ def compute_financial_anomaly(fundamentals: "pd.DataFrame", date: str, aux=None)
     gm_change = _gm_change()
 
     # Build composite: anomaly = (item_growth - revenue_growth)
+    # v544: 子因子值为 NaN 时跳过 (不传染整只股票); 归一化用平均偏差 z/count,
+    # 保证子因子可用数 (3/4) 不同时跨期口径一致 (原 z/count*4 在 count<4 时放大)
     scores = {}
     all_syms = set(rev_growth.index) | set(inv_growth.index) | set(ar_growth.index) | set(gm_change.index)
     for sym in all_syms:
@@ -339,22 +341,30 @@ def compute_financial_anomaly(fundamentals: "pd.DataFrame", date: str, aux=None)
         count = 0
         # 1. Inventories anomaly
         if sym in inv_growth.index and sym in rev_growth.index:
-            z += -(inv_growth[sym] - rev_growth[sym])
-            count += 1
+            inv_g, rev_g = inv_growth[sym], rev_growth[sym]
+            if pd.notna(inv_g) and pd.notna(rev_g):
+                z += -(inv_g - rev_g)
+                count += 1
         # 2. Receivables anomaly
         if sym in ar_growth.index and sym in rev_growth.index:
-            z += -(ar_growth[sym] - rev_growth[sym])
-            count += 1
+            ar_g, rev_g = ar_growth[sym], rev_growth[sym]
+            if pd.notna(ar_g) and pd.notna(rev_g):
+                z += -(ar_g - rev_g)
+                count += 1
         # 3. Admin expense anomaly
         if sym in admin_growth.index and sym in rev_growth.index:
-            z += -(admin_growth[sym] - rev_growth[sym])
-            count += 1
+            adm_g, rev_g = admin_growth[sym], rev_growth[sym]
+            if pd.notna(adm_g) and pd.notna(rev_g):
+                z += -(adm_g - rev_g)
+                count += 1
         # 4. Gross margin change
         if sym in gm_change.index:
-            z += -gm_change[sym]
-            count += 1
+            gm_v = gm_change[sym]
+            if pd.notna(gm_v):
+                z += -gm_v
+                count += 1
         if count > 0:
-            scores[sym] = z / count * 4  # Normalize to 4-sub-factor scale
+            scores[sym] = z / count
 
     result = pd.Series(scores)
     result = result.replace([np.inf, -np.inf], np.nan)

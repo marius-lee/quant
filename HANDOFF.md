@@ -3911,3 +3911,9 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
 - **baostock 排除**: query_profit_data 仅 11 字段 (无 operatingCost/管理费用) — sina 是唯一全字段源
 - **验证**: test_v545_v546.py 4 项 (existing 互斥 / needs_cost 命中银行股 / unblock 语义 / 聚合阈值排序) + v543+v544, 10 passed
 - **待办**: 补数完成后 (预计 12:00) → 用户重启物化 force 全量 → 验证 fund_change/financial_anomaly/gp_ta 覆盖恢复
+## 2026-08-19: v547 — 数据健康检查升级字段级 (v544 事件教训: 行级完整 ≠ 字段完整)
+
+- **事件**: v544 定位 financial_income 2020-2024 operating_cost/administration_expense 全 NaN — 此前"数据齐全/补完"检查只看行数/日期/期数覆盖, 从未查列级 NaN → 字段缺失漏过审计, 承诺"全部补完"不成立
+- **修复**: table_registry `_fin_income_field_check` (custom_check 钩子): 最新报告期两列 NaN 率 >50% → audit fail — 银行/保险无营业成本科目, NaN 率远低于 50% 不误报
+- **验证**: test_v479_data_health.py +1 (16 passed)
+- **待办**: 补数进行中 (预计 12:00) → 完成后用户重启物化

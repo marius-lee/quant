@@ -236,3 +236,15 @@ def test_missing_table_detected(db):
     rules = {r[0]: r[1] for r in audit_table(conn, _spec(table="no_such_table"), TODAY)}
     assert rules["freshness"] == "fail"
     conn.close()
+
+
+def test_v547_field_level_check():
+    """v547: financial_income 字段级检查 — 最新期 cost/admin NaN 率 ≤50%."""
+    import sqlite3
+    from quant.data.table_registry import REGISTRY, _fin_income_field_check
+    conn = sqlite3.connect("quant/data/market.db")
+    spec = REGISTRY["financial_income"]
+    assert spec.custom_check is not None, "字段级检查必须挂载"
+    ok, detail = _fin_income_field_check(conn)
+    assert ok, f"最新期字段 NaN 率超限: {detail}"
+    assert "NaN" in detail

@@ -152,6 +152,29 @@ def _check_stocks_coverage(conn) -> tuple[bool, str]:
     return (ok, f"total_shares 覆盖 {filled}/{tot} = {pct:.1f}% (≥99%)")
 
 
+def _fin_income_field_check(conn) -> tuple[bool, str]:
+    """v547: financial_income 字段级检查 — 最新报告期 operating_cost /
+    administration_expense NaN 率 ≤50% (v544 事件: 2020-2024 全 NaN 缺字段
+    靠"有行"审计漏过 — 行级完整 ≠ 字段完整). 银行/保险无营业成本科目,
+    NaN 率显著低于 50% 阈值, 不会误报."""
+    mx = conn.execute("SELECT MAX(stat_date) FROM financial_income").fetchone()[0]
+    if mx is None:
+        return False, "空表"
+    cost_nan, admin_nan, tot = conn.execute(
+        "SELECT "
+        "SUM(CASE WHEN operating_cost IS NULL OR operating_cost != operating_cost THEN 1 ELSE 0 END), "
+        "SUM(CASE WHEN administration_expense IS NULL OR administration_expense != administration_expense THEN 1 ELSE 0 END), "
+        "COUNT(*) FROM financial_income WHERE stat_date=?", (mx,)).fetchone()
+    cost_nan, admin_nan = cost_nan or 0, admin_nan or 0
+    cost_pct, admin_pct = cost_nan / tot * 100, admin_nan / tot * 100
+    if cost_pct > 50 or admin_pct > 50:
+        return (False,
+                f"最新期 {mx}: operating_cost NaN {cost_pct:.0f}% / "
+                f"administration_expense NaN {admin_pct:.0f}% (≤50%)")
+    return (True,
+            f"最新期 {mx}: cost NaN {cost_pct:.0f}% / admin NaN {admin_pct:.0f}% (≤50%)")
+
+
 @dataclass(frozen=True)
 class TableSpec:
     table: str                        # market.db 表名
@@ -249,6 +272,7 @@ REGISTRY: dict[str, TableSpec] = {
         min_total_rows=100000, slo_days=None,
         factors=frozenset(_FIN_FACTOR_NAMES),
         repair_eligible=False,
+        custom_check=_fin_income_field_check,
         desc="利润表 (sina 全历史幂等; JQ 窗口外季度由本任务补)"),
     "financial_balance": TableSpec(
         table="financial_balance", date_col="stat_date", mode="weekly_full",

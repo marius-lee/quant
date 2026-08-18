@@ -43,6 +43,7 @@ _force_fill_str = _require_cfg("execution.limit_order.force_fill_time")
 _hh, _mm = _force_fill_str.split(":")
 FORCE_FILL_TIME = time(int(_hh), int(_mm))
 QUOTE_TTL_SEC = _require_cfg("execution.limit_order.quote_ttl_sec")
+MAX_CHASE = _require_cfg("execution.limit_order.max_chase")
 
 
 def _conn():
@@ -227,6 +228,28 @@ class OrderManager:
                                 "shares": po.target_shares, "price": ask})
                 _log.info(f"[order_manager] runaway {po.symbol}: "
                           f"gap={gap:+.1%} > urgency={urgency:+.1%}, executing market")
+
+            else:
+                # ── v532: QUOTE_TTL 落地 (原死配置, _chase 无调用方) ──
+                # 挂单基于旧 ref_price 定价, 行情刷新后限价挂死 → 成交率随时间
+                # 衰减 (Kissell Ch.17 限价单应随行情追踪)。超 TTL 且未超 chase
+                # 上限 → 追价到 ask×(1-discount), 保持折扣语义。
+                try:
+                    placed_ts = datetime.fromisoformat(po.placed_at)
+                    elapsed = (now - placed_ts).total_seconds()
+                except (ValueError, TypeError):
+                    elapsed = 0
+                if elapsed >= QUOTE_TTL_SEC and po.chase_count < MAX_CHASE:
+                    new_limit = round(ask * (1 - DISCOUNT_PCT), 2)
+                    if new_limit > po.limit_price:
+                        self._chase(po.id, new_limit)
+                        actions.append({"symbol": po.symbol, "action": "chase",
+                                        "limit": new_limit,
+                                        "chase_count": po.chase_count + 1})
+                        _log.info(f"[order_manager] chase {po.symbol}: "
+                                  f"limit ¥{po.limit_price:.2f} → ¥{new_limit:.2f} "
+                                  f"(ask=¥{ask:.2f}, ttl={QUOTE_TTL_SEC}s, "
+                                  f"chase={po.chase_count + 1}/{MAX_CHASE})")
 
         return actions
 

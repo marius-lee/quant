@@ -345,48 +345,67 @@ class SubprocessRunner(BaseRunner):
         self._proc: Optional[subprocess.Popen] = None
         self._retries = 0
         self._done = False
+        self._last_rc: Optional[int] = None  # v532: 子进程最终退出码 (orchestrator 决策重试)
 
-    def run_evening_chain(self) -> None:
-        """启动晚间链 subprocess (daily_data → factor_cache → attribution → lgb_train → xgb_train → adj_factor)."""
+    def run_evening_chain(self) -> bool:
+        """启动晚间链 subprocess (daily_data → factor_cache → attribution → lgb_train → xgb_train → adj_factor).
+
+        v532: 阻塞等待完成并返回成败 (orchestrator 决策重试)。
+        返回 True=成功 / False=失败 (重试预算已耗尽)。
+        """
         s = ALL.get("evening_chain")
         if s is None:
             _log.warning("evening_chain not found in manifest")
-            return
+            return False
 
         if not self._should_run(s):
             _log.info(f"[{self.today}] evening_chain not in window or deps not met")
-            return
+            return False
 
         _log.info(f"[{self.today}] 19:00 — spawning evening chain subprocess")
         self._run_subprocess(s)
+        self._wait_done(s)
+        return self._last_rc == 0
 
-    def run_weekly_eval(self) -> None:
-        """启动周度评估 subprocess (周六 06:00-12:00)."""
+    def run_weekly_eval(self) -> bool:
+        """启动周度评估 subprocess (周六 06:00-12:00). 阻塞等待返回成败 (v532)."""
         s = ALL.get("weekly_eval")
         if s is None:
             _log.warning("weekly_eval not found in manifest")
-            return
+            return False
 
         if not self._should_run(s):
             _log.info(f"[{self.today}] weekly_eval not in window or deps not met")
-            return
+            return False
 
         _log.info(f"[{self.today}] 06:00 — spawning weekly eval subprocess")
         self._run_subprocess(s)
+        self._wait_done(s)
+        return self._last_rc == 0
 
-    def run_daily_repair(self) -> None:
-        """启动早间补拉链 subprocess (每日 08:00, 交易日与非交易日均运行)."""
+    def run_daily_repair(self) -> bool:
+        """启动早间补拉链 subprocess (每日 08:00, 交易日与非交易日均运行).
+        阻塞等待返回成败 (v532)."""
         s = ALL.get("daily_repair")
         if s is None:
             _log.warning("daily_repair not found in manifest")
-            return
+            return False
 
         if not self._should_run(s):
             _log.info(f"[{self.today}] daily_repair not in window or deps not met")
-            return
+            return False
 
         _log.info(f"[{self.today}] 08:00 — spawning daily repair subprocess")
         self._run_subprocess(s)
+        self._wait_done(s)
+        return self._last_rc == 0
+
+    def _wait_done(self, s: TaskSpec) -> None:
+        """阻塞轮询直到子进程完成 (含重试预算内自动重跑)."""
+        while self._proc is not None:
+            self._wait_subprocess(s)
+            if self._proc is not None:
+                _time.sleep(POLL)
 
     def _run_subprocess(self, s: TaskSpec) -> None:
         """启动并监控子进程."""
@@ -415,17 +434,21 @@ class SubprocessRunner(BaseRunner):
             return
 
         self._proc = None
+        self._last_rc = ret
         if ret == 0:
             _log.info(f"[{self.today}] subprocess exited OK")
         else:
             _log.warning(f"[{self.today}] subprocess failed (rc={ret}), cleanup")
             _cleanup_evening_children(self.today)
-            # 重试逻辑
+            # v532 fix: 原重试逻辑只计数不重跑 (死代码) — 晚间链失败后
+            # orchestrator 把失败当成功 (exit(1) 后 _proc=None → done),
+            # signals 次日用旧缓存。现在预算内真正重新 spawn。
             if self._retries < _MAX_TASK_RETRIES:
                 self._retries += 1
-                _log.warning(f"[{self.today}] retry {self._retries}/{_MAX_TASK_RETRIES}")
+                _log.warning(f"[{self.today}] retry {self._retries}/{_MAX_TASK_RETRIES} — respawning")
+                self._run_subprocess(s)
             else:
-                _log.error(f"[{self.today}] subprocess exhausted retries")
+                _log.error(f"[{self.today}] subprocess exhausted retries ({_MAX_TASK_RETRIES})")
 
     def cleanup(self) -> None:
         """清理残留进程."""

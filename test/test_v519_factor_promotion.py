@@ -99,7 +99,8 @@ def test_phase5_full_pass_with_dsr_promotes_evaluating(monkeypatch, _p2_p3_p4_al
     _p2_p3_p4_all_pass.fname = name = _TEST_PREFIX + "F1"
     _inject_factor(name, "evaluating", ic_mean=0.04)
     monkeypatch.setattr("quant.data.repos.factor_repo.FactorRepo.get_ic_rolling",
-                        lambda self, fn, n_days=20: _fake_ic_series(0.03, 0.015))
+                        lambda self, fn, n_days=20, scope=None:  # v532: phase5 改用 backtest scope
+                        _fake_ic_series(0.03, 0.015))
     try:
         result = sync_factor_status()
         assert name in result["active"], f"active list should contain {name}: {result}"
@@ -119,7 +120,8 @@ def test_phase5_full_pass_no_dsr_goes_probation(monkeypatch, _p2_p3_p4_all_pass)
     _p2_p3_p4_all_pass.fname = name = _TEST_PREFIX + "F2"
     _inject_factor(name, "evaluating", ic_mean=0.004)
     monkeypatch.setattr("quant.data.repos.factor_repo.FactorRepo.get_ic_rolling",
-                        lambda self, fn, n_days=20: _fake_ic_series(0.0, 0.05, seed=7))
+                        lambda self, fn, n_days=20, scope=None:  # v532: phase5 改用 backtest scope
+                        _fake_ic_series(0.0, 0.05, seed=7))
     try:
         result = sync_factor_status()
         assert name not in result["active"]
@@ -140,7 +142,8 @@ def test_phase5_probation_factor_untouched_by_eval(monkeypatch, _p2_p3_p4_all_pa
     _p2_p3_p4_all_pass.fname = name = _TEST_PREFIX + "F3"
     _inject_factor(name, "probation", ic_mean=0.04)
     monkeypatch.setattr("quant.data.repos.factor_repo.FactorRepo.get_ic_rolling",
-                        lambda self, fn, n_days=20: _fake_ic_series(0.03, 0.015))
+                        lambda self, fn, n_days=20, scope=None:  # v532: phase5 改用 backtest scope
+                        _fake_ic_series(0.03, 0.015))
     try:
         result = sync_factor_status()
         assert name not in result["active"]

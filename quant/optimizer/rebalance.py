@@ -87,12 +87,13 @@ def compute_trades(
             else:
                 scaled = diff * scale
                 result = pd.Series(0, index=diff.index, dtype=int)
+                # v532 (2026-08-18): 原 elif 分支在缩放后 |d|<0.5 手时强制保底
+                # 1 手 — 保底交易金额不在换手预算内 → 换手率约束被绕过。
+                # 修正: |d|<0.5 手 → 丢弃 (严格受预算约束, 与 alpha 分支同语义)。
                 for i in range(len(diff)):
                     d = scaled.iloc[i]
                     if abs(d) >= 0.5:
                         result.iloc[i] = int(np.ceil(d) if d > 0 else np.floor(d))
-                    elif abs(diff.iloc[i]) >= 1:
-                        result.iloc[i] = 1 if diff.iloc[i] > 0 else -1
                 diff = result
 
     # 卖出订单 (diff < 0 → 卖出)

@@ -3771,3 +3771,12 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
 - **vnpy 网关白名单 (broker_adapter)**: 原仅校验 adapter 名, 网关名任意 → 加 _VALID_GATEWAYS = {CtpGateway, XtpGateway} connect() 校验, 防配置笔误静默连不上
 - **验证**: 全量测试 409 passed (148s); 针对性验证 2025-04-15/05-15/08-20 三时点 PIT 无前视
 - **未做 (可选增强, 明确不紧迫)**: polars 加速 (135s 全量测试可接受)、CI/CD、MLflow 实验跟踪 — 流程类增强, 留待后续
+
+## 2026-08-18: 审查关键缺口 2-6 修复 (test-v532) — 归档 docs/reports/CODE-REVIEW-FULL-2026-08-18.md
+- **缺口2 晋升通道生效 (phase5_monitor)**: DSR 数据源原默认 scope="live" — evaluating 因子未实盘, live IC 缺失 (实测 94 因子中 58 个 live 空), DSR 恒 None → 晋升通道自 v519 引入起从未生效。改 scope="backtest" (6 年 IC 全覆盖, 与 phase2-4 评估侧同源)。实测: 71/94 有序列, 1 significant, 2 insufficient (23 个空序列为新注册/macro 因子, phase2 IC=0 已走退役路径不阻塞)。test_v519_factor_promotion 3 处 mock 签名补 scope=None
+- **缺口3 晚间链失败自动恢复**: (a) runners._wait_subprocess 重试死代码 — 计数后不重跑, orchestrator 把 exit(1) 失败当成功 (_proc=None → done) → 改为预算内真正重新 spawn + _last_rc 记录 + run_evening_chain/run_daily_repair/run_weekly_eval 阻塞返回成败, orchestrator 按返回值决策 (失败不置 done, 窗口内重试); (b) 08:00 因子物化兜底 — repair._ensure_factor_cache: 当日 factor_cache 未 ok → 增量物化 _fc_start→today (幂等), 原 daily_repair 只修数据表, factor_cache 缺口无人接管
+- **缺口4 VaR 持仓市值权重 (monitor.py:190)**: 原 `sum(1 for ...)` 计数等权 (大仓小仓同权, VaR 失真) → 改 shares × 现价 (quotes, 无行情 fallback FIFO 成本价)
+- **缺口5 换手率约束真实生效 (rebalance.py:98-102)**: 原缩放后 |d|<0.5 手强制保底 1 手 — 保底金额不在换手预算内 → 约束被绕过 → 删除保底, |d|<0.5 手丢弃 (与 alpha 分支同语义)
+- **缺口6 QUOTE_TTL 落地 (order_manager)**: 原 QUOTE_TTL_SEC 死配置 + _chase 无调用方 — 限价单挂死, 成交率随时间衰减 (Kissell Ch.17 应随行情追踪) → check_and_manage 新增 chase 分支: 挂单超 TTL 且 ask>limit 且 gap≤urgency 且 chase_count<MAX_CHASE(3, config) → 追价 ask×(1-discount)
+- **验证**: 新增 test_v532_gaps_fix.py 6 测试 (换手预算/追价 TTL 内不追/市值权重/repair 兜底×2/phase5); 全量 415 passed (134s)
+- **注意**: (a) 子进程 runner 改阻塞式 — orchestrator 主循环在子进程运行期间阻塞, daily_repair 秒级可接受, 晚间链期间 signals 等盘内任务照常由主循环处理 (晚间 19:00 无盘内任务); (b) phase5 DSR 门槛不变 (0.95), 只是数据源纠正 — 本周六评估将按真实 DSR 裁决

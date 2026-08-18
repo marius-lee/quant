@@ -50,6 +50,31 @@ def _pending_tables(today: str) -> list[str]:
     return sorted(tables)
 
 
+def _ensure_factor_cache(today: str) -> list[str]:
+    """v532 (2026-08-18): 晚间链 factor_cache 失败兜底 — 08:00 增量物化缺口.
+
+    晚间链 (19:00) 失败/中止 (子进程崩溃、质量门禁 error) 时 factor_cache
+    未物化当日 → signals 08:30 用旧缓存。原 daily_repair 只修 REGISTRY 数据表,
+    factor_cache 缺口无人接管 ("08:00 无因子物化兜底")。
+    增量物化 _fc_start→today 幂等, 已物化日期跳过 (meta 记录), 正常补 1-2 日。
+    返回: 本次物化的日期数 (0=已 ok 无需补)。
+    """
+    with sqlite3.connect(MARKET_DB) as conn:
+        rows = conn.execute(
+            "SELECT status FROM task_runs WHERE date=? AND task_name='factor_cache' "
+            "ORDER BY id DESC LIMIT 1", (today,)).fetchall()
+    if rows and rows[0][0] == "ok":
+        _log.info(f"[{today}] factor_cache already ok (evening chain) — no repair needed")
+        return []
+    _log.info(f"[{today}] factor_cache 未物化 (晚间链失败/中止) — 08:00 增量物化兜底")
+    from quant.config.constants import _require_cfg
+    _fc_start = _require_cfg("backtest.factor_cache_start")
+    from quant.scheduler.factor_cache import _run as _fc_run
+    _fc_run(_fc_start, today)
+    _log.info(f"[{today}] factor_cache repair done")
+    return [today]
+
+
 def _run(today: str):
     from quant.utils.logger import set_trace_id as _sid
     _sid(today[:8])
@@ -59,21 +84,25 @@ def _run(today: str):
         return
 
     tables = _pending_tables(today)
+    repaired: list[str] = []
+    still: list[str] = []
     if not tables:
         _log.info(f"[{today}] daily_repair: 无待修复表, done (0s)")
-        _tk_finish("daily_repair", today, "ok", summary={"tables": [], "repaired": []})
-        return
+    else:
+        _log.info(f"[{today}] daily_repair: 待处理 {tables}")
+        from quant.data.data_health import repair_and_reaudit
+        repaired, still = repair_and_reaudit(today, tables)
+        for t in repaired:
+            _log.info(f"[{today}] daily_repair fixed: {t}")
+        for t in still:
+            _log.error(f"[{today}] daily_repair STILL FAILED: {t}")
 
-    _log.info(f"[{today}] daily_repair: 待处理 {tables}")
-    from quant.data.data_health import repair_and_reaudit
-    repaired, still = repair_and_reaudit(today, tables)
-    for t in repaired:
-        _log.info(f"[{today}] daily_repair fixed: {t}")
-    for t in still:
-        _log.error(f"[{today}] daily_repair STILL FAILED: {t}")
+    # v532: factor_cache 兜底 — 晚间链失败时 08:00 增量物化 (signals 08:30 前)
+    fc_dates = _ensure_factor_cache(today)
 
     _tk_finish("daily_repair", today, "ok" if not still else "failed",
-               summary={"tables": tables, "repaired": repaired, "still": still})
+               summary={"tables": tables, "repaired": repaired, "still": still,
+                        "factor_cache_repaired": fc_dates})
 
 
 if __name__ == "__main__":

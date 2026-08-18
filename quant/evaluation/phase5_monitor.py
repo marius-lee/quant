@@ -105,6 +105,10 @@ def sync_factor_status() -> dict:
     # ── v519: DSR 显著性是晋升硬门槛 (Bailey & López de Prado 2014; De Prado 2018 Ch.7) ──
     # 数据源与日频 attribution 一致: factor_ic_daily 滚动 IC 序列 → CPCV+DSR 判读。
     # DSR 未显著的三阶段全 pass 因子 → probation 半权观察 (业界模拟盘期), 不直升 active。
+    # v532 fix (2026-08-18): 原默认 scope="live" — evaluating 因子未实盘, live scope
+    # 无 IC 序列 (实测 94 因子中 58 个 live 空), DSR 恒 None → 晋升通道自引入起从未生效。
+    # 改 scope="backtest" (6 年 IC 全覆盖, 与 phase2-4 评估侧同源一致);
+    # 实盘 probation/active 的健康监测仍走 live scope (attribution.py 日频通道)。
     from quant.data.repos import FactorRepo
     from quant.evaluation.cpcv_dsr import evaluate_factor as _eval_dsr
     _fr = FactorRepo()
@@ -112,7 +116,7 @@ def sync_factor_status() -> dict:
     for fname in sorted(all_evaluated):
         try:
             ic_vals = [r["ic_value"] for r in _fr.get_ic_rolling(
-                fname, _require_cfg("attribution.ic_rolling_window"))
+                fname, _require_cfg("attribution.ic_rolling_window"), scope="backtest")
                 if r["ic_value"] is not None]
             if len(ic_vals) >= 3:
                 _v = _eval_dsr(ic_vals, n_trials=max(len(all_evaluated), 1))

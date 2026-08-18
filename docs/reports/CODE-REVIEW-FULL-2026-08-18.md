@@ -120,3 +120,15 @@ hrp.py:145（corr>1→NaN→静默等权）；multi_tf.py（weekly_weight 未用
 4. **vnpy 网关白名单** ✅ — `_VALID_GATEWAYS = {CtpGateway, XtpGateway}` connect() 校验。
 
 **明确不做**（可选增强，非紧迫）: polars 加速（全量测试 135-148s 可接受）、CI/CD、MLflow 实验跟踪。
+
+## 9. 关键缺口 2-6 修复记录 (test-v532, 2026-08-18)
+
+审查第 2 节"关键缺口"之 2-6 全部完成（第 1 项实盘止损走券商为资金安全级改造，留待实盘前专项实施）：
+
+2. **晋升通道生效** ✅ — phase5 DSR 数据源 live→backtest：evaluating 因子未实盘，live IC 缺 58/94 → DSR 恒 None → 自引入起从未生效。backtest 6 年 IC 全覆盖，通道打通。
+3. **晚间链失败自动恢复** ✅ — `_wait_subprocess` 重试死代码（计数不重跑 + 失败当成功）→ 预算内真正 respawn，orchestrator 按返回值决策；08:00 `_ensure_factor_cache` 增量物化兜底（原只修数据表，factor_cache 缺口无人接管）。
+4. **VaR 持仓市值权重** ✅ — `sum(1 for ...)` 等权计数 → shares×现价市值权重。
+5. **换手率约束真实生效** ✅ — 缩放后 |d|<0.5 手保底 1 手（绕过预算）→ 丢弃，与 alpha 分支同语义。
+6. **QUOTE_TTL 落地** ✅ — 死配置 + `_chase` 无调用方 → 超 TTL 且 gap≤urgency 时追价 ask×(1-discount)，上限 MAX_CHASE=3（config）。
+
+验证: 新增 test_v532_gaps_fix.py 6 项；全量 415 passed。

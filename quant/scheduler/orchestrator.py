@@ -170,8 +170,9 @@ def _run():
                 _log.info(f"[{today}] 06:00-12:00 — spawning weekly eval subprocess")
                 if _evening_runner is None:
                     _evening_runner = SubprocessRunner(today)
-                _evening_runner.run_weekly_eval()
-                _weekly_done = True
+                # v532: 失败不置 done — 窗口内由 _should_run (failed 预算) 重试
+                _weekly_done = _evening_runner.run_weekly_eval()
+                _evening_runner = None
 
         # —— 超时/僵尸自愈: 所有日期统一检测 (B22, 2026-08-18) ——
         # 原 _check_timeouts 仅非交易日分支调用 → 交易日内 inline 任务挂死
@@ -184,8 +185,8 @@ def _run():
             _rep = ALL.get("daily_repair")
             if _rep and not _repair_done and _should_run(_rep, hhmm, now.weekday(), status, aborted):
                 _log.info(f"[{today}] 08:00 — spawning daily repair (weekend)")
-                SubprocessRunner(today).run_daily_repair()
-                _repair_done = True
+                # v532: 失败不置 done — 窗口内重试 (预算 2)
+                _repair_done = SubprocessRunner(today).run_daily_repair()
             _time.sleep(POLL)
             continue
 
@@ -242,26 +243,27 @@ def _run():
         _rep = ALL.get("daily_repair")
         if _rep and not _repair_done and _should_run(_rep, hhmm, now.weekday(), status, aborted):
             _log.info(f"[{today}] 08:00 — spawning daily repair subprocess")
-            SubprocessRunner(today).run_daily_repair()
-            _repair_done = True
+            _repair_done = SubprocessRunner(today).run_daily_repair()
 
         # —— 19:00+ — 晚间链 subprocess ——
         _even = ALL.get("evening_chain")
-        if _even and _even.in_window(hhmm, now.weekday()) and not _evening_done:
+        if _even and _even.in_window(hhmm, now.weekday()) and not _evening_done \
+                and _evening_retries < _MAX_TASK_RETRIES:
             if _evening_runner is None:
                 if _should_run(_even, hhmm, now.weekday(), status, aborted):
                     _log.info(f"[{today}] 19:00 — spawning evening chain subprocess "
-                              f"(retry={_evening_retries}/{_MAX_TASK_RETRIES})")
+                              f"(attempt={_evening_retries + 1}/{_MAX_TASK_RETRIES})")
                     _evening_runner = SubprocessRunner(today)
-                    _evening_runner.run_evening_chain()
+                    # v532: 阻塞等待完成; 失败时预算内自动重跑, 返回成败
+                    _ok = _evening_runner.run_evening_chain()
                     _evening_retries += 1
-                    # run_evening_chain 内部轮询，完成后继续
-                    if _evening_runner._proc is None:  # 已完成
-                        _log.info(f"[{today}] evening chain subprocess exited OK")
+                    if _ok:
+                        _log.info(f"[{today}] evening chain subprocess OK (attempt {_evening_retries})")
                         _evening_done = True
                         _evening_runner = None
                     elif _evening_retries >= _MAX_TASK_RETRIES:
-                        _log.error(f"[{today}] evening chain max retries exhausted")
+                        _log.error(f"[{today}] evening chain max retries exhausted "
+                                   f"({_MAX_TASK_RETRIES}) — factor_cache 缺口由次日 08:00 daily_repair 兜底")
                         _evening_done = True
                         _evening_runner = None
 

@@ -187,7 +187,12 @@ def _run_continuous_inner(today: str, stop_event=None):
                                 df_close = pd.DataFrame(close_rows, columns=["symbol", "date", "close"])
                                 piv = df_close.pivot(index="date", columns="symbol", values="close")
                                 rets = piv.pct_change().dropna(how="all")
-                                w = pd.Series({s: (sum(1 for p in positions if p["symbol"] == s) or 0) for s in syms_for_var})
+                                # v532 (2026-08-18): 原按持仓"出现次数"等权
+                                # (sum(1 for ...) 恒=1/只) — 大仓小仓同权重, VaR 失真。
+                                # 改持仓市值权重 (shares × 现价, 无行情用 FIFO 成本价)。
+                                w = pd.Series({s: sum(
+                                    p.get("shares", 0) * (quotes.get(s, {}).get("price", 0) or p.get("price", 0))
+                                    for p in positions if p["symbol"] == s) for s in syms_for_var})
                                 if w.sum() > 0:
                                     w = w / w.sum()
                                     common_syms = [s for s in w.index if s in rets.columns]

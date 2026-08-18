@@ -101,9 +101,12 @@ def _insert_rows(conn, rows: list[dict], date_str: str) -> int:
             continue
         cols = ", ".join(vals.keys()) + ", source"
         placeholders = ", ".join("?" for _ in vals) + ", 'eastmoney'"
+        set_clause = ", ".join(f"{k}=excluded.{k}" for k in vals) + ", source='eastmoney'"
+        # 2026-08-18: REPLACE 整行重建会清空 jq 源写入的 pe/pb/roe 等列 → ON CONFLICT 列级更新
         conn.execute(
-            f"INSERT OR REPLACE INTO daily_valuation (symbol, date, {cols}) "
-            f"VALUES (?, ?, {placeholders})",
+            f"INSERT INTO daily_valuation (symbol, date, {cols}) "
+            f"VALUES (?, ?, {placeholders}) "
+            f"ON CONFLICT(symbol, date) DO UPDATE SET {set_clause}",
             (symbol, date_str, *vals.values()))
         inserted += 1
     conn.commit()

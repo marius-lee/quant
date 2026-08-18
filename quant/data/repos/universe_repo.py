@@ -88,10 +88,11 @@ class UniverseRepo:
             "SELECT COALESCE((SELECT MAX(date) FROM daily WHERE turnover > 0),"
             " (SELECT MAX(date) FROM daily))") or "2020-01-01"
 
-        # 新股排除 — stocks.list_date
+        # 新股排除 — stocks.list_date (格式 'YYYY-MM-DD'; 2026-08-18: 原 8 位
+        # 'YYYYMMDD' 与库内 10 位格式字符串比较恒不命中 → 新股排除恒不生效)
         if exclude_new_stock_days > 0:
             from datetime import datetime, timedelta
-            cutoff = (datetime.now() - timedelta(days=exclude_new_stock_days)).strftime('%Y%m%d')
+            cutoff = (datetime.now() - timedelta(days=exclude_new_stock_days)).strftime('%Y-%m-%d')
             sql += " AND (s.list_date IS NULL OR s.list_date <= ?)"
             params.append(cutoff)
 

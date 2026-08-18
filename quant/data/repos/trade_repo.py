@@ -377,9 +377,12 @@ class TradeRepo:
         return float(row[0]) if row else 0.0
 
     def set_initial_capital(self, strategy: str, capital: float, mode: str = "live"):
+        # 2026-08-18: REPLACE 整行重建 (PK strategy,mode) 会先删后插 → ON CONFLICT 原子更新
         self._execute(
-            f"INSERT OR REPLACE INTO strategy_config ({SC_STRATEGY}, {SC_MODE}, {SC_INITIAL_CAPITAL}, {SC_INITIALIZED}, {SC_UPDATED_AT}) "
-            "VALUES (?, ?, ?, 1, datetime('now','localtime'))",
+            f"INSERT INTO strategy_config ({SC_STRATEGY}, {SC_MODE}, {SC_INITIAL_CAPITAL}, {SC_INITIALIZED}, {SC_UPDATED_AT}) "
+            f"VALUES (?, ?, ?, 1, datetime('now','localtime')) "
+            f"ON CONFLICT({SC_STRATEGY}, {SC_MODE}) DO UPDATE SET "
+            f"{SC_INITIAL_CAPITAL}=excluded.{SC_INITIAL_CAPITAL}, {SC_INITIALIZED}=1, {SC_UPDATED_AT}=excluded.{SC_UPDATED_AT}",
             (strategy, mode, capital))
         logger.info(f"[capital] {strategy}/{mode} initial_capital={capital}")
 

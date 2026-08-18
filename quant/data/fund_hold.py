@@ -70,9 +70,13 @@ def sync_quarter(report_date: str, conn=None) -> int:
         if len(sym) < 6:
             continue
         conn.execute("""
-            INSERT OR REPLACE INTO fund_hold
+            INSERT INTO fund_hold
             (symbol, report_date, fund_count, hold_shares, hold_mv, change_type, change_ratio)
             VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, report_date) DO UPDATE SET
+            fund_count=excluded.fund_count, hold_shares=excluded.hold_shares,
+            hold_mv=excluded.hold_mv, change_type=excluded.change_type,
+            change_ratio=excluded.change_ratio
         """, (sym, report_date,
               row.get('fund_count'), row.get('hold_shares'),
               row.get('hold_mv'), row.get('change_type'),

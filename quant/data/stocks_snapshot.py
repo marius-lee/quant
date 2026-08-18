@@ -65,10 +65,16 @@ def sync_stock_basic() -> int:
                 (name, industry, list_date, list_status, delist_date, sym))
             upd += 1
         else:
+            # 2026-08-18: akshare market 返回中文板块名 (主板/创业板/科创板/北交所)
+            # → 归一化 SH/SZ/BJ, 与 stocks 表口径一致, 避免中英文混存
+            _mkt_raw = str(r.get("market") or "")
+            _mkt = {"主板": "SH", "创业板": "SZ", "科创板": "SH", "北交所": "BJ"}.get(_mkt_raw, _mkt_raw)
+            if _mkt not in ("SH", "SZ", "BJ"):
+                _mkt = "SH" if sym.startswith(("6", "9", "68")) else "BJ" if sym.startswith(("4", "8", "92")) else "SZ"
             c.execute(
                 "INSERT INTO stocks (symbol, name, market, industry, list_date, "
                 "list_status, delist_date) VALUES (?,?,?,?,?,?,?)",
-                (sym, name, r.get("market"), industry, list_date, list_status, delist_date))
+                (sym, name, _mkt, industry, list_date, list_status, delist_date))
             ins += 1
     c.commit()
     c.close()

@@ -302,6 +302,9 @@ class VnpyAdapter(BrokerAdapter):
 
     # P0-10 fix: 白名单 — 禁止非法 adapter 名称
     _VALID_ADAPTERS = frozenset({"simulated", "vnpy"})
+    # 2026-08-18: 网关白名单 — vnpy 社区官方网关 (ctp/xtp 交易网关,
+    # 其他如 ib/tap 未开通, 防配置笔误静默连不上)
+    _VALID_GATEWAYS = frozenset({"CtpGateway", "XtpGateway"})
 
     def __init__(self, gateway_name: str = None, settings: dict = None,
                  strategy: str = "quant"):
@@ -330,6 +333,11 @@ class VnpyAdapter(BrokerAdapter):
             raise ValueError(
                 f"execution.broker.adapter={configured!r} 不在白名单 {self._VALID_ADAPTERS} — "
                 f"VnpyAdapter 拒绝连接"
+            )
+        if self._gateway_name not in self._VALID_GATEWAYS:
+            raise ValueError(
+                f"execution.broker.vnpy.gateway={self._gateway_name!r} 不在网关白名单 "
+                f"{self._VALID_GATEWAYS} — 仅支持 vnpy_ctp / vnpy_xtp"
             )
         if not self._vnpy_available:
             raise RuntimeError(

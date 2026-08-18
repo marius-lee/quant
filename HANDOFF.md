@@ -3763,3 +3763,11 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
 - **P2 清理 (4)**: B18 highfreq 6 引擎缺失方法补齐 + CostModel.total_cost→buy/sell_cost + TCA request 参数; B34 stats_cache 日期戳/空 _full_recalc/tail(120)/捏造衰减/死代码 (含非重入锁死锁修复); B35 curator 方向强签改实证校验 (符号不符拒绝注册); B36 state_machine fwd/spearmanr/_CURATED_FACTORS/_error/`{e}` 6 处 + golden_test date_results
 - **其余 (11)**: B12 var 按 symbol 对齐+归一化、B14 multi_tf 已由 C5 修复、B16 kelly 逐股 σ² + 退化路径公共缩放、B17 hrp IVP 簇方差、B20 news PK 加 pub_time (自动迁移)、B25 attribution 行业市值分组求和、B29 run_backtest 返回 trades 键、B30 tear_sheet DatetimeIndex 归一、B31 evening 用 today 而非 now() (补 pd import)、B32 pipeline 中性化/multi_tf 失败阻断 (零 fallback)、B33 crowdedness 按成交额排序取 300
 - **注意**: B32 改动使 pipeline 中性化/multi_tf 失败由 warning 降级改为 raise — 若回测遇中性化数据缺失将直接报错
+
+## 2026-08-18: 全代码审查改进 4 项 (test-v531) — 归档 docs/reports/CODE-REVIEW-FULL-2026-08-18.md
+- **PIT 财务数据框架 (get_financials, store.py)**: 原 `stat_date <= date-60天` — 年报披露时滞最长 120 天 → 基本面回测最长 2 个月前视 (回测可信度最大单点)。改双分支 PIT: 真实公告日行 (pub_date != stat_date) 用 `pub_date <= date`; 代填行 (pub_date IS NULL/=stat_date, sina 源无公告日, 占 85%) 用 `stat_date + 披露滞后` (年报 120/半年报 62/季报 45 天, 证监会规则, config `data.financials.disclosure_lag_days`)。实测: 2025-04-15 (年报截止前) 代填股回退 2024-09-30, 5-15 用年报; 真实公告日股 (招行 3-25 公告) 4-15 已可用 — 双路径均严格 PIT
+- **REPLACE→ON CONFLICT 统一 (5 处)**: trade_repo.set_initial_capital (PK strategy,mode 先删后插→原子 DO UPDATE)、em_valuation (不再清空 jq 写入的 pe/pb/roe 列)、jq_valuation (不再清空 em 写入的 ps_ttm/pcf_ttm/source)、store.sync_delisted_stocks (退市股不再清空市值/PE/行业列, 存在即 UPDATE)、fund_hold (顺手统一)
+- **日期/市场格式强约束 (3 处)**: universe_repo 新股排除 cutoff 8 位 'YYYYMMDD' vs 库内 10 位 'YYYY-MM-DD' 字符串比较恒不命中 → 新股排除恒不生效 (实证库内 0 行 8 位) → 改同格式; stocks_snapshot akshare 中文板块名 (主板/创业板/科创板/北交所) 归一化 SH/SZ/BJ; store.py tushare market 中文与 'SHSE' 比较恒假 → 全部误标 SH → 改 code 前缀推导; 存量清洗 32 行中文 market → 0 残留
+- **vnpy 网关白名单 (broker_adapter)**: 原仅校验 adapter 名, 网关名任意 → 加 _VALID_GATEWAYS = {CtpGateway, XtpGateway} connect() 校验, 防配置笔误静默连不上
+- **验证**: 全量测试 409 passed (148s); 针对性验证 2025-04-15/05-15/08-20 三时点 PIT 无前视
+- **未做 (可选增强, 明确不紧迫)**: polars 加速 (135s 全量测试可接受)、CI/CD、MLflow 实验跟踪 — 流程类增强, 留待后续

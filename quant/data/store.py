@@ -308,11 +308,15 @@ class DataStore:
                 self._stock_list_cache.set("symbols", df.to_dict(orient="records"))
                 for _, row in df.iterrows():
                     sym = row["symbol"]
-                    exchange = row.get("market", "")
-                    if exchange == "SHSE": market = "SH"
-                    elif exchange == "SZSE": market = "SZ"
-                    elif exchange == "BJSE": market = "BJ"
-                    else: market = "SH"
+                    # 2026-08-18: tushare stock_basic.market 返回中文板块名
+                    # (主板/创业板/科创板), 与 'SHSE' 比较恒假 → 全部误标 SH.
+                    # 改用 code 前缀推导, 与 sync_delisted_stocks 口径一致
+                    if sym.startswith(("6", "9", "68")):
+                        market = "SH"
+                    elif sym.startswith(("4", "8", "92")):
+                        market = "BJ"
+                    else:
+                        market = "SZ"
                     if sym not in existing:
                         conn.execute(
                             "INSERT OR IGNORE INTO stocks(symbol,name,market,list_date) VALUES(?,?,?,?)",
@@ -390,10 +394,17 @@ class DataStore:
                 mkt = "BJ"
             else:
                 mkt = "SZ"
-            conn.execute(
-                "INSERT OR REPLACE INTO stocks(symbol, name, market, "
-                "list_status, delist_date) VALUES(?,?,?,?,?)",
-                (sym, name, mkt, "D", delist_d))
+            # 2026-08-18: REPLACE 整行重建会清空该股 daily_basic 写入的
+            # 市值/PE/行业等列 → 存在则 UPDATE, 不存在才 INSERT
+            if conn.execute("SELECT 1 FROM stocks WHERE symbol=?", (sym,)).fetchone():
+                conn.execute(
+                    "UPDATE stocks SET name=?, market=?, list_status='D', delist_date=? WHERE symbol=?",
+                    (name, mkt, delist_d, sym))
+            else:
+                conn.execute(
+                    "INSERT INTO stocks(symbol, name, market, list_status, delist_date) "
+                    "VALUES(?,?,?,?,?)",
+                    (sym, name, mkt, "D", delist_d))
             new_count += 1
         conn.commit()
         total = conn.execute(
@@ -2833,6 +2844,14 @@ class DataStore:
         symbols: 股票代码列表
         date: 交易日期 → 取最近 stat_date <= date 的季度数据
         返回: DataFrame(index=symbol, 三表合并后的所有列)
+
+        PIT (2026-08-18): 原 `stat_date <= date(?, '-60 days')` — 年报披露时滞
+        最长 120 天, -60 天窗口内未披露财报已被使用 → 基本面因子回测最长
+        2 个月前视. 现双分支:
+          - 真实公告日行 (pub_date != stat_date, tushare 源): pub_date <= date
+          - 代填行 (pub_date IS NULL 或 = stat_date, sina 源无公告日):
+            stat_date + 披露滞后上限 (年报 120 / 半年报 62 / 季报 45 天,
+            证监会披露规则, config data.financials.disclosure_lag_days).
         """
         import pandas as pd
 
@@ -2841,6 +2860,8 @@ class DataStore:
             date = datetime.today().strftime("%Y-%m-%d")
 
         placeholders = ",".join("?" * len(symbols))
+        _lag = _require_cfg("data.financials.disclosure_lag_days")
+        _lag_a = int(_lag["annual"]); _lag_s = int(_lag["semi_annual"]); _lag_q = int(_lag["quarterly"])
         df = pd.DataFrame()
 
         # 表名与 tushare 接口名一致: financial_cashflow (无下划线, 2026-08-17 修复)
@@ -2850,10 +2871,16 @@ class DataStore:
                 WHERE (symbol, stat_date) IN (
                     SELECT symbol, MAX(stat_date)
                     FROM financial_{tbl}
-                    WHERE stat_date <= date(?, '-60 days') AND symbol IN ({placeholders})
+                    WHERE symbol IN ({placeholders})
+                      AND (
+                        (pub_date IS NOT NULL AND pub_date != stat_date AND pub_date <= ?)
+                        OR (pub_date IS NULL OR pub_date = stat_date)
+                           AND stat_date <= date(?, '-' || CASE strftime('%m', stat_date)
+                                WHEN '12' THEN ? WHEN '06' THEN ? ELSE ? END || ' days')
+                      )
                     GROUP BY symbol
                 )
-            """, conn, params=[date] + symbols)
+            """, conn, params=symbols + [date, date, str(_lag_a), str(_lag_s), str(_lag_q)])
 
             if sub.empty:
                 continue

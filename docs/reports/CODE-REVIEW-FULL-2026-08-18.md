@@ -4,6 +4,7 @@
 - 审查方式: 5 个并行审查代理分模块深入 + 关键发现人工实锤验证
 - 内容: 技术栈评估、功能盘点、业务闭环、架构、代码逻辑、算法、bug 清单（7 问）
 - 结论: 架构分层与工程纪律属个人量化项目高水平；存在 1 个实盘资金安全级缺陷 + 6 个"修复了但没接线"的死路径
+- 改进状态: 第 1 节"需改进"4 项已于归档当日完成 (test-v531, 全量测试 409 passed)，见第 8 节
 
 ---
 
@@ -106,3 +107,16 @@ hrp.py:145（corr>1→NaN→静默等权）；multi_tf.py（weekly_weight 未用
 
 - 归档时间: 2026-08-18
 - 归档人: opencode review 会话（5 模块并行审查 + 人工验证）
+
+---
+
+## 8. 改进落实记录 (test-v531, 2026-08-18)
+
+审查第 1 节"需改进"4 项全部完成：
+
+1. **PIT 财务数据框架** ✅ — `get_financials` (store.py) 改双分支: 真实公告日行 `pub_date <= date`; sina 代填行 (占 85%, 无公告日) 用 `stat_date + 披露滞后`（年报 120 / 半年报 62 / 季报 45 天，证监会披露规则，入 config `data.financials.disclosure_lag_days`）。实测 2025-04-15 代填股回退 Q3、真实公告日股（招行 3-25 公告）可用 — 严格 PIT。
+2. **REPLACE→ON CONFLICT 统一** ✅ — 5 处: trade_repo.set_initial_capital（PK strategy,mode 原子更新）、em_valuation / jq_valuation（两源共表不再互相清空列）、store.sync_delisted_stocks（退市股保留市值/PE/行业列）、fund_hold。
+3. **日期/市场格式强约束** ✅ — universe_repo 新股排除 cutoff 8 位 vs 库内 10 位混比恒不命中 → 同格式；akshare 中文板块名与 tushare market 字段归一化 SH/SZ/BJ（原恒误标 SH）；存量 32 行中文 market 清洗为 0。
+4. **vnpy 网关白名单** ✅ — `_VALID_GATEWAYS = {CtpGateway, XtpGateway}` connect() 校验。
+
+**明确不做**（可选增强，非紧迫）: polars 加速（全量测试 135-148s 可接受）、CI/CD、MLflow 实验跟踪。

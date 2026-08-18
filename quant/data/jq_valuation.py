@@ -215,10 +215,13 @@ def _insert_valuation_rows(conn, rows: list, date_str: str) -> int:
             continue
         cols = ", ".join(vals.keys())
         placeholders = ", ".join("?" for _ in vals)
+        set_clause = ", ".join(f"{k}=excluded.{k}" for k in vals)
         params = list(vals.values())
+        # 2026-08-18: REPLACE 整行重建会清空 em 源写入的 ps_ttm/pcf_ttm/source 等列 → ON CONFLICT 列级更新
         conn.execute(
-            f"INSERT OR REPLACE INTO daily_valuation (symbol, date, {cols}) "
-            f"VALUES (?, ?, {placeholders})",
+            f"INSERT INTO daily_valuation (symbol, date, {cols}) "
+            f"VALUES (?, ?, {placeholders}) "
+            f"ON CONFLICT(symbol, date) DO UPDATE SET {set_clause}",
             (symbol, date_str, *params))
         inserted += 1
     conn.commit()

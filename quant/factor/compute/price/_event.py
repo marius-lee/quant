@@ -409,9 +409,12 @@ def compute_fund_change(data: "pd.DataFrame", date: str, window: int = 0, aux=No
         return pd.Series(0.0, index=symbols, name="fund_change")
 
     scores = {}
-    for sym, row in fh.iterrows():
+    # v543: iterrows 的 index 是行号, symbol 是普通列 — cece5a6 (07-17 aux
+    # 重构) 把 scores 的 key 写成行号 → reindex(symbols) 全 NaN → 恒空
+    # (245 天 blocked 实证, 07-03~07-17 SQL 版正常 → 修复后恢复)
+    for _, row in fh.iterrows():
         if row.get("change_ratio") is not None:
-            scores[sym] = float(row["change_ratio"])
+            scores[row["symbol"]] = float(row["change_ratio"])
 
     result = pd.Series(scores, dtype=float)
     result = result.reindex(symbols).fillna(0.0)

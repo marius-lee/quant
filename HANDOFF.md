@@ -3877,3 +3877,15 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
 - **影响**: 物化池 93 → 91 因子; FactorStore.load 对缺因子目录天然跳过 (无副作用); 回测/评估跳过这两个 evaluating 因子; 数据补齐后从 config 移除即恢复
 - **验证**: test_v542.py 4 项 (config 列表存在/get_factor_names exclude 生效且池内确认无/默认 None 兼容/using 池同步) + v536/v538/v539 18 项回归, 22 passed; 全量回归待物化结束后 (需停服务)
 - **注意**: 当前 05:40 force 物化运行中 (结束时可能重写 blocked.json 覆盖清理 — 残留无害, 排除后无读取方); 物化池排除下一轮起生效
+## 2026-08-19: v543 根因定位 — compute_fund_change symbol key 恒空 bug (回滚 v542 排除)
+
+- **v542 排除为错误结论** (用户质疑"补数解决不了"与"补齐自动恢复"矛盾 → 深挖根因)
+- **根因定位** (三步证据链):
+  1. seg_0_25.pkl (05:40 force 物化结果文件): fund_change 18 交易日全 EMPTY (覆盖 0), 同段 accruals 正常 → 物化环境真空确认
+  2. 中间量调试: `scores` 的 key = **iterrows 行号 (0,1,2...)** 非 symbol → `reindex(symbols)` 全 NaN → 全 0 → zscore 全 NaN → **恒空**
+  3. git 历史: cece5a6 (07-17, aux 重构) 把 SQL 直查 (`SELECT symbol, change_ratio` → `scores[sym]` key=symbol ✓) 改成 `for sym, row in fh.iterrows()` → **行号当 key ✗** — fund_change 07-17 起任何日期恒空 (与数据无关); parquet 2020 年 242 天旧值 = 07-03~07-17 SQL 版产物; 07-17 后被重算的日期 → 空 → blocked 245 天 (2020-12-31 起每年 ~40 天) — 全时间线吻合
+- **修复**: `scores[row["symbol"]] = float(row["change_ratio"])`; 500 只复刻 @2020-01-02/01-22: 500/500 非 NaN (修复前 0), 非 0 286 与表内 290 只有值吻合
+- **回滚 v542**: config materialize_exclude 移除, get_factor_names exclude 参数移除 (materialize_full.sh/factor_cache.py 恢复原样), test_v542.py 删除
+- **financial_anomaly 定性** (无需排除): 2020-01 段空 = 财务期数不足 (仅 1 期, YoY 需 2 期, 正常); 2023-03-31~2024 低覆盖 (663 只/天); **2025 起 3099-5023 只/天已自愈** — "数据补齐自动恢复"对它是真实事件
+- **验证**: test_v543.py 3 项 (源码断言 key 修复 / 非空行为 / PIT 最新期符号一致性) + v536/v538/v539 回归, 21 passed
+- **待办**: 05:40 物化轮结束后 (fund_change 2020 段已被算空), 用修复代码 force 重物化 fund_change 单因子全段恢复覆盖

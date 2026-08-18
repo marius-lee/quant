@@ -405,3 +405,22 @@ eval_standard.sh 2023-2025 (完整年度评估)、phase7_wf --end 2025-12-31、b
 - blocked.json 清理 429 条记录 (1478 → 1049 日期)
 - 影响: FactorStore.load 对缺因子目录天然跳过 (零副作用); 恢复 = config 移除即自动回池
 - 验证: test_v542.py 4 项 (config/backtesting 池排除/默认兼容/using 池) + v536/v538/v539 18 项, 22 passed
+
+## §20 v543: compute_fund_change symbol key 恒空 bug 根因定位 (回滚 v542 排除)
+
+**用户质疑**: v542 结论"补数解决不了"与"数据补齐自动恢复"自相矛盾 → 要求代码分析 + 冒烟测试找根因。
+
+**定位过程 (三步证据链)**:
+1. **物化结果文件实证**: seg_0_25.pkl (05:40 force 轮) — fund_change 18 交易日全部 EMPTY (results 覆盖 0), 同路径 accruals 正常 → 物化环境真空确认 (非数据缺失)
+2. **中间量调试**: `scores` 的 key = iterrows **行号** (0,1,2…), 非 symbol → `reindex(symbols)` 全 NaN → fillna(0) 全 0 → `_cs_zscore` std=0 → 全 NaN → **恒空**
+3. **git 历史确认**: cece5a6 (07-17 aux 重构) 把 SQL 直查 (`SELECT symbol, change_ratio` → `scores[sym]`, key=symbol ✓) 改成 `for sym, row in fh.iterrows(): scores[sym]=…` → **iterrows 的 index 是行号, symbol 是普通列 → key 全错** — fund_change 07-17 起任何日期恒空; parquet 2020 年 242 天覆盖 = 07-03~07-17 SQL 版产物; 07-17 后被重算的日期 → blocked 245 天 (2020-12-31 起) — 全时间线吻合
+
+**修复**: `scores[row["symbol"]] = float(row["change_ratio"])` — 500 只复刻 @2020-01-02/01-22 500/500 非 NaN (修复前 0), 非 0 值 286 与表内 290 只有值吻合; zscore 符号与原始 change_ratio 一致。
+
+**v542 整体回滚**: config materialize_exclude 移除 / get_factor_names exclude 参数移除 / 两处调用点恢复 / test_v542 删除。
+
+**financial_anomaly 定性 (无需排除)**: 2020-01 空 = 财务期数不足 (1 期 < YoY 需 2 期, 正常机制); 2023-03-31~2024 低覆盖 (663 只/天) → **2025 起 3099-5023 只/天已自愈** — "数据补齐自动恢复"实证发生。
+
+**教训**: v542 时过早下结论 (10 只复刻被 min_count=30 门槛误导; 500 只复刻样本未查覆盖; 未用物化结果文件/中间量/代码历史三层验证)。根因定位必须到代码级, 而非 blocked 分布推断。
+
+**验证**: test_v543.py 3 项 + 回归 21 passed。待物化轮结束后 force 重物化 fund_change 单因子恢复覆盖。

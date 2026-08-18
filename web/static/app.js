@@ -224,10 +224,19 @@ async function pollOverview() {
     renderKPIs(perf);
     renderSignals(state);
     updateStatusBar(state);
-    renderAlerts(state.alerts);   // v513: 初始横幅 (SSE 断线/刷新兜底)
+    renderAlerts(withSectorAlert(state));   // v513: 初始横幅 (SSE 断线/刷新兜底)
     if (lgb) renderLGB(lgb);
     if (xgb) renderXGB(xgb);
   } catch (e) { console.warn('poll error:', e.message); }
+}
+
+// ── v536: 行业暴露告警并入横幅 (pipeline 写入的 broker 状态字段) ──
+function withSectorAlert(state) {
+  const alerts = Array.isArray(state.alerts) ? state.alerts.slice() : [];
+  if (state.sector_exposure_alert) {
+    alerts.push({ rule: 'sector_exposure', level: 'warning', msg: '行业暴露: ' + state.sector_exposure_alert });
+  }
+  return alerts;
 }
 
 function renderKPIs(p) {
@@ -580,6 +589,77 @@ async function loadPerformance() {
       }
     });
   } catch (e) { console.warn('performance error:', e.message); }
+  loadBenchmark();
+  loadDailyRisk();
+  loadBacktestHistory();
+}
+
+// ── v536: 基准跟踪 (累计曲线 + 滚动指标) ──
+async function loadBenchmark() {
+  try {
+    const d = await fetchJSON(API + '/benchmark');
+    const s = d.summary || d;
+    setText('meta-benchmark', s.available ? '' : '无基准数据');
+    const lr = d.latest_rolling || s.latest_rolling;
+    const kpi = document.getElementById('kpi-benchmark');
+    if (kpi) {
+      const c = s.cumulative || {};
+      kpi.innerHTML = `
+        <div class="kpi"><div class="label">策略累计</div><div class="value ${clsPnl(c.strategy_pct||0)}">${fmtPct(c.strategy_pct)}</div></div>
+        <div class="kpi"><div class="label">基准累计</div><div class="value ${clsPnl(c.benchmark_pct||0)}">${fmtPct(c.benchmark_pct)}</div></div>
+        <div class="kpi"><div class="label">超额 α</div><div class="value ${clsPnl(c.alpha_pct||0)}">${fmtPct(c.alpha_pct)}</div></div>
+        <div class="kpi"><div class="label">滚动 α(60d)</div><div class="value ${clsPnl((lr||{}).alpha_60d||0)}">${lr ? fmtPct(lr.alpha_60d) : '—'}</div></div>
+        <div class="kpi"><div class="label">滚动 IR(60d)</div><div class="value">${lr ? fmtNum(lr.ir_60d,2) : '—'}</div></div>`;
+    }
+    const curves = (s.curves || []).map(r => ({
+      date: r.date, strategy: r.strategy_equity, benchmark: r.benchmark_equity
+    }));
+    if (typeof Plotly !== 'undefined' && curves.length > 1) {
+      Plotly.newPlot('chart-benchmark', [
+        { x: curves.map(r => r.date), y: curves.map(r => r.strategy), name: '策略', type: 'scatter', mode: 'lines', line: { color: '#4e9fff', width: 2 } },
+        { x: curves.map(r => r.date), y: curves.map(r => r.benchmark), name: '沪深300', type: 'scatter', mode: 'lines', line: { color: '#f5a623', width: 1.5, dash: 'dot' } },
+      ], { margin: { l: 50, r: 12, t: 10, b: 28 }, paper_bgcolor: plotlyBg().paper_bgcolor, plot_bgcolor: plotlyBg().plot_bgcolor, font: plotlyFont(), legend: { orientation: 'h', y: 1.1 } }, PLOTLY_CONFIG);
+    }
+  } catch (e) { console.warn('benchmark error:', e.message); }
+}
+
+// ── v536: 每日 VaR/CVaR 历史 ──
+async function loadDailyRisk() {
+  try {
+    const rows = await fetchJSON(API + '/risk/history');
+    if (!Array.isArray(rows) || rows.length === 0) { setText('meta-daily-risk', '无数据'); return; }
+    setText('meta-daily-risk', `${rows.length} 天`);
+    const dates = rows.map(r => r.date);
+    if (typeof Plotly !== 'undefined') {
+      Plotly.newPlot('chart-daily-risk', [
+        { x: dates, y: rows.map(r => r.var_95_pct), name: 'VaR 95%', type: 'scatter', mode: 'lines+markers', line: { color: '#e5484d', width: 2 }, marker: { size: 4 } },
+        { x: dates, y: rows.map(r => r.cvar_95_pct), name: 'CVaR 95%', type: 'scatter', mode: 'lines+markers', line: { color: '#f5a623', width: 2 }, marker: { size: 4 } },
+      ], { margin: { l: 50, r: 12, t: 10, b: 28 }, paper_bgcolor: plotlyBg().paper_bgcolor, plot_bgcolor: plotlyBg().plot_bgcolor, font: plotlyFont(), legend: { orientation: 'h', y: 1.1 }, yaxis: { ticksuffix: '%' } }, PLOTLY_CONFIG);
+    }
+  } catch (e) { console.warn('daily risk error:', e.message); }
+}
+
+// ── v536: 回测历史 ──
+async function loadBacktestHistory() {
+  try {
+    const d = await fetchJSON(API + '/backtest/history');
+    const runs = d.runs || d || [];
+    setText('meta-backtest-history', `${runs.length} runs`);
+    renderTable('table-backtest-history', runs, [
+      { label: 'run_id', key: 'run_id' }, { label: '区间', key: 'start_date' },
+      { label: '结束', key: 'end_date' }, { label: '本金', key: 'capital' },
+      { label: 'Sharpe', key: 'sharpe' }, { label: 'CAGR', key: 'cagr' },
+      { label: 'MDD', key: 'max_drawdown' }, { label: '状态', key: 'status' },
+      { label: '创建', key: 'created_at' },
+    ], { fmtMap: {
+      capital: v => fmtMoney(v),
+      sharpe: v => v == null ? '—' : Number(v).toFixed(3),
+      cagr: v => v == null ? '—' : Number(v).toFixed(1) + '%',
+      max_drawdown: v => v == null ? '—' : Number(v).toFixed(1) + '%',
+      status: v => `<span class="badge">${escapeHtml(v)}</span>`,
+      created_at: v => (v||'').replace('T',' ').slice(0,19),
+    } });
+  } catch (e) { console.warn('backtest history error:', e.message); }
 }
 
 // ═══════════════════════════════════════════
@@ -706,7 +786,7 @@ function connectSSE() {
       if (state) {
         renderSignals(state);
         updateStatusBar(state);
-        renderAlerts(state.alerts);
+        renderAlerts(withSectorAlert(state));
         window._stateData = state;
       }
     } catch (_) {}
@@ -851,10 +931,61 @@ async function loadStrategies() {
       { label: '策略', key: 'name' }, { label: '状态', key: 'status' },
       { label: '持仓市值', key: 'position_value' }, { label: '现金', key: 'available_cash' },
       { label: '日 PnL', key: 'daily_pnl' }, { label: '总 PnL', key: 'total_pnl' },
+      { label: '操作', key: '__actions__' },
     ], { fmtMap: { status: v => `<span class="badge">${escapeHtml(v)}</span>`,
                    position_value: v => fmtMoney(v), available_cash: v => fmtMoney(v),
-                   daily_pnl: v => fmtMoney(v), total_pnl: v => fmtMoney(v) } });
+                   daily_pnl: v => fmtMoney(v), total_pnl: v => fmtMoney(v),
+                   __actions__: (raw, r) => `
+                     <button class="action-btn" onclick="strategyAction('${r.name}','rebalance')">调仓</button>
+                     <button class="action-btn" onclick="strategyAction('${r.name}','detail')">详情</button>` } });
+    // v536: 详情展开区
+    const detailEl = document.getElementById('strategy-detail');
+    if (!detailEl) {
+      const d = document.createElement('div');
+      d.id = 'strategy-detail';
+      d.style.cssText = 'margin-top:10px;font-size:0.85rem;color:var(--text2);white-space:pre-wrap';
+      document.getElementById('table-strategies').after(d);
+    }
   } catch (e) { setText('meta-strategies', '加载失败'); }
+  loadSignalQuality();
+}
+
+// ── v536: 策略操作 (调仓 / 详情) ──
+async function strategyAction(name, action) {
+  try {
+    if (action === 'detail') {
+      const d = await fetchJSON(API + '/strategy/' + encodeURIComponent(name));
+      const el = document.getElementById('strategy-detail');
+      if (el) el.textContent = JSON.stringify(d, null, 2);
+      return;
+    }
+    const r = await fetch(API + '/strategy/' + encodeURIComponent(name) + '/action', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    });
+    const body = await r.json();
+    const el = document.getElementById('strategy-detail');
+    if (el) el.textContent = body.error ? '✗ ' + body.error.message : '✓ ' + action + ' 已提交: ' + JSON.stringify(body.data || {});
+  } catch (e) {
+    const el = document.getElementById('strategy-detail');
+    if (el) el.textContent = '操作失败: ' + e.message;
+  }
+}
+
+// ── v536: 信号质量 (今日 vs 历史) ──
+async function loadSignalQuality() {
+  try {
+    const q = await fetchJSON(API + '/signals/quality');
+    setText('meta-sig-quality', q.error ? '不可用' : '');
+    const t = q.today || {}, h = q.historical || {}, c = q.comparison || {};
+    const kpi = document.getElementById('kpi-sig-quality');
+    if (kpi) kpi.innerHTML = `
+      <div class="kpi"><div class="label">今日信号</div><div class="value">${t.count ?? '—'}</div></div>
+      <div class="kpi"><div class="label">今日均分</div><div class="value">${t.avg_score != null ? fmtNum(t.avg_score,3) : '—'}</div></div>
+      <div class="kpi"><div class="label">历史均数(20d)</div><div class="value">${h.avg_count != null ? h.avg_count : '—'}</div></div>
+      <div class="kpi"><div class="label">数量偏差</div><div class="value ${clsPnl(c.count_pct||0)}">${c.count_pct != null ? (c.count_pct>=0?'+':'')+c.count_pct+'%' : '—'}</div></div>
+      <div class="kpi"><div class="label">均分差</div><div class="value ${clsPnl(c.score_diff||0)}">${c.score_diff != null ? fmtNum(c.score_diff,4) : '—'}</div></div>`;
+  } catch (e) { console.warn('signal quality error:', e.message); }
 }
 
 // ── 系统: 另类/分布式回测/模型/监控 (v502) ──
@@ -921,6 +1052,68 @@ async function loadSystems() {
       mEl.innerHTML = `${escapeHtml(status)} <a href="/metrics" target="_blank" style="color:var(--accent)">查看</a>${links}`;
     }
   } catch (e) { /* ignore */ }
+
+  // ── v536: 数据源摘要 + 指标快照 + 评估历史 + phase8 ──
+  try {
+    const ds = await fetchJSON('/api/monitoring/datasources');
+    const pEl = document.getElementById('mon-datasources');
+    if (pEl) pEl.textContent = `Prometheus ${ds.prometheus.configured ? '已配置' : '未配置'} (${ds.prometheus.url}) · Grafana ${ds.grafana.configured ? '已配置' : '未配置'} (${ds.grafana.url})`;
+  } catch (e) { /* ignore */ }
+
+  try {
+    const m = await fetchJSON(API + '/metrics');
+    const rows = Object.entries(m.counters || {}).map(([name, v]) => ({ name, type: 'counter', value: v }))
+      .concat(Object.entries(m.gauges || {}).map(([name, v]) => ({ name, type: 'gauge', value: v })));
+    setText('meta-metrics', `${rows.length} 项`);
+    renderTable('table-metrics', rows, [
+      { label: '指标', key: 'name' }, { label: '类型', key: 'type' }, { label: '值', key: 'value' },
+    ], { fmtMap: { type: v => `<span class="badge">${escapeHtml(v)}</span>`, value: v => fmtNum(v, 3) } });
+  } catch (e) { setText('meta-metrics', '无指标'); }
+
+  try {
+    const e = await fetchJSON(API + '/evaluations');
+    const runs = e.runs || [];
+    setText('meta-evals', `${runs.length} runs`);
+    renderTable('table-evals', runs, [
+      { label: 'run_id', key: 'id' }, { label: '时间', key: 'run_ts' },
+      { label: 'Phase', key: 'phase' }, { label: '因子数', key: 'n_factors' },
+      { label: '通过', key: 'n_passed' },
+    ], { fmtMap: { run_ts: v => (v||'').replace('T',' ').slice(0,19) } });
+  } catch (e) { setText('meta-evals', '无记录'); }
+
+  loadPhase8();
+}
+
+// ── v536: phase8 一致性报告 ──
+async function loadPhase8() {
+  try {
+    const d = await fetchJSON(API + '/phase8');
+    setText('meta-phase8', d.error ? '不可用' : (d.status || ''));
+    const el = document.getElementById('phase8-report');
+    if (!el) return;
+    if (d.error) { el.textContent = '查询失败: ' + d.error.message; return; }
+    if (d.status === 'not_available') { el.textContent = d.message || '尚无报告'; return; }
+    const dims = d.dimensions || {};
+    let html = `<div>状态: <b style="color:${d.status==='ok'?'var(--up)':'var(--down)'}">${escapeHtml(d.status)}</b> · 综合得分: <b>${d.overall_score ?? '—'}</b> · 实盘区间: ${escapeHtml((d.live_date_range||[]).join(' ~ '))}</div>`;
+    const dimNames = { D1: '信号一致性', D2: '收益一致性', D3: '持仓一致性', D4: '成本一致性' };
+    for (const [k, v] of Object.entries(dims)) {
+      const vd = v || {};
+      html += `<div style="margin-top:6px">• ${escapeHtml(dimNames[k]||k)}: <span style="color:${vd.pass?'var(--up)':'var(--down)'}">${vd.pass ? '✓' : '✗'}</span> ${escapeHtml(String(vd.detail ?? vd.message ?? ''))} (匹配率 ${vd.match_rate != null ? (vd.match_rate*100).toFixed(1)+'%' : '—'})</div>`;
+    }
+    el.innerHTML = html;
+  } catch (e) { setText('meta-phase8', '加载失败'); }
+}
+
+async function rerunPhase8() {
+  const msg = document.getElementById('phase8-msg');
+  if (msg) msg.textContent = '重跑中 (可耗时数分钟)…';
+  try {
+    const d = await fetchJSON(API + '/phase8?rerun=1');
+    if (msg) msg.textContent = d.error ? '✗ ' + d.error.message : '✓ 完成';
+    await loadPhase8();
+  } catch (e) {
+    if (msg) msg.textContent = '重跑失败: ' + e.message;
+  }
 }
 
 async function submitDistGrid() {

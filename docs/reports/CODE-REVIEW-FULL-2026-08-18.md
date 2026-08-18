@@ -281,3 +281,28 @@ test_v533_closed_loop.py 止损 2 测试更新为 v534 转发语义 (原断言 v
 ### 验证
 
 新增 test/test_v536.py 10 项; phase8 CLI 实跑; 全量 453 passed (136s, 连续 3 次稳定)。详见 HANDOFF.md。
+
+## 第 14 节: v537 UI 全量展示接入 (2026-08-18)
+
+### 范围
+
+上轮扫描后, "功能已实现但界面未展示" 分两类, 本轮全部接入:
+
+- **A 组 (端点已存在, 前端从不调用)**: /api/benchmark、daily_risk 表、/api/signals/quality、/api/backtest/history、/api/strategy/<name> + /action、/api/metrics、/api/monitoring/datasources、/api/health
+- **B 组 (数据已产生, 无端点)**: evaluation_runs 历史、phase8 报告、sector_exposure_alert 字段
+
+### 改动
+
+| 端 | 内容 |
+|----|------|
+| 后端 | 新增 3 端点: /api/risk/history (daily_risk 表, 空表幂等建表兜底)、/api/evaluations (run_store.list_runs, ?phase=)、/api/phase8 (默认读最新报告 / ?rerun=1 重跑 validate_consistency); flask request 补全局导入 |
+| Performance tab | 基准追踪: 累计收益/Alpha/滚动 Alpha-60d/IR-60d/Beta/up-down capture KPI + 策略 vs 沪深300 Plotly 双线; 每日 VaR/CVaR Plotly; 回测历史 runs 表 |
+| Strategies tab | 信号质量 KPI (今日 vs 20d 历史); 每行操作按钮 (调仓/详情), .action-btn 样式 |
+| Systems tab | metrics 快照表 (counters+gauges); 评估历史表; phase8 四维报告面板 + 重跑按钮; Prometheus 区 datasources 摘要 |
+| 横幅 | sector_exposure_alert 字段并入告警横幅 (SSE + pollOverview 双入口, withSectorAlert) |
+
+### 验证
+
+- 端点冒烟: 13 端点全 200 (flask test client); /api/phase8 实返回 divergent 报告 (15 runs 历史)
+- 语法: node --check app.js + ast.parse app.py 通过
+- 全量 453 passed — **前置条件: 停 web 服务**。服务进程 (api_state→_check_timeouts 写 task_runs) 与 pytest 写 market.db 竞争 → 随机 `database is locked` (实测 8→4 failed; 单测全过; 内嵌 pytest.main 同序复刻 18 passed, 停服务后全量恢复 453 passed)。非代码缺陷, 测试后 `bash scripts/restart.sh` 恢复

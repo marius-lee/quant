@@ -382,6 +382,19 @@ td.down { color: var(--down); }
 .badge-purple { background: #8b5cf622; color: #8b5cf6; }
 .trunc-reason em { font-style: normal; color: var(--text3); font-size: 0.75rem; }
 
+/* v536: 策略操作按钮 */
+.action-btn {
+  padding: 3px 10px;
+  margin-right: 6px;
+  font-size: 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--accent);
+  cursor: pointer;
+}
+.action-btn:hover { background: var(--accent); color: #fff; }
+
 .scheduler-group-label {
   font-size: 0.8rem;
   font-weight: 600;

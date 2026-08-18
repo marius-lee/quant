@@ -13,10 +13,10 @@ from web.services import PositionService, BacktestService, StockService, SignalS
 from quant.config.loader import get as cfg, validate; validate()  # 启动时校验 config.yaml 类型
 from quant.data.store import market_conn  # P69: 统一连接层
 from datetime import date, datetime
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template, request
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v536"
+VERSION = "test-v537"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 
@@ -1131,6 +1131,66 @@ def api_monitoring_datasources():
             "configured": bool(_cfg("grafana.enabled")),
         },
     })
+
+
+# ═══════════════════════════════════════════════════════════
+# v536: 界面接入补充端点 — daily_risk 历史 / 评估历史 / phase8
+# ═══════════════════════════════════════════════════════════
+
+@app.route("/api/risk/history")
+def api_risk_history():
+    """每日 VaR/CVaR 历史 (daily_risk 表, v536 起晚间链写入)."""
+    try:
+        from quant.config.paths import TRADE_DB
+        import sqlite3 as _sql
+        conn = _sql.connect(TRADE_DB)
+        conn.row_factory = _sql.Row
+        # 晚间链 v536 起写 daily_risk; 首次部署前表可能不存在 → 返回空
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS daily_risk ("
+            "date TEXT PRIMARY KEY, var_95 REAL, var_95_pct REAL, cvar_95 REAL, "
+            "cvar_95_pct REAL, portfolio_value REAL, n_positions INTEGER)"
+        )
+        rows = conn.execute(
+            "SELECT date, var_95, var_95_pct, cvar_95, cvar_95_pct, "
+            "portfolio_value, n_positions FROM daily_risk "
+            "ORDER BY date DESC LIMIT 120"
+        ).fetchall()
+        conn.close()
+        return _api_response(data=[dict(r) for r in rows])
+    except Exception as e:
+        logger.warning(f"api_risk_history failed: {e}")
+        return _api_response(error={"code": "INTERNAL", "message": "daily_risk 查询失败"}), 500
+
+
+@app.route("/api/evaluations")
+def api_evaluations():
+    """评估历史 (evaluation_runs 表, 每周末 phase 链写入). ?phase=phase3"""
+    from quant.evaluation.run_store import list_runs
+    phase = request.args.get("phase")
+    try:
+        rows = list_runs(phase=phase, limit=15)
+        return _api_response(data={"runs": rows, "phase": phase})
+    except Exception as e:
+        logger.warning(f"api_evaluations failed: {e}")
+        return _api_response(error={"code": "INTERNAL", "message": "评估历史查询失败"}), 500
+
+
+@app.route("/api/phase8")
+def api_phase8():
+    """phase8 回测 vs 实盘一致性报告. ?rerun=1 强制重算 (重, 默认读最近一次)."""
+    try:
+        if request.args.get("rerun") == "1":
+            from quant.evaluation.phase8_live_consistency import validate_consistency
+            result = validate_consistency()
+        else:
+            from quant.evaluation.phase8_live_consistency import get_latest_report
+            result = get_latest_report() or {"status": "not_available",
+                                             "message": "尚无 phase8 报告 — 点重跑生成"}
+        return _api_response(data=result)
+    except Exception as e:
+        logger.warning(f"api_phase8 failed: {e}")
+        return _api_response(error={"code": "INTERNAL", "message": f"phase8: {e}"}), 500
 
 
 if __name__ == "__main__":

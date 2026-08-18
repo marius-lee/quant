@@ -217,6 +217,22 @@
   </div>
 
   <div class="chart-box" id="chart-attribution" style="margin-top:12px"></div>
+
+  <div class="section" style="margin-top:12px">
+    <div class="section-header"><h2>基准跟踪 (沪深300)</h2><span class="meta" id="meta-benchmark">—</span></div>
+    <div id="kpi-benchmark" class="kpi-strip" style="grid-template-columns:repeat(5,1fr);margin-bottom:0"></div>
+    <div class="chart-box" id="chart-benchmark" style="margin-top:10px;height:300px"></div>
+  </div>
+
+  <div class="section" style="margin-top:12px">
+    <div class="section-header"><h2>每日 VaR / CVaR</h2><span class="meta" id="meta-daily-risk">—</span></div>
+    <div class="chart-box" id="chart-daily-risk" style="height:260px"></div>
+  </div>
+
+  <div class="section" style="margin-top:12px">
+    <div class="section-header"><h2>回测历史</h2><span class="meta" id="meta-backtest-history">—</span></div>
+    <div id="table-backtest-history"></div>
+  </div>
 </section>
 
 <!-- ════════════ TAB: 调度 ════════════ -->
@@ -256,6 +272,11 @@
       <div class="kpi"><div class="label">激活策略</div><div class="value" id="st-active">—</div></div>
     </div>
     <div id="table-strategies"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><h2>信号质量</h2><span class="meta" id="meta-sig-quality">—</span></div>
+    <div id="kpi-sig-quality" class="kpi-strip" style="grid-template-columns:repeat(5,1fr);margin-bottom:0"></div>
   </div>
 </section>
 
@@ -300,6 +321,26 @@
         <div class="kpi"><div class="label">/metrics</div><div class="value" id="mon-metrics">—</div></div>
       </div>
       <div style="margin-top:8px;font-size:0.8rem;color:var(--text2)" id="mon-hint"></div>
+      <div style="margin-top:6px;font-size:0.8rem;color:var(--text2)" id="mon-datasources"></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><h2>指标快照 (metrics.db)</h2><span class="meta" id="meta-metrics">—</span></div>
+    <div id="table-metrics"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><h2>评估历史 (evaluation_runs)</h2><span class="meta" id="meta-evals">—</span></div>
+    <div id="table-evals"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><h2>Phase 8 一致性报告</h2><span class="meta" id="meta-phase8">—</span></div>
+    <div id="phase8-report" style="font-size:0.9rem;line-height:1.7"></div>
+    <div style="margin-top:8px">
+      <button onclick="rerunPhase8()" style="padding:6px 14px;background:var(--accent);border:none;border-radius:4px;color:#fff;cursor:pointer">重跑一致性校验</button>
+      <span id="phase8-msg" style="font-size:0.8rem;margin-left:8px"></span>
     </div>
   </div>
 </section>

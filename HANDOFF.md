@@ -3823,3 +3823,19 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
   7. **phase8 validate_consistency CLI 入口** — 原 511 行完整实现连 CLI 都没有 → 追加 `python -m quant.evaluation.phase8_live_consistency` (_main + __main__)
 - **不接入 (报告)**: 被替代旧实现 (daily_sync.py 导入即崩/jq_valuation/orchestrator/store_metadata/registry.py 双注册表/EnsembleAlphaModel/IncrementalCovariance/sample_cov/style_neutralize/_engine_sell); 配置门控功能 (Micro/Small 层/tc_band/turnover 999/multi_tf false/intersection 策略/vnpy 族 — 设计决策或默认关闭); 数据源失效 (northbound/news/macro/alternative 自动同步 — 源不可用或 CLAUDE.md 已知事项豁免); 因子注册 (13 个未注册因子 — 因子池 104 已固化, 注册属业务决策需 8 阶段评估); 工具便捷 API (tear_sheet/parallel/BacktestEngine/calendar/order_summary/clear_cooloff/shap 等 — 低价值或无消费端)
 - **验证**: 新增 test_v536.py 10 项 (Metrics 落盘/6 处接线源码断言/stress 无悬空 import/benchmark 无裸 SQL/phase8 CLI/sector check 语义/空表分支); phase8 CLI 实跑 (D1 报因子中性化 B32 阻断 — 已知机制); 全量 453 passed (136s, 连续 3 次稳定)
+## 2026-08-18: v537 UI 全量展示接入 (已完成功能未上界面 → 全部接线) — 归档 docs/reports/CODE-REVIEW-FULL-2026-08-18.md 第 14 节
+
+- **背景**: 扫描发现"功能已实现但界面未展示"分两类 — A 组 (端点已存在但前端从不调用): /api/benchmark、daily_risk、/api/signals/quality、/api/backtest/history、/api/strategy/<name>+/action、/api/metrics、/api/monitoring/datasources、/api/health; B 组 (数据存在无端点): evaluation_runs 历史、phase8 报告、sector_exposure_alert 字段 → 全部接入
+- **后端 3 新端点 (web/app.py)**:
+  1. `/api/risk/history` — daily_risk 表 (TRADE_DB) DESC LIMIT 120; **首次部署前表不存在 → 幂等 CREATE TABLE IF NOT EXISTS 兜底** (晚间链 v536 起写入, 早于部署日的查询返回空数组而非 500)
+  2. `/api/evaluations` — run_store.list_runs (?phase= 过滤, limit 15) → {runs, phase}
+  3. `/api/phase8` — 默认 get_latest_report() 渲染; 无报告 → {"status":"not_available","message":"尚无 phase8 报告 — 点重跑生成"}; ?rerun=1 → validate_consistency() (重跑)
+  - flask request 补全局导入 (api_evaluations 用 request.args)
+- **前端 5 个展示区 (index.html + app.js + style.css)**:
+  1. Performance tab: 基准追踪 (KPI: 策略/基准累计、Alpha、滚动 Alpha-60d、IR-60d、Beta、up/down capture + Plotly 双线净值曲线)、每日 VaR/CVaR 曲线 (Plotly)、回测历史 runs 表
+  2. Strategies tab: 信号质量 KPI (今日信号数/均分/20d 均值/数量偏差/均分差 ← /api/signals/quality) + 每行策略操作按钮 (调仓 POST /action rebalance / 详情 GET /api/strategy/<name> JSON 展开) + .action-btn 样式
+  3. Systems tab: metrics 快照表 (counters+gauges ← /api/metrics)、评估历史表 (← /api/evaluations, run_ts 格式化)、phase8 报告面板 (四维 D1-D4 pass 渲染 + 综合得分 + rerunPhase8 按钮 ← /api/phase8?rerun=1)
+  4. Systems tab Prometheus 区: datasources 摘要行 (← /api/monitoring/datasources, prometheus/grafana 配置状态)
+  5. 告警横幅: sector_exposure_alert broker 状态字段并入 renderAlerts (withSectorAlert(), SSE 与 pollOverview 两处入口)
+- **验证**: 端点冒烟 13 端点全 200 (flask test client; /api/phase8 实返回 divergent 报告 + 15 runs 历史); node --check app.js + ast.parse app.py 通过; **全量 453 passed** — 前提: 停 web 服务, 服务进程 (api_state→_check_timeouts 写 task_runs) 与测试写竞争 → 随机 database is locked (8→4 failed, 单测全过, 内嵌 pytest.main 复刻同序 18 passed 证明非代码缺陷); 测试后恢复 `bash scripts/restart.sh`
+- **注意**: 本次改动纯展示接线, 不触碰因子/优化/执行链路; /api/risk/history 建表兜底为 DDL 幂等, 无数据语义

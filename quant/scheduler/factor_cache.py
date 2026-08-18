@@ -1,5 +1,6 @@
 """增量因子物化调度器 — 每日 21:00."""
 import time as _time, uuid as _uuid
+from quant.config.constants import _require_cfg
 from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
 from quant.utils.logger import get_logger, set_trace_id
 
@@ -48,8 +49,11 @@ def _run(start_date: str, end_date: str):
         finally:
             _conn.close()
         symbols = UniverseRepo().get_symbols(exclude_market='BJ')
-        factors = sorted(set(get_factor_names(status_filter='backtesting'))
-                         | set(get_factor_names(status_filter='using')))
+        # v542: materialize_exclude 排除恒空结果因子 (fund_change/financial_anomaly),
+        # 与 materialize_full.sh 物化池一致 — 否则每晚空算 429 因子日 + blocked 刷屏
+        _excl = _require_cfg('factor.materialize_exclude')
+        factors = sorted(set(get_factor_names(status_filter='backtesting', exclude=_excl))
+                         | set(get_factor_names(status_filter='using', exclude=_excl)))
         store.close()
 
         # 数据可用性裁剪 (审计 P0-3): 源表超 SLO 的因子本轮不物化 —
@@ -77,7 +81,6 @@ def _run(start_date: str, end_date: str):
             _log.info(f"[{end_date}] factor_cache done: {result['n_rows']} new rows ({elapsed:.1f}s)")
             # Trim old cache to max_days window (test-v466: 失败不再降级为 warning)
             try:
-                from quant.config.constants import _require_cfg
                 max_days = _require_cfg("backtest.factor_cache_max_days")
                 trimmed = fs.trim_to_max_days(max_days)
                 _log.info(f"[{end_date}] factor_cache: trimmed {trimmed} old rows ({max_days}d window)")

@@ -3866,3 +3866,14 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
 - **保留 (业务评估窗口, 加注释非改动)**: eval_standard.sh 2023-2025 (完整年度评估)、phase7_wf.py CLI --end 默认 2025-12-31、backtest_full.sh oos_start_date 2025-06-01 — 属业务窗口非数据终点
 - **不动 (合理)**: 测试用例日期 (smoke_verify.sh 等)、docstring 示例、expr_compiler demo、jq_valuation TRIAL (死模块)、margin 无参默认起点 (业务)、limit_up CLI 起点默认、config.yaml port 8521 (配置源正确)
 - **验证**: 8 脚本 bash -n + 8 文件 ast.parse 通过; test_v538/v539 8 passed
+## 2026-08-19: v542 恒空结果因子排除物化池 (fund_change/financial_anomaly)
+
+- **触发**: 用户贴物化日志 — fund_change/financial_anomaly 自 2020-01-22 起 blocked (计算为空结果), 追问是否数据缺失/能否计算/不能则排除
+- **定位 (非表级缺失, 但特定日期区间确实算不出)**:
+  - fund_hold 27 期 change_ratio 全有值 (2127-3909 只/期)、财务表 65-86 期齐全 → **非表缺失**
+  - blocked.json: fund_change 245 天 (自 2020-12-31 起, 2021-01 连续段 + 分散), financial_anomaly 184 天 (自 2023-03-31 起); 08-17 轮 9671 个 (date,factor) blocked 同源
+  - 500 只完整复刻 (真 chunk aux + 真 fundamentals panel + compute_all_factors 全链): fund_change/financial_anomaly EMPTY, 同路径 accruals 非空 → **物化环境独立复现空结果, blocked 判定正确**
+- **修复 (排除物化池, registry 状态不变)**: config.yaml `factor.materialize_exclude: ['fund_change','financial_anomaly']` (注释含实证+恢复条件); `get_factor_names` 加 exclude 参数 (默认 None 兼容); 两处调用点应用: materialize_full.sh (backtesting 池) + scheduler/factor_cache.py (晚间链并集, 顺带顶 import _require_cfg 消除 53 行 NameError 隐患 + 删 83 行冗余局部 import); blocked.json 清理 429 条记录 (1478 → 1049 日期)
+- **影响**: 物化池 93 → 91 因子; FactorStore.load 对缺因子目录天然跳过 (无副作用); 回测/评估跳过这两个 evaluating 因子; 数据补齐后从 config 移除即恢复
+- **验证**: test_v542.py 4 项 (config 列表存在/get_factor_names exclude 生效且池内确认无/默认 None 兼容/using 池同步) + v536/v538/v539 18 项回归, 22 passed; 全量回归待物化结束后 (需停服务)
+- **注意**: 当前 05:40 force 物化运行中 (结束时可能重写 blocked.json 覆盖清理 — 残留无害, 排除后无读取方); 物化池排除下一轮起生效

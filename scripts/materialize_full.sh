@@ -15,6 +15,7 @@ PYTHONPATH=. .venv/bin/python3 -c "
 from quant.factor.store import FactorStore
 from quant.data.repos import UniverseRepo
 from quant.config.paths import FACTOR_CACHE_DB, MARKET_DB
+from quant.config import _require_cfg
 from quant.factor.compute import get_factor_names
 import pandas as pd, sqlite3
 
@@ -24,7 +25,10 @@ end = conn.execute('SELECT MAX(date) FROM daily').fetchone()[0]
 conn.close()
 dates = pd.date_range('2020-01-01', end, freq='B')
 date_strs = [d.strftime('%Y-%m-%d') for d in dates]
-factor_names = get_factor_names(status_filter='backtesting')
+# v542: materialize_exclude — 恒空结果因子 (fund_change/financial_anomaly)
+# 从物化池排除 (config.yaml 注释含实证 + 恢复条件), 避免每轮全量重算浪费
+factor_names = get_factor_names(status_filter='backtesting',
+                                exclude=_require_cfg('factor.materialize_exclude'))
 symbols = UniverseRepo().get_symbols(exclude_market='BJ')
 
 print(f'{len(date_strs)} dates x {len(factor_names)} factors x {len(symbols)} symbols')

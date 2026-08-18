@@ -110,7 +110,7 @@ def update_factor_evaluation(name: str, ic_mean: float, ic_ir: float):
 # ═══════════════════════════════════════════════════════════
 
 
-def get_factor_names(status_filter=None, registered_before: str = None) -> list:
+def get_factor_names(status_filter=None, registered_before: str = None, exclude: list = None) -> list:
     """返回因子名列表 (从 factor_registry 表读取).
 
     status_filter:
@@ -120,7 +120,12 @@ def get_factor_names(status_filter=None, registered_before: str = None) -> list:
         None → 全部因子
     registered_before: v535 — 仅返回 created_at 早于该日期的因子
         (walk-forward 训练窗口 PIT: 2020 fold 不得使用 2023 注册的因子).
+    exclude: v542 — 物化排除列表 (config factor.materialize_exclude),
+        计算恒为空结果的因子不再物化; 排除仅作用于物化池, registry 状态不变.
     """
     price_factors = load_active_price_factors(status_filter, registered_before)
     fund_factors = load_active_fundamental_factors(status_filter, registered_before)
-    return list(price_factors.keys()) + list(fund_factors.keys())
+    names = list(price_factors.keys()) + list(fund_factors.keys())
+    if exclude:
+        names = [n for n in names if n not in exclude]
+    return names

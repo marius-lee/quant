@@ -384,3 +384,24 @@ eval_standard.sh 2023-2025 (完整年度评估)、phase7_wf --end 2025-12-31、b
 ### 验证
 
 8 脚本 bash -n + 8 文件 ast.parse; test_v538/v539 8 passed。
+
+## §19 v542: 恒空结果因子排除物化池 (fund_change/financial_anomaly)
+
+**触发**: 用户贴物化日志 — 两因子自 2020-01-22 起 blocked (计算为空结果), 追问三连: 是否缺失数据 / 能否计算 / 不能则排除。
+
+**定位结论 — 非表级缺失, 但特定日期区间确实算不出**:
+| 检查 | 结果 |
+|------|------|
+| fund_hold 27 期 change_ratio 覆盖 | 每期 2127-3909 只非空 ✓ 表齐全 |
+| 财务三表 stat_date 覆盖 | 65-86 期 (2007-12-31 起) ✓ 表齐全 |
+| blocked.json 分布 | fund_change 245 天 (2020-12-31 起, 2021-01 连续段+分散); financial_anomaly 184 天 (2023-03-31 起) |
+| 500 只完整复刻 (chunk aux + fundamentals panel + compute_all_factors 全链) | fund_change/financial_anomaly **EMPTY**; 同路径 accruals 非空 → 物化环境独立复现空结果 |
+
+**结论**: blocked 机制判定正确 (05:40 force 全量重算两轮独立复现空结果); 非补数可解 (长期日期区间缺口) → 按用户指令排除物化池。
+
+**修复 (排除仅作用物化池, registry 状态不变)**:
+- config.yaml `factor.materialize_exclude: ['fund_change','financial_anomaly']` (注释含实证 + 恢复条件)
+- `get_factor_names` 加 `exclude` 参数 (默认 None 零破坏); 两处调用点: materialize_full.sh (backtesting 池 93→91) + scheduler/factor_cache.py (晚间链并集; 顺带顶 import `_require_cfg` 消除 53 行 NameError 隐患, 删 83 行冗余局部 import)
+- blocked.json 清理 429 条记录 (1478 → 1049 日期)
+- 影响: FactorStore.load 对缺因子目录天然跳过 (零副作用); 恢复 = config 移除即自动回池
+- 验证: test_v542.py 4 项 (config/backtesting 池排除/默认兼容/using 池) + v536/v538/v539 18 项, 22 passed

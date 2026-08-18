@@ -456,3 +456,14 @@ eval_standard.sh 2023-2025 (完整年度评估)、phase7_wf --end 2025-12-31、b
 **补数**: scripts/backfill_financial_income.py v1.1 — sina lrb 重拉补齐 NULL 列 (COALESCE 幂等)。并发调优: 8 并发触发 sina 限流 (62s/请求) → 3 并发稳定 ~9.4s/请求, 5558 只 ≈ 5h。baostock 排除 (query_profit_data 仅 11 字段无 operatingCost)。银行股无营业成本科目 → 保持 NULL 合理。
 
 **验证**: test_v545_v546.py 4 项 + v543/v544 (前置断言改为不依赖临时数据状态 — 补数生效后 2020 期 cost 已恢复 41%)。10 passed。
+
+## §23 v548: 全表字段级体检 + margin_detail short_total 漏写修复
+
+scripts/field_health.py 全表字段级扫描 (v547 事件后)。39 列超 5% 阈值, 分类:
+
+1. **真实缺失 → 补数中**: financial_income 再缺 total_profit/income_tax_expense (74-75% NaN, 与 cost/admin 同源同模式) + financial_cashflow 4 列 (79% NaN) — 补数脚本 v1.2 扩展 (lrb+llb 双表, 5560 只 × 2 请求)
+2. **代码 bug → v548 修复**: margin_detail short_total 100% NaN — SH 路径 (9 列 8 值错位, margin_total 恒 NULL) + SZ 路径 (8 值 9 槽错位) 均漏写融券余额; 修复 10 列 10 值对齐 (SH 加 rqye, SZ 加 short_total), test_v548 2 项 (mock SSE 响应 + 绑定形状)
+3. **设计如此**: daily_valuation.turnover_rate (em_valuation 注释: turnover 在 daily 独立来源, 因子零引用); lhb post_Nd 最新期天然 NaN
+4. **合理缺项**: 金融股无商誉/固定资产/长短期借款科目; fund_hold.change_ratio 部分期无变动; stocks 快照 6.5% (未上市/退市)
+
+**待办**: 补数完成后 margin 历史回补 (SH 1849 天 + SZ 全量) → 复检 → 重启物化。

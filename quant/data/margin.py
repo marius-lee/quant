@@ -75,6 +75,8 @@ def _sync_sse_raw(date_str: str, conn) -> int:
         return 0
 
     # v408: executemany
+    # v548: 修复两缺陷 — (1) short_total 漏写: batch 未含融券余额, SQL 列也未含,
+    #         9 列 8 值错位绑定 (SH margin_total 恒 NULL); (2) 现在 10 列 10 值对齐
     batch = []
     for row in rows:
         sym = row.get("stockCode", "")
@@ -86,13 +88,14 @@ def _sync_sse_raw(date_str: str, conn) -> int:
               _to_float(row.get("rzche")),
               _to_float(row.get("rqmcl")),
               _to_float(row.get("rqyl")),
+              _to_float(row.get("rqye")),
               None))
     if batch:
         conn.executemany("""
             INSERT OR REPLACE INTO margin_detail
             (symbol, date, market, margin_buy, margin_balance, margin_repay,
-             short_sell_vol, short_balance, margin_total)
-            VALUES (?, ?, 'SH', ?, ?, ?, ?, ?, ?)
+             short_sell_vol, short_balance, short_total, margin_total)
+            VALUES (?, ?, 'SH', ?, ?, ?, ?, ?, ?, ?)
         """, batch)
         conn.commit()
         n = len(batch)
@@ -140,6 +143,8 @@ def _sync_szse_wrapper(date_str: str, conn) -> int:
         )
 
     # v408: executemany 替代逐行 INSERT
+    # v548: 修复错位 — 原 batch 8 值绑 9 槽 (SQL 无 short_total), margin_total
+    #       错位写入 short_total; 现 10 列 10 值对齐 (short_total=融券余额)
     batch = []
     for _, row in df.iterrows():
         sym = str(row.get('symbol', '')).strip()
@@ -151,13 +156,14 @@ def _sync_szse_wrapper(date_str: str, conn) -> int:
               None,
               _to_float(row.get('short_sell_vol')),
               _to_float(row.get('short_balance')),
+              _to_float(row.get('short_total')),
               _to_float(row.get('margin_total'))))
     if batch:
         conn.executemany("""
             INSERT OR REPLACE INTO margin_detail
             (symbol, date, market, margin_buy, margin_balance, margin_repay,
-             short_sell_vol, short_balance, margin_total)
-            VALUES (?, ?, 'SZ', ?, ?, ?, ?, ?, ?)
+             short_sell_vol, short_balance, short_total, margin_total)
+            VALUES (?, ?, 'SZ', ?, ?, ?, ?, ?, ?, ?)
         """, batch)
         conn.commit()
         n = len(batch)

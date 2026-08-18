@@ -3917,3 +3917,11 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
 - **修复**: table_registry `_fin_income_field_check` (custom_check 钩子): 最新报告期两列 NaN 率 >50% → audit fail — 银行/保险无营业成本科目, NaN 率远低于 50% 不误报
 - **验证**: test_v479_data_health.py +1 (16 passed)
 - **待办**: 补数进行中 (预计 12:00) → 完成后用户重启物化
+## 2026-08-19: 全表字段级体检 (scripts/field_health.py) + v548 margin 写入修复
+
+- **体检结果** (39 列超 5% 阈值, 分类处置):
+  - **补数中** (sina lrb+llb, v1.2 5560 只 × 2 请求 ≈ 8h): financial_income total_profit/income_tax_expense (74-75% NaN) + financial_cashflow 4 列 (79% NaN) + 已在跑的 cost/admin
+  - **v548 代码修复** (margin_detail): SH/SZ 两路径均漏写 short_total (SH 9 列 8 值错位 → SH margin_total 恒 NULL; SZ 8 值 9 槽错位); 修复: 10 列 10 值对齐, SH 加 rqye (融券余额), SZ 加 short_total
+  - **设计如此, 不补**: daily_valuation.turnover_rate (em_valuation 明确留 NULL, turnover 在 daily 有独立来源, 因子无引用); lhb_detail post_Nd (最新期天然 NaN); stocks 快照列 (最新期 0%)
+  - **合理缺项, 不补**: financial_balance good_will/fixed_assets/longterm_loan (金融股无对应科目); fund_hold.change_ratio 20% (部分期无变动记录); daily.amount 5.9%; intraday_snapshot.prev_close 9.6%
+- **待办**: 补数完成后 → margin 历史回补 (SH 全量 1849 天 + SZ 全量, 需 akshare/SSE API 可用) → 复检字段健康 → 用户重启物化

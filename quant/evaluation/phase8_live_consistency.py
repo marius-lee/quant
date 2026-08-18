@@ -509,3 +509,23 @@ def get_latest_report() -> dict | None:
     """Load the most recent Phase 8 consistency report from evaluation_runs."""
     from quant.evaluation.run_store import load_latest
     return load_latest("phase8")
+
+
+# ── v536: CLI 入口 (原完整实现无任何调用方/入口) ──
+
+def _main() -> None:
+    """python -m quant.evaluation.phase8_live_consistency
+
+    运行回测 vs 实盘一致性校验 (D1-D4), 打印 JSON 结果.
+    """
+    import json
+    from quant.utils.logger import set_trace_id
+
+    set_trace_id("phase8-cli")
+    _log.info("phase8: running backtest-vs-live consistency validation")
+    result = validate_consistency()
+    print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+
+
+if __name__ == "__main__":
+    _main()

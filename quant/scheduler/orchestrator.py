@@ -128,11 +128,36 @@ def _run():
     _evening_done = False
     _repair_done = False
     _weekly_done = False
+    # v536: 告警/指标落盘节流 — check_alerts 查 daily_equity/daily 表,
+    # 每次 POLL 跑一次过频 → 60s 评估一次; metrics.persist 每日 4 次落盘
+    _last_alert_ts = 0.0
+    _last_persist_ts = 0.0
 
     while True:
         now = datetime.now()
         current_day = now.strftime("%Y-%m-%d")
         hhmm = time(now.hour, now.minute)
+
+        # —— 监控闭环 (v536): 告警评估 + SSE 推送 + 指标落盘 ——
+        # 原 check_alerts 仅 web /api/health 被动触发, push_alerts 零调用 →
+        # 回撤/数据滞后/pipeline 失败告警从不主动推送; metrics.db 恒空表.
+        _now_ts = _time.time()
+        if _now_ts - _last_alert_ts >= 60:
+            _last_alert_ts = _now_ts
+            try:
+                from quant.core.state_broker import broker as _broker
+                from quant.monitor.metrics import metrics as _mm
+                from quant.monitor.alerts import check_alerts, push_alerts
+                push_alerts(check_alerts(_broker.get(), _mm.snapshot()))
+            except Exception as _ae:
+                _log.warning("alert evaluation failed: %s", _ae)
+        if _now_ts - _last_persist_ts >= 6 * 3600:
+            _last_persist_ts = _now_ts
+            try:
+                from quant.monitor.metrics import metrics as _mm
+                _mm.persist()
+            except Exception as _pe:
+                _log.warning("metrics persist failed: %s", _pe)
 
         # —— 新的一天: 重置状态 ——
         if current_day != today:

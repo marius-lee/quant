@@ -16,7 +16,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v535"
+VERSION = "test-v536"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 
@@ -600,9 +600,16 @@ def api_stress():
         state = broker.get()
         positions = state.get("positions", [])
         capital = state.get("total_asset", state.get("capital", 5000))
-        from quant.risk.stress_test import run_stress_tests
-        result = run_stress_tests(positions, capital)
-        return _api_response(data=result)
+        # v536: 原 from quant.risk.stress_test import run_stress_tests — 该模块
+        # 已在 v438 删除, 端点必 500 (前端在调) → 改用 var.stress_test (活代码,
+        # backtest/loop.py:893 同源); weights = 各持仓市值 (RMB)
+        from quant.risk.var import stress_test
+        weights = {
+            p["symbol"]: p.get("price", 0) * p.get("shares", 0)
+            for p in positions if p.get("symbol")
+        }
+        result = stress_test(positions, weights)
+        return _api_response(data={"capital": capital, "scenarios": result})
     except Exception as e:
         logger.warning(f"api_stress failed: {e}")
         return _api_response(error={"code": "INTERNAL", "message": str(e)}), 500
@@ -966,16 +973,17 @@ def api_metrics():
 
 @app.route("/api/benchmark")
 def api_benchmark():
-    """v409: 基准跟踪 — alpha/IR/beta/up_capture/down_capture."""
-    import sqlite3
-    from quant.config.paths import TRADE_DB
-    conn = sqlite3.connect(TRADE_DB)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT * FROM benchmark_tracking WHERE strategy='quant' ORDER BY date DESC LIMIT 60"
-    ).fetchall()
-    conn.close()
-    return _api_response(data=[dict(r) for r in rows])
+    """v409: 基准跟踪 — 累计曲线 + 滚动 alpha/IR/beta/capture.
+
+    v536: 原裸 SQL 直查 benchmark_tracking 60 行 — 改为 benchmark.tracker
+    get_tracking_summary() (累计曲线/滚动指标完整实现, 原零消费方).
+    """
+    from quant.benchmark.tracker import get_tracking_summary
+    summary = get_tracking_summary(strategy="quant")
+    if not summary.get("available"):
+        return _api_response(data=summary)
+    latest = summary.pop("latest_rolling", None)
+    return _api_response(data={"summary": summary, "latest_rolling": latest})
 
 
 # ═══════════════════════════════════════════════════════════

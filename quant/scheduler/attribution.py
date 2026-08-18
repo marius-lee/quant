@@ -673,3 +673,19 @@ def _run(today: str):
         compute_rolling_metrics(window=60, strategy="quant")
     except Exception as e:
         _log.warning(f"rolling metrics update failed: {e}")
+
+    # ── v536: daily_risk 持久化 (update_daily_risk 接入) ──
+    # 原 var.py update_daily_risk docstring 声称 "Called from scheduler.attribution"
+    # 但从未被调用 — daily_risk 表生产恒空 (web dashboard 无数据).
+    # 复用 engine2 (attribution 主流程已持持仓), 失败不阻断晚间链.
+    try:
+        from quant.risk.var import update_daily_risk
+        _dr = update_daily_risk(engine2, strategy="quant")
+        if _dr and _dr.get("available", True):
+            _v = _dr.get("var", {})
+            _cv = _dr.get("cvar", {})
+            _log.info(f"daily_risk: var_95={_v.get('var_95_pct')}% "
+                      f"cvar_95={_cv.get('cvar_95_pct')}% "
+                      f"value={_dr.get('portfolio_value')}")
+    except Exception as _dr_err:
+        _log.warning(f"daily_risk update failed (non-fatal): {_dr_err}")

@@ -608,6 +608,38 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         broker.update({"status": "signals_generated", "progress": "5/5",
                     "n_positions": portfolio.positions, "invested": portfolio.invested, "trace_id": tid, "signals": target_positions})
 
+    # ── v536: 行业暴露事后风控 (sector_exposure_check 接入) ──
+    # 原实现 (constraints.py:255) 完整但零调用方, risk.max_sector_exposure
+    # 配置无消费端 — 优化器只做单票上限, 行业集中度无约束. 此处对生成
+    # 的 target_positions 市值权重检查, 超限 → 告警 + 状态字段 (web 可见),
+    # 不阻断 (Nano 层单票集中是设计, 行业暴露必超, 记录不告警).
+    try:
+        if total_capital >= float(_require_cfg("optimizer.nano_cap")):
+            from quant.risk.constraints import sector_exposure_check
+            _w = {}
+            _invested = float(portfolio.invested) or 1.0
+            for _tp in target_positions:
+                _w[_tp["symbol"]] = (_tp["price"] * _tp["shares"]) / _invested
+            _w_s = pd.Series(_w)
+            _ind_s = None
+            if industries is not None and len(_w) > 0:
+                _ind_s = pd.Series(
+                    {s: industries.get(s, "") for s in _w if s in industries.index},
+                    dtype=str,
+                )
+            if _ind_s is not None and len(_ind_s) > 0:
+                _ok, _msg = sector_exposure_check(
+                    _w_s, _ind_s,
+                    max_exposure=float(_require_cfg("risk.max_sector_exposure")),
+                )
+                if not _ok:
+                    logger.warning("[5/5] sector exposure: %s", _msg)
+                    results["steps"]["optimizer"]["sector_exposure"] = _msg
+                    if not suppress_push:
+                        broker.update({"sector_exposure_alert": _msg})
+    except Exception as _sec_err:
+        logger.warning("sector exposure check skipped (non-fatal): %s", _sec_err)
+
     if _store_in is None:
         store.close()
     elapsed = time.time() - t0

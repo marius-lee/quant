@@ -253,3 +253,31 @@ test_v533_closed_loop.py 止损 2 测试更新为 v534 转发语义 (原断言 v
 ### 验证
 
 新增 test/test_v535.py 8 项; 全量 450 passed (132s)。详细见 HANDOFF.md。
+
+## 13. v536 未接入功能接线 (2026-08-18)
+
+### 扫描方法
+
+4 个并行 agent 全仓 48.5k 行扫描 (data/scheduler/config/utils、alpha/factor、risk/optimizer/execution、monitor/backtest/evaluation/regime/benchmark/web)，判定标准: 公共函数/类/方法在 quant/+web/+scripts/ 全仓零调用方 (排除测试/CLI/注册表/self 调用)，产出 40+ 函数级候选。
+
+### 接入 7 项
+
+1. **web /api/stress 悬空导入** (app.py): `quant.risk.stress_test` 模块 v438 已删 → 端点必 500 → 改 `var.stress_test(positions, weights=持仓市值)` (backtest/loop.py:893 同源活代码)
+2. **告警闭环** (orchestrator.py): `push_alerts` 零调用 → 主循环每 60s `check_alerts(broker.get(), metrics.snapshot())` → `push_alerts` (SSE 横幅, 去重内置); 原仅 /api/health 被动计算
+3. **Metrics.persist** (orchestrator.py): metrics.db 恒空表 → 主循环每 6h 落盘 (docstring 声称 "scheduler 每次循环调用" 从未实现)
+4. **sector_exposure_check** (pipeline.py): constraints.py:255 完整实现零调用, `risk.max_sector_exposure: 0.35` 无消费端 → construct 后市值权重检查, 超限 log + broker 状态字段; Nano 层豁免 (单票集中是设计), 不阻断
+5. **web /api/benchmark** (app.py): 裸 SQL → `benchmark/tracker.py get_tracking_summary` (累计曲线 + latest_rolling 完整实现原零消费方)
+6. **update_daily_risk** (scheduler/attribution.py): docstring 声称 "Called from scheduler.attribution" 从未实现 → 晚间链末尾复用 engine2 持久化 daily_risk 表, 失败不阻断
+7. **phase8 CLI** (phase8_live_consistency.py): 511 行实现无任何入口 → 追加 `python -m quant.evaluation.phase8_live_consistency`
+
+### 不接入清单 (判定为被替代/门控/无价值)
+
+- **被替代旧实现**: daily_sync.py (裸 config. 导入即崩, 被 table_registry 取代)、jq_valuation (被 em_valuation 取代)、factor/orchestrator.py (自述不参与 import 链)、store_metadata.py、alpha/registry.py (与 strategy.py 双注册表)、EnsembleAlphaModel/rolling_train_cv、IncrementalCovariance/sample_cov/style_neutralize、scheduler/monitor.py _engine_sell (v534 双路径取代)
+- **配置门控**: Micro/Small 层 (nano_cap ¥10K 门槛, ¥5000 起步设计)、tc_band (Nano 豁免)、turnover 999、multi_tf false、intersection/strict_intersection (无路径选中)、vnpy 族 (adapter: simulated)
+- **数据源失效/已知事项**: northbound (API 2024-08 失效)、news/macro/alternative 自动同步 (源不可用)、analyst/fund_hold/holder_trade (CLAUDE.md 已知覆盖机制豁免)
+- **因子注册**: compute/price/ 13 个未注册因子 (布林带×3/北向/主力/幻方×5 等) — 因子池 104 已固化, 注册需 8 阶段评估属业务决策
+- **工具便捷 API**: tear_sheet/parallel/BacktestEngine/calendar 5 函数/order_summary/clear_cooloff/shap_explain/feature_importance — 低价值或无消费端
+
+### 验证
+
+新增 test/test_v536.py 10 项; phase8 CLI 实跑; 全量 453 passed (136s, 连续 3 次稳定)。详见 HANDOFF.md。

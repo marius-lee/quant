@@ -3810,3 +3810,16 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
 - **优化7 年化口径统一 244/252 (审计项)**: tear_sheet.py:73 硬编码 np.sqrt(244) → config market.annual_trading_days; stats_cache.py:790 硬编码 sqrt(252/lookback) → config; deflated_sharpe docstring "A股=252" 修正为 244; **phase4 gross_sharpe 注释固化口径** — oos_ir 为日频 ICIR, √breadth (N×12=240 次下注/年, √240≈15.5) 数值上≈√244, gross 已≈完整 GK99 ICIR_annual; **严禁再乘 √annual_days (那才是双重年化高估 ×242)**
 - **验证**: 新增 test_v535.py 8 项 (sync 中文列/幂等/registered_before SQL×2/get_factor_names 透传/build_forward_returns PIT/FakeStore MultiIndex close/tear_sheet+stats_cache 无硬编码); test_eval_chain 窗口注入断言更新 (registered_before=train_end); 全量 450 passed (132s)
 - **注意**: (a) config.yaml 新增 `optimizer.risk_aversion: 2.0` + `alpha.val_frac: 0.10` (本地 gitignore, 需重启 web 服务生效); (b) 退市股 daily 历史补拉为异步 — 下次晚间链/update_daily 自动完成, 完成前 2020-2021 年训练样本仍缺退市股 (数据就绪后训练集自动增广); (c) phase4 公式未改数值 (注释澄清), 若将来把 oos_ir 改成年化 ICIR 必须同步删 √breadth, 保持单次年化
+## 2026-08-18: v536 未接入功能接线 (4 层全量扫描 + 7 项接入) — 归档 docs/reports/CODE-REVIEW-FULL-2026-08-18.md 第 13 节
+
+- **扫描**: 4 并行 agent 全仓 48.5k 行扫描 (data/scheduler/config/utils、alpha/factor、risk/optimizer/execution、monitor/backtest/evaluation/regime/benchmark/web), 产出 40+ 函数级候选 + 51 个未读 config key + 2 个整模块
+- **接入 7 项**:
+  1. **web /api/stress 悬空导入修复** — 原 `from quant.risk.stress_test import run_stress_tests` (模块 v438 已删, 端点必 500, 前端在调) → `var.stress_test(positions, weights=持仓市值)`
+  2. **告警闭环 (monitor/alerts.py push_alerts 接入)** — 原 check_alerts 仅 web /api/health 被动触发, push_alerts 零调用 → 回撤/数据滞后/pipeline 失败告警从不主动推送 → orchestrator 主循环每 60s 评估 check_alerts → push_alerts (SSE 横幅, 去重内置)
+  3. **Metrics.persist() 接入** — 原 metrics.db 恒空表 → orchestrator 主循环每 6h 落盘
+  4. **sector_exposure_check 接入 (risk/constraints.py:255)** — 原完整实现零调用, `risk.max_sector_exposure: 0.35` 无消费端 (优化器只做单票上限) → pipeline construct 后对 target_positions 市值权重检查, 超限 → log + broker 状态字段 (web 可见), Nano 层豁免 (单票集中是设计); 不阻断
+  5. **web /api/benchmark 改 get_tracking_summary** — 原裸 SQL 直查 60 行 → benchmark/tracker.py:180 完整实现 (累计曲线 + 滚动 alpha/IR/beta/up-down capture + latest_rolling)
+  6. **update_daily_risk 晚间链接入** — 原 docstring 声称 "Called from scheduler.attribution" 但从未被调, daily_risk 表生产恒空 → attribution.py 晚间链末尾 (复用 engine2) 持久化, 失败不阻断
+  7. **phase8 validate_consistency CLI 入口** — 原 511 行完整实现连 CLI 都没有 → 追加 `python -m quant.evaluation.phase8_live_consistency` (_main + __main__)
+- **不接入 (报告)**: 被替代旧实现 (daily_sync.py 导入即崩/jq_valuation/orchestrator/store_metadata/registry.py 双注册表/EnsembleAlphaModel/IncrementalCovariance/sample_cov/style_neutralize/_engine_sell); 配置门控功能 (Micro/Small 层/tc_band/turnover 999/multi_tf false/intersection 策略/vnpy 族 — 设计决策或默认关闭); 数据源失效 (northbound/news/macro/alternative 自动同步 — 源不可用或 CLAUDE.md 已知事项豁免); 因子注册 (13 个未注册因子 — 因子池 104 已固化, 注册属业务决策需 8 阶段评估); 工具便捷 API (tear_sheet/parallel/BacktestEngine/calendar/order_summary/clear_cooloff/shap 等 — 低价值或无消费端)
+- **验证**: 新增 test_v536.py 10 项 (Metrics 落盘/6 处接线源码断言/stress 无悬空 import/benchmark 无裸 SQL/phase8 CLI/sector check 语义/空表分支); phase8 CLI 实跑 (D1 报因子中性化 B32 阻断 — 已知机制); 全量 453 passed (136s, 连续 3 次稳定)

@@ -3839,3 +3839,11 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
   5. 告警横幅: sector_exposure_alert broker 状态字段并入 renderAlerts (withSectorAlert(), SSE 与 pollOverview 两处入口)
 - **验证**: 端点冒烟 13 端点全 200 (flask test client; /api/phase8 实返回 divergent 报告 + 15 runs 历史); node --check app.js + ast.parse app.py 通过; **全量 453 passed** — 前提: 停 web 服务, 服务进程 (api_state→_check_timeouts 写 task_runs) 与测试写竞争 → 随机 database is locked (8→4 failed, 单测全过, 内嵌 pytest.main 复刻同序 18 passed 证明非代码缺陷); 测试后恢复 `bash scripts/restart.sh`
 - **注意**: 本次改动纯展示接线, 不触碰因子/优化/执行链路; /api/risk/history 建表兜底为 DDL 幂等, 无数据语义
+## 2026-08-18: v538 回测默认区间接入 config (default_start/default_end 零消费端修复)
+
+- **背景**: 用户确认"全量回测应从 2020-01-01 起" — 查证: config.yaml `backtest.default_start: '2020-01-01'` (与 factor_cache_start 同源, v473 约定) 但 **loop.py full 模式 start=None → end-12mo, 配置从未被消费** (grep 全仓零引用)
+- **修复 (loop.py)**: full 分支 end=None → `_require_cfg('backtest.default_end')`, start=None → `_require_cfg('backtest.default_start')`; 删 end-12mo 旧逻辑; smoke 分支不变 (其语义本就是"最近 1 个月")
+- **调用方审计**: phase6/phase7 fold/phase8 live/BacktestEngine 全部显式传 start/end — 接入不影响任何现有调用方, 仅裸调 run_backtest() 生效
+- **验证**: test_v538.py 4 项 (源码断言×2/配置一致性 start==factor_cache_start/默认解析走 config — FakeEngine 拦截真回测, patch 源模块因 loop.py 函数体内 import); test_v538+v536 13 passed (tracking_summary 偶发锁 = 服务写竞争, 单跑 10 passed)
+- **脚本**: scripts/run_backtest_full.sh (config 默认区间/自定义区间/--smoke; 结果落 backtest_runs; 前置: 物化完成; 需停 web 服务防写竞争)
+- **物化/回测现状**: 全量物化 2026-08-18 07:33 完成 (parquet_f 99 因子 2.7GB, 2020-01-02~2026-08-17); backtest_runs 41 条全为物化前片段 (2025 Q1 调参批/2026 夏季 39 天/2024 Q1 失败), **物化后无任何回测** — 待跑

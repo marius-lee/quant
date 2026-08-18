@@ -316,9 +316,14 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             _log.info(f'backtest: SMOKE mode — {start_date}→{end_date}, {universe_size} stocks')
         else:  # full
             if end_date is None:
-                end_date = datetime.now().strftime('%Y-%m-%d')
+                # v538: 接入 config backtest.default_end (原 today — 滚动配置值
+                # 语义: 评估截止日, 数据就绪时由维护者更新)
+                end_date = _require_cfg('backtest.default_end')
             if start_date is None:
-                start_date = (pd.Timestamp(end_date) - pd.DateOffset(months=12)).strftime('%Y-%m-%d')
+                # v538: 接入 config backtest.default_start (2020-01-01, 与
+                # factor_cache_start 同源 — 2018 年 daily 仅 ~354 只子集,
+                # 更早起点拉残缺 lookback 产生半脏缓存)
+                start_date = _require_cfg('backtest.default_start')
             if universe_size is None:
                 u_cfg = cfgl.get('backtest.universe_size'); universe_size = u_cfg if u_cfg is not None else 0
             _log.info(f'backtest: FULL mode — {start_date}→{end_date}, {universe_size or "all"} stocks')

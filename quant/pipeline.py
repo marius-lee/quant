@@ -432,7 +432,11 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
             )
             logger.info("step 3: factor-level neutralize applied (%d factors, batch P)", len(factor_values))
     except Exception as _fneut_err:
-        logger.warning(f"step 3: factor-level neutralize failed (non-fatal): {_fneut_err}")
+        # B32 (2026-08-18): 原 warning 降级 → 带行业/市值偏置的因子继续进 alpha
+        # (统计污染). 中性化是风控层硬要求 — 失败即阻断, 零 fallback.
+        raise RuntimeError(
+            f"step 3: factor-level neutralize FAILED (B32: 阻断而非降级): {_fneut_err}"
+        ) from _fneut_err
 
     # test-v299 §8.2: regime 条件合成 (HMM 牛/熊/震荡 → 因子权重偏置)
     if _require_cfg("alpha.regime_combine"):
@@ -464,7 +468,11 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
             alpha = mtf.confirm(alpha, date_str)
             logger.info(f"step 3: multi_tf confirmation applied")
         except Exception as e:
-            logger.warning(f"step 3: multi_tf confirm failed (non-fatal): {e}")
+            # B32 (2026-08-18): 原 warning 降级 → 逆势信号不压制即继续.
+            # 多周期确认是 alpha 合成的一环 — 失败即阻断, 零 fallback.
+            raise RuntimeError(
+                f"step 3: multi_tf confirm FAILED (B32: 阻断而非降级): {e}"
+            ) from e
 
     results["_factor_values"] = {k: v for k, v in factor_values.items() if isinstance(v, pd.Series)}
     results["_alpha_raw"] = alpha_raw

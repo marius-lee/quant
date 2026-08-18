@@ -27,9 +27,33 @@ def _ensure_table(conn):
             pub_time TEXT,
             title TEXT,
             sentiment_score REAL,
-            PRIMARY KEY (symbol, date)
+            PRIMARY KEY (symbol, date, pub_time)
         )
     """)
+    # B20 (2026-08-18): 旧库 news_sentiment PK 为 (symbol, date) — 同日多条
+    # 新闻 INSERT OR REPLACE 互相覆盖 → news_count 恒 ≤1, 因子失真.
+    # 检测旧 PK 并迁移至 (symbol, date, pub_time); 幂等.
+    _pk_cols = sorted(r[1] for r in conn.execute(
+        "PRAGMA table_info(news_sentiment)").fetchall() if r[5] > 0)
+    if _pk_cols != ["date", "pub_time", "symbol"]:
+        conn.execute("ALTER TABLE news_sentiment RENAME TO news_sentiment_old")
+        conn.execute("""
+            CREATE TABLE news_sentiment (
+                symbol TEXT NOT NULL,
+                date TEXT NOT NULL,
+                pub_time TEXT,
+                title TEXT,
+                sentiment_score REAL,
+                PRIMARY KEY (symbol, date, pub_time)
+            )
+        """)
+        conn.execute("""
+            INSERT INTO news_sentiment (symbol, date, pub_time, title, sentiment_score)
+            SELECT symbol, date, pub_time, title, sentiment_score FROM news_sentiment_old
+        """)
+        conn.execute("DROP TABLE news_sentiment_old")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_news_sentiment_date ON news_sentiment(date)")
+        logger.info("news_sentiment migrated: PK (symbol,date) → (symbol,date,pub_time) (B20)")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS news_daily_count (
             symbol TEXT NOT NULL,

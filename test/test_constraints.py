@@ -67,10 +67,12 @@ class TestFilterSTStocks:
         assert len(result) == 1
         assert "A" in result.index
 
-    def test_no_stock_names_passes_all(self):
+    def test_no_stock_names_raises(self):
+        """B13 (2026-08-18): stock_names 缺失必须显式失败 (fail-closed),
+        原静默放行全部候选 → ST 退市风险股流入组合."""
         df = pd.DataFrame({"close": [10, 20]}, index=["A", "B"])
-        result = filter_st_stocks(df)
-        assert len(result) == 2
+        with pytest.raises(ValueError):
+            filter_st_stocks(df)
 
 
 class TestApplyAllFilters:
@@ -90,7 +92,8 @@ class TestApplyAllFilters:
             exclude_star_st=True, max_single_position=0.05,
             max_positions=20, max_sector_exposure=0.40,
         )
-        result = apply_all_filters(df, limits=limits)
+        result = apply_all_filters(df, limits=limits,
+                                   stock_names={"A": "A", "B": "B", "C": "C", "D": "D"})
         assert len(result) >= 2
         assert "B" in result.index
         assert "C" in result.index
@@ -101,8 +104,14 @@ class TestApplyAllFilters:
             "amount": [10000, 20000],
             "close": [10, 20],
         }, index=["A", "B"])
-        result = apply_all_filters(df)
+        result = apply_all_filters(df, stock_names={"A": "A", "B": "B"})
         assert len(result) == 2
+
+    def test_missing_columns_raises(self):
+        """B13: 缺 amount/close 列 → 显式失败 (原静默跳过)."""
+        df = pd.DataFrame({"close": [10, 20]}, index=["A", "B"])
+        with pytest.raises(ValueError):
+            apply_all_filters(df, stock_names={"A": "A", "B": "B"})
 
 
 class TestPositionLimitCheck:

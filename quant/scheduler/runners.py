@@ -58,12 +58,18 @@ def _get_today_status(today: str) -> dict:
 
 
 def _get_today_aborted(today: str) -> dict:
-    """查询今日各任务 aborted 次数 (B-23: 重试风暴抑制)."""
+    """查询今日各任务可重试次数 (B-23: 重试风暴抑制).
+
+    B24 (2026-08-18): 统计 failed + aborted 合计 — 原仅 status='aborted',
+    failed 行不计数 → 崩溃任务窗口内每 30s 无限重试 (signals 08:30-15:30
+    可空转 ~840 次 × 重复挂单风险).
+    """
     with sqlite3.connect(MARKET_DB) as conn:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
         rows = conn.execute(
-            "SELECT task_name, COUNT(*) FROM task_runs WHERE date=? AND status='aborted' GROUP BY task_name",
+            "SELECT task_name, COUNT(*) FROM task_runs "
+            "WHERE date=? AND status IN ('failed','aborted') GROUP BY task_name",
             (today,)
         ).fetchall()
     return dict(rows)
@@ -93,9 +99,9 @@ def _should_run(s: TaskSpec, hhmm: time, weekday: int,
     通过全部条件 → True:
       1. 时间窗 (manifest.window) 内且星期匹配
       2. 状态允许: 无记录 / running(由 grace 挡重入) /
-         aborted(预算内重试) — ok/failed 均不再触发
+         failed+aborted(预算内重试, B24: failed 也消耗预算) — ok 不再触发
       3. 依赖: depends_ok 全部 == "ok";  depends_attempt 全部今日尝试过
-      4. aborted 次数 < _MAX_TASK_RETRIES
+      4. 重试次数 (failed+aborted) < _MAX_TASK_RETRIES
     """
     if s.weekday is not None and weekday != s.weekday:
         return False
@@ -103,7 +109,8 @@ def _should_run(s: TaskSpec, hhmm: time, weekday: int,
     if cur == "ok":
         return False
     if cur == "failed":
-        # P0-11 fix: failed 允许在 max_retries 预算内重试 (主要针对 monitor 守护线程崩溃)
+        # P0-11 + B24: failed 允许在重试预算内重试 (monitor 守护线程崩溃等),
+        # 但必须消耗预算 — aborted 计数现含 failed (见 _get_today_aborted).
         if aborted.get(s.name, 0) >= _MAX_TASK_RETRIES:
             return False
         # fall through: 继续检查窗口 + 依赖 (允许重试)
@@ -303,15 +310,26 @@ class MonitorRunner(BaseRunner):
         try:
             _run_continuous_inner(today, self._monitor_stop)
         except Exception as e:
+            # B23 (2026-08-18): 崩溃必须写 failed 行 — 原仅 log, 行永卡 running,
+            # 风暴保护 _get_monitor_failures 恒 0, orchestrator 永不重启,
+            # 当日盘中风控静默丢失且无告警.
             _log.exception(f"[{today}] monitor_loop crashed: {e}")
+            try:
+                _tk_finish("monitor", today, "failed", error=str(e))
+            except Exception as _e2:
+                _log.warning(f"[{today}] monitor finish failed: {_e2}")
         finally:
             _log.info(f"[{today}] monitor_loop ended")
 
+    def is_alive(self) -> bool:
+        """B23: 内部 daemon 线程是否存活 — orchestrator 据此重置并重启."""
+        return bool(self._monitor_thread and self._monitor_thread.is_alive())
+
     def stop(self) -> None:
-        """停止 monitor daemon."""
+        """停止 monitor daemon (B23: 原空操作, stop event 全程序无人 set)."""
+        self._monitor_stop.set()
         if self._monitor_thread and self._monitor_thread.is_alive():
-            # 停止标记会由 monitor_loop 内部检查
-            pass
+            self._monitor_thread.join(timeout=5)
 
 
 class SubprocessRunner(BaseRunner):

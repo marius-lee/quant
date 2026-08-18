@@ -60,6 +60,31 @@ def _constant_correlation_target(cov: np.ndarray) -> np.ndarray:
     return target
 
 
+def _pairwise_sample_cov(returns: pd.DataFrame) -> np.ndarray:
+    """pairwise-complete 样本协方差 (ddof=1) — B6 (2026-08-18).
+
+    列内存在 NaN 时, 原 X.T@X 中一行 NaN → 整个矩阵 NaN 传染
+    (协方差全 NaN → inv 失败 → 组合权重全 NaN). 对每对 symbol 取
+    共同非 NaN 行计算, 与 pandas .cov() 的 pairwise 语义一致.
+    """
+    X = returns.values.astype(float)
+    n = X.shape[1]
+    mask = ~np.isnan(X)
+    S = np.zeros((n, n))
+    for i in range(n):
+        for j in range(i, n):
+            both = mask[:, i] & mask[:, j]
+            k = int(both.sum())
+            if k < 2:
+                continue
+            xi = X[both, i]
+            xj = X[both, j]
+            xi_c = xi - xi.mean()
+            xj_c = xj - xj.mean()
+            S[i, j] = S[j, i] = float(xi_c @ xj_c) / (k - 1)
+    return S
+
+
 def ledoit_wolf_cov(
     returns: pd.DataFrame,
     shrinkage: Optional[float] = None,
@@ -84,9 +109,10 @@ def ledoit_wolf_cov(
         var = returns.var(ddof=1)
         return pd.DataFrame(np.diag(var.values), index=symbols, columns=symbols)
 
-    # 中心化
+    # 中心化 + 样本协方差
+    # B6 (2026-08-18): 原 X.T@X 遇行内 NaN → 全矩阵 NaN 传染. 改 pairwise.
     X = returns.values - returns.values.mean(axis=0)  # (T, n)
-    S = (X.T @ X) / (T - 1)  # 样本协方差
+    S = _pairwise_sample_cov(returns)  # pairwise-complete, NaN 安全
 
     target = _constant_correlation_target(S)
 
@@ -103,6 +129,7 @@ def ledoit_wolf_cov(
         pi_mat = np.zeros((n, n))
         for t in range(T):
             diff = np.outer(X[t], X[t]) - S
+            diff = np.nan_to_num(diff, nan=0.0)  # B6: NaN 观测不贡献 π
             pi_mat += diff ** 2
         pi_mat /= T  # Ledoit-Wolf(2004) eq.(17): AsyVar = (1/T) * Σ(x_i·x_j - s_ij)²
         pi_hat = pi_mat.sum()
@@ -318,46 +345,16 @@ class IncrementalCovariance:
         return result
 
     def _incremental_update(self, daily_ret: pd.Series) -> None:
-        """增量更新协方差 (Sherman-Morrison 秩-1 更新，O(N²))。
+        """占位 — B11 (2026-08-18): 原"增量"实现是死代码假增量.
 
-        基于在线协方差更新公式:
-          C_new = (1 - 1/t) * C_old + (1/t) * (x - μ)(x - μ)' + ...
-        这里简化为对 Ledoit-Wolf 目标矩阵做增量更新，定期全量重算修正漂移。
+        原实现: new_cov 秩-1 更新算出后从未赋值 (L349-354 立即被
+        ledoit_wolf_cov 全量重算覆盖), try/except/else 三分支全部
+        _full_recalc() → 每次 update 恒 O(N³) 且带注释宣称 O(N²).
+        修复: 诚实实现 — 组合规模 ≤ max_positions (20) 时全量 LW 重算
+        O(20³)=8k 浮点/次微不足道, 无增量必要. full_recalc_interval
+        参数保留 (向后兼容), 语义并入统一重算.
         """
-        if self._cov is None or len(self._returns_buffer) < 2:
-            self._cov = self._full_recalc()
-            return
-
-        n = len(self._symbols)
-        t = len(self._returns_buffer)
-
-        # 简化增量: 样本协方差的在线更新 (Welford 算法扩展到矩阵)
-        # C_t = (1 - 1/t) * C_{t-1} + (1/t) * (x - μ_{t-1})(x - μ_t)'
-        # 为简单且稳健，仅更新样本协方差部分，收缩目标每 K 次重算
-        if self._cov is not None:
-            try:
-                old_cov = self._cov.values
-                n = old_cov.shape[0]
-                # 获取当前均值 (近似用最近均值)
-                recent = list(self._returns_buffer)
-                if len(recent) >= 2:
-                    mean_vec = np.mean([r.values for r in recent], axis=0)
-                    x = daily_ret.values
-                    dx = x - mean_vec
-                    # 秩-1 更新
-                    alpha = 1.0 / len(self._returns_buffer)
-                    new_cov = (1 - alpha) * old_cov + alpha * np.outer(dx, dx)
-                    # 保持对称
-                    new_cov = (new_cov + new_cov.T) / 2
-                    # 重新计算 Ledoit-Wolf 收缩强度
-                    result = ledoit_wolf_cov(pd.DataFrame([pd.Series(v, index=self._symbols) for v in self._returns_buffer]))
-                    self._cov = result
-                else:
-                    self._cov = self._full_recalc()
-            except Exception:
-                self._cov = self._full_recalc()
-            else:
-                self._cov = self._full_recalc()
+        self._cov = self._full_recalc()
 
     def _empty_cov(self) -> pd.DataFrame:
         syms = self._symbols or []

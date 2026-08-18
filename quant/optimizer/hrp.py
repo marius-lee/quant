@@ -72,6 +72,18 @@ def _recursive_bisection(cov: np.ndarray, sorted_idx: list, link: np.ndarray = N
         left_leaf[i] = nl
         return nl
 
+    def _cluster_var(cov_block) -> float:
+        """簇方差 — B17 (2026-08-18): 原 diag(cov).sum() 等权口径
+        (忽略协方差与权重), 高波动簇方差失真 → alpha 分配偏斜.
+        用 IVP (逆方差组合, López de Prado 2016) 权重: var = w' Σ w,
+        w ∝ 1/diag(Σ), 纯对角输入时退化为调和均值口径."""
+        if np.size(cov_block) == 1:
+            return float(np.asarray(cov_block).flat[0])
+        diag = np.diag(cov_block)
+        inv = 1.0 / np.maximum(diag, 1e-8)
+        w = inv / inv.sum()
+        return float(w @ cov_block @ w)
+
     def _bisect(node: int, items: list, factor: float, use_tree: bool):
         """递归切分 items (sorted_idx 的连续段), node 为对应 linkage 节点."""
         if len(items) <= 1:
@@ -89,8 +101,8 @@ def _recursive_bisection(cov: np.ndarray, sorted_idx: list, link: np.ndarray = N
 
         cov_left = cov[np.ix_(left_items, left_items)]
         cov_right = cov[np.ix_(right_items, right_items)]
-        var_left = 1.0 / max(np.diag(cov_left).sum() if cov_left.size > 1 else cov_left[0, 0], 1e-8)
-        var_right = 1.0 / max(np.diag(cov_right).sum() if cov_right.size > 1 else cov_right[0, 0], 1e-8)
+        var_left = 1.0 / max(_cluster_var(cov_left), 1e-8)
+        var_right = 1.0 / max(_cluster_var(cov_right), 1e-8)
         alpha = var_left / (var_left + var_right)
 
         if use_tree and node >= n:

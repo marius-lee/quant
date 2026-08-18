@@ -87,6 +87,10 @@ class RiskManager:
         self.atr_period = _require_cfg("risk.atr_period")
         self.strategy = strategy
         self._cooloff_store = cooloff_store
+        # B9: 止损状态存储 (tp1_hit/peak) 与 cooloff 同模式 —
+        # dict=内存(回测, RiskManager 实例跨日共享), None=DB(实盘, 跨重启存活)
+        self._meta_store = {} if cooloff_store is not None else None
+        self._today = ""
 
     # ═══════════════════════════════════════════
     # 固定百分比硬止损 (回测/实盘开盘共用)
@@ -213,7 +217,16 @@ class RiskManager:
             pnl_pct = gain / cost
             atr_pct = atr / cost
 
-            # ── 已触发的目标标记 (从持仓额外字段或缓存读) ──
+            # ── 已触发的目标标记 (从持仓额外字段或存储读) ──
+            # B9 (2026-08-18): 跨日回载 _tp1_hit/_peak — 原 get_positions 不加载,
+            # 导致 TP1 每日重复触发减半、移动止损跨日峰值丢失 (回测与实盘均受影响).
+            # 存储模式与 cooloff 同构: dict=内存(回测, 实例跨日共享), None=DB(实盘,
+            # MAX 聚合历史峰值, 跨重启存活). 调用方已显式注入字段时不再回载.
+            if "_tp1_hit" not in p or "_peak" not in p:
+                _meta = self._meta_get(sym)
+                if _meta:
+                    p.setdefault("_tp1_hit", _meta.get("_tp1_hit", False))
+                    p.setdefault("_peak", _meta.get("_peak") or cost)
             tp1_hit = p.get("_tp1_hit", False)
             peak = max(p.get("_peak", cost), cur)
             p["_peak"] = peak  # 持久化peak, trailing stop需要历史峰值 (2026-07-21 audit H8)
@@ -225,14 +238,16 @@ class RiskManager:
             # 原 max(100, shares//2//100*100): 100 股时 =100 (卖全仓), 300 股时=100 ✓,
             # 但 200 股时 =100 ✓ 且 100 股时语义错. 修: half 取整手向下, 至少 1 手,
             # 不超过持仓 (留一半)。
+            # B8 (2026-08-18): 不足两手 (<200股) 无法对半卖整手 → 不卖, 仅标记
+            # tp1_hit, 等 TP2/trail 全卖 — 原 100 股时 TP1 即全仓卖出, 提前清仓.
             if not tp1_hit and gain >= self.atr_mult_tp1 * atr:
                 half_lots = shares // 2 // 100
-                sell_shares = max(100, half_lots * 100)
-                if sell_shares >= shares:
-                    sell_shares = max(100, shares // 2)  # 一手内无法整除 → 卖超保护
-                sell_shares = min(sell_shares, shares)
-                results.append({"symbol": sym, "action": "sell", "shares": sell_shares,
-                                "price": cur, "reason": "TP1(+{:.1f}ATR)".format(self.atr_mult_tp1)})
+                if half_lots >= 1:
+                    sell_shares = half_lots * 100
+                    if sell_shares >= shares:
+                        sell_shares = shares
+                    results.append({"symbol": sym, "action": "sell", "shares": sell_shares,
+                                    "price": cur, "reason": "TP1(+{:.1f}ATR)".format(self.atr_mult_tp1)})
                 tp1_hit = True
                 p["_tp1_hit"] = True  # 持久化, 防止同轮次重复触发 (2026-07-21 audit C6)
 
@@ -276,16 +291,44 @@ class RiskManager:
                     results.append({"symbol": sym, "action": "sell", "shares": shares,
                                     "price": cur, "reason": "time_stop({}d)".format(days)})
 
-        # test-v313: 持久化峰值和止盈标记 (进程重启后恢复)
+        # test-v313 + B9: 持久化峰值和止盈标记 (进程重启后恢复)
+        # B9 (2026-08-18): 存储模式与 cooloff 同构 — dict=内存(回测), None=DB(实盘)
+        self._today = today
         try:
-            from quant.data.repos.trade_repo import TradeRepo
-            repo = TradeRepo()
             for p in positions:
                 if p.get("_peak") or p.get("_tp1_hit"):
-                    repo.save_position_meta(p["symbol"], today,
-                        tp1_hit=p.get("_tp1_hit", False),
-                        peak_price=p.get("_peak", 0))
+                    self._meta_set(p["symbol"],
+                                   p.get("_tp1_hit", False),
+                                   p.get("_peak", 0))
         except Exception as _e:
             _log.debug("position_meta save failed (non-fatal): %s", _e)
 
         return results
+
+    # ═══════════════════════════════════════════
+    # B9: 止损状态存储 (tp1_hit / peak) — 与 cooloff 同构双模式
+    # ═══════════════════════════════════════════
+
+    def _meta_get(self, symbol: str) -> dict:
+        """回载 symbol 的跨日止损状态. 内存模式: 进程内累计 (回测);
+        DB 模式: MAX 聚合历史峰值 (实盘, 跨重启存活)."""
+        if self._meta_store is not None:
+            return self._meta_store.get(symbol, {})
+        from quant.data.repos.trade_repo import TradeRepo
+        try:
+            return TradeRepo().get_position_meta_max(symbol)
+        except Exception as _e:
+            _log.debug("position_meta load failed for %s (non-fatal): %s", symbol, _e)
+            return {}
+
+    def _meta_set(self, symbol: str, tp1_hit: bool, peak: float):
+        """写入止损状态. 内存模式: 峰值单调累计 (跨日); DB 模式: 当日行持久化."""
+        if self._meta_store is not None:
+            cur = self._meta_store.get(symbol, {})
+            self._meta_store[symbol] = {
+                "_tp1_hit": tp1_hit or cur.get("_tp1_hit", False),
+                "_peak": max(peak, cur.get("_peak", 0) or 0),
+            }
+            return
+        from quant.data.repos.trade_repo import TradeRepo
+        TradeRepo().save_position_meta(symbol, self._today, tp1_hit, peak)

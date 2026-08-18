@@ -69,6 +69,32 @@ def _to_psd(matrix: np.ndarray) -> np.ndarray:
     return (eigvecs * clip) @ eigvecs.T
 
 
+def _align_weights(weights, cov_matrix):
+    """对齐权重与协方差矩阵 (B12, 2026-08-18).
+
+    原实现按位置截断 min(len(w), Sigma.shape[0]) — weights.index 与
+    cov 列顺序不一致时持仓错配; 截断后权重和≠1 → VaR 低估.
+    现按 symbol 对齐并归一化 (VaR 口径要求权重和为 1).
+    返回 (w, Sigma) 或 (None, None) (无可对齐资产).
+    """
+    import pandas as pd
+    if isinstance(cov_matrix, pd.DataFrame) and hasattr(weights, 'index'):
+        common = weights.index.intersection(cov_matrix.columns)
+        if len(common) == 0:
+            return None, None
+        w = weights[common].values.astype(float)
+        Sigma = cov_matrix.loc[common, common].values
+    else:
+        w = weights.values if hasattr(weights, 'values') else np.array(list(weights.values()))
+        Sigma = cov_matrix.values if hasattr(cov_matrix, 'values') else np.array(cov_matrix)
+        common_n = min(len(w), Sigma.shape[0])
+        w, Sigma = w[:common_n], Sigma[:common_n, :common_n]
+    wsum = float(np.sum(w))
+    if wsum <= 0:
+        return None, None
+    return w / wsum, Sigma
+
+
 def compute_var(portfolio_value, weights, cov_matrix, confidence=0.95):
     """Parametric VaR: loss that won't be exceeded with given confidence.
 
@@ -77,11 +103,10 @@ def compute_var(portfolio_value, weights, cov_matrix, confidence=0.95):
     """
     if cov_matrix is None or weights.empty:
         return None
-    w = weights.values if hasattr(weights, 'values') else np.array(list(weights.values()))
-    Sigma = cov_matrix.values if hasattr(cov_matrix, 'values') else np.array(cov_matrix)
-    common = min(len(w), Sigma.shape[0])
-    w = w[:common]
-    Sigma = _to_psd(Sigma[:common, :common])  # v418 (R7): 非 PSD → 负方差 → 错误 VaR
+    w, Sigma = _align_weights(weights, cov_matrix)
+    if w is None:
+        return None
+    Sigma = _to_psd(Sigma)  # v418 (R7): 非 PSD → 负方差 → 错误 VaR
     port_var = w.T @ Sigma @ w
     if port_var <= 0:
         return None
@@ -98,11 +123,10 @@ def compute_cvar(portfolio_value, weights, cov_matrix, confidence=0.95):
     """
     if cov_matrix is None or weights.empty:
         return None
-    w = weights.values if hasattr(weights, 'values') else np.array(list(weights.values()))
-    Sigma = cov_matrix.values if hasattr(cov_matrix, 'values') else np.array(cov_matrix)
-    common = min(len(w), Sigma.shape[0])
-    w = w[:common]
-    Sigma = _to_psd(Sigma[:common, :common])  # v418 (R7)
+    w, Sigma = _align_weights(weights, cov_matrix)
+    if w is None:
+        return None
+    Sigma = _to_psd(Sigma)  # v418 (R7)
     port_var = w.T @ Sigma @ w
     if port_var <= 0:
         return None
@@ -116,18 +140,23 @@ def compute_cvar(portfolio_value, weights, cov_matrix, confidence=0.95):
 
 
 def marginal_var(weights, cov_matrix, confidence=0.95):
-    w = weights.values if hasattr(weights,'values') else np.array(list(weights.values()))
-    S = _to_psd(cov_matrix.values if hasattr(cov_matrix,'values') else np.array(cov_matrix))  # v418 (R7)
-    n = min(len(w), S.shape[0])
-    w, S = w[:n], S[:n,:n]
+    w, S = _align_weights(weights, cov_matrix)
+    if w is None:
+        import pandas as pd
+        return pd.Series(dtype=float)
+    S = _to_psd(S)  # v418 (R7)
     pv = w.T @ S @ w
     if pv <= 0:
         import pandas as pd
-        return pd.Series(0.0, index=weights.index[:n])
+        idx = weights.index.intersection(cov_matrix.columns) \
+            if hasattr(cov_matrix, 'columns') else weights.index[:len(w)]
+        return pd.Series(0.0, index=idx)
     z = norm.ppf(confidence)
     mvar = z * (S @ w) / np.sqrt(pv)
     import pandas as pd
-    return pd.Series(mvar, index=weights.index[:n])
+    idx = weights.index.intersection(cov_matrix.columns) \
+        if hasattr(cov_matrix, 'columns') else weights.index[:len(w)]
+    return pd.Series(mvar, index=idx)
 
 
 def component_var(weights, cov_matrix, confidence=0.95):

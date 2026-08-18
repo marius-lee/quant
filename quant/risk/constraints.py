@@ -97,7 +97,19 @@ def filter_st_stocks(
     不适合量化策略（exclude_star_st: true in config risk）。
     """
     if stock_names is None:
-        return candidates
+        # B13 (2026-08-18): 缺数据必须显式失败 — 原静默放行全部候选 (fail-open),
+        # ST/*ST 退市风险股流入组合. 风控"只做减法", 数据缺失不得放行.
+        raise ValueError(
+            "filter_st_stocks: stock_names is None — ST 过滤需要名称映射数据, "
+            "缺数据不得静默放行 (B13 fail-closed)"
+        )
+    if not stock_names and len(candidates) > 0:
+        # B13: 空映射但有候选 → 数据异常 (stocks 表名称缺失), 显式告警
+        from quant.utils.logger import get_logger
+        get_logger("risk.constraints").warning(
+            f"filter_st_stocks: stock_names 为空但候选 {len(candidates)} 只 — "
+            f"ST 过滤失效, 需核查 stocks 表 name 数据 (B13)"
+        )
     is_st = pd.Series(False, index=candidates.index)
     for sym in candidates.index:
         name = stock_names.get(sym, "")
@@ -135,6 +147,14 @@ def filter_sealed_limit_up(candidates, prev_date: str, seal_ratio_threshold: flo
             conn.close()
 
     if not rows:
+        # B13 (2026-08-18): 无封板数据 → 显式告警 (原静默放行).
+        # 不阻断交易: 该过滤语义是"排除昨日封死涨停", 数据缺失时无法排除,
+        # 但必须留下日志以便数据核查 (limit_up_pool sync 失败可被捕获).
+        from quant.utils.logger import get_logger
+        get_logger("risk.constraints.sealed").warning(
+            f"filter_sealed_limit_up: no rows for {prev_date} — "
+            f"seal filter skipped (fail-open, 需核查 limit_up_pool 数据)"
+        )
         return candidates.copy()
     from quant.utils.logger import get_logger
     _log_seal = get_logger("risk.constraints.sealed")  # v412: 定义移到使用前
@@ -194,11 +214,17 @@ def apply_all_filters(
     df = candidates.copy()
     n_before = len(df)
     # 1. 流动性
-    if "amount" in df.columns:
-        df = filter_by_liquidity(df, limits.min_daily_amount)
+    # B13 (2026-08-18): 列缺失必须显式失败 — 原静默跳过 → 无 amount/close
+    # 数据的候选池直接放行 (fail-open).
+    missing_cols = [c for c in ("amount", "close") if c not in df.columns]
+    if missing_cols:
+        raise ValueError(
+            f"apply_all_filters: candidates 缺少列 {missing_cols} — "
+            f"流动性/股价过滤无法执行, 缺数据不得静默放行 (B13 fail-closed)"
+        )
+    df = filter_by_liquidity(df, limits.min_daily_amount)
     # 2. 股价
-    if "close" in df.columns:
-        df = filter_by_price(df, limits.min_price)
+    df = filter_by_price(df, limits.min_price)
     # 3. ST
     if limits.exclude_star_st:
         df = filter_st_stocks(df, stock_names)

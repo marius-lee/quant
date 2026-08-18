@@ -136,7 +136,11 @@ def compute_open_volume_ratio(data, date, window=None, aux=None):
         return None
     if volume is None or volume.empty:
         return None
-    total_vol = volume.iloc[-1]  # 全天成交量
+    # B2 (2026-08-18): 原 .iloc[-1] 恒取 chunk 末行 → 前视. 按 date 取当日.
+    if date not in volume.index:
+        return None
+    idx = volume.index.get_loc(date)
+    total_vol = volume.iloc[idx]  # date 当日全天成交量
 
     # 加载快照 — ADR-043 layer1: 优先 aux
     rows = None
@@ -214,13 +218,17 @@ def compute_close_surge(data, date, window=None, aux=None):
         return None
 
     symbols = close.columns if isinstance(close, pd.DataFrame) else []
+    # B2 (2026-08-18): 原 close[sym].iloc[-1] 恒取 chunk 末行 → 前视. 按 date 定位.
+    if date not in close.index:
+        return None
+    _cidx = close.index.get_loc(date)
     result = {}
     for r in rows:
         sym = r[0]
         c5 = r[1]
         if sym in symbols and c5 and c5 > 0:
-            final_close = close[sym].iloc[-1] if sym in close.columns else None
-            day_range = (high[sym].iloc[-1] - data["low"][sym].iloc[-1]) if high is not None and sym in high.columns else None
+            final_close = close[sym].iloc[_cidx] if sym in close.columns else None
+            day_range = (high[sym].iloc[_cidx] - data["low"][sym].iloc[_cidx]) if high is not None and sym in high.columns else None
             if final_close and day_range and day_range > 0:
                 # 尾盘异动 = 收盘前5分钟变化 / 全天振幅
                 surge = (final_close - c5) / day_range

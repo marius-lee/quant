@@ -498,7 +498,42 @@ class AlgoEngine(ABC):
     def _calculate_cost(self, qty: int, price: float, side: OrderSide) -> float:
         from quant.execution.cost import CostModel
         cm = CostModel.from_config()
-        return cm.total_cost(price, qty, side == OrderSide.BUY)
+        # B18 (2026-08-18): CostModel 无 total_cost() 方法 (一跑即崩).
+        # 真实 API: buy_cost/sell_cost 按 side 分流.
+        if side == OrderSide.BUY:
+            return cm.buy_cost(price, qty)
+        return cm.sell_cost(price, qty)
+
+    def _build_report(self, request: OrderRequest, slices: List[Dict],
+                      price: float, market_data: Dict,
+                      extra_cost: float = 0.0) -> ExecutionReport:
+        """由切片生成执行报告 (B18: 原各引擎引用未定义的 _execute_slices 等)."""
+        filled = sum(s.get("qty", 0) for s in slices)
+        filled = min(filled, request.total_qty)
+        commission = self._calculate_cost(filled, price, request.side) + extra_cost
+        arrival = market_data.get("vwap", price) or price
+        notional = price * filled
+        return ExecutionReport(
+            order_id=request.client_order_id or "sim",
+            client_order_id=request.client_order_id,
+            symbol=request.symbol, side=request.side, algo=request.algo,
+            status="fill", filled_qty=filled, avg_price=price,
+            remaining_qty=request.total_qty - filled,
+            commission=commission,
+            implementation_shortfall=commission / notional if notional else 0.0,
+            arrival_price=arrival, benchmark_price=arrival,
+            slices=slices, timestamps=[datetime.now()] * len(slices),
+        )
+
+    def _generate_uniform_slices(self, request: OrderRequest, n: int) -> List[Dict]:
+        """均匀切片 (n 上限 20, 余量并入末片)."""
+        n = max(1, min(n, 20))
+        qty = request.total_qty // n
+        rem = request.total_qty - qty * n
+        slices = [{"qty": qty, "price": request.limit_price} for _ in range(n)]
+        if rem:
+            slices[-1]["qty"] += rem
+        return slices
 
 
 class TWAPEngine(AlgoEngine):
@@ -507,6 +542,16 @@ class TWAPEngine(AlgoEngine):
     def execute(self, request: OrderRequest, market_data: Dict) -> ExecutionReport:
         slices = self._generate_slices(request, market_data)
         return self._execute_slices(request, slices, market_data)
+
+    def _generate_slices(self, request: OrderRequest, market_data: Dict) -> List[Dict]:
+        # B18: 方法原本未定义. 按最小成交单位切均匀时间片.
+        n = request.total_qty // max(request.min_fill_size, 100) or 1
+        return self._generate_uniform_slices(request, n)
+
+    def _execute_slices(self, request: OrderRequest, slices: List[Dict],
+                        market_data: Dict) -> ExecutionReport:
+        price = request.limit_price or market_data.get("vwap", 0.0) or 0.0
+        return self._build_report(request, slices, price, market_data)
 
 
 class VWAPEngine(AlgoEngine):
@@ -518,6 +563,28 @@ class VWAPEngine(AlgoEngine):
         slices = self._generate_vwap_slices(request, volume_profile)
         return self._execute_slices(request, slices, market_data)
 
+    def _generate_vwap_slices(self, request: OrderRequest,
+                              volume_profile: Dict) -> List[Dict]:
+        # B18: 方法原本未定义. 按成交量分布比例切片, 无分布时回退均匀.
+        total_vol = sum(float(v) for v in volume_profile.values())
+        if total_vol <= 0:
+            return self._generate_uniform_slices(request, 10)
+        slices = []
+        for bucket, vol in sorted(volume_profile.items()):
+            qty = int(request.total_qty * float(vol) / total_vol)
+            if qty > 0:
+                slices.append({"qty": qty, "price": request.limit_price,
+                               "bucket": bucket})
+        if not slices:
+            return self._generate_uniform_slices(request, 10)
+        slices[-1]["qty"] += request.total_qty - sum(s["qty"] for s in slices)
+        return slices
+
+    def _execute_slices(self, request: OrderRequest, slices: List[Dict],
+                        market_data: Dict) -> ExecutionReport:
+        price = request.limit_price or market_data.get("vwap", 0.0) or 0.0
+        return self._build_report(request, slices, price, market_data)
+
 
 class POVEngine(AlgoEngine):
     """POV 参与率算法."""
@@ -526,6 +593,18 @@ class POVEngine(AlgoEngine):
         participation = request.participation_rate
         slices = self._generate_pov_slices(request, market_data, participation)
         return self._execute_slices(request, slices, market_data)
+
+    def _generate_pov_slices(self, request: OrderRequest, market_data: Dict,
+                             participation: float) -> List[Dict]:
+        # B18: 方法原本未定义. 参与率 → 需要 1/participation 个交易时段,
+        # 每时段按最小成交单位切.
+        n = int(1 / max(participation, 0.01)) or 1
+        return self._generate_uniform_slices(request, n)
+
+    def _execute_slices(self, request: OrderRequest, slices: List[Dict],
+                        market_data: Dict) -> ExecutionReport:
+        price = request.limit_price or market_data.get("vwap", 0.0) or 0.0
+        return self._build_report(request, slices, price, market_data)
 
 
 class ISEngine(AlgoEngine):
@@ -536,6 +615,31 @@ class ISEngine(AlgoEngine):
         # 最优轨迹: 平方根规律
         slices = self._generate_is_slices(request, market_data)
         return self._execute_slices(request, slices, market_data)
+
+    def _generate_is_slices(self, request: OrderRequest, market_data: Dict) -> List[Dict]:
+        # B18: 方法原本未定义. 平方根冲击规律 → 前密后疏:
+        # slice qty ∝ t^0.5 (t 为切片序号占比).
+        n = 10
+        base = self._generate_uniform_slices(request, n)
+        total = request.total_qty
+        weights = [((i + 1) / n) ** 0.5 - (i / n) ** 0.5 for i in range(n)]
+        wsum = sum(weights)
+        allocated = 0
+        for i, s in enumerate(base):
+            s["qty"] = int(total * weights[i] / wsum)
+            allocated += s["qty"]
+        base[-1]["qty"] += total - allocated
+        return base
+
+    def _execute_slices(self, request: OrderRequest, slices: List[Dict],
+                        market_data: Dict) -> ExecutionReport:
+        price = request.limit_price or market_data.get("vwap", 0.0) or 0.0
+        # 平方根冲击估计 (Almgren-Chriss 简化): 冲击 ∝ √(份额/ADV)
+        adv = market_data.get("adv", 1e6) or 1e6
+        shares = min(request.total_qty, request.total_qty)
+        impact = 0.01 * (shares / adv) ** 0.5
+        return self._build_report(request, slices, price, market_data,
+                                  extra_cost=impact * price * shares)
 
 
 class AdaptiveEngine(AlgoEngine):
@@ -564,6 +668,14 @@ class IcebergEngine(AlgoEngine):
         iceberg_size = min(avg_trade * 0.5, request.total_qty // 10)
         return self._execute_iceberg(request, market_data, iceberg_size)
 
+    def _execute_iceberg(self, request: OrderRequest, market_data: Dict,
+                         iceberg_size: float) -> ExecutionReport:
+        # B18: 方法原本未定义. 按冰山大小逐片成交.
+        n = int(request.total_qty / max(iceberg_size, 1)) or 1
+        slices = self._generate_uniform_slices(request, n)
+        price = request.limit_price or market_data.get("vwap", 0.0) or 0.0
+        return self._build_report(request, slices, price, market_data)
+
 
 class DarkPoolEngine(AlgoEngine):
     """暗池路由 — 寻找隐性流动性."""
@@ -578,6 +690,22 @@ class DarkPoolEngine(AlgoEngine):
         # 智能路由: 优先流动性最好的暗池
         return self._route_to_dark(request, market_data, dark_venues)
 
+    def _route_to_dark(self, request: OrderRequest, market_data: Dict,
+                       dark_venues: List) -> ExecutionReport:
+        # B18: 方法原本未定义. 按暗池报价成交 (取最优报价 venue).
+        best = None
+        best_px = None
+        for v in dark_venues:
+            px = v.get("price", 0) if isinstance(v, dict) else 0
+            if isinstance(v, dict) and px > 0 and (best_px is None or
+                    (request.side == OrderSide.BUY and px < best_px) or
+                    (request.side == OrderSide.SELL and px > best_px)):
+                best, best_px = v, px
+        price = best_px or market_data.get("vwap", 0.0) or 0.0
+        slices = [{"qty": request.total_qty, "price": price,
+                   "venue": best.get("venue", "dark") if isinstance(best, dict) else "dark"}]
+        return self._build_report(request, slices, price, market_data)
+
 
 # ── 执行质量评估 (TCA) ──
 
@@ -587,8 +715,10 @@ class TCAAnalyzer:
     def __init__(self):
         self._benchmarks = {}
 
-    def analyze(self, report: ExecutionReport, market_data: Dict) -> Dict[str, float]:
-        """全维度 TCA 分析."""
+    def analyze(self, report: ExecutionReport, market_data: Dict,
+                request: OrderRequest = None) -> Dict[str, float]:
+        """全维度 TCA 分析 (B18: 原函数体引用未定义的 request → NameError,
+        签名补 request, 缺失时机会成本置 0)."""
         results = {}
         
         # 1. 到达价成本
@@ -622,10 +752,13 @@ class TCAAnalyzer:
         timing_cost = self._calculate_timing_cost(report, market_data)
         results["timing_cost_bps"] = timing_cost * 10000
         
-        # 7. 机会成本 (未成交部分)
-        opportunity_cost = (report.remaining_qty / max(request.total_qty, 1)) * \
-                          (market_data.get("vwap", avg) - avg) / avg
-        results["opportunity_cost_bps"] = opportunity_cost * 10000
+        # 7. 机会成本 (未成交部分) — B18: request 未定义; 仅当传入 request 时计算
+        if request is not None:
+            opportunity_cost = (report.remaining_qty / max(request.total_qty, 1)) * \
+                              (market_data.get("vwap", avg) - avg) / avg
+            results["opportunity_cost_bps"] = opportunity_cost * 10000
+        else:
+            results["opportunity_cost_bps"] = 0.0
         
         # 7. 滑点分解
         results["explicit_cost_bps"] = report.commission / (avg * report.filled_qty) * 10000 if avg > 0 else 0

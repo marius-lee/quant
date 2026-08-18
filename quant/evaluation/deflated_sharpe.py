@@ -58,16 +58,24 @@ def expected_max_sr(n_trials: int, n_obs: int, skewness: float = 0.0, kurtosis: 
         n_trials: number of independent strategy trials
         n_obs: number of observations per trial
 
-    Returns: expected max SR under null
+    Returns: expected max SR under null (per-observation周期, 与 observed_sr 同周期)
+
+    B28 (2026-08-18): 原实现 base=√(2lnM)/√T + γ(1−s·base+(k−1)/4·base²)/√T —
+      - γ (Euler-Mascheroni) 被误用为修正系数, 实际是式中的权重系数
+      - skewness/kurtosis 属于 PSR 的分母 (Eq.7.2), 不属于 E[max_SR]
+      - 标准式 (Bailey & López de Prado 2014 Eq.4 / De Prado 2018 Eq.7.1):
+        E[max_SR] = [(1−γ)·Z⁻¹(1−1/M) + γ·Z⁻¹(1−1/(M·e))] / √T
     """
-    if n_trials <= 0 or n_obs < 2:
+    if n_trials <= 1 or n_obs < 2:
+        # M=1: 无多重检验, null 下期望 SR=0 (Z⁻¹(1−1/1)=−inf 数学边界)
         return 0.0
 
-    gamma = 0.5772156649
-
-    base = np.sqrt(2 * np.log(max(n_trials, 1))) / np.sqrt(n_obs)
-    correction = (gamma * (1 - skewness * base + (kurtosis - 1) / 4 * base**2))
-    return float(base + correction / np.sqrt(n_obs))
+    gamma = 0.5772156649  # Euler-Mascheroni 常数
+    e = 2.718281828459045
+    from scipy.stats import norm
+    z1 = float(norm.ppf(1 - 1 / n_trials))            # Z⁻¹(1−1/M)
+    ze = float(norm.ppf(1 - 1 / (n_trials * e)))      # Z⁻¹(1−1/(M·e))
+    return float(((1 - gamma) * z1 + gamma * ze) / np.sqrt(n_obs))
 
 
 def deflated_sharpe_ratio(

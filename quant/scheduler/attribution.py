@@ -171,15 +171,18 @@ def _run(today: str):
             all_sectors = set(list(sector_returns.keys()) + list(port_weights.keys()))
             sec_mkt_cap = {}
             for sec in all_sectors:
+                # B25 (2026-08-18): 原 SQL 无 GROUP BY + LIMIT 1 → 取该行业
+                # 最近一天任意单只股票的市值, 而非行业汇总 → Brinson allocation
+                # 失真. 改为按日期分组求和, 取最近交易日行业总市值.
                 cap_rows = conn.execute(
-                    "SELECT dv.market_cap FROM daily_valuation dv "
+                    "SELECT dv.date, SUM(dv.market_cap) FROM daily_valuation dv "
                     "JOIN daily d ON dv.symbol=d.symbol AND dv.date=d.date "
                     "JOIN stocks s ON d.symbol=s.symbol "
                     "WHERE s.industry=? AND d.date <= ? "
-                    "ORDER BY d.date DESC LIMIT 1",
+                    "GROUP BY dv.date ORDER BY dv.date DESC LIMIT 1",
                     (sec, today)
                 ).fetchall()
-                sec_mkt_cap[sec] = sum(r[0] for r in cap_rows if r[0]) or 0
+                sec_mkt_cap[sec] = cap_rows[0][1] if cap_rows and cap_rows[0][1] else 0
             total_mkt = sum(sec_mkt_cap.values()) or 1
             bench_weights = {s: sec_mkt_cap.get(s, 0)/total_mkt for s in all_sectors}
             if all(w == 0 for w in bench_weights.values()):

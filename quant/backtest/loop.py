@@ -721,8 +721,11 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
 
             # Switch combine_mode from sleeve (warmup) to ic_weighted (walk-forward);
             # test-v298: run_backtest(combine_mode=...) 可覆盖 walk-forward 模式 (hyperopt)
+            # B27 (2026-08-18): 原 `not _in_oos` 条件 → OOS 期不切换, 恒用
+            # pipeline 默认 sleeve — 而训练/评估假设 ic_weighted → OOS 口径
+            # 与假设不一致, OOS 指标失真. OOS 期同样切换.
             _in_oos = oos_start_date and today >= oos_start_date
-            if i >= warmup_days and not _in_oos:
+            if i >= warmup_days:
                 kwargs["combine_mode"] = combine_mode or "ic_weighted"  # test-v307: None 时默认切 ic_weighted
             # Walk-forward IC retrain - OOS 期冻结
             if retrain_freq > 0 and (i - _last_retrain_idx) >= retrain_freq and bt_factor_names and not _in_oos:
@@ -924,10 +927,28 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
         from quant.factor.compute.price._alternative import clear_ztd_cache
         clear_ztd_cache()
 
+        # B29 (2026-08-18): 原返回无 "trades" 键 — phase8_live_consistency.py:214
+        # 读 bt_result["trades"] 恒空转 (死代码, D2 校验从不执行). 从 sim_trades
+        # 读回本策略成交 (回测执行经 engine.execute → record_trade 落库).
+        _trades = []
+        try:
+            _rows = _bc.execute(
+                "SELECT date, symbol, side, price, shares, pnl, pnl_pct "
+                "FROM sim_trades WHERE strategy=? ORDER BY date",
+                (strategy,)).fetchall()
+            _trades = [{"date": r[0], "symbol": r[1], "side": r[2],
+                        "price": r[3], "shares": r[4], "pnl": r[5],
+                        "pnl_pct": r[6]} for r in _rows]
+            _log.info("backtest: read back %d trades for strategy=%s",
+                      len(_trades), strategy)
+        except Exception as _te:
+            _log.warning("backtest: read-back sim_trades failed (non-fatal): %s", _te)
+
         return {
             "equity_curve": equity_curve,        "diagnosis": diag,
 
             "metrics": metrics,
+            "trades": _trades,
             "avg_signals_per_day": round(avg_signals, 1),
             "errors": errors,
             "elapsed_sec": round(elapsed, 1),

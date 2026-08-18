@@ -164,7 +164,11 @@ def compute_day_night(data, date, night_window=10, intraday_window=20):
     ret_night = np.log(open_.astype(float) / close.shift(1).astype(float))
     night_jump = ret_night.abs().rolling(night_window, min_periods=5).sum()
 
-    raw = 0.6 * intra_rev.iloc[-1] + 0.4 * night_jump.iloc[-1]
+    # B2 (2026-08-18): 原 .iloc[-1] 恒取 chunk 末行 → 前视. rolling 序列按 date 定位.
+    if date not in close.index:
+        return None
+    idx = close.index.get_loc(date)
+    raw = 0.6 * intra_rev.iloc[idx] + 0.4 * night_jump.iloc[idx]
     # 取负: 因子值越小 (越负) → 买入信号越强
     return _cs_zscore(-raw).rename("day_night")
 
@@ -189,8 +193,12 @@ def compute_str(data, date, window=20, aux=None):
         return pd.Series(np.nan, index=close.columns, name="str")
 
     min_records = max(window // 2, 10)
-    # v373: 仅取 tail window+1 行做 rolling std (O(T×N)→O(W×N))
-    tail = turnover_df.iloc[-(window + 1):]
+    # B2 (2026-08-18): 原 iloc[-(window+1):] 恒取 chunk 尾部 (含未来行) → 前视.
+    # 改为截到 date 为止的窗口.
+    if date not in turnover_df.index:
+        return pd.Series(np.nan, index=close.columns, name="str")
+    idx = turnover_df.index.get_loc(date)
+    tail = turnover_df.iloc[max(0, idx - window):idx + 1]
     raw = tail.rolling(window, min_periods=min_records).std().iloc[-1].dropna()
     valid_mask = tail.notna().sum() >= min_records
     raw = raw[valid_mask]
@@ -277,8 +285,12 @@ def compute_abn_turnover(data, date, window=20, aux=None):
         ind_map = {r[0]: r[2] for r in meta_rows if r[2]}
 
     min_records = max(window // 2, 10)
-    # v373: 仅取 tail window+1 行做 rolling mean (O(T×N)→O(W×N))
-    tail = turnover_df.iloc[-(window + 1):]
+    # B2 (2026-08-18): 原 iloc[-(window+1):] 恒取 chunk 尾部 (含未来行) → 前视.
+    # 改为截到 date 为止的窗口.
+    if date not in turnover_df.index:
+        return pd.Series(np.nan, index=close.columns, name="abn_turnover")
+    idx = turnover_df.index.get_loc(date)
+    tail = turnover_df.iloc[max(0, idx - window):idx + 1]
     avg_turn = tail.rolling(window, min_periods=min_records).mean().iloc[-1]
     valid_mask = tail.notna().sum() >= min_records
     avg_turn = avg_turn[valid_mask & (avg_turn > 0)]

@@ -105,23 +105,42 @@ def _run_train_phase(train_start: str, train_end: str) -> list[str]:
     return final_factors if final_factors else kept_p3
 
 
-def _activate_factors_for_test(factor_names: list[str]) -> None:
+def _activate_factors_for_test(factor_names: list[str]) -> dict:
     """Temporarily set factors to active status for an OOS backtest.
 
-    Updates factor_registry.status to 'active' for each factor in the list.
-    Failed updates are silently skipped (factor may not exist in registry).
-
-    Args:
-        factor_names: List of factor names to activate.
+    B26 (2026-08-18): 返回 {name: 原status} 快照 — 调用方在 backtest 后
+    必须调用 _restore_factor_statuses() 恢复. 原实现永久改全局因子注册表:
+      - 运行后状态池被污染 (certified 因子残留在 active, 实盘状态池失真)
+      - 下一 fold 的 backtest (factor_status_filter="active") 包含上一 fold
+        已激活但本 fold 未认证的因子 → fold 间信息泄漏
     """
     from quant.data.repos import FactorRepo
     repo = FactorRepo()
+    snapshot: dict[str, str] = {}
     for name in factor_names:
         try:
+            row = repo.get_factor_by_name(name)
+            if row is not None and row.get("status"):
+                snapshot[name] = row["status"]
             repo.update_status(name, "active", "phase7_wf: temporary OOS test")
         except Exception as _e:
             # Q7-5 fix: 状态更新失败必须可观测 (原裸 except: pass 吞错)
             _log.warning(f"phase7_wf: update_status({name}) failed: {_e}")
+    return snapshot
+
+
+def _restore_factor_statuses(snapshot: dict[str, str]) -> None:
+    """恢复因子原状态 — B26: 配合 _activate_factors_for_test 快照."""
+    if not snapshot:
+        return
+    from quant.data.repos import FactorRepo
+    repo = FactorRepo()
+    for name, status in snapshot.items():
+        try:
+            repo.update_status(name, status, "phase7_wf: restored after fold test")
+        except Exception as _e:
+            _log.warning(f"phase7_wf: restore_status({name}) failed: {_e}")
+    _log.info(f"phase7_wf: restored {len(snapshot)} factor statuses")
 
 
 def run_walkforward(
@@ -190,7 +209,8 @@ def run_walkforward(
         _log.info(f"  Fold {len(folds)+1}: {len(certified)} certified factors: {certified[:5]}...")
 
         # Step B: Test — backtest with certified factors only
-        _activate_factors_for_test(certified)
+        # B26: 快照原状态, 测试后 finally 恢复 — 不永久污染全局状态池
+        _status_snapshot = _activate_factors_for_test(certified)
 
         test_start_str = test_start.strftime("%Y-%m-%d")
         test_end_str = test_end.strftime("%Y-%m-%d")
@@ -211,6 +231,8 @@ def run_walkforward(
             _log.error(f"  Fold {len(folds)+1} backtest failed: {e}")
             current_dt += relativedelta(months=step_months)
             continue
+        finally:
+            _restore_factor_statuses(_status_snapshot)
 
         if "error" in result:
             _log.warning(f"  Fold {len(folds)+1} backtest error: {result['error']}")

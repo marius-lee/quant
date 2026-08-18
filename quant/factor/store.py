@@ -64,6 +64,17 @@ _SOURCE_HASH_CACHE: dict[str, str] = {}
 _DATA_FINGERPRINT_CACHE: dict[str, str] = {}
 
 
+def _last_sqlite_date() -> str:
+    """SQLite daily 最新日期 (v529 新鲜度断言用)."""
+    from quant.data.repos._base import DatabaseManager
+    mc = DatabaseManager.market()
+    try:
+        row = mc.execute("SELECT MAX(date) FROM daily").fetchone()
+        return row[0] if row and row[0] else "1970-01-01"
+    finally:
+        mc.close()
+
+
 def _compute_data_fingerprint(db_path: str = None) -> str:
     """计算输入数据指纹: daily 行数/turnover>0/amount>0/MAX(date) +
     财务三表 行数/MAX(stat_date)/MAX(pub_date)。
@@ -392,6 +403,19 @@ class FactorStore:
 
         t0 = _time.time()
 
+        # v529: DuckDB 新鲜度断言 — 物化读 DuckDB 优先, 若副本落后于 SQLite
+        # 会静默读旧值 (2026-08-18 实证: 手动补数后晚间链未跑, DuckDB 停 08-14,
+        # 物化 08-17 全段 failed: missing primitive). daily_data 链先同步后物化,
+        # 正常链序必过; 手动物化/链被跳过时 fail-fast 提示, 防 7 小时白算.
+        if date_range and date_range[-1] >= _last_sqlite_date():
+            from quant.data.duckdb_store import get_duckdb_manager
+            _dk = get_duckdb_manager().query_df(
+                "SELECT MAX(date) AS m FROM daily")["m"][0]
+            if _dk is not None and date_range[-1] > str(_dk)[:10]:
+                raise RuntimeError(
+                    f"factor_cache: DuckDB daily 落后 ({str(_dk)[:10]} < {date_range[-1]})"
+                    " — 先跑 bash scripts/duckdb_sync_all.sh 再物化")
+
         # 0.0 合并上次中断残留的 part 文件 (幂等, 崩溃续跑安全)
         _pre_merged = self._merge_pending_parts()
         if _pre_merged:
@@ -449,7 +473,10 @@ class FactorStore:
             if not missing:
                 continue
             # v483-2: 剔除 blocked 因子 (上一轮已确认缺数据, 反复重算无意义)
-            bl = set(blocked.get(date_str, {}))
+            # v529: force 模式豁免 blocked — force 即"无条件重建"语义, 数据补齐后
+            # 全量物化即可恢复 blocked 因子 (此前 blocked 无条件剔除导致因子
+            # 数据补齐后永不重算 — 2026-08-18 ocfp 2020-2022 空窗实证).
+            bl = set(blocked.get(date_str, {})) if not force else set()
             missing = [f for f in missing if f not in bl]
             if missing:
                 todo_map[date_str] = missing

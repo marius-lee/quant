@@ -19,6 +19,8 @@ import time as _time
 import uuid as _uuid
 from datetime import datetime
 
+import pandas as pd
+
 from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish, query_date as _tk_query
 from quant.utils.logger import get_logger, set_trace_id
 
@@ -76,7 +78,10 @@ def _run(today: str):
                     _log.warning(f"[{today}] data quality check failed (non-fatal): {_qe}")
             # lgb_train / xgb_train: 仅周一/周四执行
             if name in ("lgb_train", "xgb_train"):
-                wd = datetime.now().weekday()
+                # B31 (2026-08-18): 原 datetime.now().weekday() — 晚间链跨午夜
+                # (0x:xx) 运行时日期已变, lgb/xgb 门控错位. 用 today 变量
+                # (链起始日) 判断.
+                wd = pd.Timestamp(today).weekday()
                 if wd not in (0, 3):  # 0=周一, 3=周四
                     _log.info(f"[{today}] evening chain: {name} skipped (not Mon/Thu, wd={wd})")
                     continue

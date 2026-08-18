@@ -427,11 +427,21 @@ class FactorCurator:
             icir = mean_ic / np.std(ic_vals) if np.std(ic_vals) > 0 else 0
             abs_ic = abs(mean_ic)
 
-            # 方向校验
-            if cf["direction"] == "negative":
-                mean_ic = -abs_ic  # 确保符号一致
-            elif cf["direction"] == "positive":
-                mean_ic = abs_ic
+            # 方向校验 — B35 (2026-08-18): 原实现声明 negative → 强制
+            # -abs(IC), positive → abs(IC), 实测符号相反仍注册 → 统计造假.
+            # 现改为实证校验: 实测符号与声明不一致 → 拒绝注册, 数据如实保留.
+            sign_ok = (cf["direction"] == "negative" and mean_ic < 0) or \
+                      (cf["direction"] == "positive" and mean_ic > 0)
+            if not sign_ok:
+                _log.warning("curator: %s declared %s but measured IC=%.4f "
+                             "sign mismatch → rejected", cf["name"],
+                             cf["direction"], mean_ic)
+                results.append({**cf, "mean_ic": round(float(mean_ic), 4),
+                                "icir": round(float(icir), 4),
+                                "n_obs": len(ic_vals),
+                                "verdict": "rejected",
+                                "direction_ok": False})
+                continue
 
             verdict = "registered" if abs_ic >= ic_threshold else "rejected"
             r = {
@@ -440,6 +450,7 @@ class FactorCurator:
                 "icir": round(float(icir), 4),
                 "n_obs": len(ic_vals),
                 "verdict": verdict,
+                "direction_ok": True,
                 "source": cf["source"],
                 "category": cf["category"],
             }

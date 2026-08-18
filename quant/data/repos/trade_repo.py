@@ -741,6 +741,20 @@ class TradeRepo:
             return {"_tp1_hit": bool(row[0]), "_peak": row[1] if row[1] > 0 else None}
         return {}
 
+    def get_position_meta_max(self, symbol: str) -> dict:
+        """B9: 回载某 symbol 的历史峰值/TP1 标记 (MAX 聚合, 跨日持久).
+
+        与 get_position_meta(day) 的区别: 峰值与 tp1 标记单调不回退,
+        取全历史 MAX 才能在进程重启/跨日后恢复 trailing stop 与 TP1 状态.
+        """
+        row = self._query_one(
+            f"SELECT MAX({PM_TP1_HIT}), MAX({PM_PEAK_PRICE}) "
+            f"FROM position_meta WHERE {PM_SYMBOL}=?",
+            (symbol,))
+        if row and row[0] is not None:
+            return {"_tp1_hit": bool(row[0]), "_peak": row[1] if (row[1] or 0) > 0 else None}
+        return {}
+
     # ── meta KV (运行期开关, 如熔断标志 B-14) ────────────────
 
     def set_flag(self, key: str, value: str):

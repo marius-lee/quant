@@ -484,13 +484,22 @@ class VnpyAdapter(BrokerAdapter):
         try:
             from vnpy.trader.constant import Direction, Offset, OrderType
             vt_symbol = self._symbol_to_vnpy(symbol)
+            # B10 (2026-08-18): MainEngine.get_exchange() 在 vnpy 中不存在
+            # (AttributeError → 下单必崩). 正确 API: get_contract() 取
+            # ContractData.exchange. 合约缺失 → 显式失败 (零 fallback).
+            _contract = self._main_engine.get_contract(vt_symbol)
+            if _contract is None:
+                return OrderResult(success=False, symbol=symbol, side="buy",
+                                   shares=shares, price=price,
+                                   error=f"vnpy contract not found: {vt_symbol} "
+                                         f"(check gateway subscribe)")
             direction = Direction.LONG
             offset = Offset.OPEN
             vnpy_order_type = OrderType.LIMIT if order_type.upper() == "LIMIT" else OrderType.MARKET
 
             vt_orderids = self._main_engine.send_order(
                 symbol=vt_symbol,
-                exchange=self._main_engine.get_exchange(vt_symbol),
+                exchange=_contract.exchange,
                 direction=direction,
                 offset=offset,
                 price=price,
@@ -526,13 +535,20 @@ class VnpyAdapter(BrokerAdapter):
         try:
             from vnpy.trader.constant import Direction, Offset, OrderType
             vt_symbol = self._symbol_to_vnpy(symbol)
+            # B10: get_exchange() → get_contract().exchange (同 buy)
+            _contract = self._main_engine.get_contract(vt_symbol)
+            if _contract is None:
+                return OrderResult(success=False, symbol=symbol, side="sell",
+                                   shares=shares, price=price,
+                                   error=f"vnpy contract not found: {vt_symbol} "
+                                         f"(check gateway subscribe)")
             direction = Direction.SHORT
             offset = Offset.CLOSE
             vnpy_order_type = OrderType.LIMIT if order_type.upper() == "LIMIT" else OrderType.MARKET
 
             vt_orderids = self._main_engine.send_order(
                 symbol=vt_symbol,
-                exchange=self._main_engine.get_exchange(vt_symbol),
+                exchange=_contract.exchange,
                 direction=direction,
                 offset=offset,
                 price=price,

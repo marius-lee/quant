@@ -19,9 +19,9 @@
       "reason": "幻方 Tier S 因子接入 — 国盛证券2023, 待评估"
     }
   ],
-  "ic_mean_12m": 0.0178,
+  "ic_mean_12m": 0.0183,
   "ic_std_12m": null,
-  "icir_12m": 0.1746,
+  "icir_12m": 0.2325,
   "half_life_days": null,
   "decay_trend": "unknown",
   "correlations": {},

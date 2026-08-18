@@ -413,19 +413,24 @@ class DataStore:
         This eliminates survivorship bias in backtesting.
         """
         conn = self._connect()
-        # P0-1 fix: list_date 存为 YYYYMMDD (8 位), 查询参数为 ISO YYYY-MM-DD.
-        # 字典序比较在 '0'(0x30) vs '-'(0x2D) 处错位 → 当年上市股票整年被漏.
-        # strftime('%Y%m%d', ?) 把 ISO 日期转为 8 位, 保证同格式比较.
+        # B1 (2026-08-18): list_date/delist_date 存储为 ISO (YYYY-MM-DD, DB 实证
+        # 5556 行 ISO), 原 P0-1 修复用 strftime('%Y%m%d') 转 compact 再比较 —
+        # ISO vs compact 字典序在 '-' (0x2D) vs '0' (0x30) 处错位, 同年内恒真
+        # → 实测 2024-06-15 查询错误包含 46 只未来上市股票 (前视).
+        # 修复: 按存储格式分支比较, 两种格式均正确处理.
         query = (
             "SELECT symbol FROM stocks "
-            "WHERE list_date <= strftime('%Y%m%d', ?) "
-            "  AND (delist_date IS NULL OR delist_date > strftime('%Y%m%d', ?)) "
+            "WHERE ((list_date LIKE '%-%' AND list_date <= ?) "
+            "   OR  (list_date NOT LIKE '%-%' AND list_date <= strftime('%Y%m%d', ?))) "
+            "  AND (delist_date IS NULL OR delist_date = '' "
+            "   OR (delist_date LIKE '%-%' AND delist_date > ?) "
+            "   OR (delist_date NOT LIKE '%-%' AND delist_date > strftime('%Y%m%d', ?))) "
             "  AND market != 'BJ'"
         )
         if date_str is None:
             from datetime import date
             date_str = date.today().strftime("%Y-%m-%d")
-        rows = conn.execute(query, (date_str, date_str)).fetchall()
+        rows = conn.execute(query, (date_str, date_str, date_str, date_str)).fetchall()
         return [r[0] for r in rows]
 
     def sync_industry(self):
@@ -950,9 +955,12 @@ class DataStore:
             _factor_map.get(s, {}).get(d)
             for s, d in zip(df["symbol6"], _d_iso)
         ]
-        # 同股票内前后填充 (停牌日无因子记录), 仍缺失则该股当天不复权 (ratio=1)
+        # 同股票内仅向前填充 (停牌日无因子记录用最近已知因子) —
+        # B21 (2026-08-18): 原 ffill().bfill() 用未来因子回填历史行 → 前视.
+        # 除权发生在拉取窗口内时, bfill 会把除权后的因子填到除权前价格上,
+        # 回测收益失真. 只 ffill, 窗口开头缺失保持 NaN → ratio=1 不复权 (保守).
         df["adj_factor"] = df.groupby("symbol6")["adj_factor"].transform(
-            lambda s: s.ffill().bfill())
+            lambda s: s.ffill())
         # 全 None (K线日期与因子日期零重叠) → to_numeric 转 NaN, 防 object/除法 TypeError
         df["adj_factor"] = pd.to_numeric(df["adj_factor"], errors="coerce")
         _ratio = (df["adj_factor"] / df["symbol6"].map(_latest_map)).fillna(1.0)
@@ -1283,8 +1291,9 @@ class DataStore:
             if df.empty:
                 continue
             sym = code.split(".")[0]
-            # ratio = factor(date) / latest_factor; 停牌日无因子记录 → 该股内 ffill/bfill,
-            # 仍缺失则当天不复权 (ratio=1)。df 先按日期排序保证填充方向正确。
+            # ratio = factor(date) / latest_factor; 停牌日无因子记录 → 该股内仅向前填充,
+            # B21 (2026-08-18): 原 ffill().bfill() 用未来因子回填历史 → 前视;
+            # 窗口开头仍缺失则当天不复权 (ratio=1, 保守). df 先按日期排序保证填充方向正确。
             df = df.sort_values("trade_date")
             _fmap = _factor_map.get(sym, {})
             _tds = df["trade_date"].astype(str).str[:10]
@@ -1293,7 +1302,7 @@ class DataStore:
                 _tds.str.contains("-"),
                 _tds.str[:4] + "-" + _tds.str[4:6] + "-" + _tds.str[6:8])
             df["adj_factor"] = [_fmap.get(d) for d in _td_iso]
-            df["adj_factor"] = df["adj_factor"].ffill().bfill()
+            df["adj_factor"] = df["adj_factor"].ffill()
             # 全 None (K线日期与因子日期零重叠) → to_numeric 转 NaN, 防 object/除法 TypeError
             df["adj_factor"] = pd.to_numeric(df["adj_factor"], errors="coerce")
             _ratio = (df["adj_factor"] / _latest_map[sym]).fillna(1.0)

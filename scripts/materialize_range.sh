@@ -25,6 +25,8 @@ factor_names = get_factor_names(status_filter='backtesting')
 symbols = UniverseRepo().get_symbols(exclude_market='BJ')
 
 print(f'{len(date_strs)} dates x {len(factor_names)} factors x {len(symbols)} symbols')
-r = fs.materialize(date_strs, factor_names, symbols, store=store, force=False)
+# v525/v527: 不注入 store (subprocess 段并行); workers=2 防 8GB OOM (09:30-15:00 monitor 时段实测 3 并发被 jetsam 杀)
+r = fs.materialize(date_strs, factor_names, symbols, force=False,
+                   workers=2, max_slice_days=25)
 print(f"materialize done: {r['n_rows']} rows in {r['elapsed_sec']:.1f}s")
 EOF

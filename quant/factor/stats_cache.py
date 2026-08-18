@@ -127,11 +127,6 @@ def compute_factor_stats(
     # ══ Phase B: 从 factor_cache.db 读取因子值 + IC 计算 (不再重算) ══
     from quant.factor.ic import compute_ic as _compute_ic
 
-    # 从 factor_cache.db 加载 close 行情数据 (仅用于后续相关性矩阵计算, Phase 2 不需要)
-    data_start = str(pd.Timestamp(eval_date_strs[0]) - pd.Timedelta(days=lookback))[:10]
-    data_end = str(pd.Timestamp(eval_date_strs[-1]) + pd.Timedelta(days=40))[:10]
-    _shared_data = store.get_daily(symbols, start=data_start, end=data_end)
-
     logger.info(
         f"factor_cache: computing IC for {len(factor_names)} factors "
         f"over {len(eval_date_strs)} dates ({eval_date_strs[0]}→{eval_date_strs[-1]})"
@@ -153,31 +148,9 @@ def compute_factor_stats(
     _n_valid = _ic_result.get("n_valid", 0)
     logger.info(f"factor_cache IC done: {_n_valid}/{len(factor_names)} factors with valid IC")
 
-    # 从 IC 结果构建 forward returns 结构 (后续代码需要)
-    import pandas as _pd
-    close_parts = []
-    for _ds in sorted(eval_date_strs):
-        try:
-            s = _shared_data["close"].loc[_ds] if _ds in _shared_data.index else _pd.Series(dtype=float)
-        except Exception:
-            s = _pd.Series(dtype=float)
-        if s.empty:
-            continue
-        mi = _pd.MultiIndex.from_tuples([(_ds, sym) for sym in s.index],
-                                        names=['date', 'symbol'])
-        close_parts.append(_pd.Series(s.values, index=mi, name='close'))
-    if not close_parts:
-        logger.warning("No close data — cannot compute forward returns")
-        return _empty_result(factor_names, status_filter)
-    close = _pd.concat(close_parts)
-    if isinstance(close, _pd.Series):
-        close = close.unstack()
-    forward_1d = close.pct_change().shift(-1)
-    forward_5d = close.pct_change(5).shift(-5)
-    forward_20d = close.pct_change(20).shift(-20)
-
-    # close_by_date: 不再需要 (后续用 forward_1d)
-    close_by_date = {}
+    # B34 (2026-08-18): 删除死代码 — 原 156-180 行构建 forward_1d/5d/20d 与
+    # close_by_date, 定义后从未被引用 (仅注释声称"后续需要"); _shared_data 也
+    # 仅服务于该死代码, 一并移除 → 省一次全量行情加载.
     # 从 factor_cache.db 读取因子值用于相关性矩阵计算 (修正 test-v139 引入的全零 bug)
     from quant.factor.store import FactorStore
     _fs = FactorStore()
@@ -665,23 +638,31 @@ class IncrementalIC:
         # 存储每个因子的 (date, ic) 时间序列
         self._ic_series: dict[str, pd.Series] = {}
         # 存储每日因子值和收益率用于增量计算
-        self._factor_buffer: deque[pd.Series] = deque(maxlen=self.window + 5)
+        self._factor_buffer: deque[dict[str, pd.Series]] = deque(maxlen=self.window + 5)
         self._return_buffer: deque[pd.Series] = deque(maxlen=self.window + 5)
+        # B34: 并行日期缓冲 — _full_recalc 重算需真实日期戳, 原用序号覆盖丢失日期
+        self._date_buffer: deque[str] = deque(maxlen=self.window + 5)
         self._symbols = None
         self._factor_names = None
         self._update_count = 0
         self._lock = threading.Lock()
 
-    def update(self, factor_values: dict[str, pd.Series], returns: pd.Series) -> dict[str, float]:
+    def update(self, factor_values: dict[str, pd.Series], returns: pd.Series,
+               date: str = None) -> dict[str, float]:
         """增量更新 IC。
 
         Args:
             factor_values: {factor_name: Series(index=symbol, value=factor_value)}
             returns: pd.Series, index=symbol, value=当日收益率 (T+1)
+            date: 交易日 YYYY-MM-DD — B34 (2026-08-18): 必须显式传入,
+                原实现 pd.Timestamp.now() 打戳, 回测/重放场景日期全错.
 
         Returns:
             {factor_name: ic_value} 当日 IC 值字典
         """
+        if date is None:
+            raise ValueError("IncrementalIC.update requires explicit trade date "
+                             "(B34: now() 打戳已废除)")
         with self._lock:
             # 1. 处理新进/退出的 factor
             new_factors = set(factor_values.keys()) - set(self._factor_names) if self._factor_names else set(factor_values.keys())
@@ -702,26 +683,31 @@ class IncrementalIC:
                 # symbol 变更时重置缓冲区
                 self._factor_buffer.clear()
                 self._return_buffer.clear()
+                self._date_buffer.clear()
 
-            # 3. 对齐并存入缓冲区
+            # 3. 对齐并按日分组存入缓冲区
+            #    B34: 原实现逐因子 append (fn, series) tuple — 类型标注是
+            #    deque[pd.Series] 却混入 tuple, 结构损坏; 现按日存 {fn: Series}.
+            aligned_factors = {}
             for fn, fv in factor_values.items():
-                aligned = fv.reindex(self._symbols)
-                self._factor_buffer.append((fn, aligned))
+                aligned_factors[fn] = fv.reindex(self._symbols)
+            self._factor_buffer.append(aligned_factors)
             self._return_buffer.append(returns.reindex(self._symbols))
+            self._date_buffer.append(date)
 
             # 4. 计算当日 IC (Spearman 相关)
             ic_today = {}
-            for fn, fv in factor_values.items():
-                aligned_f = fv.reindex(self._symbols)
-                aligned_r = returns.reindex(self._symbols)
+            aligned_r = returns.reindex(self._symbols)
+            for fn, aligned_f in aligned_factors.items():
                 # 对齐非空
-                mask = aligned_f.notna() & returns.notna()
+                mask = aligned_f.notna() & aligned_r.notna()
                 if mask.sum() >= 10:
-                    ic = aligned_f[mask].corr(returns[mask], method="spearman")
+                    ic = aligned_f[mask].corr(aligned_r[mask], method="spearman")
                     if not np.isnan(ic):
                         ic_today[fn] = float(ic)
-                        # 累加到时间序列
-                        self._ic_series[fn].loc[pd.Timestamp.now().strftime("%Y-%m-%d")] = ic_today[fn]
+                        # 累加到时间序列 (B34: 用交易日 date 而非 now())
+                        self._ic_series.setdefault(fn, pd.Series(dtype=float))
+                        self._ic_series[fn].loc[date] = ic_today[fn]
 
             # 5. 定期全量重算 (修正数值漂移)
             self._update_count += 1
@@ -730,14 +716,30 @@ class IncrementalIC:
 
             return ic_today
 
-    def _full_recalc(self):
-        """全量重算所有因子的滚动 IC (使用 pandas rolling)。"""
-        # 暂存所有因子的历史值
-        factor_history = {}
-        return_history = None
-        # 这里需要重新计算完整历史，简化实现：清空重算
-        _log = get_logger("factor.stats_cache")
-        _log.info(f"IncrementalIC: full recalc triggered (approximate)")
+    def _full_recalc(self) -> None:
+        """全量重算所有因子的滚动 IC (B34: 原为空实现只打日志 → 漂移从未修正).
+
+用缓冲区逐日重算: 因子 t 日 vs 收益 t+1 日 (T+1 前瞻口径, 与 update 一致).
+        日期戳取 _date_buffer (B34: 原空实现; 序号 index 会丢失真实日期).
+        注意: 调用方须已持 self._lock (threading.Lock 不可重入, 内部不得再取锁).
+        """
+        n = len(self._return_buffer)
+        if n < 2 or len(self._date_buffer) != n:
+            return
+        for fn in list(self._factor_buffer[0].keys()):
+            series = pd.Series(dtype=float)
+            for i in range(n - 1):
+                f = self._factor_buffer[i].get(fn)
+                r = self._return_buffer[i + 1]
+                if f is None:
+                    continue
+                mask = f.notna() & r.notna()
+                if mask.sum() >= 10:
+                    ic = f[mask].corr(r[mask], method="spearman")
+                    if not np.isnan(ic):
+                        series.loc[self._date_buffer[i]] = float(ic)
+            if len(series):
+                self._ic_series[fn] = series
 
     def get_ic_map(self, lookback: int = None) -> dict[str, float]:
         """获取最近 lookback 期 IC 均值 (用于 alpha 合成权重)。
@@ -756,8 +758,8 @@ class IncrementalIC:
             for fn, series in self._ic_series.items():
                 if len(series) == 0:
                     continue
-                # 取最近 lookback 个有效值
-                tail = series.dropna().tail(120)  # 默认 120 天
+                # 取最近 lookback 个有效值 (B34: 原硬编码 tail(120) 无视参数)
+                tail = series.dropna().tail(lookback)
                 if len(tail) >= 5:
                     ic_map[fn] = float(tail.mean())
             return ic_map
@@ -790,10 +792,34 @@ class IncrementalIC:
             return ir_map
 
     def get_ic_decay(self, factor_name: str, horizons: list[int] = None) -> dict[str, float]:
-        """计算 IC 衰减: 不同前瞻期的 IC。"""
-        # 简化实现：返回当前 IC 作为 1d，5d/20d 近似
-        ic = self.get_ic_map().get(factor_name, 0)
-        return {"1d": ic, "5d": ic * 0.8, "20d": ic * 0.5}
+        """计算 IC 衰减: 不同前瞻期的 IC (B34: 原 0.8/0.5 捏造系数已废除).
+
+        真实口径: 因子 t 日截面 vs 收益 t+h 日截面 (Spearman), 每 horizon
+        至少 10 对样本且 ≥5 个有效 IC 才返回均值.
+        """
+        horizons = horizons or [1, 5, 20]
+        n = len(self._return_buffer)
+        if n < 2:
+            return {}
+        out = {}
+        with self._lock:
+            for h in horizons:
+                if n <= h:
+                    continue
+                ics = []
+                for i in range(n - h):
+                    f = self._factor_buffer[i].get(factor_name)
+                    r = self._return_buffer[i + h]
+                    if f is None:
+                        continue
+                    mask = f.notna() & r.notna()
+                    if mask.sum() >= 10:
+                        ic = f[mask].corr(r[mask], method="spearman")
+                        if not np.isnan(ic):
+                            ics.append(float(ic))
+                if len(ics) >= 5:
+                    out[f"{h}d"] = float(np.mean(ics))
+        return out
 
     def reset(self):
         """重置状态 (换因子池/换窗口时调用)。"""

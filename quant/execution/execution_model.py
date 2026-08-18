@@ -71,7 +71,9 @@ def trim_orders_by_alpha(orders: list, cash: float, cost_model,
         if px <= 0:
             continue
         # B-13: 边际成本 while 递减 (原双重计数公式已废)
-        max_shares = int(available // (px * LOT_SIZE)) * LOT_SIZE
+        # B7 (2026-08-18): 上限必须 min(原目标股数) — 原 max_shares 仅按可用资金,
+        # 资金不足裁剪时首单被放大到耗尽全部资金, 超出目标股数, 组合超额配置.
+        max_shares = min(o.shares, int(available // (px * LOT_SIZE)) * LOT_SIZE)
         while max_shares >= LOT_SIZE and cost_model.buy_cost(px, max_shares) > available:
             max_shares -= LOT_SIZE
         if max_shares >= LOT_SIZE:
@@ -161,10 +163,6 @@ class ExecutionModel(ABC):
             result.stopped_out.append(st["symbol"])
             positions = ctx.engine.get_positions(ctx.strategy)
             current_lots = {p["symbol"]: p["shares"] // LOT_SIZE for p in positions}
-        if result.stopped_out:
-            target_lots = {s: l for s, l in target_lots.items()
-                           if s not in result.stopped_out}
-            targets = [tp for tp in targets if tp["symbol"] not in result.stopped_out]
 
         # v410: ATR 动态止盈止损 (回测↔实盘一致)
         # 构建 quotes dict (回测用日线价格)
@@ -177,8 +175,20 @@ class ExecutionModel(ABC):
                 [Order(symbol=_as["symbol"], side="sell", shares=_as["shares"],
                        price=_as["price"], cost=0)],
                 ctx.today, ctx.strategy)
+            rm.set_cooloff(_as["symbol"], ctx.today)
             result.stopped_out.append(_as["symbol"])
             result.sells += 1
+            # B3 (2026-08-18): ATR 止损卖出后必须刷新持仓 —
+            # 原硬止损刷新了而 ATR 分支没有, 且 target 过滤在 ATR 检查之前,
+            # delta 对已清仓 symbol 生成卖出单 → 二次卖出/负持仓/券商拒单.
+            positions = ctx.engine.get_positions(ctx.strategy)
+            current_lots = {p["symbol"]: p["shares"] // LOT_SIZE for p in positions}
+
+        # B3: 止损清仓 symbol 统一从目标中移除 (硬止损+ATR, 移至 ATR 之后)
+        if result.stopped_out:
+            target_lots = {s: l for s, l in target_lots.items()
+                           if s not in result.stopped_out}
+            targets = [tp for tp in targets if tp["symbol"] not in result.stopped_out]
 
         # ── 3. delta 计算 ──
         cash = ctx.engine.get_cash(ctx.strategy)

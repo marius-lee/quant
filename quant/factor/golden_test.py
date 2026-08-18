@@ -40,6 +40,8 @@ def generate():
         fv = compute_all_factors(data, date_str, fundamentals=fundamentals,
                                  factor_fail_fast=False, quiet=True, use_shortcut=True,
                                  financials_cache={})
+        # B36 (2026-08-18): date_results 未初始化 (NameError) — 循环外初始化
+        date_results = {}
         for name, series in fv.items():
             if series is not None and series.dropna().count() >= 2:
                 date_results[name] = {s: round(float(v), 6) for s, v in series.dropna().items()}

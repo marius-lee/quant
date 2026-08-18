@@ -86,9 +86,31 @@ def sync_quarter(report_date: str, conn=None) -> int:
     return n
 
 
+def _recent_quarters(n: int) -> list[str]:
+    """最近 n 个季度末日期 (含当前季度) — B19 (2026-08-18).
+
+    原 sync_recent 硬编码 ['20241231',...] 固定列表 → 2026 年起永久停在
+    2025Q4, 新季度数据永不同步. 动态生成, n 来源 config
+    data.fund_hold_recent_quarters.
+    """
+    from datetime import date
+    today = date.today()
+    ends = ['0331', '0630', '0930', '1231']
+    q = (today.month - 1) // 3
+    res = []
+    y, qq = today.year, q
+    for _ in range(n):
+        res.append(f"{y}{ends[qq]}")
+        qq -= 1
+        if qq < 0:
+            qq = 3
+            y -= 1
+    return res
+
+
 def sync_recent(conn=None):
-    """同步最近几个季度的数据。"""
-    quarters = ['20241231', '20250331', '20250630', '20250930', '20251231']
+    """同步最近几个季度的数据 (B19: 动态季度, 来源 config)."""
+    quarters = _recent_quarters(_require_cfg("data.fund_hold_recent_quarters"))
     total = 0
     for q in quarters:
         n = sync_quarter(q, conn=conn)

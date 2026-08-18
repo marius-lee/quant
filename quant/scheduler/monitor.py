@@ -249,14 +249,9 @@ def _run_continuous_inner(today: str, stop_event=None):
                 _log.warning(f"[{today}] Trade frequency check failed (will retry): {type(e).__name__}: {e}")
 
             rm = RiskManager()
-            # test-v313: 加载持久化的峰值/止盈标记 (进程重启后恢复)
-            _trepo = TradeRepo()
-            for p in positions:
-                meta = _trepo.get_position_meta(p["symbol"], today)
-                if meta.get("_peak"):
-                    p["_peak"] = meta["_peak"]
-                if meta.get("_tp1_hit"):
-                    p["_tp1_hit"] = meta["_tp1_hit"]
+            # B9 (2026-08-18): 跨日止损状态 (_tp1_hit/_peak) 由 RiskManager.check
+            # 内部统一回载 (DB 模式 MAX 聚合) — 原手动 get_position_meta(当天)
+            # 只取当日行, 跨日峰值丢失且不加载 _tp1_hit.
             signals = rm.check(positions, quotes, today)
             for sig in signals:
                 sym = sig["symbol"]

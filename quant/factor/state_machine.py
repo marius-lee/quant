@@ -34,6 +34,10 @@ from quant.factor.compute.price import _PRICE_FN_MAP
 from quant.factor.compute.fundamental import _FUNDAMENTAL_FN_MAP
 from quant.data.store import DataStore
 from quant.data.repos import FactorRepo, UniverseRepo
+from scipy.stats import spearmanr
+# B36 (2026-08-18): curate_all 引用的 _CURATED_FACTORS 常量未导入 (NameError);
+# 常量单一真相源仍在 factor_curator.py, 此处显式引用.
+from quant.factor.factor_curator import _CURATED_FACTORS
 
 _log = get_logger("factor.state_machine")
 
@@ -207,7 +211,6 @@ class FactorStateMachine:
                 fn = compile_factor(expression)
             return True, fn, None
         except Exception as e:
-            error_msg = f"compile failed: {e}"
             _log.error(f"factor compile: {expression} -> {e}")
             return False, None, str(e)
 
@@ -220,10 +223,10 @@ class FactorStateMachine:
         """
         from quant.factor.compute._dispatch import compute_all_factors
         from quant.factor.windows import max_factor_calendar_days
-        from scipy.stats import spearmanr
 
-        n_dates = len(dates)
         ic_vals = []
+        # B36: fwd 从未定义 (NameError). 从 data_full 计算 T+5 前向收益.
+        fwd = data_full["close"].shift(-5) / data_full["close"] - 1
         for d in dates[:-5]:
             try:
                 _d = pd.Timestamp(d)
@@ -236,7 +239,7 @@ class FactorStateMachine:
                 if not np.isnan(ic):
                     ic_vals.append(ic)
             except Exception as _daily_err:
-                _log.debug(f"daily eval failed: {e}")
+                _log.debug(f"daily eval failed: {_daily_err}")
                 continue
 
         if len(ic_vals) < 10:
@@ -300,8 +303,10 @@ class FactorStateMachine:
         # 1. 编译
         success, fn, error = self.compile_factor(candidate.name, candidate.expression)
         if not success:
+            # B36: candidate._error 属性不存在 (AttributeError) — compile_factor
+            # 返回的 error 变量才是错误信息.
             return {**candidate.__dict__, "mean_ic": 0, "icir": 0, "n_obs": 0,
-                    "registered": False, "verdict": "compilation_failed", "error": candidate._error}
+                    "registered": False, "verdict": "compilation_failed", "error": error}
 
         # 2. 准备评估数据
         store = DataStore()

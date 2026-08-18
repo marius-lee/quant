@@ -3,8 +3,8 @@
   "display_name": "vp_divergence",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.01,
-  "icir_12m": 0.088,
+  "ic_mean_12m": 0.0096,
+  "icir_12m": 0.0829,
   "last_evaluated": "auto",
   "n_obs": 130
 }

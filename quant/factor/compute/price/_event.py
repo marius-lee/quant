@@ -494,7 +494,12 @@ def compute_lhb_reversal(data, date: str, window: int = 5, aux=None):
     if lhb.empty:
         return pd.Series(np.nan, index=symbols, name=f"lhb_reversal_{window}d")
     cutoff = (pd.Timestamp(date) - pd.Timedelta(days=30)).strftime("%Y-%m-%d")
-    recent = lhb[lhb["trade_date"] >= cutoff]
+    # B2 (2026-08-18): post_{window}d 是上榜后 N 日收益 (未来数据).
+    # 上榜日距 date 不足 window 个交易日时 post 未完全实现 → 前视.
+    # 只保留上榜日 + window 交易日 ≤ date 的记录 (post 已完整).
+    from pandas.tseries.offsets import BDay
+    _impl_limit = (pd.Timestamp(date) - BDay(window)).strftime("%Y-%m-%d")
+    recent = lhb[(lhb["trade_date"] >= cutoff) & (lhb["trade_date"] <= _impl_limit)]
     if recent.empty:
         return pd.Series(np.nan, index=symbols, name=f"lhb_reversal_{window}d")
     col = f"post_{window}d"

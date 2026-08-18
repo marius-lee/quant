@@ -3,8 +3,8 @@
   "display_name": "seasonality_12m_1m",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.0111,
-  "icir_12m": -0.0621,
+  "ic_mean_12m": -0.0109,
+  "icir_12m": -0.0601,
   "last_evaluated": "auto",
-  "n_obs": 129
+  "n_obs": 130
 }

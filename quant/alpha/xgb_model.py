@@ -153,8 +153,16 @@ class XgbAlphaModel:
         # v421: config.xgb.params 含 early_stopping_rounds, 无 eval_set 必崩
         # (ValueError: Must have at least 1 validation dataset) →
         # v423: 用时间切分 OOS 尾部样本作 eval_set (早停验证集, 非随机)
+        # B15 (2026-08-18): 原 fit(eval_set=...) 但未传 early_stopping_rounds
+        # (config.xgb.params 无此键) → eval_set 仅作日志, 早停从未生效,
+        # 200 棵树全量训练 → 过拟合. xgboost 3.x 的 fit() 不再接受
+        # early_stopping_rounds/callbacks 关键字 — 必须注入构造器 kwargs.
+        _has_eval = len(y_oos) >= 20
+        if _has_eval and "early_stopping_rounds" not in xgb_params:
+            xgb_params = dict(xgb_params)
+            xgb_params["early_stopping_rounds"] = 50
         self._xgb = xgb.XGBRegressor(**xgb_params)
-        if len(y_oos) >= 20:
+        if _has_eval:
             self._xgb.fit(X, y, eval_set=[(X_oos, y_oos)], verbose=False)
         else:
             self._xgb.fit(X, y, verbose=False)
@@ -242,11 +250,18 @@ class XgbAlphaModel:
             _log.warning("xgb predict: %d/%d features available (missing: %s), filling zeros",
                          len(self._feature_names) - len(missing), len(self._feature_names),
                          ", ".join(sorted(missing)[:5]))
-        X = np.column_stack([
-            factor_values.get(fn, pd.Series(0.0, index=symbols))
-            .reindex(symbols).fillna(0.0).values
+        # B5 (2026-08-18): 推理特征必须与训练同口径 (同 qlib_model.py) —
+        # 训练端 build_train_matrices → build_cross_sectional_factors 为
+        # "逐日截面 rank → normal quantile z"; 原直接喂原始值 → 分布漂移, 模型失效.
+        # 缺失语义与训练端一致: NaN 不参与 rank, rank 后补零.
+        from quant.alpha.ml_common import _inv_norm
+        _sym_df = pd.DataFrame({
+            fn: factor_values.get(fn, pd.Series(0.0, index=symbols))
             for fn in self._feature_names  # 严格按训练列序, 不过滤
-        ])
+        }).reindex(symbols)
+        _ranked = _sym_df.rank(axis=0, pct=True)
+        _z = _ranked.apply(lambda col: _inv_norm(col.clip(0.0001, 0.9999))).fillna(0.0)
+        X = _z.values.astype(np.float32)
 
         preds = self._xgb.predict(X)
         return pd.Series(preds, index=symbols, name="alpha_xgb").dropna()

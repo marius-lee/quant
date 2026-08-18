@@ -33,15 +33,29 @@ def check_factor_crowdedness(
         trend_up, alert, high_corr_pairs, details
     }
     """
-    if symbols is None:
-        from quant.data.repos import UniverseRepo
-        symbols = UniverseRepo().get_symbols(exclude_market='BJ')[:300]
-
     _close_store = False
     if store is None:
         from quant.data.store import DataStore
         store = DataStore()
         _close_store = True
+
+    if symbols is None:
+        from quant.data.repos import UniverseRepo
+        universe = UniverseRepo().get_symbols(exclude_market='BJ')
+        # B33 (2026-08-18): 原 [:300] 按 universe 顺序切片 — 非流动性排名,
+        # 拥挤度因子算在非代表性子集上. 按近 60 日日均成交额降序取前 300.
+        _rows = store._connect().execute("""
+            SELECT symbol, AVG(amount) FROM daily
+            WHERE date >= date('now', '-120 days') AND amount > 0
+            GROUP BY symbol
+            ORDER BY AVG(amount) DESC
+            LIMIT 300
+        """).fetchall()
+        symbols = [r[0] for r in _rows]
+        if not symbols:
+            symbols = universe[:300]
+            _log.warning(f"[{today}] crowdedness: amount data empty, "
+                         f"fallback to universe order")
 
     try:
         from quant.factor.compute._registry import get_factor_names

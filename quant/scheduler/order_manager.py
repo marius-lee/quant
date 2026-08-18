@@ -101,9 +101,22 @@ class OrderManager:
     # ── 挂单 ──
     def place(self, day: str, strategy: str,
               symbol: str, shares: int, ref_price: float) -> int:
-        """挂限价买单: limit_price = ref_price × (1 - DISCOUNT_PCT)."""
+        """挂限价买单: limit_price = ref_price × (1 - DISCOUNT_PCT).
+
+        B24 (2026-08-18): 同日同 symbol 已有 pending 单 → 去重跳过, 返回已有 id.
+        原无去重 × execute 失败无限重试 → 盘中重复挂单/双倍仓位风险.
+        """
         limit = round(ref_price * (1 - DISCOUNT_PCT), 2)
         c = _conn()
+        row = c.execute(
+            "SELECT id FROM pending_orders "
+            "WHERE day=? AND strategy=? AND symbol=? AND status='pending'",
+            (day, strategy, symbol)).fetchone()
+        if row:
+            c.close()
+            _log.info(f"[order_manager] dedup: {symbol} already pending "
+                      f"(order#{row[0]}), skip re-place")
+            return row[0]
         now = datetime.now().isoformat(timespec="seconds")
         rid = c.execute(
             """INSERT INTO pending_orders

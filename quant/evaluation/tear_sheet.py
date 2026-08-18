@@ -111,7 +111,12 @@ def generate_report(
     })
 
     # Monthly returns heatmap
-    monthly = returns.groupby([returns.index.year, returns.index.month]).apply(
+    # B30 (2026-08-18): equity_curve.index 可能是 object dtype (str/混合) →
+    # returns.index.year AttributeError → 报告必崩. 统一转 DatetimeIndex.
+    _ret = returns.copy()
+    _ret.index = pd.to_datetime(_ret.index, errors="coerce")
+    _ret = _ret.dropna()
+    monthly = _ret.groupby([_ret.index.year, _ret.index.month]).apply(
         lambda x: (1 + x).prod() - 1
     ).unstack()
     monthly_pct = (monthly * 100).round(1).fillna(0)

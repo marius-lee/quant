@@ -29,6 +29,8 @@ bash scripts/eval_standard.sh      # 五阶段标准评估 (CPCV+walk-forward+PB
 | `materialize_factors.py` | 全量物化因子值到 factor_cache.db |
 | `materialize_full.sh` | 全量重建因子缓存 (force=True, 整段覆盖; 物化起点 2020-01-01, v473 约定勿改) |
 | `materialize_range.sh` | 按日期区间补齐因子缓存 (幂等, 只补缺失) |
+| `materialize_factor.sh` | 单因子 force 强制重算区间 (无视 blocked/指纹判定, v529 定向修复缺口) |
+| `check_materialize_gaps.py` | 物化缺口核查 (正式口径: is_trading_day 判节假日, blocked 机制 vs 真缺口, v529) |
 | `rematerialize_industry_pit.sh` | 行业 PIT 生效后重物化 2020 起因子缓存 (v502) |
 | `rebuild_factor_cache.py` | 重建 factor_cache.json |
 
@@ -44,6 +46,13 @@ bash scripts/eval_standard.sh      # 五阶段标准评估 (CPCV+walk-forward+PB
 | `industry_pit_activate.sh [--skip-wait]` | 一键顺序链: 等后台同步完成 → 校验 → 重物化 (v502) |
 | `verify_industry_pit.sh` | 校验 industry_history 覆盖 + smoke 回测验证 PIT 中性化不崩 |
 | `rematerialize_industry_pit.sh` | 同步完成后重物化 2020 起因子缓存 (行业 PIT 生效) |
+
+## 数据回填
+
+| 脚本 | 用途 |
+|------|------|
+| `backfill_financials_em.py` | 东财财务主指标回填 financial_income/financial_cashflow 2019-2023 历史缺口 (sue/ocfp 因子; 幂等 upsert, 6 并发 × 批量 4 只/请求 ≈ 3 分钟全市场) (v527) |
+| `backfill_financials.py` | sina 三表财务回填 (v525; 实测覆盖率仅 7-14%, 已被东财源取代, 保留备用) |
 
 顺序: `industry_pit_activate.sh` 一键执行 (等同步 → 校验 → 重物化) → `restart.sh` 重启。
 

@@ -144,7 +144,12 @@ def calibrate_risk_aversion(
     方法:
       对 _CALIBRATION_GRID 中每个候选 λ:
         1. 取 alpha 前 max_positions 只股票
-        2. 用协方差矩阵做均值-方差优化: w = inv(Σ) @ α / λ → normalize
+        2. 用 ridge 正则化协方差做均值-方差优化:
+           Σ_λ = Σ + λ·trace(Σ)/N·I,  w = inv(Σ_λ) @ α → normalize
+           (B4 修复, 2026-08-18: 原 w = inv(Σ)@α/λ 再归一化 → λ 在分子分母
+           同时出现被抵消, 网格恒选首项 0.5. 无约束 MV 解的比例本与 λ 无关,
+           λ 必须通过正则化进入 Σ 才能影响组合 — 文献: Ledoit-Wolf 收缩,
+           Grinold & Kahn 风险厌恶)
         3. 计算组合预期收益 μ_p = w'α, 标准差 σ_p = sqrt(w'Σw)
         4. 计算 Sharpe = μ_p / σ_p (近似, 未减无风险利率)
       选 Sharpe 最大的 λ。
@@ -173,18 +178,21 @@ def calibrate_risk_aversion(
 
     alpha_vec = top.loc[common].values
     Sigma = covariance.loc[common, common].values
-
-    try:
-        inv_Sigma = np.linalg.inv(Sigma)
-    except np.linalg.LinAlgError:
-        inv_Sigma = np.linalg.pinv(Sigma)
-        logger.warning("[calibrate] near-singular covariance, using pseudo-inverse")
+    # λ 归一化缩放: 用平均对角元素 (协方差量级) 使 λ 无量纲 (ridge 强度)
+    _tau = float(np.trace(Sigma) / len(Sigma)) if len(Sigma) else 1.0
 
     best_lambda = 2.0
     best_sharpe = -np.inf
 
     for lam in _CALIBRATION_GRID:
-        w_raw = inv_Sigma @ alpha_vec / lam
+        # B4: λ 经 ridge 正则化进入协方差 (Σ + λ·τ·I), 而非除在权重上
+        _Sig_reg = Sigma + lam * _tau * np.eye(len(Sigma))
+        try:
+            _inv = np.linalg.inv(_Sig_reg)
+        except np.linalg.LinAlgError:
+            _inv = np.linalg.pinv(_Sig_reg)
+            logger.warning("[calibrate] near-singular covariance, using pseudo-inverse")
+        w_raw = _inv @ alpha_vec
         w_raw = np.maximum(w_raw, 0)
         if w_raw.sum() <= 0:
             continue
@@ -858,6 +866,8 @@ class PortfolioConstructor:
         """均值-方差优化 + 整手离散化。
         来源: Markowitz (1952); Grinold & Kahn (2000) Chapter 7
         参数 risk_aversion 由 construct() 实时调用 calibrate_risk_aversion() 确定。
+        B4 (2026-08-18): λ 经 ridge 正则化进入协方差 (Σ + λ·τ·I, 与
+        calibrate_risk_aversion 同口径) — 原 w = inv(Σ)@α/λ 归一化后 λ 抵消.
         """
         n_stocks = min(self.max_positions, len(alpha))
         top = alpha.iloc[:n_stocks]
@@ -867,12 +877,14 @@ class PortfolioConstructor:
             if len(common_cov) >= 3:
                 alpha_vec = top.loc[common_cov].values
                 Sigma = covariance.loc[common_cov, common_cov].values
+                _tau = float(np.trace(Sigma) / len(Sigma)) if len(Sigma) else 1.0
+                _Sig_reg = Sigma + risk_aversion * _tau * np.eye(len(Sigma))
                 try:
-                    inv_Sigma = np.linalg.inv(Sigma)
+                    inv_Sigma = np.linalg.inv(_Sig_reg)
                 except np.linalg.LinAlgError:
-                    inv_Sigma = np.linalg.pinv(Sigma)
+                    inv_Sigma = np.linalg.pinv(_Sig_reg)
                     logger.warning("[mean_variance_lot] near-singular covariance, using pseudo-inverse")
-                w_raw = inv_Sigma @ alpha_vec / risk_aversion
+                w_raw = inv_Sigma @ alpha_vec
                 w_raw = np.maximum(w_raw, 0)
                 if w_raw.sum() > 0:
                     w_cont = w_raw / w_raw.sum()

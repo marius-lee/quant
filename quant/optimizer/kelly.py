@@ -75,52 +75,57 @@ def compute_kelly_fractions(
     if ic_map is None or not ic_map:
         # 无 IC 信息 → 退化为 alpha 比例分配
         _log.debug("No IC map — falling back to alpha-proportional allocation")
-        return _alpha_proportional(alpha)
+        kelly = _alpha_proportional(alpha)
+    else:
+        # ── 从 IC 估算预期收益 ──
+        # 每个股票的预期收益 = 各因子 IC 加权 × 股票在该因子的得分
+        # 简化: 用 med_IC 作为全局预期收益参数
+        ic_values = np.array(list(ic_map.values()))
+        med_ic = np.median(np.abs(ic_values))
 
-    # ── 从 IC 估算预期收益 ──
-    # 每个股票的预期收益 = 各因子 IC 加权 × 股票在该因子的得分
-    # 简化: 用 med_IC 作为全局预期收益参数
-    ic_values = np.array(list(ic_map.values()))
-    med_ic = np.median(np.abs(ic_values))
+        # IC 退化保护: 所有 IC=0 → 退化为 alpha 比例
+        if med_ic < 1e-6:
+            _log.debug("All IC ≈ 0 — falling back to alpha-proportional")
+            kelly = _alpha_proportional(alpha)
+        else:
+            # 预期收益 μ = med_IC × 日波动率代理
+            # 使用 alpha 得分的标准化值作为 μ 的代理
+            mu = alpha / alpha.abs().max() * med_ic if alpha.abs().max() > 0 else alpha
 
-    # IC 退化保护: 所有 IC=0 → 退化为 alpha 比例
-    if med_ic < 1e-6:
-        _log.debug("All IC ≈ 0 — falling back to alpha-proportional")
-        return _alpha_proportional(alpha)
+            # σ²: A股日收益率典型方差 ≈ 0.0004 (σ_daily ≈ 2%)
+            # 来源: CSRC 2025年度报告 + 2026-07-21 audit C5
+            # alpha.var() 是截面方差(~1.0), 非收益率方差, 会导致 Kelly ~0
+            # B28: default return variance (σ≈2%), should be overridden by covariance matrix
+            # ALG5: dynamic return variance — prioritize covariance diag, fallback to default.
+            # Default 0.0004 = σ_daily≈2% per CSRC 2025 report.
+            DEFAULT_RETURN_VAR = 0.0004
+            # B16 (2026-08-18): 原取 mean(cov_diag) 单一标量 → kelly_raw 归一化时
+            # 被消掉 → Kelly 退化为 alpha 比例 (σ² 维度信息丢失). 改用逐股方差
+            # 向量 (cov 对角), 每只股票按自身波动率缩放.
+            var = DEFAULT_RETURN_VAR
+            if cov is not None:
+                cov_diag = np.diag(cov) if isinstance(cov, np.ndarray) else np.array(cov).diagonal()
+                if len(cov_diag) > 0 and cov_diag.mean() > 1e-8:
+                    var = np.asarray(cov_diag, dtype=float)
+                    _log.debug("kelly: per-stock var from cov diag (mean=%.6f)", var.mean())
 
-    # 预期收益 μ = med_IC × 日波动率代理
-    # 使用 alpha 得分的标准化值作为 μ 的代理
-    mu = alpha / alpha.abs().max() * med_ic if alpha.abs().max() > 0 else alpha
+            # Kelly: f = (μ - r_f) / σ², r_f=0 (A股无风险利率极低)
+            # 过滤负 Kelly (因子预期该股下跌)
+            kelly_raw = (mu / np.maximum(var, 1e-8)).clip(lower=0)
 
-    # σ²: A股日收益率典型方差 ≈ 0.0004 (σ_daily ≈ 2%)
-    # 来源: CSRC 2025年度报告 + 2026-07-21 audit C5
-    # alpha.var() 是截面方差(~1.0), 非收益率方差, 会导致 Kelly ~0
-    # B28: default return variance (σ≈2%), should be overridden by covariance matrix
-    # ALG5: dynamic return variance — prioritize covariance diag, fallback to default.
-    # Default 0.0004 = σ_daily≈2% per CSRC 2025 report.
-    DEFAULT_RETURN_VAR = 0.0004
-    var = DEFAULT_RETURN_VAR
-    if cov is not None:
-        # Extract diagonal as per-stock variance estimates
-        cov_diag = np.diag(cov) if isinstance(cov, np.ndarray) else np.array(cov).diagonal()
-        if len(cov_diag) > 0 and cov_diag.mean() > 1e-8:
-            var = float(np.mean(cov_diag))
-            _log.debug("kelly: dynamic var=%.6f from cov diag", var)
-
-    # Kelly: f = (μ - r_f) / σ², r_f=0 (A股无风险利率极低)
-    # 过滤负 Kelly (因子预期该股下跌)
-    kelly_raw = (mu / max(var, 1e-8)).clip(lower=0)
-
-    # ── 归一化: 相对比例总和 = 1 (必须在 ×fraction 之前完成) ──
-    total = kelly_raw.sum()
-    if total <= 0:
-        return _alpha_proportional(alpha)
-    kelly = kelly_raw / total
+            # ── 归一化: 相对比例总和 = 1 (必须在 ×fraction 之前完成) ──
+            total = kelly_raw.sum()
+            if total <= 0:
+                kelly = _alpha_proportional(alpha)
+            else:
+                kelly = kelly_raw / total
 
     # ── Fractional Kelly: 按 fraction 缩放部署资本 (regime-aware) ──
     # CODE-REVIEW P0-10 fix: 原代码 kelly_raw/fraction 语义反了, 且归一化
     # (除以 sum) 与乘/除 fraction 数学上相互抵消 → 熊市 fraction=0.2 缩仓空操作。
     # 正确顺序: 归一化(sum=1) → ×fraction(总仓位强度) → clip(max_single)。
+    # B16: ic_map 缺失 / IC=0 退化路径原直接 return _alpha_proportional —
+    # 跳过 fraction 与 max_single clip → 熊市满仓. 所有路径统一走公共缩放.
     kelly = kelly * fraction
 
     # 单票仓位上限 (risk.max_single_position)。

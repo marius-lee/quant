@@ -3,8 +3,8 @@
   "display_name": "momentum_126d",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.0234,
-  "icir_12m": -0.1462,
+  "ic_mean_12m": -0.022,
+  "icir_12m": -0.1293,
   "last_evaluated": "auto",
   "n_obs": 130
 }

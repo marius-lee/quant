@@ -272,11 +272,20 @@ class LgbAlphaModel:
 
         # v406: 按训练列序对齐特征 — 原缺列零填充放在末尾,
         # 导致全截面列序错位, 预测结果乱序
-        X = np.column_stack([
-            factor_values.get(fn, pd.Series(0, index=symbols))
-            .reindex(symbols).fillna(0).values
+        # B5 (2026-08-18): 推理特征必须与训练同口径 —
+        # 训练端 build_train_matrices → build_cross_sectional_factors
+        # 是"逐日截面 rank → normal quantile z"; 原 predict 直接喂原始值
+        # → 特征分布漂移 (原始量纲任意 vs 训练 N(0,1) 有界), 树分裂点失效.
+        from quant.alpha.ml_common import _inv_norm
+        _sym_df = pd.DataFrame({
+            fn: factor_values.get(fn, pd.Series(0, index=symbols))
             for fn in self._feature_names  # 严格按训练列序
-        ])
+        }).reindex(symbols)
+        # 训练端语义: 缺失值不参与截面 rank (rank 保持 NaN) → ppf(NaN)=NaN → 补零.
+        # 推理端同序: rank 前不 fillna, rank 后补零.
+        _ranked = _sym_df.rank(axis=0, pct=True)
+        _z = _ranked.apply(lambda col: _inv_norm(col.clip(0.0001, 0.9999))).fillna(0.0)
+        X = _z.values.astype(np.float32)
 
         preds = self._lgb.predict(X)
         result = pd.Series(preds, index=symbols, name="alpha_lgb")

@@ -244,10 +244,6 @@ class DuckDBManager:
 
         self._db_path = _DUCKDB_PATH
         self._thread_lock = threading.Lock()  # guard 短连接创建 (单例内串行)
-        # v496: 线程级 RW 连接复用 — 每次写入开新连接 (144 次开关) 是
-        # 同步慢的元凶; 每线程持有一个
-        # 长期 RW 连接, 即写即提交, 退出时由 close() 统一释放.
-        self._thread_local = threading.local()
         self._sync_thread: Optional[threading.Thread] = None
         self._stop_sync = threading.Event()
         self._sqlite_conn = None
@@ -262,14 +258,24 @@ class DuckDBManager:
         # DuckDB 不支持 PRAGMA journal_mode=WAL，已移除
         _log.info(f"DuckDBManager initialized: {self._db_path}")
 
-    # ── 短命连接 (v495 核心: 不持锁) ──
+    # ── 短命连接 (2026-08-18 duckdb 锁审计: v495/v496 "不持锁" 认知错误) ──
+    #
+    # DuckDB 锁语义 (实测, 2026-08-18):
+    #   1. 文件锁是进程级排他 — 任意连接 (含 read_only) 都独占整个 DB 文件,
+    #      其他进程 (测试/sync 脚本) 一律 IOError 打不开;
+    #   2. 同进程内所有连接必须同配置 — RW 连接存在时再开 RO 连接报
+    #      "different configuration" (v496 注释属实, 故统一 read_only=False).
+    #   3. 结论: 线程级连接复用 = 进程生命周期持锁. scheduler 常驻进程
+    #      即永续占锁, 所有测试/脚本被阻塞 (2026-08-18 实测 PID 2458 持锁 3.5h).
+    #   修复: 全部短命连接, 即开即关, 锁窗口缩至单次查询毫秒级.
+    #   性能: connect 约 1-3ms; v496 之前 sync 慢的真实元凶是 executemany
+    #         (34 万行 ~200s), 已被 _write_df (register+INSERT, 0.03s) 修复,
+    #         连接开关开销 (<0.5s/144表) 可忽略.
 
     def _open(self, read_only: bool):
-        """打开 DuckDB 连接 (v496: 同文件所有连接必须同配置).
+        """打开 DuckDB 连接 (短命, 调用方负责关闭).
 
-        RW 连接线程级复用的前提: 不能再开 read_only=True 连接
-        (DuckDB 报 "different configuration than existing connections").
-        统一非只读连接, 查询连接不写即可; 多进程仍可共存 (文件级锁).
+        统一 read_only=False: 同进程 RW+RO 混用被 DuckDB 拒绝.
         """
         c = duckdb.connect(
             str(self._db_path), read_only=False,
@@ -279,47 +285,30 @@ class DuckDBManager:
         return c
 
     def _ro(self):
-        """查询连接 — 线程级复用 (v496).
+        """查询连接 — 短命 (每次新建, 调用方 try/finally 关闭).
 
-        同文件所有连接须同配置 (非只读), 查询连接不写数据即可.
+        2026-08-18: 原线程级复用 → scheduler 长驻永续持锁. 短连接后
+        锁窗口 = 单次查询, 与其他进程共存.
         """
-        conn = getattr(self._thread_local, "ro_conn", None)
-        if conn is None:
-            self._ensure_schema()
-            conn = self._open(read_only=True)
-            self._thread_local.ro_conn = conn
-        return conn
+        self._ensure_schema()
+        return self._open(read_only=True)
 
     def _close_ro_conn(self):
-        """关闭当前线程持有的 RO 连接."""
-        conn = getattr(self._thread_local, "ro_conn", None)
-        if conn is not None:
-            try:
-                conn.close()
-            finally:
-                self._thread_local.ro_conn = None
+        """v496 遗留: 短连接模式下无线程级连接可关 (幂等)."""
+        pass
 
     def _rw(self):
-        """读写连接 — 线程级复用 (v496), 不再每次写入开新连接.
+        """读写连接 — 短命 (每次新建, 调用方 try/finally 关闭).
 
-        每线程首个连接仍走 _ensure_schema (进程内仅首次建表).
-        写事务由 DuckDB 自动提交; close() 时统一释放.
+        2026-08-18: 原线程级复用 → 任何常驻进程持锁. 短连接后
+        sync 独占任务与查询进程可在毫秒级窗口内交替.
         """
-        conn = getattr(self._thread_local, "rw_conn", None)
-        if conn is None:
-            self._ensure_schema()
-            conn = self._open(read_only=False)
-            self._thread_local.rw_conn = conn
-        return conn
+        self._ensure_schema()
+        return self._open(read_only=False)
 
     def _close_rw_conn(self):
-        """关闭当前线程持有的 RW 连接 (close() 与 stop_sync() 调用)."""
-        conn = getattr(self._thread_local, "rw_conn", None)
-        if conn is not None:
-            try:
-                conn.close()
-            finally:
-                self._thread_local.rw_conn = None
+        """v496 遗留: 短连接模式下无线程级连接可关 (幂等)."""
+        pass
 
     def _ensure_schema(self):
         """建表/建索引 — 幂等, 进程内仅首次 rw 时执行."""
@@ -340,31 +329,39 @@ class DuckDBManager:
             c.close()
 
     def _scalar(self, sql: str, params: tuple = ()):
-        """单值查询 — 复用线程级查询连接 (v496, 不再即查即关)."""
+        """单值查询 — 短命连接 (2026-08-18), 即查即关."""
         c = self._ro()
         try:
             r = c.execute(sql, params).fetchone()
             return r[0] if r else None
         except duckdb.Error:
-            # 连接可能被并发线程 close() 关闭 — 重建一次后重试
-            self._close_ro_conn()
+            # 锁冲突/连接被并发关闭 — 重建一次后重试 (短连接下罕见)
+            c.close()
             c = self._ro()
             r = c.execute(sql, params).fetchone()
             return r[0] if r else None
+        finally:
+            c.close()
 
     def _write(self, sql: str, params: tuple = ()):
-        """单条写入 — 复用线程级 RW 连接 (v496)."""
+        """单条写入 — 短命连接 (2026-08-18), 即写即关."""
         c = self._rw()
-        c.execute(sql, params)
+        try:
+            c.execute(sql, params)
+        finally:
+            c.close()
 
     def _write_many(self, sql: str, rows: list) -> int:
-        """批量写入 (executemany) — 复用线程级 RW 连接 (v496). 返回行数.
+        """批量写入 (executemany) — 短命连接. 返回行数.
 
         注意: executemany 逐行参数绑定, 34 万行 ~200s (慢 5000x);
         大表写入一律走 _write_df (register + INSERT..SELECT).
         """
         c = self._rw()
-        c.executemany(sql, rows)
+        try:
+            c.executemany(sql, rows)
+        finally:
+            c.close()
         return len(rows)
 
     _df_seq = 0
@@ -373,18 +370,21 @@ class DuckDBManager:
         """DataFrame 批量写入 — register + INSERT..SELECT (v496).
 
         实测: 34 万行 ON CONFLICT UPSERT 0.03s (executemany 需 200s).
-        与 _write_many 同走线程级 RW 连接.
+        短命连接 (2026-08-18): 写后即关.
         """
         if df.empty:
             return 0
         type(self)._df_seq += 1
         tmp_name = f"__df_{type(self)._df_seq}_{os.getpid()}"
         c = self._rw()
-        c.register(tmp_name, df)
         try:
-            c.execute(sql.replace("__TMP_DF__", tmp_name))
+            c.register(tmp_name, df)
+            try:
+                c.execute(sql.replace("__TMP_DF__", tmp_name))
+            finally:
+                c.unregister(tmp_name)
         finally:
-            c.unregister(tmp_name)
+            c.close()
         return len(df)
 
     def _create_indexes(self, conn):
@@ -421,24 +421,28 @@ class DuckDBManager:
             c.close()
 
     def query_df(self, sql: str, params: tuple = ()) -> pd.DataFrame:
-        """查询返回 DataFrame — 复用线程级查询连接 (v496)."""
+        """查询返回 DataFrame — 短命连接 (2026-08-18), 即查即关."""
         c = self._ro()
         try:
             return c.execute(sql, params).df()
         except duckdb.Error:
-            self._close_ro_conn()
+            c.close()
             c = self._ro()
             return c.execute(sql, params).df()
+        finally:
+            c.close()
 
     def query_arrow(self, sql: str, params: tuple = ()) -> pa.Table:
-        """查询返回 Arrow Table (零拷贝) — 复用线程级查询连接 (v496)."""
+        """查询返回 Arrow Table (零拷贝) — 短命连接 (2026-08-18), 即查即关."""
         c = self._ro()
         try:
             return c.execute(sql, params).arrow()
         except duckdb.Error:
-            self._close_ro_conn()
+            c.close()
             c = self._ro()
             return c.execute(sql, params).arrow()
+        finally:
+            c.close()
 
     # ── 同步相关 ──
     def start_sync(self):
@@ -827,7 +831,7 @@ class DuckDBManager:
         self._write(sql, tuple(params))
 
     def close(self):
-        """关闭连接 — 释放线程级 RW 连接 (v496) + SQLite 读连接."""
+        """关闭连接 — 短连接模式下仅释放 SQLite 读连接 (2026-08-18)."""
         if self._sync_thread:
             self.stop_sync()
         self._close_rw_conn()

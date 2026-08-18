@@ -173,17 +173,18 @@ def send_error_alert(component: str, error: str) -> bool:
     })
 
 
-def send_baostock_quota_alert(count: int, limit: int, pending: int) -> bool:
+def send_baostock_quota_alert(count: int, limit: int, pending: int = 0) -> bool:
     """baostock 日请求上限告警 (v513) — macOS 通知+提示音 + 可选 IM 通道.
 
-    达 5 万/日软上限: 任务优雅停止, 需用户换热点续跑 (IP 变化自动检测恢复).
+    达软上限: gate 全局闸口拦截一切 baostock 请求, 需用户换热点续跑
+    (IP 变化自动检测恢复, v528 起全局生效, 不再局限于行业 PIT 同步).
     """
     _macos_sound()   # 提示音独立于弹窗 (系统勿扰模式也发声)
+    tail = f", 剩余 {pending} 只未同步" if pending else ""
     return send_alert({
         "level": "CRITICAL",
         "title": "⚠ baostock 今日请求已达上限",
-        "body": (f"今日 {count}/{limit} 次 — 行业 PIT 同步已停止, "
-                 f"剩余 {pending} 只未同步. 请更换网络热点 (新公网 IP) "
-                 f"后重跑 scripts/resume_industry_sync.sh, 系统自动检测 IP "
-                 f"变化并清零计数续跑."),
+        "body": (f"今日 {count}/{limit} 次, 全局闸口已拦截后续请求{tail}. "
+                 f"请更换网络热点 (新公网 IP) 后重跑同步任务, 系统自动检测 "
+                 f"IP 变化并清零计数续跑."),
     })

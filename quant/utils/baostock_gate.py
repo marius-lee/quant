@@ -165,6 +165,25 @@ class BaostockGate:
                 raise BaostockQuotaExceeded(
                     f"baostock 每分钟配额已尽 ({self._per_minute}), 稍后重试")
 
+            # v528: 日请求软上限 — 全局闸口 (非任务自查, 覆盖所有调用方).
+            # 背景: v511 删除硬配额后 2026-08-16 day_count=52956 时服务端直接拉黑;
+            # 软上限原设计 (v513) 仅 industry_history 自查, adj_factor 等任务不查 →
+            # 8-16 行业同步到限后其他任务继续打爆服务端. 此处下沉为 gate 全局检查,
+            # 任何任务经 acquire() 自动受控; 达限当日仅通知一次 (防刷屏).
+            day_cap = self._per_day
+            if st.get("day_count", 0) >= day_cap:
+                if st.get("quota_alert_on") != today:
+                    st["quota_alert_on"] = today
+                    self._save_state(st)
+                    try:
+                        from quant.monitor.notify import send_baostock_quota_alert
+                        send_baostock_quota_alert(st.get("day_count", 0), day_cap, 0)
+                    except Exception as _ne:
+                        logger.warning(f"baostock 配额告警发送失败: {_ne}")
+                raise BaostockQuotaExceeded(
+                    f"baostock 日请求软上限已尽 ({day_cap}), 请换热点 "
+                    f"(IP 变化自动清零) 后重跑")
+
             # 跨进程最小间隔
             file_last_ts = float(st.get("last_ts", 0))
             if now - file_last_ts < interval:

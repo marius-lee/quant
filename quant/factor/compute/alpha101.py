@@ -29,6 +29,20 @@ def _adv(data, window):
     return None
 
 
+def _row_at(s, date, offset=0):
+    """取 date (偏移 offset 个交易日) 当日的横截面行 — B2 (2026-08-18):
+    物化传入整 chunk 数据, 原 .iloc[-1] 恒取 chunk 末行 → 前视 + 同值.
+    offset=0: 当日; offset=-1: 前一交易日 (用于 delta 类因子).
+    date 不存在 (停牌/非交易日) → None, 调用方返回 None."""
+    _d = pd.Timestamp(date)
+    if _d not in s.index:
+        return None
+    _i = s.index.get_loc(_d) + offset
+    if _i < 0 or _i >= len(s):
+        return None
+    return s.iloc[_i]
+
+
 def _rolling_corr(a, b, window):
     """滚动相关系数."""
     ma = a.rolling(window, min_periods=max(window // 2, 1)).mean()
@@ -48,7 +62,12 @@ def compute_alpha033(data, date, window=None):
     opn = data["open"].astype(float) if "open" in data.columns.get_level_values(0) else None
     if close is None or opn is None or close.empty:
         return None
-    gap = opn.iloc[-1] / close.iloc[-1] - 1
+    # B2 (2026-08-18): 原 .iloc[-1] 恒取 chunk 末行 → 前视. 按 date 取当日.
+    c_today = _row_at(close, date)
+    o_today = _row_at(opn, date)
+    if c_today is None or o_today is None:
+        return None
+    gap = o_today / c_today - 1
     return _cs_zscore(gap, sparse=True).rename("alpha033_gap")
 
 
@@ -61,8 +80,11 @@ def compute_alpha042(data, date, window=None):
     close = data["close"].astype(float) if isinstance(data.columns, pd.MultiIndex) else data.astype(float)
     if v is None or close is None or close.empty:
         return None
-    v_last = v.iloc[-1]
-    c_last = close.iloc[-1]
+    # B2: 按 date 取当日, 原 .iloc[-1] 恒取 chunk 末行 → 前视.
+    v_last = _row_at(v, date)
+    c_last = _row_at(close, date)
+    if v_last is None or c_last is None:
+        return None
     num = v_last - c_last
     den = v_last + c_last
     ratio = num / den.replace(0, np.nan)
@@ -79,8 +101,14 @@ def compute_alpha041(data, date, window=None):
     low = data["low"].astype(float) if "low" in data.columns.get_level_values(0) else None
     if v is None or high is None or low is None:
         return None
-    geo = np.sqrt(np.asarray(high.iloc[-1].values, dtype=np.float64) * np.asarray(low.iloc[-1].values, dtype=np.float64))
-    diff = geo - v.iloc[-1]
+    # B2: 按 date 取当日, 原 .iloc[-1] 恒取 chunk 末行 → 前视.
+    h_today = _row_at(high, date)
+    l_today = _row_at(low, date)
+    v_today = _row_at(v, date)
+    if h_today is None or l_today is None or v_today is None:
+        return None
+    geo = np.sqrt(np.asarray(h_today.values, dtype=np.float64) * np.asarray(l_today.values, dtype=np.float64))
+    diff = geo - v_today
     return _cs_zscore(diff, sparse=True).rename("alpha041_geo_vwap")
 
 
@@ -93,8 +121,15 @@ def compute_alpha012(data, date, window=None):
     volume = data["volume"].astype(float) if "volume" in data.columns.get_level_values(0) else None
     if close is None or volume is None or close.empty:
         return None
-    dv = np.sign(volume.iloc[-1] - volume.iloc[-2])
-    dp = -(close.iloc[-1] - close.iloc[-2])
+    # B2: 按 date 取当日 + 前一交易日, 原 .iloc[-1]/.iloc[-2] 恒取 chunk 末行 → 前视.
+    v_today = _row_at(volume, date)
+    v_prev = _row_at(volume, date, -1)
+    c_today = _row_at(close, date)
+    c_prev = _row_at(close, date, -1)
+    if v_today is None or v_prev is None or c_today is None or c_prev is None:
+        return None
+    dv = np.sign(v_today - v_prev)
+    dp = -(c_today - c_prev)
     return _cs_zscore(dv * dp, sparse=True).rename("alpha012_vol_price_dir")
 
 
@@ -110,11 +145,16 @@ def compute_alpha002(data, date, window=None):
     window = 6
     dlog_vol = np.log(volume.replace(0, np.nan)).diff()
     ret = close.pct_change()
-    # rank 仍需要全历史 (跨时间百分位), 但 rolling corr 仅需 tail window+2 行
-    tail = window + 2
+    # B2: 原 .iloc[-tail:] 恒取 chunk 尾部 (含 date 之后的未来行) → 前视.
+    # 改为截到 date 为止的 tail 段.
+    _d = pd.Timestamp(date)
+    if _d not in close.index:
+        return None
+    _idx = close.index.get_loc(_d)
+    _sl = max(0, _idx - (window + 2) + 1)
     corr = _rolling_corr(
-        dlog_vol.rank(pct=True).iloc[-tail:],
-        ret.rank(pct=True).iloc[-tail:],
+        dlog_vol.rank(pct=True).iloc[_sl:_idx + 1],
+        ret.rank(pct=True).iloc[_sl:_idx + 1],
         window).iloc[-1]
     return _cs_zscore(-corr, sparse=True).rename("alpha002_vol_price_div")
 
@@ -142,7 +182,12 @@ def compute_alpha035(data, date, window=None):
     vr = _ts_rank(volume, 32)
     rr = _ts_rank(rng, 16)
     mr = _ts_rank(ret, 32)
-    composite = vr.iloc[-1] * (1 - rr.iloc[-1]) * (1 - mr.iloc[-1])
+    # B2: 原 .iloc[-1] 恒取 chunk 末行 → 前视. rolling 序列按 date 定位取值.
+    _d = pd.Timestamp(date)
+    if _d not in close.index:
+        return None
+    _idx = close.index.get_loc(_d)
+    composite = vr.iloc[_idx] * (1 - rr.iloc[_idx]) * (1 - mr.iloc[_idx])
     return _cs_zscore(composite, sparse=True).rename("alpha035_range_mom")
 
 
@@ -159,13 +204,18 @@ def compute_alpha055(data, date, window=None):
         return None
 
     w = 12
-    # v373: rolling max/min/rank 全历史→仅 tail (O(T×N)→O(W×N)), 但 rank 需全历史百分位
+    # B2: 原 .iloc[-tail:] 恒取 chunk 尾部 (含未来行) → 前视. 改为截到 date 为止.
+    _d = pd.Timestamp(date)
+    if _d not in close.index:
+        return None
+    _idx = close.index.get_loc(_d)
     tail = w + 2
-    hh = high.iloc[-tail:].rolling(w, min_periods=max(w // 2, 1)).max()
-    ll = low.iloc[-tail:].rolling(w, min_periods=max(w // 2, 1)).min()
-    pos_tail = (close.iloc[-tail:] - ll) / (hh - ll).replace(0, np.nan)
+    _sl = max(0, _idx - tail + 1)
+    hh = high.iloc[_sl:_idx + 1].rolling(w, min_periods=max(w // 2, 1)).max()
+    ll = low.iloc[_sl:_idx + 1].rolling(w, min_periods=max(w // 2, 1)).min()
+    pos_tail = (close.iloc[_sl:_idx + 1] - ll) / (hh - ll).replace(0, np.nan)
     # pos 百分位 rank 也仅需 tail 内 (pos 值域 [0,1], 跨时间可比)
     pos_ranked = pos_tail.rank(pct=True)
     vol_ranked = volume.rank(pct=True)
-    corr = _rolling_corr(pos_ranked.iloc[-8:], vol_ranked.iloc[-8:], 6).iloc[-1]
+    corr = _rolling_corr(pos_ranked.iloc[-8:], vol_ranked.iloc[_idx - 7:_idx + 1], 6).iloc[-1]
     return _cs_zscore(-corr, sparse=True).rename("alpha055_pos_vol")

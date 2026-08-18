@@ -53,10 +53,20 @@ def test_tp1_200_shares_sells_100():
     assert tp_share(res, "TP1") == 100
 
 
-def test_tp1_single_lot_sells_full_lot():
-    """一手 100 股: 一半不足一手 → 卖整手 (唯一可行), 不超过持仓."""
-    res = _check(_pos(shares=100), 116.0)
-    assert tp_share(res, "TP1") == 100
+def test_tp1_single_lot_marks_hit_no_sell():
+    """B8 (2026-08-18): 一手 100 股时 TP1 无法对半卖整手 → 不卖出, 仅标记
+    tp1_hit, 等 TP2/trail 全卖 — 原实现 TP1 即全仓卖出, 提前清仓 (止盈语义错)."""
+    pos = _pos(shares=100)
+    res = _check(pos, 116.0)
+    assert not any(r["reason"].startswith("TP") for r in res)
+    assert pos.get("_tp1_hit") is True
+
+
+def test_tp1_single_lot_then_tp2_sells_all():
+    """B8: 100 股 TP1 标记后, 触碰 TP2 → 全卖 (完整止盈链)."""
+    pos = _pos(shares=100, _tp1_hit=True)
+    res = _check(pos, 124.0)
+    assert tp_share(res, "TP2") == 100
 
 
 def test_tp2_residual_lot_sells_rest_not_zero():

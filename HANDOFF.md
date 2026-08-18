@@ -1,3 +1,101 @@
+### v529: blocked 因子永不恢复修复 + 单因子 force 物化 + ocfp 2020-2022 缺口闭环 (test-v529)
+
+**背景**: 东财回填 (v527) 后 sue 恢复, 但 ocfp 2020-2022 物化 4 小时 (42 段) 后 meta
+仍 818 日期 (2023-03-31 起) — 增量物化没碰 ocfp。
+
+**根因 1 (blocked 永不恢复)**: store.py v483-2 的 blocked 剔除**无条件生效**
+(`bl = set(blocked.get(date_str, {}))`, force 分支后仍剔除) — 数据补齐后 blocked
+因子永远不重算, "自动恢复"从未实现。ocfp 2020-2022 在数据缺失期被算空而 blocked,
+东财回填后依然被剔 → 永不恢复。**修复**: force 模式豁免 blocked 剔除 (force = 无条件
+重建语义)。
+
+**根因 2 (节假日日期反复空算)**: materialize_range.sh 用 `pd.date_range(freq='B')`
+(工作日) 生成日期, 含法定节假日 (元旦/春节/清明/五一/国庆 等) → 无行情 → 全因子算空
+→ 每年 ~73 个节假日日期永远 todo, 每轮物化空算一遍 (本轮实测: blocked 清除后第二轮
+todo 仅剩 73 个节假日日期, 全部 0 dates 空转)。
+
+**修复加脚本**:
+
+- `quant/factor/store.py`: force 分支豁免 blocked 剔除 (v529 注释留档)
+- 新脚本 `scripts/materialize_factor.sh` (登记 scripts/README.md): 单因子 force
+  强制重算区间 (无视 blocked/指纹判定) — 定向修复因子数据缺口
+- **ocfp 2020-2022 修复完成**: force 重算 2020-01-02→2023-12-29, 全工作日 1042 日期,
+  4,499,073 行, 3593.7s。meta: 818 → **1676 日期 (2020-01-02 → 2026-08-14)**,
+  2020-2023 全覆盖 1042 日期 ✓
+- 遗留: materialize_range.sh/factor 脚本的日期生成仍含节假日 (空算无害, 只浪费
+  ~分钟级; 后续可改用交易日历过滤)
+- **2026 段物化 + 08-17 补齐闭环**: 2026 数据回填后首次物化 (data_hash 过期全量重算,
+  7 段 67,023,480 行 4312.5s), 新增 `scripts/check_materialize_gaps.py` 缺口核查
+  (is_trading_day 正式口径: 真交易日缺口/blocked 机制/节假日三分类). 08-17 段
+  failed 根因 = **DuckDB 副本落后** (SQLite daily 已到 08-17, DuckDB 停 08-14;
+  昨晚晚间链未跑 + 今天手动补数绕过同步) → get_daily 读 DuckDB 缺 primitive →
+  alpha035 KeyError. **修复**: duckdb_sync_all.sh 全量同步 (daily 949 万行 match)
+  + 重物化 08-17 (439,654 行 70.2s) + **物化入口 DuckDB 新鲜度硬断言**
+  (`_last_sqlite_date` vs DuckDB MAX(date), 落后即 raise 提示先同步, 防 7 小时白算).
+  最终核查: 真交易日缺口仅 08-18 (今晚晚间链自然补), blocked 1596 天属正常机制.
+
+前序: v528 baostock 软上限闸口。
+
+### v528: baostock 日软上限全局闸口 — v513 设计断链补齐 (test-v528)
+
+晚间链 adj_factor 同步失败复盘: tushare 免费档限流 (3-4 批/天) + baostock IP 黑名单
+(8-16 23:50 标记, 服务端 day_count=52956 拉黑 "黑名单用户").
+
+**断链根因**: v513 声称"恢复日上限但改软上限"(优雅停止+换热点提醒), 但实现断层:
+
+- `baostock_calls_per_day` (50000) 取值函数与 `send_baostock_quota_alert` 通知函数
+  v513 已写, **acquire() 里从未有日配额检查** (`_locked_update` 只拦 minute)
+- 软上限检查只在 industry_history.py:436 **任务自查** (行业 PIT 同步独家受益),
+  adj_factor/turnover/手动脚本等任务不查 → 8-16 行业同步到限后, 其他任务继续
+  打服务端 → 52956 拉黑 (软上限 50000 设计值应提前 ~25 分钟拦截)
+
+**修复 (全局闸口下沉)**:
+
+- `quant/utils/baostock_gate.py` `_locked_update`: minute 检查后加日软上限检查
+  → 达限抛 BaostockQuotaExceeded (所有任务经 acquire 自动受控), 当日首达
+  `quota_alert_on` 去重后发告警 (macOS+ServerChan+可选 IM)
+- `quant/monitor/notify.py` `send_baostock_quota_alert`: body 不再写死"行业 PIT
+  同步已停止" (通用化, pending 可选), 提示换热点 (IP 变化自动清零续跑)
+- config.yaml `baostock_calls_per_day: 50000` 注释补实证依据 (52956 拉黑,
+  50000 提前 ~25 分钟; 0.5s 间隔 × 3000 次)
+- 验证: 模拟达限 state → acquire 拦截 ✓ + 通知去重 ✓ + 告警实测送达 ✓ (state 已还原)
+
+**adj_factor 补数**: 用户换热点 → IP 变化检测自动解禁 (218.12.27.93 → IPv6 新地址,
+日计数清零+解除黑名单, v513 设计生效) → 手动触发 baostock 全市场补数 (22:52 完成:
+RESULT batches=4683 rows=27170 remaining=0; adj_factor 是除权事件表, 08-17 仅 151 只正常)。
+
+前序: v527 东财财务回填 (sue/ocfp 恢复) + 4 因子归档。
+
+### v527: 东财财务回填 — sue/ocfp 2019-2023 根因修复 (test-v527)
+
+物化实测 sue/ocfp 在 2020-2023 blocked, 根因 = financial_income(利润表) / financial_cashflow
+(现金流表) 2019-2023 历史缺口 (financial_balance 同区间完整 5466-5552 只/年, 当日覆盖对比确认;
+v482 已知欠账, baostock 解封后一直未补)。同轮另外 4 因子归档 (数据不可补):
+
+| 因子 | 根因 | 处置 |
+|------|------|------|
+| sue / ocfp | income/cashflow 表 2019-2023 空 | 东财回填修复 (见下) |
+| close_surge / intraday_reversal / open_volume_ratio | intraday_snapshot 仅 2026-08-03 起 ~2 周, 分钟快照历史不可回填 | 归档 archived (物化池 97 → 93) |
+| pledge_ratio | pledge_stat 仅 2024-09-06 单日快照, akshare 质押仅当前视图 | 归档 archived |
+
+修复 (scripts/backfill_financials_em.py, 新增):
+
+- 源: 东财 datacenter-web RPT_F10_FINANCE_MAINFINADATA (与 em_valuation.py 同域, 项目已验证)
+  → PARENTNETPROFIT→income.net_profit (sue 因子), NETCASH_OPERATE_PK→cashflow.net_operate_cash_flow
+  (ocfp 因子), 另带上 operating_revenue/operating_profit。TARGET = 2019-2024 全部季度。
+- 先用 sina 源 (v525 脚本) 实测: 覆盖率仅 7-14% (sina 接口 num<=50, 部分股票仅存近端期) → 弃用, 保留备用。
+- 性能: columns=ALL 原型 400ms/请求 → 显式 6 列 21ms/请求 (×18); 6 并发 × 批量 4 只/请求
+  (pageSize 500 上限保证不截断 4×107 期)。
+- 结果: 163.9s 全市场 5557 只, 插入 124,301 行; income/cashflow 2020-2023 覆盖 5471-5557 只/年
+  (2020-2021 少 ~80 只为次新上市缺口, 正常)。
+- 幂等: (symbol, stat_date) upsert, 非 NULL 字段只更新; WAL 与物化并发安全。
+- 文章登记: scripts/README.md "数据回填" 节。
+
+待办: 当前物化 (启动时池 97, sue/ocfp 遇 blocked 已剔除后续日期) 跑完后, 补跑一次增量
+物化让 sue/ocfp 在 2020-2023 重算出值, 并以 2023-12-31 日收盘出值数/IC 泼面验证。
+
+前序: v526b 归档 analyst_consensus/earnings_revision/earnings_upgrade 3 因子 (物化池 104 → 97)。
+
 ### v526b: 因子池文档对齐 (物化中实测触发)
 
 全量物化实测 5 因子 blocked (analyst_consensus/earnings_revision/earnings_upgrade/
@@ -3654,3 +3752,14 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
   | P7 并行因子 | v458 | ✅ | 2-3x |
 
 - **综合预期**: 回测总耗时从 ~180s → **~25-35s** (5-7x 加速)
+
+
+## 2026-08-18: 36 bug 全量修复完成 (test-v530) — 归档 docs/reviews/2026-08-18-code-review-bugs.md
+- **36/36 全部修复并打钩**, 全量测试 409 passed (135s)
+- **P0 资金安全 (8)**: B3/B7/B8/B9/B24/B22/B23/B13 — 止损 TP1 语义、position_meta 回载、runners 崩溃写 failed、constraints fail-closed
+- **P0 数据 (4)**: B1 get_universe 双格式 SQL 分支 (5040 只, 泄漏 46 只未来上市股修复)、B21 adj_factor 去 bfill、B2 11 处活前视修复 (alpha101 `_row_at` helper)、B5 predict rank→normal z 变换与训练同口径
+- **P1 统计 (7)**: B4 ridge λ 入协方差 (网格有区分度)、B6 pairwise sample cov、B11 增量协方差改诚实全量重算、B26 fold 因子状态快照恢复、B27 OOS 期也切 ic_weighted、B28 DSR 标准式 Eq.7.1 + M=1 守卫、B15 xgboost 3.x 早停注入构造器 (fit() 不再接受该关键字)
+- **P1 运营 (2)**: B10 vnpy get_exchange→get_contract().exchange (两处)、B19 fund_hold 动态季度 (config `data.fund_hold_recent_quarters: 5`)
+- **P2 清理 (4)**: B18 highfreq 6 引擎缺失方法补齐 + CostModel.total_cost→buy/sell_cost + TCA request 参数; B34 stats_cache 日期戳/空 _full_recalc/tail(120)/捏造衰减/死代码 (含非重入锁死锁修复); B35 curator 方向强签改实证校验 (符号不符拒绝注册); B36 state_machine fwd/spearmanr/_CURATED_FACTORS/_error/`{e}` 6 处 + golden_test date_results
+- **其余 (11)**: B12 var 按 symbol 对齐+归一化、B14 multi_tf 已由 C5 修复、B16 kelly 逐股 σ² + 退化路径公共缩放、B17 hrp IVP 簇方差、B20 news PK 加 pub_time (自动迁移)、B25 attribution 行业市值分组求和、B29 run_backtest 返回 trades 键、B30 tear_sheet DatetimeIndex 归一、B31 evening 用 today 而非 now() (补 pd import)、B32 pipeline 中性化/multi_tf 失败阻断 (零 fallback)、B33 crowdedness 按成交额排序取 300
+- **注意**: B32 改动使 pipeline 中性化/multi_tf 失败由 warning 降级改为 raise — 若回测遇中性化数据缺失将直接报错

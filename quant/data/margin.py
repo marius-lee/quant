@@ -212,4 +212,7 @@ if __name__ == "__main__":
     if len(sys.argv) >= 3:
         sync_range(sys.argv[1], sys.argv[2])
     else:
-        sync_range('2026-06-01', '2026-07-03')
+        from quant.utils.date import today_str as _ts
+        from datetime import timedelta
+        _end = _ts()
+        sync_range((pd.Timestamp(_end) - timedelta(days=90)).strftime('%Y-%m-%d'), _end)

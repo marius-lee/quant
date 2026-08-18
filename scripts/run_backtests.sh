@@ -25,7 +25,12 @@ echo "2/3 全量回测 (2025-01 → 2026-07, ~10min)"
 echo "========================================"
 $PY -c "
 from quant.backtest.loop import run_backtest
-r = run_backtest('2025-01-01', '2026-07-27', capital=5000)
+import sqlite3
+from quant.config.paths import MARKET_DB
+_c = sqlite3.connect(MARKET_DB)
+_end = _c.execute('SELECT MAX(date) FROM daily').fetchone()[0]
+_c.close()
+r = run_backtest('2025-01-01', _end, capital=5000)
 m = r['metrics']
 print(f'Sharpe={m[\"sharpe\"]}  CAGR={m[\"cagr_pct\"]}%  MDD={m[\"max_drawdown_pct\"]}%')
 print(f'equity=¥{m[\"final_equity\"]:,.0f}  return={m[\"total_return_pct\"]}%  win_rate={m[\"win_rate\"]}')

@@ -4,9 +4,14 @@ set -e
 cd "$(dirname "$0")/.."
 PYTHONPATH=. .venv/bin/python -c "
 from quant.backtest.loop import run_backtest
+import sqlite3
+from quant.config.paths import MARKET_DB
+_c = sqlite3.connect(MARKET_DB)
+_end = _c.execute('SELECT MAX(date) FROM daily').fetchone()[0]
+_c.close()
 r = run_backtest(
     start_date='2020-01-01',
-    end_date='2026-07-31',
+    end_date=_end,
     capital=5000,
     universe_size=3000,
     factor_status_filter='backtesting',

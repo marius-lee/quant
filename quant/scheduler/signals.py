@@ -4,6 +4,7 @@
 """
 import time as _time, uuid as _uuid
 from datetime import time
+from quant.utils.date import today_str
 from quant.monitor.metrics import metrics as _m
 from quant.utils.logger import get_logger, set_trace_id
 
@@ -50,4 +51,4 @@ def _run(today: str):
 
 if __name__ == "__main__":
     import sys
-    _run(sys.argv[1] if len(sys.argv) > 1 else "2026-08-10")
+    _run(sys.argv[1] if len(sys.argv) > 1 else today_str())

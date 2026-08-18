@@ -146,5 +146,5 @@ def sync_range(start_date: str, end_date: str, conn=None) -> int:
 if __name__ == "__main__":
     import sys
     start = sys.argv[1] if len(sys.argv) > 1 else '2025-01-01'
-    end = sys.argv[2] if len(sys.argv) > 2 else '2026-07-01'
+    end = sys.argv[2] if len(sys.argv) > 2 else today_str()
     sync_range(start, end)

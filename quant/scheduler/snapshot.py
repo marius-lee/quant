@@ -13,6 +13,7 @@ test-v402: 触发时间从 09:30 修正为 10:00 — 09:30 拉到的是开盘价
 """
 import urllib.request, re, time as _time
 from datetime import datetime
+from quant.utils.date import today_str
 from quant.data.repos._base import DatabaseManager
 from quant.utils.logger import get_logger
 
@@ -129,4 +130,4 @@ def _snapshot(today: str = None, mode: str = "open"):
 if __name__ == "__main__":
     import sys
     mode = sys.argv[2] if len(sys.argv) > 2 else "open"
-    _snapshot(sys.argv[1] if len(sys.argv) > 1 else "2026-08-10", mode=mode)
+    _snapshot(sys.argv[1] if len(sys.argv) > 1 else today_str(), mode=mode)

@@ -14,7 +14,8 @@ def _run(start_date: str, end_date: str):
         end_date:   物化终点 (YYYY-MM-DD)
 
     用法:
-        _run('2019-01-01', '2026-08-03')  # 手动全量/回填
+        # 手动全量/回填: 终点取数据最新日 (SQLite daily MAX(date)), 勿写死
+        # _run('2019-01-01', today_str())
         _run(today, today)                 # 每日增量
     """
     tid = _uuid.uuid4().hex[:12]

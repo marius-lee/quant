@@ -323,7 +323,7 @@ if __name__ == "__main__":
     parser.add_argument("--start", default="2020-01-01",
                         help="Start date YYYY-MM-DD")
     parser.add_argument("--end", default="2025-12-31",
-                        help="End date YYYY-MM-DD")
+                        help="End date YYYY-MM-DD (业务评估窗口, 非数据终点)")
     args = parser.parse_args()
 
     result = run_walkforward(

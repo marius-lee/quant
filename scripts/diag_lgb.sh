@@ -17,7 +17,12 @@ fstore = FactorStore(db_path="quant/data/market.db")
 cache_dir = fstore._cache_dir
 avail = sorted(f.replace('.csv.gz', '') for f in os.listdir(cache_dir) if f.endswith('.csv.gz'))
 
-start = '2025-07-01'; end = '2026-07-28'
+import sqlite3
+from quant.config.paths import MARKET_DB
+_c = sqlite3.connect(MARKET_DB)
+end = _c.execute('SELECT MAX(date) FROM daily').fetchone()[0]
+_c.close()
+start = '2025-07-01'
 train_dates = [d for d in avail if start <= d <= end]
 _log.info("Date range: %s → %s, %d train dates", start, end, len(train_dates))
 

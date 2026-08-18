@@ -3855,3 +3855,14 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
 - **修复 (store.py `_get_existing_factors`)**: 删除 data_hash 判定 (局部信任已物化日期, 日期+source_hash 双条件即可); 指纹保留写入 meta 作审计字段; **历史回填/因子代码变更 → force 全量重物化 (scripts/materialize_full.sh, v529 语义)** — 回填事件罕见 (本次 8-18 force 补全实证), 日常增量不再误伤
 - **验证**: test_v539.py 4 项 (源码断言 data_hash 判定删除/source_hash 判定保留; 行为: 旧指纹+已物化日期 → 有效; stale source_hash → 缺失; 未物化日期 → 缺失), 4 passed
 - **环境现状**: 回测仍被 15 因子 source_hash 失效阻断 → 待重跑全量物化 (v538 代码) 后回测可跑
+## 2026-08-19: v541 写死值全仓排查修复 (用户发现 materialize_full.sh 终点写死后全仓扫描)
+
+- **触发**: 用户重物化被 "DuckDB daily 落后 (2026-08-18 < 2026-12-31)" 拦截 — 终点写死 2026-12-31 (ee59fea 8-05 引入, "一次管到年底"意图, 数据永达不到 → 必拦); v540 已改动态 (SQLite daily MAX(date))
+- **排查范围**: scripts/*.sh|py + quant/ + web/ — 日期字面量/路径/端口; 分类处置
+- **修复 (数据依赖终点 → 动态)**: 
+  - 脚本: backtest_full.sh (2026-08-03→MAX(date), 起点 2020-01-01 对齐 config)/run_backtest.sh (07-31→动态)/run_backtests.sh (07-27→动态)/full_backtest.sh (07-27→动态)/diag_lgb.sh (07-28→动态)
+  - 代码 CLI 默认日: scheduler/signals.py+execute.py+reconcile.py+snapshot.py 写死 "2026-08-10" → today_str() (此前 CLI 无参永远跑 08-10); data/holder_trade.py 终点 → today_str(); data/margin.py CLI 无参 90 天窗口终点 → today_str()
+  - scheduler/factor_cache.py docstring 示例 2026-08-03 → 动态语义注释
+- **保留 (业务评估窗口, 加注释非改动)**: eval_standard.sh 2023-2025 (完整年度评估)、phase7_wf.py CLI --end 默认 2025-12-31、backtest_full.sh oos_start_date 2025-06-01 — 属业务窗口非数据终点
+- **不动 (合理)**: 测试用例日期 (smoke_verify.sh 等)、docstring 示例、expr_compiler demo、jq_valuation TRIAL (死模块)、margin 无参默认起点 (业务)、limit_up CLI 起点默认、config.yaml port 8521 (配置源正确)
+- **验证**: 8 脚本 bash -n + 8 文件 ast.parse 通过; test_v538/v539 8 passed

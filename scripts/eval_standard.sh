@@ -137,6 +137,7 @@ from quant.utils.excepthook import setup; setup()
 with offline_mode():
     from quant.evaluation.phase6_backtest import run_strategy_backtest
     import json
+    # 业务评估窗口 2023-2025 完整年度 (非数据终点, 勿随手改)
     result = run_strategy_backtest(
         start_date='2023-01-01',
         end_date='2025-12-31',

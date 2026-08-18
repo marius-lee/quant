@@ -126,12 +126,22 @@ def ledoit_wolf_cov(
 
         # π: 渐近方差 (使用无偏一致估计)
         # AsyVar(s_ij) ≈ 1/T * sum_t[(x_ti - x̄_i)(x_tj - x̄_j) - s_ij]²
+        # B6 (2026-08-18): 原 X.T@X 遇行内 NaN → 全矩阵 NaN 传染. 改 pairwise.
+        # v535: π̂ 与 S 同口径 — 原整行 outer 后 nan_to_num: 任一 symbol 当日
+        # NaN → 该观测整行贡献置 0 → π̂ 系统性低估 → δ* 偏移 (收缩不足,
+        # 偏向样本协方差). 改 pairwise 有效对累计, 与 _pairwise_sample_cov
+        # 完全一致 (x_ti 缺 → 该 (i,j) 对当日不贡献, 其他对不受牵连).
         pi_mat = np.zeros((n, n))
-        for t in range(T):
-            diff = np.outer(X[t], X[t]) - S
-            diff = np.nan_to_num(diff, nan=0.0)  # B6: NaN 观测不贡献 π
-            pi_mat += diff ** 2
-        pi_mat /= T  # Ledoit-Wolf(2004) eq.(17): AsyVar = (1/T) * Σ(x_i·x_j - s_ij)²
+        X_nan = np.isnan(X)
+        for i in range(n):
+            for j in range(i, n):
+                both = ~(X_nan[:, i] | X_nan[:, j])
+                if both.sum() < 2:
+                    continue
+                d = X[both, i] * X[both, j] - S[i, j]
+                v = float((d ** 2).sum()) / both.sum()  # AsyVar = (1/k)Σ[...]², k=有效对数
+                pi_mat[i, j] = v
+                pi_mat[j, i] = v
         pi_hat = pi_mat.sum()
 
         # γ: 样本协方差与目标的距离

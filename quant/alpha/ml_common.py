@@ -54,19 +54,30 @@ def _inv_norm(series: pd.Series) -> pd.Series:
     return (series - 0.5) * 6.0  # 线性近似, 边缘更平
 
 
-def split_train_oos(dates: list, oos_frac: float = 0.15) -> tuple[set, set]:
-    """时间顺序切分: 前 (1-frac) 做训练, 尾 frac 做 OOS (可空集).
+def split_train_oos(dates: list, oos_frac: float = 0.15,
+                    val_frac: float = 0.0) -> tuple[set, set, set]:
+    """时间顺序切分: 前 (1-frac-oos_frac) 做训练, 尾 frac 做 OOS (可空集).
 
-    返回: (train_date_set, oos_date_set)   边界语义: 严格不相交.
+    v535: val_frac > 0 时中部切出早停验证集 (XGB eval_set 专用) —
+    早停集与 OOS 评估集分离 (原共用尾部 → OOS IC 乐观偏倚).
+
+    返回: (train_date_set, val_date_set, oos_date_set)  边界语义: 严格不相交.
     输入 dates 为 str ('YYYY-MM-DD') 或 datetime, 统一按 str 比较.
     """
     if len(dates) == 0:
-        return set(), set()
-    n = max(int(len(dates) * (1 - oos_frac)), 1)
+        return set(), set(), set()
     sorted_dates = sorted({to_str(d) for d in dates})
-    train = set(sorted_dates[:n])
-    oos = set(sorted_dates[n:])
-    return train, oos
+    n = len(sorted_dates)
+    n_oos = int(n * oos_frac)
+    n_val = int(n * val_frac) if val_frac > 0 else 0
+    n_train = n - n_oos - n_val
+    if n_train < 1:
+        n_train = 1
+        n_oos = max(n - n_train - n_val, 0)
+    train = set(sorted_dates[:n_train])
+    val = set(sorted_dates[n_train:n_train + n_val])
+    oos = set(sorted_dates[n_train + n_val:])
+    return train, val, oos
 
 
 def daily_ic_series(
@@ -111,39 +122,44 @@ def build_train_matrices(
     forward_returns: pd.Series,
     feature_names: list[str],
     oos_frac: float = 0.15,
+    val_frac: float = 0.0,
     min_features_frac: float = 0.6,
     min_symbols: int = 30,
     min_labels: int = 20,
 ) -> dict:
-    """统一训练矩阵构建: 时间顺序切分 train/OOS + 逐日 z-score 特征 (v423).
+    """统一训练矩阵构建: 时间顺序切分 train/val/OOS + 逐日 z-score 特征 (v423).
 
     与 LGB/XGB 两模型共用, 消除训练/推理特征分布漂移.
     factor_values: {name: DataFrame(index=date, columns=symbol)}
     forward_returns: Series(MultiIndex date,symbol)
+    v535: val_frac — 中部切出早停验证集 (XGB eval_set), 与 OOS 评估集分离
+    (原共用尾部 → 早停基于评估集选模型 → OOS IC 乐观偏倚).
     返回:
-      {X_tr, y_tr, X_oo, y_oo, oos_dates, train_dates, skipped}
-    X_tr/X_oo: float32 矩阵; y_*: 对应标签; oos_dates/train_dates: 行数对齐的日期标签
+      {X_tr, y_tr, X_va, y_va, val_dates, X_oo, y_oo, oos_dates, train_dates, skipped}
+    X_*: float32 矩阵; y_*: 对应标签; *_dates: 行数对齐的日期标签
     """
     from quant.alpha.ml_common import build_cross_sectional_factors, split_train_oos
     _zs = build_cross_sectional_factors(factor_values)
 
     fwd_dates = sorted(set(forward_returns.index.get_level_values(0)))
     min_features = max(1, int(len(feature_names) * min_features_frac))
-    tr_set, oo_set = split_train_oos(fwd_dates, oos_frac=oos_frac)
-    _log.info("train matrices: %d dates → %d train / %d OOS",
-              len(fwd_dates), len(tr_set), len(oo_set))
+    tr_set, va_set, oo_set = split_train_oos(fwd_dates, oos_frac=oos_frac, val_frac=val_frac)
+    _log.info("train matrices: %d dates → %d train / %d val / %d OOS",
+              len(fwd_dates), len(tr_set), len(va_set), len(oo_set))
 
     skipped = {"train": {"date": 0, "syms": 0, "mask": 0},
+               "val": {"date": 0, "syms": 0, "mask": 0},
                "oos": {"date": 0, "syms": 0, "mask": 0}}
 
     X_tr, y_tr, d_tr = [], [], []
+    X_va, y_va, d_va = [], [], []
     X_oo, y_oo, d_oo = [], [], []
 
     for ts in fwd_dates:
         ds = to_str(ts)
-        if ds not in tr_set and ds not in oo_set:
+        if ds not in tr_set and ds not in va_set and ds not in oo_set:
             continue
-        bucket = "train" if ds in tr_set else "oos"
+        bucket = "train" if ds in tr_set else ("val" if ds in va_set else "oos")
         syms = set()
         n_avail = 0
         for fn in feature_names:
@@ -179,6 +195,9 @@ def build_train_matrices(
         if bucket == "train":
             X_tr.append(X_day); y_tr.append(y_day[mask])
             d_tr.extend([ts] * n)
+        elif bucket == "val":
+            X_va.append(X_day); y_va.append(y_day[mask])
+            d_va.extend([ts] * n)
         else:
             X_oo.append(X_day); y_oo.append(y_day[mask])
             d_oo.extend([ts] * n)
@@ -187,11 +206,14 @@ def build_train_matrices(
         raise ValueError("No valid training samples — check factor_values/forward_returns")
 
     return {
-        "X_tr": np.vstack(X_tr).astype(np.float32),
+        "X_tr": np.concatenate(X_tr).astype(np.float32),
         "y_tr": np.concatenate(y_tr).astype(np.float32),
-        "X_oo": np.vstack(X_oo).astype(np.float32) if X_oo else np.zeros((0, len(feature_names)), dtype=np.float32),
-        "y_oo": np.concatenate(y_oo).astype(np.float32) if y_oo else np.zeros(0, dtype=np.float32),
-        "oos_dates": d_oo,
         "train_dates": d_tr,
+        "X_va": np.concatenate(X_va).astype(np.float32) if X_va else np.empty((0, X_tr[0].shape[1]), dtype=np.float32),
+        "y_va": np.concatenate(y_va).astype(np.float32) if y_va else np.empty(0, dtype=np.float32),
+        "val_dates": d_va,
+        "X_oo": np.concatenate(X_oo).astype(np.float32) if X_oo else np.empty((0, X_tr[0].shape[1]), dtype=np.float32),
+        "y_oo": np.concatenate(y_oo).astype(np.float32) if y_oo else np.empty(0, dtype=np.float32),
+        "oos_dates": d_oo,
         "skipped": skipped,
     }

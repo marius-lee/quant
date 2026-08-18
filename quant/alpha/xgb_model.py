@@ -120,20 +120,25 @@ class XgbAlphaModel:
 
         _log.info("xgb train: %d factors, building matrix...", len(feature_names))
 
-        # ── v423: 共享矩阵构建 (z-score 特征 + 时间切分 OOS) ──
+        # v535: 早停集与 OOS 评估集分离 — 原 eval_set=X_oos 与 OOS IC 评估
+        # 共用尾部 (早停基于评估集选模型 → OOS IC 乐观偏倚).
+        # 现在 train/val/oos 时间三分: 早停用 val, OOS 仅评估.
         from quant.alpha.ml_common import build_train_matrices, daily_ic_series
         mats = build_train_matrices(
             factor_values, forward_returns, feature_names,
             oos_frac=_require_cfg("alpha.oos_frac"),
+            val_frac=_require_cfg("alpha.val_frac"),
         )
 
         X = mats["X_tr"]
         y = mats["y_tr"]
+        X_val = mats["X_va"]
+        y_val = mats["y_va"]
         X_oos = mats["X_oo"]
         y_oos = mats["y_oo"]
         oos_dates = mats["oos_dates"]
         stops = mats["skipped"]
-        fwd_dates = list(sorted(set(mats["train_dates"] + mats["oos_dates"])))
+        fwd_dates = list(sorted(set(mats["train_dates"] + mats["val_dates"] + mats["oos_dates"])))
 
         _log.info("xgb train: skipped=%s", stops)
         if len(y) < 20:
@@ -157,13 +162,14 @@ class XgbAlphaModel:
         # (config.xgb.params 无此键) → eval_set 仅作日志, 早停从未生效,
         # 200 棵树全量训练 → 过拟合. xgboost 3.x 的 fit() 不再接受
         # early_stopping_rounds/callbacks 关键字 — 必须注入构造器 kwargs.
-        _has_eval = len(y_oos) >= 20
+        # v535: 早停集改 val 集 (train/val/oos 时间三分, 不再与评估集共用)
+        _has_eval = len(y_val) >= 20
         if _has_eval and "early_stopping_rounds" not in xgb_params:
             xgb_params = dict(xgb_params)
             xgb_params["early_stopping_rounds"] = 50
         self._xgb = xgb.XGBRegressor(**xgb_params)
         if _has_eval:
-            self._xgb.fit(X, y, eval_set=[(X_oos, y_oos)], verbose=False)
+            self._xgb.fit(X, y, eval_set=[(X_val, y_val)], verbose=False)
         else:
             self._xgb.fit(X, y, verbose=False)
 

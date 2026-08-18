@@ -2,7 +2,7 @@
 
 risk_aversion (Markowitz λ):
   不写入 config.yaml，不使用实例默认值。
-  进入均值-方差分支时由 calibrate_risk_aversion() 实时网格搜索确定最优 λ。
+  进入均值-方差分支时读取 config optimizer.risk_aversion (v535: 原网格恒选左边界, 删除)。
   校准函数是模块级纯函数，不依赖 PortfolioConstructor 实例。
   来源: Markowitz (1952) 均值-方差框架, λ 决定收益/风险权衡。
   典型范围 1-10, 越低越激进 (追求收益), 越高越保守 (规避风险)。
@@ -100,122 +100,6 @@ def _stock_sigma(symbol: str, log_returns: pd.DataFrame = None) -> float:
             return float(max(s.std(), 0.005))  # 保底 0.5% (防止零波动)
     return _DEFAULT_SIGMA_DAILY
 
-# ── risk_aversion 校准网格 ──
-# 来源: Markowitz (1952) 框架下 λ 典型范围 1-10。
-# 0.5 为极端激进, 10.0 为极端保守, 网格覆盖全范围。
-_CALIBRATION_GRID = [0.5, 1.0, 2.0, 5.0, 10.0]
-
-# ── risk_aversion 校准缓存 (test-v458: P3) ──
-# key: (alpha_hash, cov_hash, capital, max_positions, max_single) -> optimal_lambda
-# alpha/cov 使用 values.tobytes() 哈希，capital 保留 2 位小数
-_CALIBRATION_CACHE: dict[tuple, float] = {}
-
-
-def _make_calibration_key(
-    alpha: pd.Series,
-    covariance: pd.DataFrame,
-    capital: float,
-    max_positions: int,
-    max_single: float,
-) -> tuple:
-    """生成校准缓存键。"""
-    import hashlib
-    # 取前 max_positions 个 alpha 值的 hash
-    top_alpha = alpha.iloc[:20].values.tobytes() if len(alpha) >= 20 else alpha.values.tobytes()
-    # 协方差矩阵 hash (只取对角线 + 上三角，避免完整矩阵太大)
-    cov_diag = covariance.values.diagonal().tobytes() if hasattr(covariance, 'values') else str(covariance).encode()
-    cov_upper = covariance.values[np.triu_indices_from(covariance.values, k=1)].tobytes() if hasattr(covariance, 'values') else b''
-    capital_key = round(capital, -2)  # 保留百元位
-    return (hashlib.md5(top_alpha).hexdigest()[:16],
-            hashlib.md5(cov_diag + cov_upper).hexdigest()[:16],
-            capital_key, max_positions, max_single)
-
-
-def calibrate_risk_aversion(
-    alpha: pd.Series,
-    prices: pd.Series,
-    capital: float,
-    covariance: pd.DataFrame,
-    max_positions: int = 20,
-    max_single: float = 0.05,
-) -> float:
-    """网格搜索最优 Markowitz 风险厌恶系数 λ。
-
-    方法:
-      对 _CALIBRATION_GRID 中每个候选 λ:
-        1. 取 alpha 前 max_positions 只股票
-        2. 用 ridge 正则化协方差做均值-方差优化:
-           Σ_λ = Σ + λ·trace(Σ)/N·I,  w = inv(Σ_λ) @ α → normalize
-           (B4 修复, 2026-08-18: 原 w = inv(Σ)@α/λ 再归一化 → λ 在分子分母
-           同时出现被抵消, 网格恒选首项 0.5. 无约束 MV 解的比例本与 λ 无关,
-           λ 必须通过正则化进入 Σ 才能影响组合 — 文献: Ledoit-Wolf 收缩,
-           Grinold & Kahn 风险厌恶)
-        3. 计算组合预期收益 μ_p = w'α, 标准差 σ_p = sqrt(w'Σw)
-        4. 计算 Sharpe = μ_p / σ_p (近似, 未减无风险利率)
-      选 Sharpe 最大的 λ。
-
-    返回:
-      最优 λ (float)。若数据不足无法校准, 返回 2.0。
-    """
-    # ── 校准缓存查找 (test-v458: P3) ───────────────────────────────
-    cache_key = _make_calibration_key(alpha, covariance, capital, max_positions, max_single)
-    if cache_key in _CALIBRATION_CACHE:
-        cached_lambda = _CALIBRATION_CACHE[cache_key]
-        logger.info(
-            "[calibrate] cache hit: λ=%.1f (key=%s)", cached_lambda, str(cache_key)[:50]
-        )
-        return cached_lambda
-
-    n_stocks = min(max_positions, len(alpha))
-    top = alpha.iloc[:n_stocks]
-    common = [s for s in top.index if s in covariance.index]
-    if len(common) < 3:
-        logger.warning(
-            "[calibrate] insufficient common stocks in covariance (%d < 3), "
-            "cannot calibrate — returning conservative λ=2.0", len(common)
-        )
-        return 2.0
-
-    alpha_vec = top.loc[common].values
-    Sigma = covariance.loc[common, common].values
-    # λ 归一化缩放: 用平均对角元素 (协方差量级) 使 λ 无量纲 (ridge 强度)
-    _tau = float(np.trace(Sigma) / len(Sigma)) if len(Sigma) else 1.0
-
-    best_lambda = 2.0
-    best_sharpe = -np.inf
-
-    for lam in _CALIBRATION_GRID:
-        # B4: λ 经 ridge 正则化进入协方差 (Σ + λ·τ·I), 而非除在权重上
-        _Sig_reg = Sigma + lam * _tau * np.eye(len(Sigma))
-        try:
-            _inv = np.linalg.inv(_Sig_reg)
-        except np.linalg.LinAlgError:
-            _inv = np.linalg.pinv(_Sig_reg)
-            logger.warning("[calibrate] near-singular covariance, using pseudo-inverse")
-        w_raw = _inv @ alpha_vec
-        w_raw = np.maximum(w_raw, 0)
-        if w_raw.sum() <= 0:
-            continue
-        w = w_raw / w_raw.sum()
-        w = _iterative_clip(w, max_single)  # (2026-07-21 audit H6)
-
-        mu_p = np.dot(w, alpha_vec)
-        sigma_p = np.sqrt(np.dot(w.T, np.dot(Sigma, w)))
-        sharpe = mu_p / sigma_p if sigma_p > 0 else 0.0
-
-        if sharpe > best_sharpe:
-            best_sharpe = sharpe
-            best_lambda = lam
-
-    logger.info(
-        "[calibrate] grid search complete: best λ=%.1f (Sharpe=%.4f) "
-        "from grid %s", best_lambda, best_sharpe, _CALIBRATION_GRID
-    )
-    # 存入缓存
-    _CALIBRATION_CACHE[cache_key] = best_lambda
-    return best_lambda
-
-
 def _iterative_clip(w, max_single, max_iter=20):
     """迭代裁剪+重归一化: 保证所有权重 ≤ max_single 且 sum=1。
 
@@ -279,7 +163,7 @@ class PortfolioConstructor:
 
       Small 层:  capital ≥ micro_cap
         → 中型+: Risk Parity / Kelly 均值-方差, 8-20 只股票
-        → 每次进入此分支时实时调用 calibrate_risk_aversion() 确定 λ
+        → 每次进入此分支时读取 config optimizer.risk_aversion (v535)
 
       来源: Markowitz (1952); Grinold & Kahn (2000) Ch.7;
             DeMiguel, Garlappi, Uppal (2009); 华泰金工 (2020)
@@ -439,17 +323,16 @@ class PortfolioConstructor:
                     result = rp
             if result is None:
                 if ic_map is not None:
-                    result = self._kelly_greedy(a, p, capital, ic_map, regime_label=regime_label)
+                    result = self._kelly_greedy(a, p, capital, ic_map,
+                                                regime_label=regime_label,
+                                                covariance=covariance)
                 elif covariance is None:
                     raise ValueError(
                         "Mean-variance tier requires covariance matrix. "
                         "Pass covariance= to construct()."
                     )
                 else:
-                    risk_aversion = calibrate_risk_aversion(
-                        a, p, capital, covariance,
-                        self.max_positions, self.max_single,
-                    )
+                    risk_aversion = float(_require_cfg("optimizer.risk_aversion"))
                     result = self._mean_variance_lot(a, p, capital, covariance, risk_aversion)
 
         # ── test-v397 (Problem 9): 换手率全局约束 ──
@@ -571,7 +454,7 @@ class PortfolioConstructor:
 
     def _kelly_greedy(
         self, alpha: pd.Series, prices: pd.Series, capital: float, ic_map: dict = None,
-        regime_label: str = None,
+        regime_label: str = None, covariance: Optional[pd.DataFrame] = None,
     ) -> TargetPortfolio:
         """Kelly 头寸分配 (Small 层 ¥100K+ 专用)。
 
@@ -582,6 +465,10 @@ class PortfolioConstructor:
 
         来源: Kelly (1956), Fractional Kelly per Ralph Vince (1990).
         当 ic_map 为 None 或全零时退化为贪心等权 (向后兼容).
+
+        v535: covariance 链路打通 — 原调用不传 cov, compute_kelly_fractions
+        恒走默认方差 → 归一化时被消掉 → Kelly 退化为 alpha 比例分配.
+        现传 covariance (DataFrame), 逐股 σ² 进入 Kelly 分数 (σ² 维度生效).
         """
         from quant.optimizer.kelly import compute_lot_allocation
         n_stocks = min(self.max_positions, len(alpha))
@@ -589,7 +476,7 @@ class PortfolioConstructor:
             return TargetPortfolio(pd.Series(dtype=int), capital, "kelly_greedy", 0.0)
         lots, cash = compute_lot_allocation(
             alpha, prices, capital, ic_map, self.max_positions, LOT_SIZE,
-            regime_label=regime_label,
+            regime_label=regime_label, cov=covariance,
         )
         total_value = (lots * prices.loc[lots.index] * LOT_SIZE).sum()
         if lots.sum() == 0:
@@ -865,9 +752,10 @@ class PortfolioConstructor:
     ) -> TargetPortfolio:
         """均值-方差优化 + 整手离散化。
         来源: Markowitz (1952); Grinold & Kahn (2000) Chapter 7
-        参数 risk_aversion 由 construct() 实时调用 calibrate_risk_aversion() 确定。
-        B4 (2026-08-18): λ 经 ridge 正则化进入协方差 (Σ + λ·τ·I, 与
-        calibrate_risk_aversion 同口径) — 原 w = inv(Σ)@α/λ 归一化后 λ 抵消.
+        参数 risk_aversion 来自 config optimizer.risk_aversion (v535:
+        原 calibrate_risk_aversion 网格目标函数单调, 恒选左边界 0.5, "自适应"为假).
+        B4 (2026-08-18): λ 经 ridge 正则化进入协方差 (Σ + λ·τ·I) —
+        原 w = inv(Σ)@α/λ 归一化后 λ 抵消.
         """
         n_stocks = min(self.max_positions, len(alpha))
         top = alpha.iloc[:n_stocks]

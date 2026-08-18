@@ -54,18 +54,19 @@ def _resolve_statuses(status_filter):
     return (status_filter,)
 
 
-def load_active_price_factors(status_filter='using'):
+def load_active_price_factors(status_filter='using', registered_before: str = None):
     """从 factor_registry 表加载价格因子 → {name: (cat, window, fn)}.
 
     status_filter:
         'using' → active + probation (两者都参与信号, probation 衰减权重)
         'backtesting' → evaluating + probation (评估池)
         None → 全部因子
+    registered_before: v535 — PIT: 仅 created_at 早于该日期的因子.
     """
     statuses = _resolve_statuses(status_filter)
     name_list = list(_PRICE_FN_MAP.keys())
     repo = FactorRepo()
-    active_names = {f["name"] for f in repo.get_factors_by_status(statuses, name_list)} if statuses else set(name_list)
+    active_names = {f["name"] for f in repo.get_factors_by_status(statuses, name_list, registered_before)} if statuses else set(name_list)
     result = {}
     for name, (fn, win) in _PRICE_FN_MAP.items():
         if name in active_names:
@@ -73,18 +74,19 @@ def load_active_price_factors(status_filter='using'):
     return result
 
 
-def load_active_fundamental_factors(status_filter='using'):
+def load_active_fundamental_factors(status_filter='using', registered_before: str = None):
     """从 factor_registry 表加载基本面因子.
 
     status_filter:
         'using' → active + probation (两者都参与信号, probation 衰减权重)
         'backtesting' → evaluating + probation (评估池)
         None → 全部因子
+    registered_before: v535 — PIT: 仅 created_at 早于该日期的因子.
     """
     statuses = _resolve_statuses(status_filter)
     fn_names = list(_FUNDAMENTAL_FN_MAP.keys())
     repo = FactorRepo()
-    active_names = {f["name"] for f in repo.get_factors_by_status(statuses, fn_names)} if statuses else set(fn_names)
+    active_names = {f["name"] for f in repo.get_factors_by_status(statuses, fn_names, registered_before)} if statuses else set(fn_names)
     result = {}
     for name, (cat, fn) in _FUNDAMENTAL_FN_MAP.items():
         if name in active_names:
@@ -108,7 +110,7 @@ def update_factor_evaluation(name: str, ic_mean: float, ic_ir: float):
 # ═══════════════════════════════════════════════════════════
 
 
-def get_factor_names(status_filter=None) -> list:
+def get_factor_names(status_filter=None, registered_before: str = None) -> list:
     """返回因子名列表 (从 factor_registry 表读取).
 
     status_filter:
@@ -116,7 +118,9 @@ def get_factor_names(status_filter=None) -> list:
         'backtesting' → evaluating + probation (评估池)
         'active' → 仅 active
         None → 全部因子
+    registered_before: v535 — 仅返回 created_at 早于该日期的因子
+        (walk-forward 训练窗口 PIT: 2020 fold 不得使用 2023 注册的因子).
     """
-    price_factors = load_active_price_factors(status_filter)
-    fund_factors = load_active_fundamental_factors(status_filter)
+    price_factors = load_active_price_factors(status_filter, registered_before)
+    fund_factors = load_active_fundamental_factors(status_filter, registered_before)
     return list(price_factors.keys()) + list(fund_factors.keys())

@@ -6,7 +6,7 @@ import pytest
 import pandas as pd
 import numpy as np
 from quant.optimizer.portfolio import (
-    PortfolioConstructor, TargetPortfolio, LOT_SIZE, calibrate_risk_aversion,
+    PortfolioConstructor, TargetPortfolio, LOT_SIZE,
     _alpha_to_z, _ic_effective, _TC_IC_REF,
 )
 from quant.execution.cost import CostModel
@@ -279,22 +279,29 @@ class TestTargetPortfolio:
         assert tp.positions == 0
 
 
-class TestCalibrateRiskAversion:
-    """risk_aversion 校准."""
+class TestRiskAversionConfig:
+    """v535: λ 校准网格已删除 (目标函数单调, 网格恒选左边界 0.5, "自适应"为假).
 
-    def test_calibrate_returns_valid_lambda(self):
+    诚实改为 config optimizer.risk_aversion 固定参数 — 测试验证:
+    1) config 键存在且可解析; 2) MV 层用 config λ 进入 ridge 协方差。
+    """
+
+    def test_risk_aversion_from_config(self):
+        from quant.config.constants import _require_cfg
+        lam = float(_require_cfg("optimizer.risk_aversion"))
+        assert lam > 0, "optimizer.risk_aversion 必须为正"
+
+    def test_mean_variance_uses_config_lambda(self):
         alpha = pd.Series([0.05, 0.03, 0.08, 0.02, 0.06], index=["A", "B", "C", "D", "E"])
         prices = pd.Series([10.0] * 5, index=["A", "B", "C", "D", "E"])
         cov = pd.DataFrame(np.eye(5) * 0.01, index=alpha.index, columns=alpha.index)
-        lam = calibrate_risk_aversion(alpha, prices, 100000, cov, max_positions=5)
-        assert lam in [0.5, 1.0, 2.0, 5.0, 10.0]
-
-    def test_calibrate_insufficient_stocks_returns_conservative(self):
-        alpha = pd.Series([0.05, 0.03], index=["A", "B"])
-        prices = pd.Series([10.0, 12.0], index=["A", "B"])
-        cov = pd.DataFrame(np.eye(2) * 0.01, index=["A", "B"], columns=["A", "B"])
-        lam = calibrate_risk_aversion(alpha, prices, 10000, cov)
-        assert lam == 2.0
+        pc = PortfolioConstructor(config={"max_positions": 5, "max_single_position": 0.5,
+                                           "nano_cap": 30000.0, "micro_cap": 100000.0,
+                                           "method": "mv"})
+        from quant.config.constants import _require_cfg
+        lam = float(_require_cfg("optimizer.risk_aversion"))
+        rp = pc._mean_variance_lot(alpha, prices, 100000, cov, lam)
+        assert rp.lots.sum() > 0
 
 
 class TestCostAwareBand:

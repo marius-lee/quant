@@ -276,16 +276,23 @@ class LgbAlphaModel:
         # 训练端 build_train_matrices → build_cross_sectional_factors
         # 是"逐日截面 rank → normal quantile z"; 原 predict 直接喂原始值
         # → 特征分布漂移 (原始量纲任意 vs 训练 N(0,1) 有界), 树分裂点失效.
+        # v535: z-score 截面口径统一 — 训练端逐日对**全市场面板** rank;
+        # 原 predict 先 reindex(symbols) 再 rank → 候选子集内秩 vs 训练
+        # 全市场秩 → 同因子同日的 z 值漂移. 改为: 全量传入因子面板
+        # (factor_values 覆盖全集, pipeline 传入全市场截面) 上 rank,
+        # 再取 symbols 子集预测.
         from quant.alpha.ml_common import _inv_norm
         _sym_df = pd.DataFrame({
             fn: factor_values.get(fn, pd.Series(0, index=symbols))
             for fn in self._feature_names  # 严格按训练列序
-        }).reindex(symbols)
+        })
         # 训练端语义: 缺失值不参与截面 rank (rank 保持 NaN) → ppf(NaN)=NaN → 补零.
         # 推理端同序: rank 前不 fillna, rank 后补零.
         _ranked = _sym_df.rank(axis=0, pct=True)
         _z = _ranked.apply(lambda col: _inv_norm(col.clip(0.0001, 0.9999))).fillna(0.0)
-        X = _z.values.astype(np.float32)
+        # v535: 全市场秩后按候选子集取行 (与训练全市场截面 rank 同口径)
+        _z_sub = _z.reindex(symbols).fillna(0.0)
+        X = _z_sub.values.astype(np.float32)
 
         preds = self._lgb.predict(X)
         result = pd.Series(preds, index=symbols, name="alpha_lgb")
@@ -720,7 +727,11 @@ def build_forward_returns(
 
     if symbols is None:
         from quant.data.repos import UniverseRepo
-        symbols = UniverseRepo().get_symbols(exclude_market="BJ")
+        # v535 (PIT): 用训练窗口起点 asof 过滤 — 仅含"当时已上市且未退市"的
+        # 股票 (原全量 get_symbols: 训练起点之后上市的股票混入早期标签 →
+        # 幸存者偏差 (反向)。退市股若 daily 有历史 (stocks 表 2026-08-18
+        # 起含 361 只 delisted, update_daily 自动补历史) 则被 JOIN 纳入)。
+        symbols = UniverseRepo().get_symbols(exclude_market="BJ", start_date=start_date)
 
     data = store.get_daily(symbols, start=start_date, end=end_date)
     close = data["close"]

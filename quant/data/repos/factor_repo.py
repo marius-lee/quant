@@ -88,17 +88,23 @@ class FactorRepo:
     # ── factor_registry queries ──
 
     def get_factors_by_status(self, statuses: tuple[str, ...],
-                              names: list[str]) -> list[dict]:
-        """Return factors with given statuses, filtered by name list."""
+                              names: list[str],
+                              registered_before: str = None) -> list[dict]:
+        """Return factors with given statuses, filtered by name list.
+
+        v535: registered_before (YYYY-MM-DD) — 仅返回 created_at 早于该日期的
+        因子 (walk-forward 训练窗口 PIT: 2020 fold 不得使用 2023 注册的因子).
+        """
         if not names:
             return []
         ph_status = ",".join("?" * len(statuses))
         ph_names = ",".join("?" * len(names))
+        _created = " AND created_at <= datetime(?)" if registered_before else ""
         rows = self._query(
             f"SELECT {FR_NAME}, {FR_CATEGORY}, {FR_IC_MEAN}, {FR_STATUS}, {FR_STATUS_REASON} "
             f"FROM factor_registry "
-            f"WHERE {FR_STATUS} IN ({ph_status}) AND {FR_NAME} IN ({ph_names})",
-            tuple(statuses) + tuple(names))
+            f"WHERE {FR_STATUS} IN ({ph_status}) AND {FR_NAME} IN ({ph_names}){_created}",
+            tuple(statuses) + tuple(names) + ((registered_before,) if registered_before else ()))
         return [dict(r) for r in rows]
 
     def get_all_by_status(self, statuses: tuple[str, ...]) -> list[dict]:

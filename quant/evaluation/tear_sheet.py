@@ -67,10 +67,12 @@ def generate_report(
     returns = equity_curve.pct_change().dropna()
     # 累计收益: (终值-初值)/初值 × 100
     total_return = (equity_curve.iloc[-1] / capital - 1) * 100
-    # 年化波动: 日收益 std × √244 (annual_trading_days = 244)
-    annual_vol = returns.std() * np.sqrt(_require_cfg("market.annual_trading_days")) * 100
-    # Sharpe: 日收益 mean/std × √244 (年化)
-    sharpe = (returns.mean() / returns.std() * np.sqrt(244)) if returns.std() > 0 else 0
+    # 年化波动: 日收益 std × √annual (annual_trading_days = config 244, A股)
+    _ann = float(_require_cfg("market.annual_trading_days"))
+    annual_vol = returns.std() * np.sqrt(_ann) * 100
+    # Sharpe: 日收益 mean/std × √annual (年化) — v535: 原硬编码 244
+    # 与波动率口径 (config) 分裂 → 统一同源常量
+    sharpe = (returns.mean() / returns.std() * np.sqrt(_ann)) if returns.std() > 0 else 0
 
     # 最大回撤: (当前值 - 历史峰值) / 历史峰值 的最小值
     peak = equity_curve.cummax()

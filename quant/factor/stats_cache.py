@@ -787,7 +787,10 @@ class IncrementalIC:
                     ic_mean = vals.mean()
                     ic_std = vals.std()
                     if ic_std > 0:
-                        ir = ic_mean / ic_std * np.sqrt(252 / max(lookback, 1))
+                        # v535: 年化常量统一 → config (原硬编码 252,
+                        # 与 tear_sheet/config 244 分裂 → ICIR 权重口径漂移)
+                        _ann = float(_require_cfg("market.annual_trading_days"))
+                        ir = ic_mean / ic_std * np.sqrt(_ann / max(lookback, 1))
                         ir_map[fn] = float(ir)
             return ir_map
 

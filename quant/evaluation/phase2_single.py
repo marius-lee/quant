@@ -12,11 +12,15 @@ from quant.factor.stats_cache import compute_factor_stats
 
 
 def screen_factors(input_json: str = None, output_json: str = None,
-                   eval_start: str = None, eval_end: str = None) -> dict:
+                   eval_start: str = None, eval_end: str = None,
+                   registered_before: str = None) -> dict:
     """运行单因子检验, 返回通过/未通过因子列表。
 
     评估全部 backtesting 因子, 自己算 IC, 不依赖外部诊断数据。
     计算完成后将 IC 结果写回 evaluation_runs.diagnostics 供后续参考。
+
+    registered_before: v535 — walk-forward 训练窗口 PIT: 仅评估
+        created_at 早于该日期的因子 (2020 fold 不得用 2023 注册的因子).
 
     Returns
     -------
@@ -53,8 +57,10 @@ def screen_factors(input_json: str = None, output_json: str = None,
 
     # 获取全部 backtesting 因子 — 不再依赖外部诊断预筛
     from quant.factor.compute import get_factor_names
-    active_names = get_factor_names(status_filter="backtesting")
-    logger.info("Phase 2: evaluating all %d backtesting factors", len(active_names))
+    active_names = get_factor_names(status_filter="backtesting",
+                                    registered_before=registered_before)
+    logger.info("Phase 2: evaluating all %d backtesting factors (registered_before=%s)",
+                len(active_names), registered_before or "all")
 
     # 计算因子统计
     n_symbols = _require_cfg("factor.evaluation.n_symbols")

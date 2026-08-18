@@ -104,6 +104,12 @@ def verify_costs(input_json: str = None) -> dict:
             continue
 
         # 毛 Sharpe = ICIR * sqrt(breadth) (GK99 Eq.6.5)
+        # v535 口径说明 (审计项7): oos_ir 为**日频** ICIR (phase3 未年化),
+        # √breadth 同时承担 breadth 年化 (N持仓×12月调仓=240 次下注/年,
+        # √240≈15.5) — 数值上 ≈ √annual_days(√244≈15.6) 巧合, 故 gross
+        # 已≈完整 GK99 的 ICIR_annual. 严禁在此再乘 √annual_days —
+        # 那才是"双重年化高估" (ICIR 年化 ×√244 又乘 breadth √240 ≈ ×242).
+        # 年化常量统一引用 config (tear_sheet/stats_cache 同源).
         gross_sharpe = abs_ir * math.sqrt(breadth)
 
         # 年化换手率估算: 每月 100% -> 12 次/年

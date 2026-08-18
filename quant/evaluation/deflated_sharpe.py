@@ -158,7 +158,7 @@ def compute_dsr_for_strategy(
     Args:
         daily_returns: list of daily PnL returns
         n_factors: number of factors tested (用于估计 M = independent trials)
-        annual_factor: trading days per year (A股 = 252)
+        annual_factor: trading days per year (A股 ≈ 244, config 值; 原 docstring 252 误导)
         skewness: A股 return skewness (典型 -0.5)
         kurtosis: A股 return kurtosis (典型 6-8)
 

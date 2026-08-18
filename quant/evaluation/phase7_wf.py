@@ -69,8 +69,11 @@ def _run_train_phase(train_start: str, train_end: str) -> list[str]:
     # 全折叠在全局窗口上评估 → 窗口参数形同虚设). 注意返回键是 `active`
     # (v346 对齐), 且 screen_factors 无 prefilter_from_diagnostics 参数
     # (原调用 TypeError → 每 fold 都空 → walk-forward 从未产出 fold).
+    # v535: registered_before=train_end — 训练窗口 PIT: 2020 fold 不得使用
+    # 2023 注册的因子 (原未来因子池泄漏: 注册表含训练窗口后诞生的因子).
     try:
-        p2 = screen_factors(eval_start=train_start, eval_end=train_end)
+        p2 = screen_factors(eval_start=train_start, eval_end=train_end,
+                            registered_before=train_end)
         passed_p2 = p2.get("active") or p2.get("passed") or []
         _log.info(f"  Phase 2: {len(passed_p2)} passed")
     except Exception as e:

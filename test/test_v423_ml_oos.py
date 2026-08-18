@@ -79,19 +79,31 @@ class TestCrossSectionalFactors:
 class TestSplitTrainOos:
     def test_ratio_and_disjoint(self):
         dates = [f"2024-01-{i:02d}" for i in range(1, 21)]
-        tr, oo = split_train_oos(dates, oos_frac=0.15)
+        tr, va, oo = split_train_oos(dates, oos_frac=0.15)
         assert len(tr) == 17
         assert len(oo) == 3
+        assert len(va) == 0  # 默认无 val 段
         assert tr.isdisjoint(oo)
+
+    def test_val_segment(self):
+        """v535: val_frac>0 → 中部切出早停集, 三段互不相交."""
+        dates = [f"2024-01-{i:02d}" for i in range(1, 31)]
+        tr, va, oo = split_train_oos(dates, oos_frac=0.15, val_frac=0.10)
+        assert len(tr) + len(va) + len(oo) == 30
+        assert len(va) == 3
+        assert len(oo) == 4
+        assert tr.isdisjoint(va) and va.isdisjoint(oo) and tr.isdisjoint(oo)
+        # 时间序: train 最早, val 居中, oos 最尾
+        assert max(tr) < min(va) < min(oo)
 
     def test_timestamp_input(self):
         dates = pd.bdate_range("2024-01-01", periods=10)
-        tr, oo = split_train_oos(dates, oos_frac=0.5)
+        tr, va, oo = split_train_oos(dates, oos_frac=0.5)
         assert len(oo) == 5
-        assert all(isinstance(d, str) for d in tr | oo)
+        assert all(isinstance(d, str) for d in tr | oo | va)
 
     def test_empty(self):
-        assert split_train_oos([]) == (set(), set())
+        assert split_train_oos([]) == (set(), set(), set())
 
 
 class TestDailyIcSeries:
@@ -130,6 +142,17 @@ class TestBuildTrainMatrices:
         assert len(mats["oos_dates"]) == len(mats["y_oo"])
         assert len(mats["train_dates"]) > 0
         assert mats["y_tr"].dtype == np.float32
+
+    def test_val_segment_present(self):
+        """v535: val_frac>0 → X_va/y_va/val_dates 与 OOS 分离."""
+        panels, fwd = _mk_panel(n_days=60)
+        mats = build_train_matrices(panels, fwd, ["f1", "f2"], oos_frac=0.15, val_frac=0.1)
+        assert mats["X_va"].shape[0] == len(mats["y_va"]) > 0
+        assert len(mats["val_dates"]) == len(mats["y_va"])
+        assert mats["X_va"].shape[1] == 2
+        # val 日期全部早于 oos 日期 (时间序切分)
+        if len(mats["val_dates"]) and len(mats["oos_dates"]):
+            assert max(mats["val_dates"]) < min(mats["oos_dates"])
 
     def test_missing_factor_date_zero_filled(self):
         panels, fwd = _mk_panel(n_days=40)

@@ -371,12 +371,38 @@ class DataStore:
         @datasource_retry
         def _fetch_delist():
             try:
-                return ak.stock_info_a_delist()
+                df = ak.stock_info_a_delist()
+                if df is None or df.empty:
+                    return None
+                # v535: 字段名标准化 (上交所接口的中文列名)
+                return df.rename(columns={
+                    "证券代码": "symbol", "公司代码": "symbol",
+                    "证券简称": "name", "公司简称": "name",
+                    "终止上市日期": "delist_date", "delisting_date": "delist_date",
+                })
             except AttributeError:
                 import pandas as _pd2
                 df_sh = ak.stock_info_sh_delist()
                 df_sz = ak.stock_info_sz_delist()
-                return _pd2.concat([df_sh, df_sz], ignore_index=True)
+
+                def _norm(d, sym_col, name_col, date_col):
+                    """v535: 上交所/深交所接口均为中文列名 — 原代码按英文键
+                    row.get("symbol") 恒 None → 全部写成 "000000" (INSERT OR
+                    IGNORE → 367 "new" 只落 1 条, 退市名单从未真正入库).
+                    显式列映射 + 独立构造, 避免 concat 后同名列 row.get
+                    返回 Series (symbol 列重复 → len(sym)!=6 全部跳过)."""
+                    out = _pd2.DataFrame()
+                    out["symbol"] = d[sym_col].astype(str).str.zfill(6)
+                    out["name"] = d[name_col]
+                    out["delist_date"] = d[date_col]
+                    return out
+
+                # SH: 暂停上市日期; SZ: 终止上市日期 (SH 终止列全 NaN)
+                _df = _pd2.concat([
+                    _norm(df_sh, "公司代码", "公司简称", "暂停上市日期"),
+                    _norm(df_sz, "证券代码", "证券简称", "终止上市日期"),
+                ], ignore_index=True)
+                return _df
 
         df = _fetch_delist()
         if df is None or df.empty:

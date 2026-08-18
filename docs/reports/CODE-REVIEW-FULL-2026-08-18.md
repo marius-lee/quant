@@ -205,3 +205,51 @@ hrp.py:145（corr>1→NaN→静默等权）；multi_tf.py（weekly_weight 未用
 test_v533_closed_loop.py 止损 2 测试更新为 v534 转发语义 (原断言 v533 中间态自管 adapter 行为).
 
 全量: **433 passed (134s)**.
+
+## 12. v535 审计 7 项修复 (2026-08-18)
+
+### 优化1: Kelly 退化打通 + λ 校准删改 (kelly.py / portfolio.py)
+
+**问题**: (a) covariance 从未穿透 _kelly_greedy → compute_lot_allocation → compute_kelly_fractions (portfolio.py:590 链), kelly 恒用常量 DEFAULT_RETURN_VAR; (b) calibrate_risk_aversion 在网格 [0.5,1,2,5,10] 上目标函数单调 → 恒选左边界 0.5, "自适应 λ" 为假。
+
+**修复**: (a) _kelly_greedy 新增 covariance 参数并下传; compute_kelly_fractions 的 var 支持 DataFrame (reindex alpha.index 对齐) 与 ndarray, NaN 兜底 DEFAULT_RETURN_VAR; (b) 删 calibrate_risk_aversion/_CALIBRATION_GRID/_CALIBRATION_CACHE/_make_calibration_key, MV 层与 Kelly 层统一读 config `optimizer.risk_aversion: 2.0`。
+
+### 优化2: XGB 早停集与 OOS 评估集分离 (ml_common.py / xgb_model.py)
+
+**问题**: train() 的 eval_set=[(X_oos, y_oos)] — 早停集即 OOS IC 评估的同一段尾部数据 → 早停决策泄漏 → OOS IC 乐观偏差。
+
+**修复**: split_train_oos 返回 (train, val, oos) 三元组 + val_frac; build_train_matrices 产出 X_va/y_va/val_dates + skipped["val"]; train() 用 eval_set=[(X_val, y_val)] (val_frac=config `alpha.val_frac: 0.10`)。
+
+### 优化3: 训练/推理 z-score 截面口径统一 (qlib_model.py)
+
+**问题**: 训练在全集 rank, predict 对候选子集 reindex 后 rank → 子集分布与训练分布错配。
+
+**修复**: predict 先在全集 _sym_df rank 得 _z, 再 _z.reindex(symbols) 取子集。
+
+### 优化4: LW π̂ NaN 系统性低估 (covariance.py)
+
+**问题**: π̂ 原循环对含 NaN 的整行做 outer 差 → nan_to_num 置 0 → 低估; S 已 pairwise 而 π̂ 未对称。
+
+**修复**: 逐对 (i,j) both-mask 有效样本累计, v=(d²).sum()/both.sum() 归一, 去掉 T 全局除法。
+
+### 优化5: 训练幸存者偏差 — 退市名单 + PIT universe (store.py / qlib_model.py)
+
+**问题**: (a) stocks.delist_date 全空 — sync_delisted_stocks 的 akshare fallback 返回中文列名, row.get("symbol") 恒 None → 367 条全写 symbol="000000" (INSERT OR IGNORE 只落 1 条); (b) build_forward_returns 全量 get_symbols — 训练起点后上市的股票混入早期标签。
+
+**修复**: (a) 显式 _norm 列映射: SH 公司代码/公司简称/暂停上市日期, SZ 证券代码/证券简称/终止上市日期 (SH 终止列全 NaN); 重跑 367 只入库 (delist_date 非空 0 → 361); (b) get_symbols(start_date=训练起点) — PIT asof 仅含"当时已上市且未退市"。退市股 daily 历史由后续 update_daily 自动补拉。
+
+### 优化6: phase7 因子池时间对齐 (factor_repo / _registry / phase2_single / phase7_wf)
+
+**问题**: screen_factors 用全注册表 (status_filter="backtesting"), 2020 fold 使用 2023 注册的因子 — 未来因子池泄漏进训练窗口。
+
+**修复**: factor_repo.get_factors_by_status 加 registered_before (created_at <= datetime(?)); _registry.load_active_*_factors 透传; get_factor_names(registered_before=); screen_factors(registered_before=train_end); phase7 注入 train_end。
+
+### 优化7: 年化口径统一 (tear_sheet / stats_cache / deflated_sharpe / phase4)
+
+**问题**: tear_sheet 硬编码 np.sqrt(244) vs stats_cache 硬编码 sqrt(252/lookback) vs deflated_sharpe docstring "A股=252" — 三处口径分裂。
+
+**修复**: 全部收敛到 config market.annual_trading_days (244); phase4 gross_sharpe 补注释固化口径 — oos_ir 日频, √breadth (√240≈15.5) 数值上≈√244, 已≈完整 GK99 ICIR_annual, 严禁再乘 √annual_days (双重年化高估 ×242)。
+
+### 验证
+
+新增 test/test_v535.py 8 项; 全量 450 passed (132s)。详细见 HANDOFF.md。

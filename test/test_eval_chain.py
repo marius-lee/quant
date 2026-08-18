@@ -68,7 +68,11 @@ def test_phase7_failure_returns_empty_list():
 
 
 def test_wf_window_injected_into_phase2_3():
-    """训练窗口 (PIT) 注入到 screen_factors / validate_oos."""
+    """训练窗口 (PIT) 注入到 screen_factors / validate_oos.
+
+    v535: registered_before=train_end — 因子池 PIT 过滤 (2020 fold
+    不得使用 2023 注册的因子, 审计项6).
+    """
     src = open("quant/evaluation/phase7_wf.py", encoding="utf-8").read()
-    assert "screen_factors(eval_start=train_start, eval_end=train_end)" in src
+    assert "screen_factors(eval_start=train_start, eval_end=train_end,\n                            registered_before=train_end)" in src
     assert "validate_oos(eval_start=train_start, eval_end=train_end)" in src

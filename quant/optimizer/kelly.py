@@ -102,11 +102,20 @@ def compute_kelly_fractions(
             # B16 (2026-08-18): 原取 mean(cov_diag) 单一标量 → kelly_raw 归一化时
             # 被消掉 → Kelly 退化为 alpha 比例 (σ² 维度信息丢失). 改用逐股方差
             # 向量 (cov 对角), 每只股票按自身波动率缩放.
+            # v535: cov 链路打通 — 此前 _kelly_greedy 从未传 cov (portfolio.py),
+            # cov=None → var=常数 → 归一化时被消掉, "自适应"实为 alpha 比例分配.
+            # 现支持 DataFrame (portfolio 传 covariance) 与 ndarray 两态,
+            # DataFrame 按 alpha.index 对齐 (与 compute_lot_allocation 同序).
             var = DEFAULT_RETURN_VAR
             if cov is not None:
-                cov_diag = np.diag(cov) if isinstance(cov, np.ndarray) else np.array(cov).diagonal()
-                if len(cov_diag) > 0 and cov_diag.mean() > 1e-8:
+                if isinstance(cov, pd.DataFrame):
+                    _cov = cov.reindex(index=alpha.index, columns=alpha.index)
+                    cov_diag = np.nan_to_num(_cov.values.diagonal(), nan=DEFAULT_RETURN_VAR)
+                else:
+                    cov_diag = np.diag(cov) if isinstance(cov, np.ndarray) else np.array(cov).diagonal()
+                if len(cov_diag) > 0 and np.nanmean(cov_diag) > 1e-8:
                     var = np.asarray(cov_diag, dtype=float)
+                    var = np.where(np.isnan(var) | (var <= 1e-8), DEFAULT_RETURN_VAR, var)
                     _log.debug("kelly: per-stock var from cov diag (mean=%.6f)", var.mean())
 
             # Kelly: f = (μ - r_f) / σ², r_f=0 (A股无风险利率极低)
@@ -155,6 +164,7 @@ def compute_lot_allocation(
     max_positions: int = None,
     lot_size: int = 100,
     regime_label: str = None,
+    cov: np.ndarray | pd.DataFrame = None,
 ) -> tuple[pd.Series, float]:
     """用 Kelly 分数计算整数手分配.
 
@@ -166,6 +176,9 @@ def compute_lot_allocation(
         max_positions: 最大持仓数
         lot_size: 每手股数 (A股=100)
         regime_label: test-v397: market regime for dynamic kelly fraction
+        cov: v535 — 协方差矩阵 (DataFrame index=symbol 或 ndarray, 与
+             top_alpha 对齐), 提供逐股日收益率方差 (σ² 维度, 打破
+             "Kelly=alpha 比例" 退化). None=默认方差 0.0004.
 
     Returns:
         (lots Series, remaining_cash)
@@ -177,7 +190,8 @@ def compute_lot_allocation(
     top_alpha = alpha.iloc[:n]
     top_prices = prices.loc[top_alpha.index]
 
-    kelly_weights = compute_kelly_fractions(top_alpha, ic_map, regime_label=regime_label)
+    kelly_weights = compute_kelly_fractions(top_alpha, ic_map, regime_label=regime_label,
+                                            cov=cov)
     kelly_weights = kelly_weights.loc[top_alpha.index].fillna(0)
     if kelly_weights.sum() == 0:
         kelly_weights = pd.Series(1.0 / n, index=top_alpha.index)

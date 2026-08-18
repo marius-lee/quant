@@ -118,7 +118,14 @@ def sync() -> int:
 
     existing = set()
     for _, tbl in _TABLES:
-        rows = conn.execute(f"SELECT symbol, stat_date FROM {tbl}").fetchall()
+        if tbl == "financial_income":
+            # v545: 行存在但 operating_cost/administration_expense 为 NULL 不算已同步
+            # (2020-2024 历史导入行缺这两列, sina 接口现已返回 → 必须重拉补齐)
+            rows = conn.execute(
+                "SELECT symbol, stat_date FROM financial_income "
+                "WHERE operating_cost IS NOT NULL AND administration_expense IS NOT NULL").fetchall()
+        else:
+            rows = conn.execute(f"SELECT symbol, stat_date FROM {tbl}").fetchall()
         existing.update((r[0], str(r[1])[:10]) for r in rows)
 
     symbols = [r[0] for r in conn.execute(
@@ -151,7 +158,15 @@ def sync() -> int:
             mn, mx = conn.execute(
                 f"SELECT MIN(stat_date), MAX(stat_date) FROM {tbl} WHERE symbol=?",
                 (symbol,)).fetchone()
-            if mx is None or str(mx)[:10] < target_end or mn is None or mn > hist_cover:
+            needs_cost = False
+            if tbl == "financial_income":
+                # v545: 存在 operating_cost/administration_expense 为 NULL 的行 → 重拉补齐
+                needs_cost = conn.execute(
+                    "SELECT 1 FROM financial_income WHERE symbol=? AND "
+                    "(operating_cost IS NULL OR administration_expense IS NULL) LIMIT 1",
+                    (symbol,)).fetchone() is not None
+            if (mx is None or str(mx)[:10] < target_end or mn is None or mn > hist_cover
+                    or needs_cost):
                 need_fetch.setdefault(symbol, set()).add(tbl)
 
     client = SinaClient()

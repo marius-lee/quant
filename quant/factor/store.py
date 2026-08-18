@@ -57,6 +57,31 @@ _MISSING_MAP: dict[str, list[str]] = {}
 
 _BLOCKED_PATH = os.path.join(_CACHE_DIR, "blocked.json")
 
+# v546: 空结果聚合告警阈值 (交易日) — 单因子单轮空结果超阈值 → 判为异常 (代码/数据源),
+# 而非正常缺数据; 避免 bug 因子静默 blocked 永久归档
+_EMPTY_WARN_DAYS = 50
+
+
+def _unblock_recovered(blocked: dict, per_factor: dict) -> None:
+    """v546: 本轮成功算出结果的 (date, factor) 从 blocked 移除 — 恢复因子自动解除剔除.
+
+    blocked 结构 {date_str: {factor: ts}}; 原地修改, 无返回.
+    """
+    for fname, dset in per_factor.items():
+        for _d in dset:
+            bfs = blocked.get(_d)
+            if bfs and fname in bfs:
+                del bfs[fname]
+                if not bfs:
+                    del blocked[_d]
+
+
+def _empty_factor_summary(empty_factors, min_days: int = _EMPTY_WARN_DAYS):
+    """v546: 本轮空结果按因子聚合, 返回 [(factor, 天数)] 按天数降序 (只含 >= min_days)."""
+    from collections import Counter
+    return sorted(((f, n) for f, n in Counter(f for _, f in empty_factors).items()
+                   if n >= min_days), key=lambda x: -x[1])
+
 # per-factor 源码 hash 缓存 (代码不变则 hash 不变, 进程内安全缓存)
 _SOURCE_HASH_CACHE: dict[str, str] = {}
 
@@ -522,6 +547,7 @@ class FactorStore:
         n_dates_computed = 0
         failed_dates: list[str] = []
         per_factor_dates: dict[str, set] = {}
+        _empty_this_run: list[tuple[str, str]] = []  # v546: 本轮空结果 (date, factor)
 
         n_chunks = max(1, (len(date_list) + chunk_days - 1) // chunk_days)
         idx_to_date = {i: d for d, i in date_to_idx.items()}
@@ -606,7 +632,10 @@ class FactorStore:
                 failed_dates.extend(chunk_result.get("failed_dates", []))
                 for fname, dset in per_factor.items():
                     per_factor_dates.setdefault(fname, set()).update(dset)
+                # v546: 成功重算 → 解除 blocked (恢复因子自动剔除失效)
+                _unblock_recovered(blocked, per_factor)
                 for _d, _f in chunk_result.get("empty_factors", []):
+                    _empty_this_run.append((_d, _f))
                     if _d not in blocked:
                         blocked[_d] = {}
                     if _f not in blocked[_d]:
@@ -697,6 +726,15 @@ class FactorStore:
             _log.warning("factor_cache: %d (date,factor) blocked (缺数据剔除) — 数据补齐后自动恢复",
                          _blocked_total)
 
+        # v546: 本轮空结果按因子聚合, 超阈值 → ERROR 告警 (代码/数据源异常信号,
+        # 而非正常缺数据) — 修复 bug 因子持续静默 blocked 归档
+        _heavy_empty = _empty_factor_summary(_empty_this_run)
+        if _heavy_empty:
+            _log.error("factor_cache: %d factors produced >=%d empty dates this run "
+                       "(非正常缺数据 — 检查代码或数据源): %s",
+                       len(_heavy_empty), _EMPTY_WARN_DAYS,
+                       ", ".join(f"{f}={n}" for f, n in _heavy_empty))
+
         return {"n_dates": n_dates_computed, "n_factors": len(factor_names),
                 "n_symbols": len(symbols), "n_rows": total_rows,
                 "elapsed_sec": round(elapsed, 1), "failed_dates": failed_dates}
@@ -725,6 +763,7 @@ class FactorStore:
         n_dates_computed = 0
         failed_dates: list[str] = []
         per_factor_dates: dict[str, set] = {}
+        _empty_this_run: list[tuple[str, str]] = []  # v546: 本轮空结果 (date, factor)
 
         n_chunks = max(1, (len(date_list) + chunk_days - 1) // chunk_days)
         idx_to_date = {i: d for d, i in date_to_idx.items()}

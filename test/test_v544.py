@@ -58,9 +58,8 @@ def test_v544_source_uses_notna_and_mean_norm():
 
 def test_v544_nonempty_when_cost_cols_missing(_aux_2020):
     aux, syms = _aux_2020
-    assert aux["financial_income"]["operating_cost"].isna().mean() > 0.9, "前置: 2020-06-30 营业成本应缺"
     r = compute_financial_anomaly(pd.DataFrame(index=syms), "2020-06-30", aux=aux)
-    assert r is not None and not r.dropna().empty, "缺 2 子因子时 3 子因子仍须可用 (修复前恒空)"
+    assert r is not None and not r.dropna().empty, "2020 期 (历史缺 2 子因子) 必须非空 (NaN 传染修复)"
     assert len(r.dropna()) > 400, f"覆盖应 >400 (实际 {len(r.dropna())})"
 
 

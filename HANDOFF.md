@@ -3901,3 +3901,13 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
 - **chunk 预载字符串比较疑云排除**: 2025-06-30 chunk 实际含 9 期 (2023-06-30~2025-06-30, 同年期正常载入) — 非 bug
 - **验证**: test_v544.py 3 项 (源码断言 notna+z/count / 2020 缺字段期非空>400 / 2025 全字段期 zscore 有效), 6 passed (v543+v544)
 - **待办**: 05:40 轮结束后 → 清理 blocked (fund_change/financial_anomaly) → 两因子单因子 force 重物化 → 验证覆盖 → 全量回归/回测
+## 2026-08-19: v545+v546 — sync 字段缺失根治 + blocked 自愈/空结果聚合告警
+
+- **v545 (sina_financials sync 增强)**: financial_income 行存在但 operating_cost/administration_expense 为 NULL → 不算已同步 (existing 排除) + need_fetch 判定加 needs_cost → 字段缺失行重拉补齐 — 根治"行已存在永不补"缺陷 (2020-2024 历史导入行缺字段的根因之一)
+- **v546 (store.py)**: 
+  1. `_unblock_recovered`: 成功重算 → 从 blocked 移除该 (date, factor) — 恢复因子自动解除剔除 (此前 blocked 只增不减, 恢复后残留)
+  2. `_empty_factor_summary` + ERROR 告警: 本轮空结果按因子聚合, ≥50 天 → ERROR "非正常缺数据 — 检查代码或数据源" — 修复 bug 因子静默 blocked 永久归档的机制缺陷 (fund_change 案例: 245 天 blocked 唯一暴露路径是人工查覆盖率)
+- **补数脚本** `scripts/backfill_financial_income.py` (v1.1): 对 NULL 行用 sina lrb 重拉补齐 (COALESCE 不覆盖), 3 并发 (8 并发触发 sina 限流 62s/请求 → 降 3 并发 ~9.4s/请求), 5558 只 ≈ 5h; 银行股无营业成本科目 → 保持 NULL 合理
+- **baostock 排除**: query_profit_data 仅 11 字段 (无 operatingCost/管理费用) — sina 是唯一全字段源
+- **验证**: test_v545_v546.py 4 项 (existing 互斥 / needs_cost 命中银行股 / unblock 语义 / 聚合阈值排序) + v543+v544, 10 passed
+- **待办**: 补数完成后 (预计 12:00) → 用户重启物化 force 全量 → 验证 fund_change/financial_anomaly/gp_ta 覆盖恢复

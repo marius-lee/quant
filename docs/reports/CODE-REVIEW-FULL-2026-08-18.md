@@ -444,3 +444,15 @@ eval_standard.sh 2023-2025 (完整年度评估)、phase7_wf --end 2025-12-31、b
 **chunk 预载疑云排除**: 2025-06-30 chunk 预载实测含 9 报告期 (2023-06-30~2025-06-30), 同年期正常载入, 字符串比较无问题 (v523 实现正确)。
 
 **教训**: 大规模 blocked 不恐慌, 按因子分类 (代码/数据/机制) 逐一钉死; 数据缺失类 blocked 在数据源补齐前不修代码、不排除因子, 等自愈。
+
+## §22 v545+v546: sync 字段缺失根治 + blocked 自愈/聚合告警 (防再犯机制落地)
+
+**v545 (sina_financials sync)**: "行已存在即跳过"是 2020-2024 缺字段永不补的另一半根因 (行在表里但列 NULL)。修复: financial_income 的 existing 判定要求 operating_cost/administration_expense 非空 + need_fetch 判定加 needs_cost — 缺失字段的股票重拉补齐, 根治。
+
+**v546 (store.py)**: 防"bug 因子静默归档"机制:
+1. `_unblock_recovered` — 成功重算自动解除 blocked (此前 blocked 只增不减, 恢复后残留导致增量轮跳过)
+2. `_empty_factor_summary` — 本轮空结果按因子聚合 ≥50 天 → ERROR 告警"检查代码或数据源" — fund_change 案例 (245 天 blocked, 唯一暴露路径是人工查 parquet) 从此自动暴露
+
+**补数**: scripts/backfill_financial_income.py v1.1 — sina lrb 重拉补齐 NULL 列 (COALESCE 幂等)。并发调优: 8 并发触发 sina 限流 (62s/请求) → 3 并发稳定 ~9.4s/请求, 5558 只 ≈ 5h。baostock 排除 (query_profit_data 仅 11 字段无 operatingCost)。银行股无营业成本科目 → 保持 NULL 合理。
+
+**验证**: test_v545_v546.py 4 项 + v543/v544 (前置断言改为不依赖临时数据状态 — 补数生效后 2020 期 cost 已恢复 41%)。10 passed。

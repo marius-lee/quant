@@ -53,3 +53,6 @@ quant/data/.amount_full_progress.json
 
 # 敏感信息: 本机生产配置含密钥 (serverchan/telegram token), 不提交
 quant/config/config.yaml
+
+# baostock 运行锁 (临时文件)
+.baostock_task.busy

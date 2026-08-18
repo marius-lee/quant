@@ -110,7 +110,10 @@ def _compare_signals(live_start: str, live_end: str) -> dict:
         try:
             result = generate_signals(
                 date_str=d_str, skip_pull=True, suppress_push=True,
-                scope="backtest", status_filter="backtesting",
+                # v532: 池统一 using (active+probation) — 原 status_filter=
+                # "backtesting" (evaluating+probation) 与实盘恒 divergent,
+                # D1 匹配率恒低失真; 实盘默认即 using, 同池同口径回放.
+                scope="backtest", status_filter="using",
                 factor_store=factor_store,
             )
             bt_signals[d_str] = result.get("target_positions", [])

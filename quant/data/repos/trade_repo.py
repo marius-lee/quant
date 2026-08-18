@@ -744,6 +744,13 @@ class TradeRepo:
             return {"_tp1_hit": bool(row[0]), "_peak": row[1] if row[1] > 0 else None}
         return {}
 
+    def get_last_sell_time(self, symbol: str) -> str:
+        """v532: 最近一次卖出时间 (清仓重买判定 — 旧 peak/tp1 不残留)."""
+        row = self._query_one(
+            f"SELECT MAX(datetime({ST_CREATED_AT}, 'localtime')) FROM sim_trades "
+            f"WHERE {ST_SYMBOL}=? AND {ST_SIDE}='sell'", (symbol,))
+        return row[0] if row and row[0] else None
+
     def get_position_meta_max(self, symbol: str) -> dict:
         """B9: 回载某 symbol 的历史峰值/TP1 标记 (MAX 聚合, 跨日持久).
 

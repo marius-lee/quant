@@ -222,8 +222,13 @@ class RiskManager:
             # 导致 TP1 每日重复触发减半、移动止损跨日峰值丢失 (回测与实盘均受影响).
             # 存储模式与 cooloff 同构: dict=内存(回测, 实例跨日共享), None=DB(实盘,
             # MAX 聚合历史峰值, 跨重启存活). 调用方已显式注入字段时不再回载.
+            # v532 (2026-08-18): 清仓重买判定 — 全历史 MAX 聚合把旧仓 peak/tp1
+            # 带进新仓 (trailing 立即触发 / TP1 永久失效); 最近卖出时间晚于本仓
+            # 买入时间 → 新仓, 跳过回载 (peak=成本, tp1=False)。
             if "_tp1_hit" not in p or "_peak" not in p:
-                _meta = self._meta_get(sym)
+                _meta = {}
+                if not (p.get("buy_time") and self._is_recently_rebought(sym, p.get("buy_time"))):
+                    _meta = self._meta_get(sym)
                 if _meta:
                     p.setdefault("_tp1_hit", _meta.get("_tp1_hit", False))
                     p.setdefault("_peak", _meta.get("_peak") or cost)
@@ -308,6 +313,24 @@ class RiskManager:
     # ═══════════════════════════════════════════
     # B9: 止损状态存储 (tp1_hit / peak) — 与 cooloff 同构双模式
     # ═══════════════════════════════════════════
+
+    def _is_recently_rebought(self, symbol: str, buy_time: str) -> bool:
+        """v532: 本仓买入晚于最近一次卖出 → 清仓重买的新仓.
+
+        仅 DB 模式有意义 (内存模式 _meta_store 由实例生命周期管理);
+        实盘全历史 MAX 聚合必须靠此判定避免旧仓状态污染新仓。
+        """
+        if self._meta_store is not None:
+            return False
+        if not buy_time:
+            return False
+        from quant.data.repos.trade_repo import TradeRepo
+        try:
+            last_sell = TradeRepo().get_last_sell_time(symbol)
+            return bool(last_sell) and buy_time[:19] > last_sell[:19]
+        except Exception as _e:
+            _log.debug("last_sell query failed for %s (non-fatal): %s", symbol, _e)
+            return False
 
     def _meta_get(self, symbol: str) -> dict:
         """回载 symbol 的跨日止损状态. 内存模式: 进程内累计 (回测);

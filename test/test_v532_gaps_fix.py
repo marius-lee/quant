@@ -51,12 +51,26 @@ def test_rebalance_turnover_scale_drops_sub_lot_trades():
 
 # ── 缺口6: order_manager QUOTE_TTL 追价 ──
 def test_order_manager_quote_ttl_chase(monkeypatch):
-    """挂单超 QUOTE_TTL 且 ask 高于 limit → 追价到 ask×(1-discount)."""
+    """挂单超 QUOTE_TTL 且 ask 高于 limit → 追价到 ask×(1-discount).
+
+    v533: 固定测试时钟 now=09:45 — 原跑在 14:50 后 (如下午全量回归) 会
+    走 force_fill 分支导致 chase 分支不可达 (时序敏感脆弱测试).
+    """
+    from quant.scheduler import order_manager as om_mod
     from quant.scheduler.order_manager import OrderManager, PendingOrder, QUOTE_TTL_SEC, DISCOUNT_PCT, MAX_CHASE
     from datetime import datetime, timedelta
 
+    fixed_now = datetime(2026, 8, 18, 9, 45, 0)
+    _real_dt = datetime
+    monkeypatch.setattr(
+        om_mod, "datetime",
+        type("_FDT", (), {
+            "now": staticmethod(lambda: fixed_now),
+            "fromisoformat": staticmethod(_real_dt.fromisoformat),
+        })())
+
     om = OrderManager()
-    placed_at = (datetime.now() - timedelta(seconds=QUOTE_TTL_SEC + 60)).isoformat(timespec="seconds")
+    placed_at = (fixed_now - timedelta(seconds=QUOTE_TTL_SEC + 60)).isoformat(timespec="seconds")
     po = PendingOrder(
         id=999, strategy="quant", symbol="000001", target_shares=100,
         limit_price=9.90, reference_price=10.0, status="pending",

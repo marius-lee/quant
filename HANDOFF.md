@@ -3780,3 +3780,13 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
 - **缺口6 QUOTE_TTL 落地 (order_manager)**: 原 QUOTE_TTL_SEC 死配置 + _chase 无调用方 — 限价单挂死, 成交率随时间衰减 (Kissell Ch.17 应随行情追踪) → check_and_manage 新增 chase 分支: 挂单超 TTL 且 ask>limit 且 gap≤urgency 且 chase_count<MAX_CHASE(3, config) → 追价 ask×(1-discount)
 - **验证**: 新增 test_v532_gaps_fix.py 6 测试 (换手预算/追价 TTL 内不追/市值权重/repair 兜底×2/phase5); 全量 415 passed (134s)
 - **注意**: (a) 子进程 runner 改阻塞式 — orchestrator 主循环在子进程运行期间阻塞, daily_repair 秒级可接受, 晚间链期间 signals 等盘内任务照常由主循环处理 (晚间 19:00 无盘内任务); (b) phase5 DSR 门槛不变 (0.95), 只是数据源纠正 — 本周六评估将按真实 DSR 裁决
+## 2026-08-18: 闭环断裂点 2-6 修复 (test-v533) — 归档 docs/reports/CODE-REVIEW-FULL-2026-08-18.md 第 10 节
+
+- **断裂点2 equity_cross 当日快照口径 (reconcile.py)**: 原比较"最近一条 daily_equity"= 昨日日终快照 — reconcile (15:05) 在当日 equity 写入前执行, 有交易的交易日现金变动必超 tol → 每个交易日必报 break (告警疲劳零信息量) → 改 `WHERE strategy=? AND date=?` 当日快照, 当日无快照 → skip (跨日漂移由 daily_equity 曲线 + alerts Rule 1 监控); test_reconcile.py 两测试同步更新 (篡改检测改为同日快照篡改)
+- **断裂点3 Brinson 基准量纲统一 (attribution.py)**: 原 sector_returns 取历史日均 `pct_change().mean()` (60 日均 vs 组合"最近一日"收益, 量纲错配 → 每日虚假分解) → 抽 `_sector_returns_from_df`: 最近交易日当日收益 (成分等权, 与 pos_returns 同日口径)
+- **断裂点4 止损状态回测/实盘方向相反 (stop_loss.py + loop.py)**: 根因 — 回测 `_risk_manager(ctx)` 每 run 新建实例 → `_meta_store` 空 dict → peak/tp1 每日重置 (trailing 永基于当日); 实盘 `get_position_meta_max` 全历史 MAX 聚合 → 清仓重买后旧 peak/tp1 残留 (trailing 立即触发 / TP1 永久失效)。统一语义 "持仓周期内跨日保留, 清仓重买重置": (a) loop.py ctx 注入 `risk_manager=_rm` (顶层内存实例跨日共享, 原 _rm 只用于 cooloff 是死注入); (b) `_is_recently_rebought` — DB 模式最近卖出早于本仓买入 → 新仓, 跳过 meta 回载 (peak=成本, tp1=False); trade_repo 新增 `get_last_sell_time`
+- **断裂点5 (P0-1) 实盘止损走券商 (execution_model.py)**: 原 4 处止损直接 `ctx.engine.execute` → 只写 sim_trades — 账本已清、券商仍持仓 → 持仓翻倍 (ADR-036 止损路径从未实现) → 新增 `_execute_stop_orders`: adapter=None → engine.execute (回测); 已连接 → adapter.sell (simulated 等价写账本); **存在但未连接 → RuntimeError 零 fallback** (宁可留仓不双账); LiveExecutionModel.execute_sells 同样收紧 (原未连接也回退 engine.execute)
+- **断裂点6 phase8 D1 因子池统一 (phase8_live_consistency.py)**: 原回放 `status_filter="backtesting"` (evaluating+probation) vs 实盘 using (active+probation) → 池恒 divergent, D1 匹配率恒低失真 → 改 `status_filter="using"` 与实盘同口径
+- **断裂点1 残余验证**: 晚间链失败 → 08:00 daily_repair `_ensure_factor_cache` 增量物化 (v532) + orchestrator 窗口内重试预算已闭环, 无需再改
+- **验证**: 新增 test_v533_closed_loop.py 7 测试; test_v532_gaps_fix.py 追价测试钉死时钟 (原下午跑 14:50 后走 force_fill 分支, 时序敏感); 全量 422 passed (135s)
+- **注意**: (a) 集成回测验证被因子缓存 data_hash 指纹失效阻断 (2023-01 起 ~10 因子缺失, v492 机制: 数据更新后旧缓存日期需重算) — 补 `bash scripts/materialize_full.sh` 后可跑短回测回归; (b) 实盘重启后首个交易日 `_known` 新仓判定基于 last_sell 时间戳, 无卖出记录的新持仓不受影响; (c) 未连接券商时止损抛 RuntimeError — orchestrator 需用户介入恢复连接, 属预期资金安全行为

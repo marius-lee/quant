@@ -102,6 +102,33 @@ class ExecutionModel(ABC):
             return ctx.risk_manager
         return RiskManager(strategy=ctx.strategy, cooloff_store=self.cooloff_store)
 
+    def _execute_stop_orders(self, orders: list, ctx: ExecutionContext) -> None:
+        """v532 (P0-1, 实盘资金安全): 止损卖单经 broker_adapter.
+
+        原 4 处止损直接 ctx.engine.execute → 只写 sim_trades — 账本已清、
+        券商实际仍持仓 → 持仓翻倍风险 (ADR-036 止损路径从未实现)。
+
+        - adapter=None (回测/未注入): engine.execute 模拟 (回测语义)
+        - adapter 已连接 (simulated 等价写账本 / 真实券商): adapter.sell
+        - adapter 存在但未连接 (vnpy 掉线): RuntimeError — 零 fallback,
+          宁可留仓也不双账 (账本清、券商留 = 事后不可逆)
+        """
+        adapter = getattr(ctx.engine, 'broker_adapter', None)
+        if adapter is None:
+            ctx.engine.execute(orders, ctx.today, ctx.strategy)
+            return
+        if not adapter.is_connected():
+            raise RuntimeError(
+                f"止损无法执行: broker adapter {adapter.name} 未连接 — 拒绝模拟成交 "
+                f"(P0-1: 账本/券商双账风险). 请恢复券商连接后重试")
+        for o in orders:
+            r = adapter.sell(o.symbol, o.price, o.shares, order_type="MARKET")
+            if not r.success:
+                raise RuntimeError(
+                    f"止损券商卖出失败 {o.symbol}: {r.error} — 拒绝模拟成交 (P0-1)")
+            _log.info(f"[{ctx.today}] stop-loss via broker: {o.symbol} "
+                      f"{o.shares}股 @¥{o.price:.2f} status={r.status}")
+
     def run(self, targets: list, ctx: ExecutionContext,
             risk_only: bool = False) -> ExecutionResult:
         """共用执行链: 冷却 → 止损 → delta → 校验裁剪 → 分单成交。
@@ -120,10 +147,9 @@ class ExecutionModel(ABC):
             for st in stops:
                 _log.warning(f"[{ctx.today}] stop-loss (risk_only): {st['symbol']} "
                              f"drop={st['drop']:.1%}, selling {st['shares']}")
-                ctx.engine.execute(
+                self._execute_stop_orders(
                     [Order(symbol=st["symbol"], side="sell", shares=st["shares"],
-                           price=st["price"], cost=0)],
-                    ctx.today, ctx.strategy)
+                           price=st["price"], cost=0)], ctx)
                 rm.set_cooloff(st["symbol"], ctx.today)
                 result.stopped_out.append(st["symbol"])
             # v410: ATR 动态止盈止损 (回测↔实盘一致)
@@ -131,10 +157,9 @@ class ExecutionModel(ABC):
             atr_stops = rm.check(positions, _quotes, ctx.today,
                                  atr_panel=getattr(ctx, "atr_panel", None))
             for _as in atr_stops:
-                ctx.engine.execute(
+                self._execute_stop_orders(
                     [Order(symbol=_as["symbol"], side="sell", shares=_as["shares"],
-                           price=_as["price"], cost=0)],
-                    ctx.today, ctx.strategy)
+                           price=_as["price"], cost=0)], ctx)
                 result.stopped_out.append(_as["symbol"])
             result.sells = len(result.stopped_out)
             result.buys_mode = "none"
@@ -155,10 +180,9 @@ class ExecutionModel(ABC):
         for st in stops:
             _log.warning(f"[{ctx.today}] stop-loss: {st['symbol']} "
                          f"drop={st['drop']:.1%}, selling {st['shares']}")
-            ctx.engine.execute(
+            self._execute_stop_orders(
                 [Order(symbol=st["symbol"], side="sell", shares=st["shares"],
-                       price=st["price"], cost=0)],
-                ctx.today, ctx.strategy)
+                       price=st["price"], cost=0)], ctx)
             rm.set_cooloff(st["symbol"], ctx.today)
             result.stopped_out.append(st["symbol"])
             positions = ctx.engine.get_positions(ctx.strategy)
@@ -171,10 +195,9 @@ class ExecutionModel(ABC):
                              atr_panel=getattr(ctx, "atr_panel", None))
         for _as in atr_stops:
             _log.warning(f"[{ctx.today}] ATR stop: {_as['symbol']} {_as['reason']}")
-            ctx.engine.execute(
+            self._execute_stop_orders(
                 [Order(symbol=_as["symbol"], side="sell", shares=_as["shares"],
-                       price=_as["price"], cost=0)],
-                ctx.today, ctx.strategy)
+                       price=_as["price"], cost=0)], ctx)
             rm.set_cooloff(_as["symbol"], ctx.today)
             result.stopped_out.append(_as["symbol"])
             result.sells += 1
@@ -360,6 +383,12 @@ class LiveExecutionModel(ExecutionModel):
                 else:
                     _log.info(f"[{ctx.today}] broker sell: {o.symbol} "
                               f"{o.shares}股 @¥{o.price:.2f} status={result.status}")
+        elif adapter is not None:
+            # v532 (P0-1): adapter 存在但未连接 → 拒绝模拟 — 账本已清、券商
+            # 仍持仓 = 持仓翻倍 (原直接回退 engine.execute 是双账根源).
+            raise RuntimeError(
+                f"卖单无法执行: broker adapter {adapter.name} 未连接 — 拒绝模拟成交 "
+                f"(P0-1: 账本/券商双账风险). 请恢复券商连接后重试")
         else:
             ctx.engine.execute(orders, ctx.today, ctx.strategy)
         _log.info(f"[{ctx.today}] executed {len(orders)} sell orders")

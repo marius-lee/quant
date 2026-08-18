@@ -95,6 +95,35 @@ def _promotion_eligible(
     return True, "eligible"
 
 
+def _sector_returns_from_df(df) -> dict:
+    """v532: 最近交易日当日收益 (成分等权) — 与组合 pos_returns 同日口径.
+
+    原 _run 内联取历史日均收益 pct_change().mean() — 60 日均 vs 组合
+    "最近一日"收益, 量纲错配 → Brinson allocation/selection 每日虚假分解。
+    """
+    import pandas as pd
+    df = df.copy()
+    df["sector"] = df["sector"].fillna("其他")
+    sector_returns = {}
+    for s, g in df.groupby("sector"):
+        g_sorted = g.sort_values("date")
+        if len(g_sorted) < 2:
+            continue
+        last_date = g_sorted["date"].max()
+        day_group = g_sorted[g_sorted["date"] == last_date]
+        rets = []
+        for _, row in day_group.iterrows():
+            prev = g_sorted[(g_sorted["symbol"] == row["symbol"])
+                            & (g_sorted["date"] < last_date)]
+            if not prev.empty:
+                prev_close = prev["close"].iloc[-1]
+                if prev_close and prev_close > 0:
+                    rets.append(row["close"] / prev_close - 1)
+        if rets:
+            sector_returns[s] = sum(rets) / len(rets)
+    return sector_returns
+
+
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
@@ -130,13 +159,7 @@ def _run(today: str):
         if rows:
             df = pd.DataFrame(rows, columns=["symbol", "close", "sector", "date"])
             df["sector"] = df["sector"].fillna("其他")
-            sectors = df.groupby("sector")
-            sector_returns = {}
-            for s, g in sectors:
-                g_sorted = g.sort_values("date")
-                if len(g_sorted) >= 2:
-                    ret = g_sorted["close"].pct_change().dropna().mean()
-                    sector_returns[s] = ret
+            sector_returns = _sector_returns_from_df(df)
 
             port_values = {}
             for p in positions:

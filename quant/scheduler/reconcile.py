@@ -111,10 +111,15 @@ def _recon_cash(day: str, strategy: str, db_path: str) -> list[dict]:
     # P0-2 fix: drift 容差由配置读取, 默认 1.0 (报告 §1.6)
     tol = _require_cfg("recon.cash_drift_tolerance")
 
-    # equity_cross: 最近日终快照现金 vs 当前现金 (快照后账本被改 → drift 暴露)
+    # equity_cross: 当日快照现金 vs 当前现金 (快照后账本被改 → drift 暴露)
+    # v532 (2026-08-18): 原比较"最近一条"= 昨日日终快照 — reconcile (15:05)
+    # 在当日 equity 写入之前执行, 交易日现金变动 (交易净额) 必触发 drift >
+    # tol → 每个有交易的交易日必报 break (告警疲劳, 无信息量)。
+    # 改为仅与当日快照比较 (重复执行/尾盘后篡改检测); 当日无快照 → skip
+    # (首次对账无基准, 跨日漂移由 daily_equity 曲线 + monitor/alerts Rule 1 监控)。
     snapshot = repo._query_one(
-        "SELECT cash FROM daily_equity WHERE strategy=? ORDER BY date DESC LIMIT 1",
-        (strategy,))
+        "SELECT cash FROM daily_equity WHERE strategy=? AND date=? ORDER BY date DESC LIMIT 1",
+        (strategy, day))
     if snapshot and snapshot[0] is not None:
         snapshot_cash = float(snapshot[0])
         eq_drift = actual_cash - snapshot_cash

@@ -132,3 +132,18 @@ hrp.py:145（corr>1→NaN→静默等权）；multi_tf.py（weekly_weight 未用
 6. **QUOTE_TTL 落地** ✅ — 死配置 + `_chase` 无调用方 → 超 TTL 且 gap≤urgency 时追价 ask×(1-discount)，上限 MAX_CHASE=3（config）。
 
 验证: 新增 test_v532_gaps_fix.py 6 项；全量 415 passed。
+
+## 10. 闭环断裂点 2-6 修复记录 (test-v533, 2026-08-18)
+
+审查第 3 节"闭环断裂点"6 处逐一闭环:
+
+1. **晚间链失败 → signals 无因子缓存** ✅ — 实为 v532 修复: 08:00 daily_repair `_ensure_factor_cache` 增量物化兜底 + orchestrator 按返回值窗口内重试; v533 验证 signals 侧无残留缺口, 无需再改。
+2. **equity_cross 每日必报 break** ✅ — 原比较"最近一条"快照 (= 昨日, reconcile 15:05 早于当日 equity 写入) → 有交易即 break; 改当日快照 `WHERE date=?`, 当日无快照 → skip。跨日漂移移交 daily_equity 曲线 + alerts Rule 1。
+3. **Brinson 基准量纲错配** ✅ — 原 sector_returns 历史日均收益 (60 日均 vs 组合当日收益, 量纲不一致 → 每日虚假分解); 改最近交易日当日收益 (成分等权, 与 pos_returns 同日口径)。抽纯函数 `_sector_returns_from_df` 可测。
+4. **回测止损每日重置 vs 实盘历史残留** ✅ — 根因: 回测 `_risk_manager` 每 run 新建实例 (meta 空 dict, 峰值每日归成本) vs 实盘 MAX 聚合 (清仓重买旧峰值残留 → trailing 立即触发 / TP1 失效), 行为方向相反。统一 "持仓周期跨日保留、清仓重买重置": 回测注入共享 `_rm`; 实盘 `_is_recently_rebought` (最近卖出早于本仓买入 → 跳过回载)。
+5. **实盘止损"模拟成交"→ 券商持仓翻倍 (P0-1)** ✅ — 原 4 处止损直写 engine.execute (sim_trades), 账本清、券商留 → 翻倍; 新增 `_execute_stop_orders` 统一走 broker_adapter: 未连接 → RuntimeError 零 fallback (宁可留仓不双账); LiveExecutionModel.execute_sells 同样收紧。
+6. **phase8 D1 因子池恒 divergent** ✅ — 回放 `status_filter="backtesting"` → `"using"` (与实盘 active+probation 同池), D1 匹配率恢复信息量。
+
+验证: 新增 test_v533_closed_loop.py 7 项 (当日快照/当日基准/重买重置/止损三态/P0-1 三态/using 池); test_v532 追价测试钉死时钟 (时序敏感); 全量 422 passed。
+
+注意: (a) 集成回测回归暂被因子缓存 data_hash 指纹失效阻断 (2023-01 起 ~10 因子需重算, v492 机制正常行为) — `bash scripts/materialize_full.sh` 后补跑; (b) P0-1 的 RuntimeError 属预期: 券商掉线时止损拒绝模拟, orchestrator 需人工恢复连接。

@@ -60,9 +60,12 @@ def test_position_recon_drift(env):
 
 
 def test_cash_invariant_and_equity_cross(env):
-    """现金: 不变量 cash>=0 + 跨源 equity_cross 一致 → ok."""
+    """现金: 不变量 cash>=0 + 跨源 equity_cross 一致 → ok.
+
+    v533: equity_cross 改为当日快照口径 — 原 YDAY 快照在 DAY 对账时
+    恒 skip (行为变更: 跨日漂移由 daily_equity 曲线监控)."""
     _seed_position(env)
-    env["repo"].record_daily_equity(YDAY, env["eng"].get_cash("quant"),
+    env["repo"].record_daily_equity(DAY, env["eng"].get_cash("quant"),
                                     1000.0, strategy="quant")
     env["repo"].save_signals(DAY, [{"symbol": "699999", "shares": 100,
                                     "score": 9, "price": 10.0}], 100000.0)
@@ -74,13 +77,15 @@ def test_cash_invariant_and_equity_cross(env):
 
 
 def test_equity_cross_detects_tampering(env):
-    """昨日快照后账本被改 (手工插一条买入) → equity_cross break."""
+    """当日快照后账本被改 (篡改 daily_equity 现金) → equity_cross break.
+
+    v533: 篡改检测语义随当日快照口径更新 — 快照与对账同日 (原 YDAY 篡改
+    属跨日, 改由 daily_equity 曲线 + alerts Rule 1 监控)."""
     _seed_position(env)
-    env["repo"].record_daily_equity(YDAY, env["eng"].get_cash("quant"),
+    env["repo"].record_daily_equity(DAY, env["eng"].get_cash("quant"),
                                     1000.0, strategy="quant")
-    # 快照之后又插入当日交易 → 快照+流水 != 现金? 不, 现金含流水.
-    # 篡改场景: 直接改 daily_equity 现金 → drift 出现
-    env["repo"].record_daily_equity(YDAY, 90000.0, 1000.0, strategy="quant")
+    # 篡改场景: 同日快照现金被改 → drift 出现
+    env["repo"].record_daily_equity(DAY, 90000.0, 1000.0, strategy="quant")
     r = run_reconcile(DAY, db_path=env["db"])
     eq = next(c for c in r["cash"] if c["check"] == "equity_cross")
     assert eq["status"] == "break" and abs(eq["drift"]) > 1.0

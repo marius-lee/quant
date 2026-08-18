@@ -684,6 +684,12 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             prebuilt_constructor=_prebuilt_constructor,
             suppress_push=suppress_push, db_path=BACKTEST_DB, universe_size=universe_size,
             atr_panel=_ctx_atr_panel, probation_names=_ctx_probation,
+            # v532: 注入跨日共享 RiskManager — 原 BacktestExecutionModel.
+            # _risk_manager(ctx) 每 run 新建实例 → _meta_store 空 dict →
+            # 回测 peak/tp1 每日重置 (trailing 永基于当日, 与实盘全历史残留
+            # 方向相反)。注入 loop 顶层 _rm (内存 dict 跨日共享) 后统一为
+            # "持仓周期内跨日保留, 清仓重买重置"。
+            risk_manager=_rm,
         )
 
         # ── Main loop ──

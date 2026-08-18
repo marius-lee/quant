@@ -3847,3 +3847,11 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
 - **验证**: test_v538.py 4 项 (源码断言×2/配置一致性 start==factor_cache_start/默认解析走 config — FakeEngine 拦截真回测, patch 源模块因 loop.py 函数体内 import); test_v538+v536 13 passed (tracking_summary 偶发锁 = 服务写竞争, 单跑 10 passed)
 - **脚本**: scripts/run_backtest_full.sh (config 默认区间/自定义区间/--smoke; 结果落 backtest_runs; 前置: 物化完成; 需停 web 服务防写竞争)
 - **物化/回测现状**: 全量物化 2026-08-18 07:33 完成 (parquet_f 99 因子 2.7GB, 2020-01-02~2026-08-17); backtest_runs 41 条全为物化前片段 (2025 Q1 调参批/2026 夏季 39 天/2024 Q1 失败), **物化后无任何回测** — 待跑
+## 2026-08-18: v539 因子缓存指纹修复 — data_hash 整库判定删除 (每日增量误伤)
+
+- **背景**: 全量物化 (07:33 完成) 后回测报 "factor cache missing for 239 IC lookback dates (2025-06-06..2026-06-01)"
+- **根因 1 (data_hash 整库指纹误伤, v492 设计缺陷)**: `_get_existing_factors` 要求 meta.data_hash == 当前整库指纹 (daily COUNT/SUM/MAX + daily_valuation + 财务三表) — 晚间链拉新数据 → COUNT/MAX(date) 变 → **全部日期误判缺失** (每日必发, 逼全量重物化); 实测 meta 3f5dc83 vs 当前 574fa3f
+- **根因 2 (source_hash 失效 15/99 因子)**: 凌晨物化用 v533 代码, 白天 v534 (16:26, piotroski aux 序) / v535 (17:58) 落地改因子代码 → piotroski_fscore/alpha002/alpha055/alpha033/ztd/short_interest 等 15 因子缓存值过时 — **机制正确, 必须重物化**
+- **修复 (store.py `_get_existing_factors`)**: 删除 data_hash 判定 (局部信任已物化日期, 日期+source_hash 双条件即可); 指纹保留写入 meta 作审计字段; **历史回填/因子代码变更 → force 全量重物化 (scripts/materialize_full.sh, v529 语义)** — 回填事件罕见 (本次 8-18 force 补全实证), 日常增量不再误伤
+- **验证**: test_v539.py 4 项 (源码断言 data_hash 判定删除/source_hash 判定保留; 行为: 旧指纹+已物化日期 → 有效; stale source_hash → 缺失; 未物化日期 → 缺失), 4 passed
+- **环境现状**: 回测仍被 15 因子 source_hash 失效阻断 → 待重跑全量物化 (v538 代码) 后回测可跑

@@ -1030,10 +1030,11 @@ class FactorStore:
             # source_hash 不匹配 → 因子代码已变, 该日期需重算 (per-factor 口径)
             if "source_hash" in meta and meta["source_hash"] != _source_hash_single(fname):
                 continue
-            # data_hash 不匹配 → 输入数据已变 (amount/turnover/财务回填),
-            # 该日期需重算 (v492) — meta 无 data_hash (旧版) 时按缺失处理
-            if meta.get("data_hash") != _compute_data_fingerprint():
-                continue
+            # v539: 删除整库 data_hash 判定 — 整库指纹随每日增量变化
+            # (晚间链拉新数据 → daily COUNT/MAX(date) 变) → 全段缓存误判
+            # 缺失 → 回测 IC 检查全缺报错 (2026-08-18 实证 239 天全缺).
+            # 数据指纹仅作审计字段保留; 历史回填后须 force 全量重物化
+            # (scripts/materialize_full.sh, v529 force 语义)
             existing.add(fname)
         return existing
 

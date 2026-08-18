@@ -11,7 +11,11 @@
 #         不覆盖既有记录; 可重复执行
 # 前置: 因子缓存已全量物化 (bash scripts/materialize_full.sh, 2026-08-18 完成)
 # 输出: 结果落库 backtest_trades.db#backtest_runs + 终端打印 metrics
-# 环境: 需停 web 服务 (其写 task_runs 与回测写库竞争) — 测试/回测完再 restart
+# 写库范围: 仅 backtest_trades.db (模拟成交+记录); market.db 只读
+#           (limit_up_pool 预加载) — 与实盘模拟 (trades.db) 和 web 服务
+#           (market.db task_runs) 无交集, **无需停服务**
+#           (停服务仅 pytest 场景: 服务 api_state→_check_timeouts 写
+#            market.db 与测试写库竞争)
 # =============================================================================
 set -euo pipefail
 cd "$(dirname "$0")/.."

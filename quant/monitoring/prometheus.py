@@ -42,8 +42,6 @@ _log = get_logger("monitoring.prometheus")
 class MetricType(str, Enum):
     COUNTER = "counter"
     GAUGE = "gauge"
-    HISTOGRAM = "histogram"
-    SUMMARY = "summary"
 
 
 # ── 全局指标注册表 (自定义 Registry, 避免污染全局 REGISTRY) ──
@@ -58,7 +56,6 @@ def _get_or_create_metric(
     name: str,
     documentation: str,
     labels: List[str] = None,
-    buckets: List[float] = None,
 ) -> Any:
     """获取或创建指标 (线程安全, 避免重复注册)."""
     key = f"{metric_type.value}:{name}"
@@ -71,10 +68,6 @@ def _get_or_create_metric(
             metric = Counter(name, documentation, labels, registry=_metrics_registry)
         elif metric_type == MetricType.GAUGE:
             metric = Gauge(name, documentation, labels, registry=_metrics_registry)
-        elif metric_type == MetricType.HISTOGRAM:
-            metric = Histogram(name, documentation, labels, buckets=buckets, registry=_metrics_registry)
-        elif metric_type == MetricType.SUMMARY:
-            metric = Summary(name, documentation, labels, registry=_metrics_registry)
         else:
             raise ValueError(f"Unknown metric type: {metric_type}")
 
@@ -82,90 +75,23 @@ def _get_or_create_metric(
         return metric
 
 
-# ── 通用装饰器 ──
-
-def monitor_latency(metric_name: str, labels: Dict[str, str] = None, buckets: List[float] = None):
-    """函数耗时监控装饰器 (Histogram)."""
-    histogram = _get_or_create_metric(
-        MetricType.HISTOGRAM, metric_name, f"Latency of {metric_name}",
-        labels=list(labels.keys()) if labels else None,
-        buckets=buckets or [0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0],
-    )
-
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            start = time.time()
-            try:
-                return func(*args, **kwargs)
-            finally:
-                elapsed = time.time() - start
-                labels_values = {**labels} if labels else {}
-                histogram.labels(**labels_values).observe(time.time() - start)
-        return wrapper
-    return decorator
-
-
-def monitor_count(metric_name: str, labels: Dict[str, str] = None, increment: float = 1.0):
-    """计数器装饰器 (Counter)."""
-    counter = _get_or_create_metric(
-        MetricType.COUNTER, metric_name, f"Count of {metric_name}",
-        labels=list(labels.keys()) if labels else None,
-    )
-
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            try:
-                return func(*args, **kwargs)
-            finally:
-                labels_values = {**labels} if labels else {}
-                counter.labels(**labels_values).inc()
-        return wrapper
-    return decorator
-
-
-def monitor_gauge(metric_name: str, labels: Dict[str, str] = None, value_func: Callable = None):
-    """Gauge 监控装饰器 (设置当前值)."""
-    gauge = _get_or_create_metric(
-        MetricType.GAUGE, metric_name, f"Gauge of {metric_name}",
-        labels=list(labels.keys()) if labels else None,
-    )
-
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            result = func(*args, **kwargs)
-            if value_func:
-                value = value_func(result)
-                labels_values = {**labels} if labels else {}
-                gauge.labels(**labels_values).set(value)
-            return result
-        return wrapper
-    return decorator
+# v534: 通用装饰器 (monitor_latency/monitor_count/monitor_gauge) 已删除 —
+# 全项目无调用方, 指标从未 set (僵尸定义); 业务指标统一走
+# monitor/metrics.py 本地系统 + MetricsCollector._inject_local_metrics 动态导出。
 
 
 # ── 业务指标定义 (quant 专用) ──
 
 class QuantMetrics:
-    """Quant 业务指标集合 — 统一定义, 避免重复/冲突."""
+    """Quant 业务指标集合 — 统一定义, 避免重复/冲突.
 
-    # ── 交易指标 ──
-    TRADES_TOTAL = Counter(
-        "quant_trades_total", "Total number of trades executed",
-        ["strategy", "side", "symbol", "status"],
-        registry=_metrics_registry,
-    )
-    TRADE_VOLUME = Counter(
-        "quant_trade_volume_total", "Total trade volume (shares)",
-        ["strategy", "symbol"],
-        registry=_metrics_registry,
-    )
-    TRADE_PNL = Counter(
-        "quant_trade_pnl_total", "Total PnL from trades",
-        ["strategy", "symbol"],
-        registry=_metrics_registry,
-    )
+    v534: 交易/因子/风控/回测类指标定义后从未 set (业务代码统一走
+    monitor/metrics.py 本地系统) — 僵尸定义已删除, 由
+    MetricsCollector._inject_local_metrics 以 quant_local_* 动态导出.
+    以下仅保留 collector 实际 set 的指标。
+    """
+
+    # ── 持仓/资金指标 (MetricsCollector 每日 set) ──
     POSITION_VALUE = Gauge(
         "quant_position_value", "Current position market value",
         ["strategy", "symbol"],
@@ -187,60 +113,6 @@ class QuantMetrics:
         registry=_metrics_registry,
     )
 
-    # ── 因子/Alpha 指标 ──
-    FACTOR_IC = Gauge(
-        "quant_factor_ic", "Factor IC value",
-        ["factor_name", "scope"],
-        registry=_metrics_registry,
-    )
-    FACTOR_ICIR = Gauge(
-        "quant_factor_icir", "Factor ICIR",
-        ["factor_name", "scope"],
-        registry=_metrics_registry,
-    )
-    FACTOR_RANK = Gauge(
-        "quant_factor_rank", "Factor rank percentile",
-        ["factor_name"],
-        registry=_metrics_registry,
-    )
-    ALPHA_SCORE = Gauge(
-        "quant_alpha_score", "Alpha composite score",
-        ["symbol", "strategy"],
-        registry=_metrics_registry,
-    )
-
-    # ── 风控指标 ──
-    VAR_95 = Gauge(
-        "quant_var_95", "Value at Risk (95%)",
-        ["strategy"],
-        registry=_metrics_registry,
-    )
-    VAR_99 = Gauge(
-        "quant_var_99", "Value at Risk (99%)",
-        ["strategy"],
-        registry=_metrics_registry,
-    )
-    MAX_DRAWDOWN = Gauge(
-        "quant_max_drawdown_pct", "Maximum drawdown percentage",
-        ["strategy"],
-        registry=_metrics_registry,
-    )
-    LEVERAGE = Gauge(
-        "quant_leverage", "Current leverage ratio",
-        ["strategy"],
-        registry=_metrics_registry,
-    )
-    TURNOVER = Gauge(
-        "quant_turnover_ratio", "Portfolio turnover ratio",
-        ["strategy"],
-        registry=_metrics_registry,
-    )
-    CONCENTRATION = Gauge(
-        "quant_concentration", "Single position concentration",
-        ["strategy", "symbol"],
-        registry=_metrics_registry,
-    )
-
     # ── 数据质量指标 ──
     DATA_FRESHNESS = Gauge(
         "quant_data_freshness_hours", "Data freshness in hours",
@@ -250,11 +122,6 @@ class QuantMetrics:
     DATA_ROWS = Gauge(
         "quant_data_rows", "Number of rows in table",
         ["table"],
-        registry=_metrics_registry,
-    )
-    DATA_STALENESS = Gauge(
-        "quant_data_staleness", "Data staleness indicator (1=stale)",
-        ["source", "table"],
         registry=_metrics_registry,
     )
 
@@ -277,31 +144,8 @@ class QuantMetrics:
         ["database"],
         registry=_metrics_registry,
     )
-    QUEUE_SIZE = Gauge(
-        "quant_queue_size", "Task queue size",
-        ["queue_name"],
-        registry=_metrics_registry,
-    )
 
-    # ── 调度器指标 ──
-    TASK_DURATION = Histogram(
-        "quant_task_duration_seconds", "Task execution duration",
-        ["task_name", "status"],
-        buckets=[1, 5, 10, 30, 60, 300, 600, 1800, 3600],
-        registry=_metrics_registry,
-    )
-    TASK_STATUS = Counter(
-        "quant_task_status_total", "Task execution status",
-        ["task_name", "status"],
-        registry=_metrics_registry,
-    )
-    SCHEDULER_POLL = Counter(
-        "quant_scheduler_poll_total", "Scheduler poll count",
-        ["status"],
-        registry=_metrics_registry,
-    )
-
-    # ── 回测指标 ──
+    # ── 回测指标 (MetricsCollector._collect_backtest_metrics set) ──
     BACKTEST_SHARPE = Gauge(
         "quant_backtest_sharpe", "Latest backtest Sharpe ratio",
         ["strategy"],
@@ -320,11 +164,6 @@ class QuantMetrics:
     BACKTEST_DSR = Gauge(
         "quant_backtest_dsr", "Latest backtest Deflated Sharpe Ratio",
         ["strategy"],
-        registry=_metrics_registry,
-    )
-    BACKTEST_RUNS = Counter(
-        "quant_backtest_runs_total", "Total backtest runs",
-        ["strategy", "status"],
         registry=_metrics_registry,
     )
 
@@ -416,6 +255,26 @@ class MetricsCollector:
         finally:
             if conn is not None:
                 conn.close()
+
+        # v534: 本地指标系统 (monitor/metrics.py) 动态导出 —
+        # 双指标系统合并: 业务代码统一 inc/gauge 本地 metrics, 此处按
+        # 周期注入 Prometheus 注册表 (quant_local_*), 两套系统一套采集。
+        # Counter 语义用 Gauge 绝对值导出 (本地 snapshot 即累计值)。
+        try:
+            from quant.monitor.metrics import metrics as _local
+            snap = _local.snapshot()
+            for name, val in {**snap.get("counters", {}),
+                              **snap.get("gauges", {})}.items():
+                if not isinstance(val, (int, float)):
+                    continue
+                g = _get_or_create_metric(
+                    MetricType.GAUGE,
+                    "quant_local_" + name.replace(".", "_").replace("-", "_"),
+                    f"Local metric {name} (via monitor/metrics.py)",
+                )
+                g.set(float(val))
+        except Exception as _e:
+            _log.debug("local metrics injection failed (non-fatal): %s", _e)
         self._collect_trade_metrics()
         self._collect_backtest_metrics()
 
@@ -577,10 +436,12 @@ class GrafanaDashboardBuilder:
                 _panel_timeseries("Cash Balance", "quant_cash_balance", "{{strategy}}", 12, 0, 6, 8),
                 _panel_timeseries("Position Value", "quant_position_value", "{{strategy}}/{{symbol}}", 18, 0, 6, 8),
                 _panel_timeseries("Drawdown %", "quant_drawdown_pct", "{{strategy}}", 0, 8, 12, 6),
-                _panel_stat("Sharpe (latest backtest)", "quant_backtest_sharpe", "{{strategy}}", 12, 8, 6, 6),
-                _panel_stat("Max Drawdown %", "quant_max_drawdown_pct", "{{strategy}}", 18, 8, 6, 6),
-                _panel_stat("CAGR % (latest backtest)", "quant_backtest_cagr_pct", "{{strategy}}", 0, 14, 6, 5),
-                _panel_stat("DSR (latest backtest)", "quant_backtest_dsr", "{{strategy}}", 6, 14, 6, 5),
+                # v534: 僵尸回测指标 (quant_backtest_*/quant_max_drawdown_pct) 已删 —
+                # 回测/归因指标由本地系统导出 (quant_local_scheduler_attribution_dsr)
+                _panel_stat("DSR (weekly eval)", "quant_local_scheduler_attribution_dsr", "", 12, 8, 6, 6),
+                _panel_stat("IC degraded (1h)", "increase(quant_local_scheduler_attribution_ic_degraded[1h])", "", 18, 8, 6, 6),
+                _panel_stat("Attribution OK (1h)", "increase(quant_local_scheduler_attribution_ok[1h])", "", 0, 14, 6, 5),
+                _panel_stat("Reconcile OK (1h)", "increase(quant_local_scheduler_reconcile_ok[1h])", "", 6, 14, 6, 5),
                 _panel_stat("Active Positions", "count(quant_position_value > 0)", "", 12, 14, 6, 5),
                 _panel_stat("Data Freshness (h)", "quant_data_freshness_hours", "{{source}}/{{table}}", 18, 14, 6, 5),
             ],
@@ -594,10 +455,11 @@ class GrafanaDashboardBuilder:
             title="Factor Analysis",
             tags=["quant", "factors"],
             panels=[
-                _panel_timeseries("Factor IC", "quant_factor_ic", "{{factor_name}}/{{scope}}", 0, 0, 12, 8),
-                _panel_timeseries("Factor ICIR", "quant_factor_icir", "{{factor_name}}/{{scope}}", 12, 0, 12, 8),
-                _panel_timeseries("Factor Rank", "quant_factor_rank", "{{factor_name}}", 0, 8, 12, 8),
-                _panel_timeseries("Alpha Score", "quant_alpha_score", "{{symbol}}", 12, 8, 12, 8),
+                # v534: 因子指标改本地导出 (quant_local_scheduler_attribution_*)
+                _panel_timeseries("Attribution DSR", "quant_local_scheduler_attribution_dsr", "", 0, 0, 12, 8),
+                _panel_timeseries("IC degraded", "increase(quant_local_scheduler_attribution_ic_degraded[1h])", "", 12, 0, 12, 8),
+                _panel_timeseries("Factor redundant", "increase(quant_local_scheduler_attribution_factor_redundant[1h])", "", 0, 8, 12, 8),
+                _panel_timeseries("Factor pnl count", "quant_local_scheduler_attribution_factor_pnl_factors", "", 12, 8, 12, 8),
             ],
         )
 
@@ -609,12 +471,14 @@ class GrafanaDashboardBuilder:
             title="Risk Management",
             tags=["quant", "risk"],
             panels=[
-                _panel_timeseries("VaR 95%", "quant_var_95", "{{strategy}}", 0, 0, 8, 8),
-                _panel_timeseries("Max Drawdown", "quant_max_drawdown_pct", "{{strategy}}", 8, 0, 8, 8),
-                _panel_timeseries("Leverage", "quant_leverage", "{{strategy}}", 16, 0, 8, 8),
-                _panel_timeseries("Turnover Ratio", "quant_turnover_ratio", "{{strategy}}", 0, 8, 8, 8),
-                _panel_timeseries("Concentration", "quant_concentration", "{{strategy}}/{{symbol}}", 8, 8, 8, 8),
-                _panel_timeseries("VaR 99%", "quant_var_99", "{{strategy}}", 16, 8, 8, 8),
+                # v534: VaR/Leverage/Turnover/Concentration 僵尸指标已删 —
+                # 风控指标改本地导出 (monitor 盘中检查计数)
+                _panel_timeseries("Monitor checks ok", "increase(quant_local_scheduler_monitor_ok[1h])", "", 0, 0, 8, 8),
+                _panel_timeseries("Stop-loss fired", "increase(quant_local_scheduler_monitor_stop_loss[1h])", "", 8, 0, 8, 8),
+                _panel_timeseries("Alerts fired", "increase(quant_local_scheduler_monitor_alert[1h])", "", 16, 0, 8, 8),
+                _panel_timeseries("Reconcile breaks", "increase(quant_local_scheduler_reconcile_break[1h])", "", 0, 8, 8, 8),
+                _panel_timeseries("Cash breaks", "increase(quant_local_recon_cash_break[1h])", "", 8, 8, 8, 8),
+                _panel_timeseries("Pipeline runs", "increase(quant_local_pipeline_runs[1h])", "", 16, 8, 8, 8),
                 _panel_timeseries("CPU %", "quant_cpu_usage_percent", "", 0, 16, 8, 6),
                 _panel_timeseries("Memory (bytes)", "quant_memory_usage_bytes", "", 8, 16, 8, 6),
                 _panel_timeseries("DB Connections", "quant_db_connections_active", "{{database}}", 16, 16, 8, 6),
@@ -652,16 +516,16 @@ groups:
 - name: quant.rules
   interval: 30s
   rules:
-  # 交易异常
+  # 交易异常 (v534: 僵尸指标 quant_trades_total 已删 — 改本地指标导出)
   - alert: QuantTradeFailure
-    expr: increase(quant_trades_total{status="failed"}[5m]) > 0
+    expr: increase(quant_local_pipeline_trades[5m]) > 0
     for: 1m
     labels:
       severity: critical
       component: trading
     annotations:
-      summary: "Trade execution failed"
-      description: "{{ $labels.strategy }} {{ $labels.symbol }} trade failed: {{ $labels.status }}"
+      summary: "Trade execution abnormal"
+      description: "pipeline.trades counter increased: {{ $value }}"
 
   # 回撤告警
   - alert: QuantDrawdownCritical
@@ -684,16 +548,16 @@ groups:
       summary: "Drawdown warning: {{ $value }}%"
       description: "Strategy {{ $labels.strategy }} drawdown exceeded 10%"
 
-  # 因子失效
+  # 因子失效 (v534: quant_factor_icir 僵尸指标已删 — 本地 ic_degraded 导出)
   - alert: QuantFactorDegraded
-    expr: quant_factor_icir < 0.1
+    expr: increase(quant_local_scheduler_attribution_ic_degraded[1h]) > 0
     for: 1h
     labels:
       severity: warning
       component: alpha
     annotations:
-      summary: "Factor {{ $labels.factor_name }} ICIR degraded"
-      description: "ICIR dropped below 0.1: {{ $value }}"
+      summary: "Factor IC degraded detected"
+      description: "attribution ic_degraded fired: {{ $value }}"
 
   # 数据延迟
   - alert: QuantDataStale

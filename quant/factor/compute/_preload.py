@@ -143,7 +143,10 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
 
     # financial tables: TTM data (v523: +symbol 过滤/financial_lookback_days 下界,
     # 与单日版对齐 — 全历史全表 220k 行×3 曾造成 worker fork 内存过剩)
-    fin_start = (pd.Timestamp(date_from)
+    # v534: 修复 NameError — 单日版误用 chunk 版变量 date_from/date_to
+    # (从未定义 → 单日 aux 预载必崩 → golden_test verify_strict 双路径
+    # 校验瘫痪; 物化走 chunk 版所以掩蔽至今)
+    fin_start = (pd.Timestamp(date)
                  - pd.Timedelta(days=_require_cfg("factor.compute.financial_lookback_days"))
                  ).strftime("%Y-%m-%d")
     for tbl in ["financial_income", "financial_balance", "financial_cashflow"]:
@@ -151,7 +154,7 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
             df = pd.read_sql_query(
                 f"SELECT * FROM {tbl} WHERE symbol IN ({ph}) "
                 f"AND stat_date >= ? AND stat_date <= ? ORDER BY stat_date",
-                conn, params=symbols + [fin_start, date_to]
+                conn, params=symbols + [fin_start, date]
             )
             # v523: stat_date 统一 datetime — 下游因子过滤免 3 亿次 object 比较
             if not df.empty and "stat_date" in df.columns:

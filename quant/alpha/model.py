@@ -13,45 +13,9 @@ from quant.utils.logger import get_logger
 
 _log = get_logger("alpha.model")
 
-# P3a: 冗余因子相关性阈值 (WorldQuant 标准: 0.7)
-_REDUNDANCY_CORR_THRESHOLD = None  # 懒加载, 由 _require_cfg 读取
-
-def _get_redundancy_threshold() -> float:
-    global _REDUNDANCY_CORR_THRESHOLD
-    if _REDUNDANCY_CORR_THRESHOLD is None:
-        _REDUNDANCY_CORR_THRESHOLD = _require_cfg("factor.compute.redundancy_corr_threshold")
-    return _REDUNDANCY_CORR_THRESHOLD
-
-
-def _adjust_for_redundancy(factor_values: dict, ic_map: dict) -> dict:
-    """P3a: 检测共线因子对, 低 IC 方降权。"""
-    if len(factor_values) < 2:
-        return ic_map
-    try:
-        names = list(factor_values.keys())
-        common_names = [n for n in names if n in ic_map]
-        if len(common_names) < 2:
-            return ic_map
-        df = pd.DataFrame({n: factor_values[n] for n in common_names}).dropna()
-        if df.shape[0] < 30 or df.shape[1] < 2:
-            return ic_map
-        corr = df.corr()
-        adjusted = dict(ic_map)
-        for i, n1 in enumerate(common_names):
-            for j, n2 in enumerate(common_names):
-                if j <= i:
-                    continue
-                if abs(corr.loc[n1, n2]) < _get_redundancy_threshold():
-                    continue
-                ic1, ic2 = abs(ic_map.get(n1, 0)), abs(ic_map.get(n2, 0))
-                loser = n1 if ic1 < ic2 else n2
-                if loser in adjusted:
-                    adjusted[loser] = adjusted[loser] * 0.5
-                    _log.info(f"redundancy: {n1}<->{n2} corr={corr.loc[n1,n2]:.2f} dampen {loser}")
-        return adjusted
-    except Exception as e:
-        _log.debug(f"redundancy skipped (non-fatal): {e}")
-        return ic_map
+# v534: P3a 冗余降权 (_adjust_for_redundancy) 已删除 — 全项目无调用方,
+# 从未生效 (定义于 2026-07 但 combine/combine_regime 均未接线);
+# 因子冗余管控由 attribution 每日 factor_redundant 检测 + IC 退化告警承担.
 
 
 class AlphaModel:
@@ -132,7 +96,13 @@ class AlphaModel:
         return self.combine(factor_values, ic_map=regime_weights)
 
     def rank(self, alpha_raw, method_override=None):
-        """Soft cutoff: 削弱弱信号 (二次衰减) 而非硬砍.
+        """Soft cutoff 已移除 (v534).
+
+        原 ALG1 sigmoid 单调变换 α' = α/(1+exp(-k(α-t))) 对排名选股是
+        no-op — 入选集合只由序决定 (top_fraction 截断 + alpha 边际成本
+        裁剪均按序), 任何单调变换不改变; 且 sigmoid_steepness=10 无文献
+        依据, 权重分配应按原始 alpha 相对差 (组合层 score_weighted),
+        不附加拍脑袋非线性。直接返回原始分。
 
         intersection 模式跳过 (候选池已由交集决定).
         """
@@ -146,12 +116,4 @@ class AlphaModel:
         if self.top_fraction >= 1.0:
             return alpha_raw.copy()
 
-        threshold = alpha_raw.quantile(1.0 - self.top_fraction)
-        alpha = alpha_raw.copy()
-        # ALG1: sigmoid soft cutoff — smooth transition instead of hard quadratic decay.
-        # α' = α / (1 + exp(-k × (α - threshold)))
-        # k (steepness) from config; default 10.0 balances selectivity vs smoothness.
-        from quant.config.constants import _require_cfg
-        k = float(_require_cfg("alpha.sigmoid_steepness"))
-        alpha = alpha / (1.0 + np.exp(-k * (alpha - threshold)))
-        return alpha
+        return alpha_raw.copy()

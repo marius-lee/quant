@@ -147,3 +147,61 @@ hrp.py:145（corr>1→NaN→静默等权）；multi_tf.py（weekly_weight 未用
 验证: 新增 test_v533_closed_loop.py 7 项 (当日快照/当日基准/重买重置/止损三态/P0-1 三态/using 池); test_v532 追价测试钉死时钟 (时序敏感); 全量 422 passed。
 
 注意: (a) 集成回测回归暂被因子缓存 data_hash 指纹失效阻断 (2023-01 起 ~10 因子需重算, v492 机制正常行为) — `bash scripts/materialize_full.sh` 后补跑; (b) P0-1 的 RuntimeError 属预期: 券商掉线时止损拒绝模拟, orchestrator 需人工恢复连接。
+
+# 第 11 节: v534 优化/重构清单
+
+## 优化1: engine.execute 模拟/实盘双路径 (ADR-036 落实)
+
+原状态: v533 的 `_execute_stop_orders` 自管 broker_adapter — 券商成交成功后**漏写账本** (账本仍持仓 → 次日重复止损, 反向双账); 未连接时回退模拟执行 (v418 批判).
+
+修复: `ExecutionEngine.execute()` 双路径 (仅 sell 单):
+- adapter=None 或 SimulatedAdapter → 纯账本 (回测/模拟)
+- 真实券商已连接 → `adapter.sell` 先成交, 成功后才写账本 (账本唯一真相源, 原子同步)
+- 真实券商未连接 → RuntimeError 零 fallback (宁留仓不双账, 券商清账本留 = 事后不可逆)
+
+收敛点: `execution_model._execute_stop_orders` / `LiveExecutionModel.execute_sells` / `monitor._execute_sell` 三处全部回归 `engine.execute` — adapter 逻辑不再散落 4 层, 双路径单点实现单点测试. buy 恒纯账本 (实盘买入由 OrderManager 限价流成交).
+
+## 优化2: monitor/metrics.py ↔ monitoring/prometheus.py 双指标系统合并
+
+僵尸指标 (19 个, 无人 set): TRADES_TOTAL/TRADE_VOLUME/TRADE_PNL/FACTOR_IC/FACTOR_ICIR/FACTOR_RANK/ALPHA_SCORE/VAR_95/VAR_99/MAX_DRAWDOWN/LEVERAGE/TURNOVER/CONCENTRATION/DATA_STALENESS/QUEUE_SIZE/TASK_DURATION/TASK_STATUS/SCHEDULER_POLL/BACKTEST_RUNS — 全部删除.
+
+误删纠正: BACKTEST_SHARPE/CAGR/MAX_DD/DSR 曾被一并删除 — `_collect_backtest_metrics` 是活代码会 set → 恢复.
+
+活指标保留 (10): POSITION_VALUE/CASH_BALANCE/TOTAL_EQUITY/DRAWDOWN/DATA_FRESHNESS/DATA_ROWS/CPU_USAGE/MEMORY_USAGE/DISK_USAGE/DB_CONNECTIONS.
+
+其余: monitor_latency/monitor_count/monitor_gauge 装饰器无调用方 → 删; MetricType HISTOGRAM/SUMMARY → 删; `_collect_business_metrics` 新增本地指标动态导出 `quant_local_<name>` (GAUGE set 绝对值); AlertRuleBuilder 规则 + Grafana 3 面板引用同步.
+
+## 优化3: 死代码清理
+
+- `quant/execution/highfreq.py` (905 行): 全项目零调用方 → 删除
+- `quant/alpha/model_serving.py` (439 行): 零调用方, ShadowDeploymentManager 246 行全 pass → 删除
+- `alpha/model.py::_adjust_for_redundancy` (P3a): 定义于 2026-07 但 combine/combine_regime 均未接线, 从未生效 → 删除 + config `redundancy_corr_threshold` 一并移除
+- **piotroski aux 序错误 (missing.py)**: `_preload.py` 以 `ORDER BY stat_date` 升序装载 aux, 而 `_last_two` 假设 DESC (rows[0]=最新期, DB 路径同款) → aux 单日路径 cur/prv 互换 → F-score 用错期. 修复: aux 分支构造后按 stat_date 降序排序, 与 DB 路径语义对齐. 测试: 升序/降序装载结果恒等 (修复前必不等)
+
+## 优化4: verify_strict 双路径 NameError 瘫痪修复
+
+根因: `_preload.py:146` 单日版 `preload_aux_data` 财务段误用 chunk 版变量 `date_from` (函数签名只有 `date`) → **单日 aux 预载必崩 NameError**. 影响: golden_test verify_strict 双路径校验从未真实执行; 物化走 chunk 版 (store 注入) 故掩蔽至今.
+
+修复: `date_from`→`date`, `date_to`→`date`. 实测 verify_strict 0 mismatches (5 采样日期全通过).
+
+## 重构1: alpha/model.py rank sigmoid 单调变换
+
+`α' = α/(1+exp(-k(α-t)))` 是单调变换 — 入选集合只由序决定 (top_fraction 截断 + alpha 边际成本裁剪均按序), 任何单调变换不改变结果; `sigmoid_steepness=10` 无文献依据, 权重分配应按原始 alpha 相对差 (组合层 score_weighted). 删除变换 + config 项, rank 直接返回原分.
+
+## 重构2: strategy/__init__.py engine property + 单位错乱
+
+- engine property: `config.capital.db_path` — CapitalAllocation dataclass 无 db_path 字段 → AttributeError 必崩 → 改 TRADE_DB (路径由 config.paths 常量统一管理)
+- check_risk_limits: 原 `lots × 100` 股数当市值传入 validate (单票占比/绝对限额全部失准) → 抽 `_position_market_value()` (价×手×100 = 市值元口径), update_positions 复用同源
+
+## 验证
+
+新增 test/test_v534.py 11 项:
+- 双路径 6 态: 无 adapter 纯账本 / SimulatedAdapter 不双写 / 真实未连接 RuntimeError + 账本不写 / 已连接先券商后账本 / 券商失败 RuntimeError + 不写账本 / buy 恒纯账本
+- preload_aux_data 单日无 NameError
+- piotroski aux 升序/降序装载结果恒等
+- strategy engine property 不崩 + 市值口径 (38.2×100 = 3820 元)
+- alpha rank 恒等
+
+test_v533_closed_loop.py 止损 2 测试更新为 v534 转发语义 (原断言 v533 中间态自管 adapter 行为).
+
+全量: **433 passed (134s)**.

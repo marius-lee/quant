@@ -213,9 +213,10 @@ class StrategyInstance:
 
     @property
     def engine(self) -> ExecutionEngine:
+        # v534: 原 self.config.capital.db_path — CapitalAllocation 无 db_path
+        # 字段 (AttributeError 必崩); DB 路径统一由 config.paths 常量管理
         if self._engine is None:
-            db_path = self.config.capital.db_path if self.config.capital else TRADE_DB
-            self._engine = ExecutionEngine(db_path=self.config.capital.db_path if self.config.capital else TRADE_DB)
+            self._engine = ExecutionEngine(db_path=TRADE_DB)
         return self._engine
 
     @property
@@ -286,21 +287,34 @@ class StrategyInstance:
     def get_available_cash(self) -> float:
         return self.config.capital.available_cash if self.config.capital else 0.0
 
+    def _position_market_value(self) -> Dict[str, float]:
+        """持仓市值 (元) — 价 × 手数 × 100 股/手.
+
+        v534: 抽取公用 — 原 update_positions/check_risk_limits 各写一份,
+        且 check_risk_limits 把股数 (lots×100) 当市值传入 validate,
+        单票占比/绝对限额全部失准 (手数当市值)。
+        """
+        out = {}
+        if not self._current_positions:
+            return out
+        store = DataStore()
+        for sym, lots in self._current_positions.items():
+            if lots > 0:
+                df = store.get_daily([sym], start=datetime.now().strftime("%Y-%m-%d"),
+                                     columns=["close"])
+                if not df.empty:
+                    price = df["close"].iloc[-1]
+                    out[sym] = price * lots * 100
+        return out
+
     def update_positions(self, positions: Dict[str, int]):
         """更新持仓 (外部同步)."""
         with self._lock:
             self._current_positions = positions.copy()
             # 更新市值
             if self.config.capital:
-                pos_value = 0.0
-                store = DataStore()
-                for sym, lots in positions.items():
-                    if lots > 0:
-                        df = store.get_daily([sym], start=datetime.now().strftime("%Y-%m-%d"), columns=["close"])
-                        if not df.empty:
-                            price = df["close"].iloc[-1]
-                            pos_value += price * lots * 100
-                self.config.capital.position_value = pos_value
+                self.config.capital.position_value = sum(
+                    self._position_market_value().values())
 
     def record_trade(self, trade: Dict[str, Any]):
         """记录成交."""
@@ -325,10 +339,9 @@ class StrategyInstance:
         """检查风控限制, 返回违规列表."""
         if not self.config.risk_quota:
             return []
-        
-        portfolio_value = self.get_portfolio_value()
-        positions = {sym: lots * 100 for sym, lots in self._current_positions.items()}
-        
+
+        # v534: 市值 (元) 口径 — 原 lots×100 股数当市值, 限额判定全错
+        positions = self._position_market_value()
         return self.config.risk_quota.validate(self.get_portfolio_value(), positions)
 
     def check_drawdown(self) -> bool:

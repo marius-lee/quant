@@ -311,31 +311,20 @@ def _run_continuous_inner(today: str, stop_event=None):
 
 def _execute_sell(today: str, symbol: str, shares: int, price: float,
                   reason: str, pnl_pct: float):
-    """执行卖出订单 — ADR-036: 优先通过 broker_adapter, 回退 engine.execute."""
-    # ADR-036: 尝试 broker adapter
-    adapter = None
-    try:
-        adapter = get_broker_adapter()
-    except Exception as e:
-        # v418 (R2): 原 debug 吞错 → critical + metric (适配器故障时静默走模拟执行是危险默认)
-        _m.inc("scheduler.monitor.adapter_fallback")
-        _log.critical(f"[{today}] broker adapter unavailable → 降级模拟执行: {type(e).__name__}: {e}")
+    """执行卖出订单 — v534: 双路径收敛 engine.execute (ADR-036 落实).
 
-    if adapter is not None and adapter.is_connected() and not adapter.name == "simulated":
-        result = adapter.sell(symbol, price, shares, order_type="MARKET")
-        if result.success:
-            _log.warning(f"[monitor] {reason}: {symbol} {shares}股 @¥{price:.2f} "
-                         f"PnL={pnl_pct:+.1f}% (broker)")
-            # test-v307: 真实券商卖出成功后同步写入 sim_trades (账本唯一真相源)
-            _engine_sell(today, symbol, shares, price)
-        else:
-            _log.error(f"[monitor] broker sell failed: {symbol}: {result.error}")
-            # 回退到模拟执行以确保止损不静默失败
-            _engine_sell(today, symbol, shares, price)
-    else:
-        _engine_sell(today, symbol, shares, price)
-        _log.warning(f"[monitor] {reason}: {symbol} {shares}股 @¥{price:.2f} "
-                     f"PnL={pnl_pct:+.1f}%")
+    原实现自管 adapter: 未连接/失败回退模拟执行 = 账本清、券商留 → 双账
+    翻倍风险 (v532 只修 execution_model, 漏此盘中路径); 成功后又漏写账本。
+    v534: 统一走 engine.execute 双路径 — 券商先成交成功才写账本, 未连接
+    RuntimeError 零 fallback (宁可留仓不双账)。
+    """
+    engine = ExecutionEngine(broker_adapter=get_broker_adapter())
+    engine.execute(
+        [Order(symbol=symbol, side="sell", shares=shares,
+               price=round(price, 2), cost=5.0)],
+        today, strategy="quant")
+    _log.warning(f"[monitor] {reason}: {symbol} {shares}股 @¥{price:.2f} "
+                 f"PnL={pnl_pct:+.1f}%")
 
 
 def _engine_sell(today: str, symbol: str, shares: int, price: float):

@@ -148,28 +148,43 @@ def test_stop_orders_adapter_absent_uses_engine():
 
 
 def test_stop_orders_adapter_disconnected_raises():
-    """adapter 存在但未连接 → RuntimeError, 拒绝模拟成交 (账本/券商双账)."""
+    """v534: 双路径下沉 engine.execute — 未连接 → RuntimeError 零 fallback.
+
+    v533 中间态曾在此自管 adapter (连接检查抛 P0-1);
+    v534 收敛后引擎内校验 (engine.execute 双路径), 本测试验证转发语义:
+    _execute_stop_orders 把订单交 engine.execute, 未连接由引擎拒绝.
+    """
     from quant.execution.execution_model import LiveExecutionModel
-    from quant.execution.engine import Order
-    eng = _FakeEngine(adapter=_FakeAdapter(connected=False))
-    model = LiveExecutionModel()
-    with pytest.raises(RuntimeError, match="P0-1"):
-        model._execute_stop_orders(
-            [Order(symbol="600000", side="sell", shares=100, price=9.5)], _mk_ctx(eng))
-    assert eng.executed == [], "未连接时不得落账本 (模拟成交=双账根源)"
+    from quant.execution.engine import Order, ExecutionEngine
+    from test.test_v534 import FakeBroker
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as td:
+        eng = ExecutionEngine(db_path=os.path.join(td, "t.db"),
+                              broker_adapter=FakeBroker(connected=False))
+        model = LiveExecutionModel()
+        with pytest.raises(RuntimeError, match="未连接"):
+            model._execute_stop_orders(
+                [Order(symbol="600000", side="sell", shares=100, price=9.5)], _mk_ctx(eng))
 
 
 def test_stop_orders_adapter_connected_sells_via_broker():
-    """adapter 已连接 → adapter.sell, engine.execute 不落账本."""
+    """v534: 已连接 → engine.execute 双路径 (券商成交 + 账本同步)."""
     from quant.execution.execution_model import LiveExecutionModel
-    from quant.execution.engine import Order
-    ad = _FakeAdapter(connected=True)
-    eng = _FakeEngine(adapter=ad)
-    model = LiveExecutionModel()
-    model._execute_stop_orders(
-        [Order(symbol="600000", side="sell", shares=100, price=9.5)], _mk_ctx(eng))
-    assert ad.sold == [("600000", 9.5, 100)], f"止损应经 broker 卖出, got {ad.sold}"
-    assert eng.executed == [], "走券商后不得再写 engine (重复成交)"
+    from quant.execution.engine import Order, ExecutionEngine
+    from quant.data.repos import TradeRepo
+    from test.test_v534 import FakeBroker
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as td:
+        db = os.path.join(td, "t.db")
+        eng = ExecutionEngine(db_path=db, broker_adapter=FakeBroker(connected=True))
+        repo = TradeRepo(db_path=db)
+        repo.set_initial_capital("quant", 100000.0)
+        eng.execute([Order(symbol="600000", side="buy", shares=100, price=9.0)],
+                    "2026-08-17", strategy="quant")
+        model = LiveExecutionModel()
+        model._execute_stop_orders(
+            [Order(symbol="600000", side="sell", shares=100, price=9.5)], _mk_ctx(eng))
+        assert eng.get_positions("quant") == [], "券商成交后账本同步清仓 (双路径原子)"
 
 
 # ── 断裂点6: phase8 D1 用 using 池 ──

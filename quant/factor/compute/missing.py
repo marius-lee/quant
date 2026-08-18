@@ -274,6 +274,12 @@ def compute_piotroski_fscore(data, date, window=None, fundamentals=None, aux=Non
                     for _, r in fb.iterrows()] if not fb.empty else []
         cf_rows = [(r["symbol"], r["stat_date"], r.get("net_operate_cash_flow"))
                    for _, r in fc.iterrows()] if not fc.empty else []
+        # v534: aux 序修复 — _preload 以 ORDER BY stat_date 升序装载,
+        # 而 _last_two 假设 DESC (rows[0]=最新期, 与 DB 路径一致);
+        # 原序反转让 cur/prv 互换 → F-score 用错期 (aux 单日路径).
+        fin_rows = sorted(fin_rows, key=lambda r: r[1], reverse=True)
+        bal_rows = sorted(bal_rows, key=lambda r: r[1], reverse=True)
+        cf_rows = sorted(cf_rows, key=lambda r: r[1], reverse=True)
     else:
         from quant.data.repos._base import DatabaseManager
         conn = DatabaseManager.market()

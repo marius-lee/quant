@@ -3790,3 +3790,12 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
 - **断裂点1 残余验证**: 晚间链失败 → 08:00 daily_repair `_ensure_factor_cache` 增量物化 (v532) + orchestrator 窗口内重试预算已闭环, 无需再改
 - **验证**: 新增 test_v533_closed_loop.py 7 测试; test_v532_gaps_fix.py 追价测试钉死时钟 (原下午跑 14:50 后走 force_fill 分支, 时序敏感); 全量 422 passed (135s)
 - **注意**: (a) 集成回测验证被因子缓存 data_hash 指纹失效阻断 (2023-01 起 ~10 因子缺失, v492 机制: 数据更新后旧缓存日期需重算) — 补 `bash scripts/materialize_full.sh` 后可跑短回测回归; (b) 实盘重启后首个交易日 `_known` 新仓判定基于 last_sell 时间戳, 无卖出记录的新持仓不受影响; (c) 未连接券商时止损抛 RuntimeError — orchestrator 需用户介入恢复连接, 属预期资金安全行为
+## 2026-08-18: v534 优化/重构清单完成 — 归档 docs/reports/CODE-REVIEW-FULL-2026-08-18.md
+
+- **优化1 双路径执行 (engine.py, ADR-036 落实)**: execute() 拆模拟/实盘双路径 — 仅 sell 单: adapter=None/simulated → 纯账本; 真实券商已连接 → 先 adapter.sell 成功才写账本 (账本唯一真相源, 双账根治); 未连接 → RuntimeError 零 fallback (宁留仓不双账)。buy 恒纯账本 (实盘买入 OrderManager 自管)。_execute_stop_orders/LiveExecutionModel.execute_sells 收敛回 engine.execute — **修 v533 缺陷: adapter.sell 成功后漏写账本 (券商已卖、账本仍持仓 → 次日重复止损)**。monitor._execute_sell 同步收紧 (原未连接回退模拟删除)
+- **优化2 双指标合并 (prometheus.py)**: 删 19 个僵尸指标 (TRADES_TOTAL/TRADE_PNL/FACTOR_IC/VAR_95/MAX_DRAWDOWN/SCHEDULER_POLL 等, 均无人 set); **恢复 BACKTEST_SHARPE/CAGR/MAX_DD/DSR** (曾误删 — _collect_backtest_metrics 活代码会 set); 保留 10 个活指标; 删 monitor_latency/count/gauge 无调用方装饰器 + MetricType HISTOGRAM/SUMMARY; 新增本地指标动态导出 quant_local_<name> (GAUGE); AlertRuleBuilder/Grafana 3 面板同步
+- **优化3 死代码清理**: 删 quant/execution/highfreq.py (905 行) + quant/alpha/model_serving.py (439 行, ShadowDeploymentManager 246 行 pass) — 全项目零引用; 删 alpha/model.py _adjust_for_redundancy (P3a 从未接线) + config redundancy_corr_threshold; **piotroski aux 序错误**: _preload 升序装载 vs _last_two 假设 DESC → cur/prv 互换, F-score 用错期 → aux 分支排序降序归一 (missing.py)
+- **优化4 verify_strict 修复**: _preload.py:146 单日版误用 chunk 版 date_from 变量 → NameError, 单日 aux 预载必崩 (golden_test 双路径瘫痪; 物化走 chunk 版所以掩蔽) → 改 date; verify_strict 实测 0 mismatches
+- **重构1 sigmoid 移除 (alpha/model.py rank)**: α/(1+exp(-k(α-t))) 单调变换对排名选股 no-op (入选集合只由序决定), sigmoid_steepness=10 无文献依据 → 直接返回原分; config 删除该项
+- **重构2 strategy/__init__.py**: engine property 原 `config.capital.db_path` — CapitalAllocation 无此字段 → AttributeError 必崩 → TRADE_DB; check_risk_limits 原 lots×100 股数当市值 → _position_market_value() 市值(元) 口径 (价×手×100)
+- **验证**: 新增 test_v534.py 11 项 (双路径 6 态/buy 恒账本/NameError 回归/piotroski 序不变/strategy 修复 2 项/rank 恒等); test_v533 止损 2 测试更新为 v534 转发语义 (原测 v533 中间态自管 adapter); 全量 433 passed (134s)

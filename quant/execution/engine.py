@@ -161,13 +161,24 @@ class ExecutionEngine:
         date: str,
         strategy: str = "quant",
     ) -> int:
-        """执行模拟交易 — DB 操作委托 TradeRepo, 成本/PnL 计算留在引擎。
+        """执行交易 — 模拟/实盘双路径 (v534, ADR-036 落实)。
 
         orders: [Order, ...] 或 [(symbol, side, shares, price), ...]
         date: 交易日期 (YYYY-MM-DD)
         strategy: 策略标识
 
         返回: 执行的订单数。
+
+        双路径 (仅卖出单):
+        - broker_adapter=None (回测/未注入): 纯模拟 — 直接写账本 (sim_trades)
+        - broker_adapter 已连接: 先 adapter.sell 真实券商成交, 成功后才写账本
+          (账本唯一真相源, 券商成交与账本原子同步 — 双账翻倍风险的根治)
+        - broker_adapter 存在但未连接: RuntimeError 零 fallback — 宁可留仓
+          也不模拟成交 (账本清、券商留 = 事后不可逆)
+
+        买入单恒为纯账本写入: 实盘买入由 OrderManager 限价挂单流成交,
+        此处仅做账本同步 (monitor/order_manager 自管券商买入)。
+
         所有订单在同一事务中执行 — 部分失败时整体回滚。
         读操作（T+1、除权检测、PnL 计算）在事务外完成，只有 write 在事务内。
         """
@@ -194,6 +205,25 @@ class ExecutionEngine:
                 buy_symbols.append(symbol)
                 buy_prices[symbol] = price
             entries.append(e)
+
+        # v534: 卖出单双路径 — 券商先成交, 成功才进账本 (零 fallback).
+        # simulated adapter 内部已写账本 (自管执行) → 排除, 防双重写入;
+        # 真实券商 (vnpy/ctp/xtp) 注入且未连接 → RuntimeError 拒绝模拟。
+        _adapter = getattr(self, "broker_adapter", None)
+        if _adapter is not None and getattr(_adapter, "name", "") != "simulated":
+            if not _adapter.is_connected():
+                raise RuntimeError(
+                    f"卖出无法执行: broker adapter {_adapter.name} 未连接 — 拒绝模拟成交 "
+                    f"(v534 P0-1: 账本/券商双账风险). 请恢复券商连接后重试")
+            for e in entries:
+                if e["side"] == "sell":
+                    r = _adapter.sell(e["symbol"], e["price"], e["shares"],
+                                      order_type="MARKET")
+                    if not r.success:
+                        raise RuntimeError(
+                            f"券商卖出失败 {e['symbol']}: {r.error} — 拒绝写账本 (v534 P0-1)")
+                    logger.info(f"[{date}] broker sell: {e['symbol']} {e['shares']}股 "
+                                f"@¥{e['price']:.2f} status={r.status}")
 
         # 批量除权检测
         skip_symbols = self._check_ex_dividend_batch(buy_symbols, buy_prices, date)

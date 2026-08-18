@@ -306,3 +306,81 @@ test_v533_closed_loop.py 止损 2 测试更新为 v534 转发语义 (原断言 v
 - 端点冒烟: 13 端点全 200 (flask test client); /api/phase8 实返回 divergent 报告 (15 runs 历史)
 - 语法: node --check app.js + ast.parse app.py 通过
 - 全量 453 passed — **前置条件: 停 web 服务**。服务进程 (api_state→_check_timeouts 写 task_runs) 与 pytest 写 market.db 竞争 → 随机 `database is locked` (实测 8→4 failed; 单测全过; 内嵌 pytest.main 同序复刻 18 passed, 停服务后全量恢复 453 passed)。非代码缺陷, 测试后 `bash scripts/restart.sh` 恢复
+
+## 第 15 节: v538 回测默认区间接入 config (2026-08-18)
+
+### 背景
+
+用户确认"全量回测应从 2020-01-01 起"。查证: config.yaml `backtest.default_start: '2020-01-01'` (与 factor_cache_start 同源, v473 约定) 但 loop.py full 模式 start=None → end-12mo, **配置从未被消费** (全仓 grep 零引用)。
+
+### 改动
+
+- loop.py full 分支: end=None → `_require_cfg('backtest.default_end')`; start=None → `_require_cfg('backtest.default_start')`; 删 end-12mo 旧逻辑; smoke 分支不变
+- 调用方审计: phase6/phase7 fold/phase8 live/BacktestEngine 全部显式传参 — 仅裸调 run_backtest() 生效
+- 新增 scripts/run_backtest_full.sh: config 默认区间/自定义区间/--smoke, 结果落 backtest_runs
+
+### 验证
+
+test_v538.py 4 项 (源码断言×2 / 配置一致性 start==factor_cache_start / FakeEngine 拦截默认解析 — patch 源模块因 loop.py 函数体内 import)。全量 453 passed (停服务前提, 服务 api_state→_check_timeouts 写 task_runs 与测试写 market.db 竞争, 非代码缺陷)。
+
+## 第 16 节: v539 因子缓存 data_hash 整库指纹误伤 (2026-08-18)
+
+### 背景
+
+全量物化 (07:33) 后回测报 "factor cache missing for 239 IC lookback dates (2025-06-06..2026-06-01)"。
+
+### 根因 (双因叠加)
+
+1. **data_hash 整库指纹误伤 (v492 设计缺陷)**: `_get_existing_factors` 要求 meta.data_hash == 当前整库指纹 (daily COUNT/SUM/MAX + daily_valuation + 财务三表) — 晚间链拉新数据 → COUNT/MAX(date) 变 → **全部日期误判缺失** (每日必发)。实测 meta 3f5dc83 vs 当前 574fa3f。
+2. **source_hash 失效 15/99 因子**: 凌晨物化用 v533 代码, 白天 v534 (16:26, piotroski aux 序) / v535 (17:58) 落地改因子代码 → piotroski_fscore/alpha002/alpha055/alpha033/ztd/short_interest 等 15 因子缓存值过时 — **机制正确, 必须重物化**。
+
+### 修复
+
+- store.py `_get_existing_factors`: 删除 data_hash 判定 (局部信任: 日期已物化 + source_hash 匹配即有效); 指纹保留写入 meta 作审计字段
+- 回填/因子代码变更 → force 全量重物化 (scripts/materialize_full.sh, v529 语义)
+
+### 验证
+
+test_v539.py 4 项 (源码断言 data_hash 判定删除 / source_hash 判定保留 / 行为: 旧指纹+已物化日期有效 / stale source_hash 判缺失 / 未物化日期判缺失), 4 passed。
+
+## 第 17 节: v540 materialize_full.sh 终点写死修复 (2026-08-19)
+
+### 背景
+
+用户重物化被拦截: "factor_cache: DuckDB daily 落后 (2026-08-18 < 2026-12-31)"。脚本终点写死 `2026-12-31` (ee59fea 8-05 引入, "一次管到年底"意图 — 数据永达不到 → 必拦; 首次创建 e67e8af2 时终点为当时数据日 2026-08-03)。
+
+### 修复
+
+物化终点 = SQLite daily MAX(date) 动态取值 (数据真相源); DuckDB 落后于终点时守卫仍提示先 sync (scripts/duckdb_sync_all.sh)。起点 2020-01-01 保持 (v473 约定勿改)。
+
+## 第 18 节: v541 写死日期全仓排查 (2026-08-19)
+
+### 范围
+
+scripts/*.sh|py + quant/ + web/ 全仓扫描日期字面量/路径/端口。
+
+### 修复 (数据依赖终点 → 动态)
+
+| 位置 | 原写死 | 改为 |
+|------|--------|------|
+| scripts/backtest_full.sh | 2026-08-03 | SQLite daily MAX(date), 起点对齐 config |
+| scripts/run_backtest.sh | 2026-07-31 | 同上 |
+| scripts/run_backtests.sh | 2026-07-27 | 同上 |
+| scripts/full_backtest.sh | 2026-07-27 | 同上 |
+| scripts/diag_lgb.sh | 2026-07-28 | 同上 |
+| scheduler/{signals,execute,reconcile,snapshot}.py | "2026-08-10" CLI 默认日 | today_str() |
+| data/holder_trade.py CLI | 2026-07-01 | today_str() |
+| data/margin.py CLI | 2026-07-03 | today_str() 90 天窗口 |
+| scheduler/factor_cache.py docstring | 2026-08-03 | 动态语义注释 |
+
+### 保留 (业务评估窗口, 加注释)
+
+eval_standard.sh 2023-2025 (完整年度评估)、phase7_wf --end 2025-12-31、backtest_full.sh oos_start_date 2025-06-01 — 业务窗口非数据终点。
+
+### 不动 (合理写死)
+
+测试用例日期 (smoke_verify.sh 等)、docstring 示例、expr_compiler demo、jq_valuation TRIAL (死模块)、config.yaml port 8521 (配置源正确)。
+
+### 验证
+
+8 脚本 bash -n + 8 文件 ast.parse; test_v538/v539 8 passed。

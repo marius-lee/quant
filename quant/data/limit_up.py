@@ -60,7 +60,7 @@ def sync_date(date_str: str, conn=None) -> int:
 
     close_conn = False
     if conn is None:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=30)
         close_conn = True
 
     _ensure_table(conn)
@@ -125,7 +125,7 @@ def sync_range(start_date: str, end_date: str = None, conn=None) -> int:
     
     close_conn = False
     if conn is None:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=30)
         close_conn = True
     
     # Get trading days from daily table
@@ -160,7 +160,7 @@ def sync_down_date(date_str: str, conn=None) -> int:
 
     close_conn = False
     if conn is None:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=30)
         close_conn = True
 
     conn.execute("""
@@ -237,7 +237,7 @@ def sync_down_range(start_date: str, end_date: str = None, conn=None) -> int:
 
     close_conn = False
     if conn is None:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=30)
         close_conn = True
 
     dates = [r[0] for r in conn.execute(

@@ -190,7 +190,7 @@ def _get_prev_crowd_index(store, today: str) -> float | None:
         import sqlite3
         db_path = store.db_path
         prev = (pd.Timestamp(today) - pd.Timedelta(days=CROWD_TREND_DAYS)).strftime("%Y-%m-%d")
-        with sqlite3.connect(db_path) as conn:
+        with sqlite3.connect(db_path, timeout=30) as conn:
             rows = conn.execute(
                 "SELECT AVG(crowd_index) FROM factor_crowd_snapshot "
                 "WHERE date >= ? AND date < ?",
@@ -208,7 +208,7 @@ def _store_crowd_snapshot(store, date: str, crowd_index: float,
     try:
         import sqlite3
         db_path = store.db_path
-        with sqlite3.connect(db_path) as conn:
+        with sqlite3.connect(db_path, timeout=30) as conn:
             conn.execute(
             """CREATE TABLE IF NOT EXISTS factor_crowd_snapshot (
                 date TEXT PRIMARY KEY,

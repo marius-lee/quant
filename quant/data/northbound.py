@@ -45,7 +45,7 @@ def sync_single_stock(symbol: str, conn=None) -> int:
     from quant.data.datasource_retry import datasource_retry
     close_conn = False
     if conn is None:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=30)
         close_conn = True
 
     try:
@@ -105,7 +105,7 @@ def sync_all(max_stocks: int = None, conn=None) -> int:
     """同步所有 A 股的北向资金数据。"""
     close_conn = False
     if conn is None:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=30)
         close_conn = True
     
     _ensure_table(conn)

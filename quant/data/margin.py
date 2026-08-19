@@ -173,7 +173,7 @@ def sync_range(start_date: str, end_date: str, conn=None):
     """从 daily 表获取交易日, 同步上交所融资融券。"""
     close_conn = False
     if conn is None:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=30)
         close_conn = True
 
     _ensure_table(conn)

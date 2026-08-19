@@ -500,3 +500,18 @@ scripts/field_health.py 全表字段级扫描 (v547 事件后)。39 列超 5% �
 3. pipeline.py:426 (因子层) + 513 (合成层) 只认 **market_cap** 列名 → live 路径市值恒 None → neutralize 崩 (B32) / industry-only 降级
 
 **修复**: 426/513 认 PIT total_mv (同语义); neutralize 全家 (batch/_build/标量入口) 单 None、双 None、样本不足一律抛 ValueError — 风控硬要求不降级。验证: signals 日志 joint (industry+size), STATUS=OK。
+
+## §27 v552: 全库写事务审查 — 锁死事故彻底解决 (7 处活体风险全修)
+
+2026-08-19 事故 (backfill 长事务锁杀调度) 后, 对全部 market.db 写者做逐文件审查。发现 7 处与事故同构的活体风险 (deferred 事务 + 网络/CPU 在事务窗口内 + 批量 commit), 全部修复:
+
+1. sina_financials.py: 每 200 只 commit + HTTP 在事务内 (回填 10-30 分钟锁) → 每 symbol commit
+2. store.py ×4: _sync_industry_akshare (5-20 分钟)、_backfill_via_baostock (60-120s)、backfill_turnover (1-3 分钟)、_rebase_ex_dividend (分钟级) → 每股 commit
+3. news.py: SnowNLP CPU 在事务内 (30s-3 分钟) → 攒批一次写
+4. 受害加固: margin/limit_up/northbound/monitor/crowdedness 裸连接 (5s busy_timeout) → timeout=30
+
+**审查方法**: 每个 connect 查 busy_timeout/WAL/isolation_level; 每个写路径查 commit 频率; 事务边界内查网络/CPU; 查共享连接。审查结论: runners/orchestrator/reconcile/task_log/factor_cache/industry_history/data_health 均无风险 (单语句即 commit 或网络在事务外)。
+
+**验证**: 8 文件语法 OK; 全量 pytest 479 passed; 补数运行中 15/15 连续写成功 (锁窗口秒级)。
+
+**通用规则**: sqlite3 默认 deferred 事务, 首条 DML 持写锁到 commit; 禁止网络/CPU 密集计算在事务内; 批量写每小批 commit; 所有写连接 timeout≥30。

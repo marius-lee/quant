@@ -214,8 +214,12 @@ def sync() -> int:
                     existing.add((symbol, stat_date))
                 except Exception as e:
                     _log.warning(f"{symbol} {stat_date} {table_name}: upsert failed ({e})")
+        # v552: 每 symbol 完成后立即 commit — 原每 200 只才 commit, 使 HTTP 网络
+        # 请求落在 sqlite3 deferred 写事务窗口内 (首条 INSERT 起持写锁), 回填
+        # 历史缺口时连续持写锁 10-30 分钟 (2026-08-19 backfill 事故同构).
+        # 现在事务只覆盖纯内存循环 (每股 ≤3 表 × 50 期 INSERT), 秒级以内.
+        conn.commit()
         if (i + 1) % 200 == 0:
-            conn.commit()
             _log.info(f"sina_financials sync: {i+1}/{len(symbols)} ({total} new, "
                       f"{_time.monotonic()-t0:.0f}s)")
     conn.commit()

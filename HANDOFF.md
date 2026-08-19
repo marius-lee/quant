@@ -3951,3 +3951,22 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
   - neutralize.py: _build_neutralize_projection 单 None/双 None → 抛 ValueError (明确缺失维度); neutralize_factors_batch 双 None → 抛; 样本不足 (_MIN_COMMON) → 抛 (原 warning+skip 降级撤销); neutralize() 单维度退化 → 抛
 - **验证**: test_v550.py (v551 语义) 5 项; signals 实测: **"[neutralize] joint (industry+size)"** (修复前 industry only) + STATUS=OK 3 targets
 - **待办**: 用户重启 web (09:30 execute 前) → phase8 回测重跑验证 07-30 修复 → 数据补齐后物化
+
+## 2026-08-19: v552 — 全量写锁审查修复 (锁死事故彻底解决)
+
+**事故教训**: v1.3 补数两次启动都因缺 PYTHONPATH=. 秒崩 (ModuleNotFoundError), 09:07 的"5/5 验证"是假阳性 (无写者当然成功)。正确启动后 15/15 连续写成功 = 真验证。
+
+**全库写事务审查** (两个并行 agent 逐文件) — 与事故同构 (deferred 事务 + 网络/CPU 在事务内 + 批量 commit) 的活体风险全部修复:
+
+| 文件 | 原风险 | 修复 (v552) |
+|---|---|---|
+| quant/data/sina_financials.py | 逐行 INSERT + 每 200 只 commit, HTTP 在事务内 → 回填 10-30 分钟长锁 | 每 symbol 后立即 commit (事务仅纯内存循环) |
+| store.py _sync_industry_akshare | 317 只 × (网络+0.8s sleep) 在事务内, 最后 commit → 5-20 分钟长锁 | 每股 commit |
+| store.py _backfill_via_baostock | 每 100 只 commit, 事务跨 ~100 次网络 → 60-120s 长锁 | 每股 commit |
+| store.py backfill_turnover 逐日 | 每 100 只 commit + 重试退避 → 1-3 分钟长锁 | 每股 commit |
+| store.py _rebase_ex_dividend | 全表单事务写历史 daily → 分钟级长锁 | 每股 commit |
+| news.py | SnowNLP CPU (~0.3-1s/条 × 100) 在事务内 → 30s-3 分钟长锁 | 攒批后一次写 (CPU 移出事务) |
+| margin/limit_up/northbound/monitor/crowdedness | 裸连接默认 5s busy_timeout — 受害脆弱 | 全部 timeout=30 加固 |
+
+**验证**: 语法 8 文件全 OK; 全量 pytest 479 passed; 补数 v1.3 运行中 (PID 92834, 5061 只) 连续写 15/15 成功 (间隔 1s 持续 15s, 锁窗口秒级)
+**通用规则 (已写入本教训)**: sqlite3 默认 deferred 事务 — 首条 DML 起持写锁到 commit; **禁止网络请求/CPU 密集计算落在写事务窗口内**; 批量写者必须每小批 commit (≤秒级锁窗口); 所有写连接必须 timeout≥30

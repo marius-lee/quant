@@ -111,7 +111,9 @@ def sync_news_sentiment(start_date: str = None, end_date: str = None, max_per_da
     if end_date is None:
         end_date = start_date
 
-    conn = sqlite3.connect(DB_PATH)
+    # v552: 受害加固 — 原裸连接默认 5s busy_timeout, 遇长写锁即崩
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.execute("PRAGMA busy_timeout = 30000")
     _ensure_table(conn)
 
     total_new = 0
@@ -126,7 +128,10 @@ def sync_news_sentiment(start_date: str = None, end_date: str = None, max_per_da
         conn.close()
         return 0
 
-    # Process each news item
+    # v552: 攒批后一次写 — SnowNLP CPU 计算 (~0.3-1s/条 × max 100) 全部移出
+    # 事务; 原逐条 INSERT 使情感计算落在 sqlite3 deferred 写事务窗口内
+    # (首条 INSERT 起持写锁到 commit), 持写锁 30s-3 分钟 (锁死事故同构)
+    rows = []
     for _, row in news_df.iterrows():
         if total_new >= max_per_day:
             break
@@ -142,15 +147,16 @@ def sync_news_sentiment(start_date: str = None, end_date: str = None, max_per_da
         pub_time = str(row.get("发布时间", row.get("pub_time", "")))[:19]
         date = pub_time[:10] if pub_time else start_date
 
-        # Sentiment analysis
+        # Sentiment analysis (CPU 密集, 事务外)
         score = _sentiment_snownlp(title)
-
-        conn.execute(
+        rows.append((sym, date, pub_time, title, round(score, 4)))
+        total_new += 1
+    if rows:
+        conn.executemany(
             "INSERT OR REPLACE INTO news_sentiment (symbol, date, pub_time, title, sentiment_score) "
             "VALUES (?, ?, ?, ?, ?)",
-            (sym, date, pub_time, title, round(score, 4))
+            rows
         )
-        total_new += 1
     conn.execute("""
         INSERT OR REPLACE INTO news_daily_count (symbol, date, news_count, avg_sentiment)
         SELECT symbol, date, COUNT(*), AVG(sentiment_score)

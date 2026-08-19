@@ -358,7 +358,7 @@ def _set_monitor_stage(stage: str):
     from datetime import date
     today = date.today().strftime("%Y-%m-%d")
     try:
-        c = sqlite3.connect(MARKET_DB)
+        c = sqlite3.connect(MARKET_DB, timeout=30)
         c.execute(
             "UPDATE task_runs SET status=? WHERE date=? AND task_name='monitor' "
             "AND pid=? AND status IN ('running','lunch')",
@@ -372,5 +372,5 @@ def _set_monitor_stage(stage: str):
 def _get_market_conn():
     """获取 market.db 只读连接 (P6 辅助)."""
     import sqlite3
-    conn = sqlite3.connect(MARKET_DB)
+    conn = sqlite3.connect(MARKET_DB, timeout=30)
     return conn

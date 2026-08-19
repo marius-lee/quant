@@ -905,6 +905,9 @@ class DataStore:
                     "updated_at=datetime('now','localtime') WHERE symbol=?",
                     (f_new, sym))
                 rebased += 1
+                # v552: 每股立即 commit — 原最后一次性 commit, symbols=None 全表
+                # 时单事务写全历史 daily (5000 只 × 秒级 = 分钟级长锁)
+                conn.commit()
                 logger.info(f"rebase: {sym} factor {f_old:.4f}→{f_new:.4f}, "
                             f"history × {ratio:.6f}")
         conn.commit()
@@ -1659,8 +1662,11 @@ class DataStore:
                          float(r[6]) / 1000 if r[6] else 0,   # v491: amount 元→千元 (对齐 _fetch_baostock_daily; 原 v407 直写元错 1000 倍)
                          float(r[7]) if r[7] else 0))
                     total += 1
+                # v552: 每只立即 commit — 原每 100 只 commit 使 baostock 网络查询
+                # (query_history_k_data) 落在 deferred 写事务窗口内 (~100 次查询
+                # ≈ 60-120s 长锁, 2026-08-19 backfill 事故同构)
+                conn.commit()
                 if (i + 1) % 100 == 0:
-                    conn.commit()
                     logger.info(f"baostock backfill: {i+1}/{len(symbols)} "
                                 f"({(i+1)*100//len(symbols)}%) — {total} rows")
             except Exception as e:
@@ -1826,8 +1832,10 @@ class DataStore:
                     _eta = (total_stocks - _bs_processed) / _rate if _rate > 0 else 0
                     logger.info(f"turnover backfill: {_bs_processed}/{total_stocks} ({100*_bs_processed//total_stocks}%) "
                                 f"{_rate:.1f}stocks/s ETA={_eta/60:.0f}min today={updated_today} total={total_updated}")
-                if _bs_processed % 100 == 0:
-                    conn.commit()  # 每100只提交一次, 防数据丢失
+                # v552: 每只立即 commit — 原每 100 只 commit 使 baostock 查询 + 失败
+                # 重试退避 (2s/4s/6s) 落在写事务窗口内 (1-3 分钟长锁); 现在事务
+                # 仅覆盖单只纯内存循环, 网络查询全在事务外
+                conn.commit()
                 # 全局限速已由 _bs_query (BaostockGate) 统一控制 — 不再裸 sleep
             if gate_blocked:
                 break
@@ -2368,6 +2376,9 @@ class DataStore:
                     "UPDATE stocks SET industry=? WHERE symbol=?",
                     (industry, sym)
                 )
+                # v552: 每只立即 commit — 原最后一次性 commit 使 akshare 网络
+                # 请求 + sleep 落在 deferred 写事务窗口内 (~317 只 ≈ 5-20 分钟长锁)
+                conn.commit()
                 updated += 1
             if idx < 3:
                 logger.info(f"stock {sym}: industry='{industry}', items={list(info_dict.keys())[:5]}")

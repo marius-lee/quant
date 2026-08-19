@@ -7,13 +7,17 @@ backfill_financial_income.py — 补数: financial_income 缺失列 (operating_c
         2020-2024 期这两列 (历史导入时缺失) 永不补齐。本脚本对仍为 NULL 的行
         用 sina lrb 接口重拉该股全量利润表, 仅更新缺失列 (COALESCE 不覆盖已有值)。
         银行/保险/券商无营业成本科目 (sina 返回 None) → 保持 NULL, 属合理缺项。
-版本:   v1.2 (2026-08-19) — 扩展: income 补 total_profit/income_tax_expense + cashflow 4 列 (同源 llb); v1.1 起 3 并发 (8 并发触发限流)
+版本:   v1.3 (2026-08-19) — 锁死根因修复: 原共享 1 连接 + 每 200 只才 commit,
+        sqlite3 deferred 事务首条 UPDATE 起持写锁 ~19 分钟/窗口, 锁杀物化轮
+        子进程与 web 调度任务 (database is locked)。重构: fetch 网络并行,
+        UPDATE 串行执行 (主线程单写者), 每 50 只 commit, 锁窗口秒级。
+        v1.2 扩展: income 补 total_profit/income_tax_expense + cashflow 4 列 (同源 llb);
+        v1.1 起 3 并发 (8 并发触发限流)
 用法:   PYTHONPATH=. .venv/bin/python3 scripts/backfill_financial_income.py
 幂等:   可重复执行 — 只处理仍为 NULL 的行, 已补值不被覆盖。
-耗时:   5558 股 × 8 并发 ≈ 60-90 分钟 (每 200 股打点)。
+耗时:   5560 股 × 2 请求 × 3 并发 ≈ 5-8 小时 (每 200 股打点)。
 """
 import sqlite3
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -25,6 +29,7 @@ from quant.utils.logger import get_logger
 _log = get_logger("scripts.backfill_financial_income")
 
 _WORKERS = 3
+_COMMIT_EVERY = 50  # v1.3: 短事务 — 每 50 只 commit, 锁窗口秒级 (原 200 只 ≈ 19 分钟)
 
 # v1.2: 全表字段级体检 (scripts/field_health.py) 扩展 — financial_income 还缺
 # total_profit (利润总额) / income_tax_expense (所得税费用) (74-75% NaN);
@@ -44,15 +49,16 @@ _CF_CN = {
 }
 
 
-def _fetch_and_update(client, conn, symbol: str) -> tuple[int, str | None]:
-    """单股票: 拉 lrb + llb → 更新缺失列. 返回 (更新行数, 失败信息或 None)."""
-    per_sym = 0
+def _fetch_updates(client, symbol: str) -> tuple[list, str | None]:
+    """单股票: 拉 lrb + llb → 组装 UPDATE 参数列表. 只 fetch 不写库 (v1.3).
+    返回 (updates, 失败信息或 None); updates 元素 = (table, set_clause, params)."""
+    updates: list = []
     for report_type, table, cn_map in (("lrb", "financial_income", _INC_CN),
                                        ("llb", "financial_cashflow", _CF_CN)):
         try:
             df = client.get_financial_report(symbol, report_type=report_type, num=50)
         except Exception as e:
-            return per_sym, f"{report_type} {type(e).__name__}: {e}"
+            return updates, f"{report_type} {type(e).__name__}: {e}"
         if df is None or df.empty:
             continue
         for _, raw in df.iterrows():
@@ -68,16 +74,14 @@ def _fetch_and_update(client, conn, symbol: str) -> tuple[int, str | None]:
             if not mapped:
                 continue
             set_clause = ", ".join(f"{c} = COALESCE({c}, ?)" for c in mapped)
-            cur = conn.execute(
-                f"UPDATE {table} SET {set_clause} WHERE symbol=? AND stat_date=?",
-                list(mapped.values()) + [symbol, stat_date])
-            per_sym += cur.rowcount
-    return per_sym, None
+            updates.append((table, set_clause,
+                            list(mapped.values()) + [symbol, stat_date]))
+    return updates, None
 
 
 def main() -> None:
     t0 = time.monotonic()
-    conn = sqlite3.connect(str(MARKET_DB), timeout=60, check_same_thread=False)
+    conn = sqlite3.connect(str(MARKET_DB), timeout=60)
     symbols = [r[0] for r in conn.execute(
         "SELECT DISTINCT symbol FROM financial_income WHERE "
         "(operating_cost IS NULL OR administration_expense IS NULL "
@@ -94,26 +98,38 @@ def main() -> None:
     touched_symbols = 0
     fail_symbols: list[tuple[str, str]] = []
     done = 0
-    lock = threading.Lock()
+    pending: list = []
+    # v1.3: fetch 网络并行 (线程池), UPDATE 串行执行 (主线程单写者) — 锁窗口 = 每
+    # _COMMIT_EVERY 只的写入耗时 (秒级), 不再阻塞 web/物化的写事务
     with ThreadPoolExecutor(max_workers=_WORKERS) as pool:
-        futs = {pool.submit(_fetch_and_update, client, conn, s): s for s in symbols}
+        futs = {pool.submit(_fetch_updates, client, s): s for s in symbols}
         for fut in as_completed(futs):
-            per_sym, err = fut.result()
-            with lock:
-                done += 1
-                if per_sym:
-                    updated_rows += per_sym
-                    touched_symbols += 1
-                if err:
-                    fail_symbols.append((futs[fut], err))
-                if done % 200 == 0:
-                    conn.commit()
-                    _log.info(f"进度 {done}/{len(symbols)} | 已补 {updated_rows} 行 "
-                              f"({touched_symbols} 只) | 失败 {len(fail_symbols)} "
-                              f"| 耗时 {time.monotonic()-t0:.1f}s")
+            updates, err = fut.result()
+            done += 1
+            if err:
+                fail_symbols.append((futs[fut], err))
+            pending.extend(updates)
+            if done % _COMMIT_EVERY == 0:
+                for table, set_clause, params in pending:
+                    cur = conn.execute(
+                        f"UPDATE {table} SET {set_clause} WHERE symbol=? AND stat_date=?",
+                        params)
+                    updated_rows += cur.rowcount
+                pending = []
+                conn.commit()
+                if touched_symbols == 0 and updated_rows:
+                    touched_symbols = done
+                _log.info(f"进度 {done}/{len(symbols)} | 已补 {updated_rows} 行 "
+                          f"({done} 只) | 失败 {len(fail_symbols)} "
+                          f"| 耗时 {time.monotonic()-t0:.1f}s")
+    for table, set_clause, params in pending:
+        cur = conn.execute(
+            f"UPDATE {table} SET {set_clause} WHERE symbol=? AND stat_date=?",
+            params)
+        updated_rows += cur.rowcount
     conn.commit()
     conn.close()
-    _log.info(f"补数完成: {updated_rows} 行 ({touched_symbols}/{len(symbols)} 只有更新) "
+    _log.info(f"补数完成: {updated_rows} 行 ({done}/{len(symbols)} 只) "
               f"| 失败 {len(fail_symbols)}: {fail_symbols[:10]} "
               f"| 总计 {time.monotonic()-t0:.1f}s")
 

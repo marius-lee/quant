@@ -3925,3 +3925,11 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
   - **设计如此, 不补**: daily_valuation.turnover_rate (em_valuation 明确留 NULL, turnover 在 daily 有独立来源, 因子无引用); lhb_detail post_Nd (最新期天然 NaN); stocks 快照列 (最新期 0%)
   - **合理缺项, 不补**: financial_balance good_will/fixed_assets/longterm_loan (金融股无对应科目); fund_hold.change_ratio 20% (部分期无变动记录); daily.amount 5.9%; intraday_snapshot.prev_close 9.6%
 - **待办**: 补数完成后 → margin 历史回补 (SH 全量 1849 天 + SZ 全量, 需 akshare/SSE API 可用) → 复检字段健康 → 用户重启物化
+
+## 2026-08-19: 锁死根因定位与修复 (v549)
+
+- **症状**: 08:23 起 web 调度任务全失败 (database is locked); market.db 连续写 20/20 锁死; 05:40 物化轮 seg_6+ 全灭; daily_repair 卡 running
+- **根因**: scripts/backfill_financial_income.py (本会话新建) — 3 线程共享 1 连接 (check_same_thread=False) + sqlite3 默认 deferred 事务 (首条 UPDATE 起持写锁) + **每 200 只才 commit** → 写锁连续持有 ≈ 200 只 × 5.7s ≈ 19 分钟/窗口 → 物化段子进程 (factor_cache 写) 等锁 60s 超时崩溃 → 物化轮死亡; web repair/task_runs 写同样被锁
+- **修复 v1.3**: fetch (网络) 3 线程并行, UPDATE 串行执行 (主线程单写者), 每 50 只 commit — 锁窗口秒级; 实测补数运行中 5/5 写成功 (修复前 0/20)
+- **教训**: sqlite3 连接默认 deferred 事务, 共享连接 + 批量 commit = 长写锁; 多线程写必须显式事务边界
+- **待办**: 用户重启 web (63886 卡死 + daily_repair 76816 卡 running → auto-abort 清理) → 调度恢复 → 数据补齐后重跑物化

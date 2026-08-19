@@ -467,3 +467,15 @@ scripts/field_health.py 全表字段级扫描 (v547 事件后)。39 列超 5% �
 4. **合理缺项**: 金融股无商誉/固定资产/长短期借款科目; fund_hold.change_ratio 部分期无变动; stocks 快照 6.5% (未上市/退市)
 
 **待办**: 补数完成后 margin 历史回补 (SH 1849 天 + SZ 全量) → 复检 → 重启物化。
+
+## §24 v549: market.db 写锁死根因 — backfill 长事务锁杀调度
+
+**症状链**: 08:23 daily_repair 写 data_audit 锁失败 (60s busy_timeout 超) → 调度任务全灭 → 05:40 物化轮 seg_6+ 子进程全灭 (factor_cache 写等锁崩溃) → daily_repair 卡 running 25 分钟 → web 高 CPU 忙等。
+
+**根因**: backfill_financial_income.py v1.0-v1.2 — 3 线程共享 1 sqlite3 连接 (check_same_thread=False) + 默认 deferred 事务 (首条 UPDATE 自动 BEGIN 持写锁) + 每 200 只才 commit → 锁窗口 ≈ 19 分钟。期间所有外部写者 (物化段/repair/task_runs) 全部 database is locked。
+
+**证据**: 暂停 backfill (SIGSTOP, 冻结进程持锁 — 首次测试被误导判定 web) + 杀进程后写立即恢复 (IntegrityError 而非 locked)。
+
+**修复 (v1.3)**: fetch 网络并行 (线程池), UPDATE 串行 (主线程单写者), 每 50 只 commit。实测: 补数运行中连续写 5/5 成功 (修复前 0/20)。
+
+**通用约束**: 多线程共享 sqlite3 连接必须显式事务边界 (每批 commit ≤ 秒级); 禁止"共享连接 + 批量 commit"模式。

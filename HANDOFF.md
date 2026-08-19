@@ -1,3 +1,21 @@
+### v555: 测试污染事故 — trades.db 误写真实库 26 行已清 (test-v555)
+
+**事故**: 用户绩效 tab 看到交易记录 created_at=2026-08-19 12:01:53 (date=2024-05-06 等虚拟
+日期) → 根因 = test_v554_audit_fixes.py 首次运行时 monkeypatch.setenv("TRADE_DB_PATH")
+**无效** (TradeRepo 路径来自 quant.config.paths.TRADE_DB, 不看环境变量) → 测试直接写入了
+真实 trades.db (id 3494-3511, 600000 假交易 18 行) + 我手动验证脚本再写 2 批。
+另发现 13:29:35 的 8 行 test_execution 残留 (t_tr_b/t_tr_p/t_tr_s/t_tr_z/t_tr_r,
+strategy_config 8 行 t_*) — 同属测试数据残留一并清除。
+
+**修复**:
+- test_v554 隔离改为 monkeypatch.setattr(trade_repo 模块, "TRADE_DB", tmp db) —
+  已生效 (12:04 全量回归后无新增污染)
+- 清理: DELETE sim_trades id 3494-3519 (26 行) + strategy_config t_* (8 行);
+  备份 trades.db.bak_v555_20260819_134133; 600000 污染清零, quant 44 条真实记录完好
+- 教训: 测试写库类用例必须显式 db_path 注入或 monkeypatch 模块常量, 禁 env 变量
+  (TradeRepo 不看 env); 排查误写后先备份再删, 按 id/strategy 精确删除
+
+**验证**: quant 最新交易 = 600162 卖出 4.14 (2026-08-19 10:50:09 实盘) ✓
 ### v554: 全代码审查第三轮 — 数据链/执行链/优化链 17 处修复 (test-v554)
 
 **背景**: 用户对"查了 5 次还有 bug"不满, 要求全代码行为级最终审查。4 个 agent 并行

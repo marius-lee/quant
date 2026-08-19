@@ -565,3 +565,22 @@ scripts/field_health.py 全表字段级扫描 (v547 事件后)。39 列超 5% �
 | P1-11 | _alpha_proportional 负权重 Σw≠1 → 15% 部署 | kelly.py:152-156 | clip(0) 再归一 |
 
 **验证**: test_v554_audit_fixes.py 17 项; 修正固化旧 bug 语义的 test_synth (0.82→1.225) 与 test_portfolio 微调; 全量 **511 passed**。回测烟测待物化重启后跑。
+
+## §30 v555: 测试污染事故 — trades.db 误写真实库清理 (test-v555)
+
+**事故发现**: 用户绩效 tab 交易记录出现 created_at=2026-08-19 12:01:53, date=2024-05-06
+等虚拟日期。
+
+**根因**: test_v554_audit_fixes.py 首次运行用 `monkeypatch.setenv("TRADE_DB_PATH", ...)`
+隔离 — TradeRepo 路径来自 `quant.config.paths.TRADE_DB` 模块常量,**不看环境变量** →
+隔离失效, 测试直写真实 trades.db (600000 假交易, id 3494-3511) + 验证脚本 2 批。
+另发现 13:29 的 test_execution 残留 8 行 (t_* strategy)。
+
+**修复**:
+1. 测试隔离改 `monkeypatch.setattr(tr_mod, "TRADE_DB", tmp_db)` — 已验证后续运行零污染
+2. 备份 trades.db → `trades.db.bak_v555_20260819_134133` 后精确删除:
+   sim_trades id 3494-3519 (26 行) + strategy_config t_* (8 行)
+3. 验证: 600000 零残留; quant 44 条真实记录完好 (最新 = 600162 卖出 4.14, 2026-08-19 10:50:09 实盘)
+
+**教训**: 写库类测试必须显式 db_path 注入或 monkeypatch 模块常量, 禁用环境变量;
+事故排查先备份后精确删除 (按 id/strategy), 不动真实记录。

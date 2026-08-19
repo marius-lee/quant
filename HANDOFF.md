@@ -3941,3 +3941,13 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
 - **修复 v550**: _build_neutralize_projection 支持单 None — market_caps=None → industry-only 投影 (X=[1,行业哑变量]); industries=None → 市值-only; 两者有 → 原逻辑。落实 v501 设计语义
 - **验证**: test_v550 5 项通过; `bash scripts/run_task.sh signals 2026-08-19` → STATUS=OK, 2 targets (17.2s)
 - **待办**: 用户重启 web 使 orchestrator 加载新代码 (09:30 execute 前)
+
+## 2026-08-19: v551 — 纠正 v550 错误方向, neutralize 不降级 (B32 严格化)
+
+- **v550 方向错误**: 实现了 v501 注释承诺的"单 None 降级投影" (industry-only/市值-only) — 违背用户"不降级不静默"铁律, 撤销
+- **真正根因**: 数据根本不缺 — daily_valuation 2019-01-02~2026-08-18 全覆盖 (07-30 5203 行/08-18 5209 行, market_cap 100% 非空); get_fundamentals (live/signals/phase8) PIT 路径把 market_cap 换算写入 **total_mv** 列 (2946-2990), 而 pipeline.py:426+513 只认 **market_cap** 列名 → 明明有市值却传 None → neutralize 崩 (signals) / 降级 industry-only (合成后 alpha)
+- **修复 (v551)**:
+  - pipeline.py:426 因子层中性化 + 513 合成层中性化: market_cap 列缺失时认 PIT total_mv (同语义, 单位已换算)
+  - neutralize.py: _build_neutralize_projection 单 None/双 None → 抛 ValueError (明确缺失维度); neutralize_factors_batch 双 None → 抛; 样本不足 (_MIN_COMMON) → 抛 (原 warning+skip 降级撤销); neutralize() 单维度退化 → 抛
+- **验证**: test_v550.py (v551 语义) 5 项; signals 实测: **"[neutralize] joint (industry+size)"** (修复前 industry only) + STATUS=OK 3 targets
+- **待办**: 用户重启 web (09:30 execute 前) → phase8 回测重跑验证 07-30 修复 → 数据补齐后物化

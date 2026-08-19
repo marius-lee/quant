@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
-"""v550: neutralize 单 None 降级修复 — market_caps/industries 缺一时
-不再 AttributeError (None.dropna), 而是只投影可用维度 (industry-only / 市值-only).
-v501 设计语义 "pivot 无 PIT → 列缺失, 下游 neutralize 自动降级" 的落实."""
+"""v551: neutralize 不降级 — 单 None / 双 None / 样本不足一律抛错阻断 (B32),
+数据不完整 = 风控缺失 = 硬失败. 修复被 v550 误实现的"降级投影"."""
 
 import numpy as np
 import pandas as pd
@@ -24,42 +23,39 @@ def _mk_factors():
     }
 
 
-def test_v550_mcap_none_industry_only():
-    """market_caps=None → industry-only 投影, 不崩, 输出与输入同索引."""
-    fv = _mk_factors()
-    out = neutralize_factors_batch(fv, industries=_IND, market_caps=None)
-    assert set(out) == set(fv)
-    assert all(list(s.index) == _SYMS for s in out.values())
-    assert all(np.isfinite(s.dropna()).all() for s in out.values())
+def test_v551_mcap_none_raises():
+    """market_caps=None → 抛错 (原 v550 降级为 industry-only, 撤销)."""
+    with pytest.raises(ValueError, match="market_caps"):
+        neutralize_factors_batch(_mk_factors(), industries=_IND, market_caps=None)
 
 
-def test_v550_industry_none_mcap_only():
-    """industries=None → 市值-only 投影, 不崩."""
-    fv = _mk_factors()
-    out = neutralize_factors_batch(fv, industries=None, market_caps=_MCAP)
-    assert set(out) == set(fv)
-    assert all(list(s.index) == _SYMS for s in out.values())
+def test_v551_industry_none_raises():
+    """industries=None → 抛错."""
+    with pytest.raises(ValueError, match="industries"):
+        neutralize_factors_batch(_mk_factors(), industries=None, market_caps=_MCAP)
 
 
-def test_v550_both_none_unchanged():
-    """两者都 None → 原样返回 (batch 顶层语义)."""
-    fv = _mk_factors()
-    out = neutralize_factors_batch(fv, industries=None, market_caps=None)
-    assert out is fv
+def test_v551_both_none_raises():
+    """两者都 None → 抛错 (原静默 return, 撤销)."""
+    with pytest.raises(ValueError):
+        neutralize_factors_batch(_mk_factors(), industries=None, market_caps=None)
 
 
-def test_v550_both_present_batch_preserved():
-    """两者都有 → 与原逻辑一致 (有效值非空且有限)."""
+def test_v551_both_present_ok():
+    """两者都有 → 正常中性化, 输出有限且同索引."""
     fv = _mk_factors()
     out = neutralize_factors_batch(fv, industries=_IND, market_caps=_MCAP)
     assert set(out) == set(fv)
+    assert all(list(s.index) == _SYMS for s in out.values())
     assert all(np.isfinite(s.dropna()).all() for s in out.values())
 
 
-def test_v550_mcap_none_with_nan_scores():
-    """industry-only 投影下含 NaN 的因子 → 只对有效子集投影, 无 NaN 传染."""
-    fv = _mk_factors()
-    fv["f3"] = fv["f1"].copy()
-    fv["f3"].iloc[10:20] = np.nan
-    out = neutralize_factors_batch(fv, industries=_IND, market_caps=None)
-    assert np.isfinite(out["f3"].dropna()).all()
+def test_v551_too_few_samples_raises():
+    """样本不足 (_MIN_COMMON) → 抛错 (原 warning+skip 降级, 撤销)."""
+    syms = [f"T{i:04d}" for i in range(5)]
+    ind = pd.Series(["a"] * 5, index=syms)
+    mcap = pd.Series(np.logspace(8, 9, 5), index=syms)
+    with pytest.raises(ValueError, match="common stocks"):
+        neutralize_factors_batch(
+            {"f1": pd.Series(np.arange(5.0), index=syms)},
+            industries=ind, market_caps=mcap)

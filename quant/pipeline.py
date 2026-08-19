@@ -423,8 +423,16 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         # 原 fundamentals["total_mv"] 为 stocks 表当前快照 — 回测历史日期隐含前视
         # v501: 只允许 PIT market_cap 列, 禁止回退 total_mv (当前快照=前视);
         # 当日无 PIT 市值 → 该列缺失, neutralize 内部 dropna 剔除缺失股.
-        _mcap_info = fundamentals["market_cap"].reindex(factor_values[next(iter(factor_values))].index) \
-            if "market_cap" in fundamentals.columns else None
+        # v551: get_fundamentals (live/signals/phase8 路径) 的 PIT total_mv 合法
+        # (daily_valuation ≤date 换算, 非 stocks 快照) — 列名不同但同语义, 一并认;
+        # 两列均无 → _mcap_info=None → neutralize 抛错阻断 (数据缺失, 不降级)
+        _mcap_info = None
+        if "market_cap" in fundamentals.columns:
+            _mcap_info = fundamentals["market_cap"].reindex(
+                factor_values[next(iter(factor_values))].index)
+        elif "total_mv" in fundamentals.columns:
+            _mcap_info = fundamentals["total_mv"].reindex(
+                factor_values[next(iter(factor_values))].index)
         if _ind_info is not None or _mcap_info is not None:
             from quant.risk.neutralize import neutralize_factors_batch
             factor_values = neutralize_factors_batch(
@@ -491,8 +499,12 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
     # test-v466 (BT-1): 市值用 PIT market_cap — 原 total_mv 为 stocks 当前快照 (前视)
     # v501: 只允许 PIT market_cap, 禁 total_mv (当前快照=前视). 缺失日由
     # fillna(price*1e8) 兜底 — prices 为当日 PIT 收盘价, 非未来数据.
-    mcap_real = fundamentals["market_cap"].reindex(prices.index) \
-        if "market_cap" in fundamentals.columns else None
+    # v551: get_fundamentals (live) 的 PIT total_mv 合法 — 与 market_cap 同语义
+    mcap_real = None
+    if "market_cap" in fundamentals.columns:
+        mcap_real = fundamentals["market_cap"].reindex(prices.index)
+    elif "total_mv" in fundamentals.columns:
+        mcap_real = fundamentals["total_mv"].reindex(prices.index)
     if mcap_real is not None:
         mcap_real = mcap_real.fillna(prices * 1e8)
     if _industry_pt is not None:

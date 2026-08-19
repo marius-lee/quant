@@ -490,3 +490,13 @@ scripts/field_health.py 全表字段级扫描 (v547 事件后)。39 列超 5% �
 3. B32 (08-18): neutralize 失败 warning→阻断 — 旧静默降级变成硬失败
 
 **修复**: _build_neutralize_projection 三态: 单 None → 只投影可用维度 (industry-only X=[1,dummies] / 市值-only X=[1,log_mcap]); 双有 → 原逻辑。test_v550 5 项; run_task.sh signals 实测 STATUS=OK (2 targets, 17.2s)。
+
+## §26 v551: 纠正 v550 — neutralize 不降级 (B32), 真根因是列名不认 (PIT total_mv)
+
+**§25 修正**: v550 实现的"单 None 降级投影"违背"不降级不静默"铁律, 已撤销。真根因不是数据缺失:
+
+1. daily_valuation 2019-01-02~2026-08-18 全覆盖, 07-30/08-18 market_cap 100% 非空 — **数据齐全**
+2. get_fundamentals (live/signals/phase8) PIT 路径将 market_cap 按 source 换算后写入 **total_mv** 列 (store.py:2946-2990)
+3. pipeline.py:426 (因子层) + 513 (合成层) 只认 **market_cap** 列名 → live 路径市值恒 None → neutralize 崩 (B32) / industry-only 降级
+
+**修复**: 426/513 认 PIT total_mv (同语义); neutralize 全家 (batch/_build/标量入口) 单 None、双 None、样本不足一律抛 ValueError — 风控硬要求不降级。验证: signals 日志 joint (industry+size), STATUS=OK。

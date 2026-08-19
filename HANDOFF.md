@@ -4287,3 +4287,18 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
   自管 _tk_finish, 跑完自动收尾); 生产链 pid=22320 全程未被杀, factor_cache
   阶段健康推进 (DuckDB 全量重同步 957 万行完成, turnover backfill 5201 股完成)。
 - 验证: test_v557+test_v556 23 passed 且不触碰生产 task_runs; 全量 542 passed。
+
+### v561: DuckDB 同步顺序 bug 修复 — daily_valuation 当日数据缺失 (2026-08-20)
+
+- 现象: 用户问全量重同步是否产生冗余 — 实测 daily/daily_valuation 主键重复
+  组均 0 (ON CONFLICT DO UPDATE 幂等), 但发现 daily_valuation 08-19 在
+  DuckDB 缺 5210 行 (SQLite 8322941 vs DuckDB 8317731)。
+- 根因: daily_data._run() 顺序 bug — DuckDB 同步 (backfill→incremental→verify)
+  跑在 sync_main (rollback 表循环) 之前。daily_valuation 08-19 数据 21:06
+  才由 em_valuation 写入 SQLite, 而 DuckDB 增量只追 date > MAX(08-18),
+  之后无重同步 → 08-19 估值数据永不进 DuckDB。因子物化 get_daily() DuckDB
+  优先 → 当日估值因子 (pe_ttm/pb/market_cap) 缺失。
+- 修复: 把 DuckDB 同步块移到 sync_main + audit 之后 (所有 SQLite 数据就绪
+  后再同步); 已手动全量重同步补齐当日 5210 行, verify match=True。
+- 验证: 全量重同步 8322941 rows 49s, DuckDB 08-19=5210 行, verify True;
+  duckdb/daily_data 相关测试 16 passed。

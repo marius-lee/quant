@@ -62,6 +62,46 @@ def _run(today: str):
     # v382: 后续步骤各自独立 try/except, 单步失败不阻断整体 (v479 改由
     # 审计/补拉闭环兜底, 任务状态 partial 而非 ok)
 
+    # ── v479: 子同步按注册表循环 (rollback 模式, 自带 T+1 迟发补偿窗口) ──
+    from quant.data.table_registry import rollback_specs
+    sync_results: dict[str, object] = {}
+    for spec in rollback_specs():
+        if spec.sync_main is None:
+            continue
+        start_ = (_dt.strptime(today, "%Y-%m-%d") - _td(days=spec.window_days)).strftime("%Y-%m-%d")
+        try:
+            n = spec.sync_main(start_, today)
+            sync_results[spec.table] = n
+            _log.info(f"[{today}] sync {spec.table}: +{n} rows ({start_}..{today})")
+        except Exception as e:
+            sync_results[spec.table] = f"FAIL: {str(e)[:120]}"
+            _log.warning(f"[{today}] sync {spec.table} failed: {str(e)[:160]}")
+
+    # ── v479: 完整性审计 + 自动补拉修复 (sync → audit → repair → re-audit) ──
+    from quant.data.data_health import audit_all, repair_and_reaudit, consecutive_failures
+    audit = audit_all(today)
+    failed = sorted(t for t, rules in audit.items()
+                    if any(v == "fail" for v in rules.values()))
+    repaired: list[str] = []
+    still: list[str] = []
+    if failed:
+        _log.warning(f"[{today}] audit FAIL tables: {failed}")
+        repaired, still = repair_and_reaudit(today, failed)
+        for t in repaired:
+            _log.info(f"[{today}] audit repaired: {t}")
+        for t in still:
+            _log.error(f"[{today}] audit STILL FAILED after repair: {t}")
+
+    # 连续失败告警升级 (≥3 天同一表 fail → ERROR, 需人工排查数据源)
+    for t, rules in audit.items():
+        if any(v == "fail" for v in rules.values()) and consecutive_failures(t, days=5) >= 3:
+            _log.error(f"[{today}] DATA HEALTH: {t} 连续失败 ≥3 天 — 数据源需人工排查/换源")
+
+    # v560-fix (2026-08-19): DuckDB 同步必须放在 sync_main + audit 之后 —
+    # 原位置在 rollback 表循环之前, 导致 daily_valuation 08-19 数据 (21:06
+    # 才由 em_valuation 写入 SQLite) 永不进 DuckDB: _sync_incremental 只追
+    # date > DuckDB.MAX(date) (08-18), 之后无重同步 → 因子物化读 DuckDB 缺
+    # 当日估值因子。实测: DuckDB daily_valuation 08-19 = 0 行 vs SQLite 5210。
     # v449: Sync SQLite -> DuckDB (DuckDB 仅用于读查询分流, 写入仍走 SQLite)
     # v448: DuckDB 后台同步线程从未启动, 导致 DuckDB daily 表落后 SQLite 数月
     #   - materialize() 走 DuckDB 优先, 获取不到新增日期数据 -> cache 短 fewer
@@ -102,41 +142,6 @@ def _run(today: str):
         # 4) 预聚合表刷新已删除 (v498: 零消费方, DROP 8 表 — 见 duckdb_sync_all.sh)
     except Exception:
         _log.warning(f"[{today}] DuckDB sync failed: {_tb.format_exc()}")
-
-    # ── v479: 子同步按注册表循环 (rollback 模式, 自带 T+1 迟发补偿窗口) ──
-    from quant.data.table_registry import rollback_specs
-    sync_results: dict[str, object] = {}
-    for spec in rollback_specs():
-        if spec.sync_main is None:
-            continue
-        start_ = (_dt.strptime(today, "%Y-%m-%d") - _td(days=spec.window_days)).strftime("%Y-%m-%d")
-        try:
-            n = spec.sync_main(start_, today)
-            sync_results[spec.table] = n
-            _log.info(f"[{today}] sync {spec.table}: +{n} rows ({start_}..{today})")
-        except Exception as e:
-            sync_results[spec.table] = f"FAIL: {str(e)[:120]}"
-            _log.warning(f"[{today}] sync {spec.table} failed: {str(e)[:160]}")
-
-    # ── v479: 完整性审计 + 自动补拉修复 (sync → audit → repair → re-audit) ──
-    from quant.data.data_health import audit_all, repair_and_reaudit, consecutive_failures
-    audit = audit_all(today)
-    failed = sorted(t for t, rules in audit.items()
-                    if any(v == "fail" for v in rules.values()))
-    repaired: list[str] = []
-    still: list[str] = []
-    if failed:
-        _log.warning(f"[{today}] audit FAIL tables: {failed}")
-        repaired, still = repair_and_reaudit(today, failed)
-        for t in repaired:
-            _log.info(f"[{today}] audit repaired: {t}")
-        for t in still:
-            _log.error(f"[{today}] audit STILL FAILED after repair: {t}")
-
-    # 连续失败告警升级 (≥3 天同一表 fail → ERROR, 需人工排查数据源)
-    for t, rules in audit.items():
-        if any(v == "fail" for v in rules.values()) and consecutive_failures(t, days=5) >= 3:
-            _log.error(f"[{today}] DATA HEALTH: {t} 连续失败 ≥3 天 — 数据源需人工排查/换源")
 
     elapsed = _time.time() - t0
     # v479: partial — 主流程 ok 但审计有残留失败 → 次日早间补拉链修复

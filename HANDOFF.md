@@ -1,3 +1,19 @@
+### v559: backfill_financial_income v1.4 — 失败可诊断化 + 自动重试 (2026-08-19)
+
+- 诊断结论 (py-spy attach 不可用 → 网络复现): 448 只失败全部为 sina 财报接口
+  网络超时 (SinaError: SSL handshake timed out / read timed out), 瞬时性 (重试即
+  恢复), 与并发负载相关 (3 并发 13% 失败; 叠加 4 并发诊断=7 并发时抽样 8/8 全超时;
+  脚本注释明示 8 并发触发限流). 非数据缺失 (空表不算失败, 走 continue).
+- 脚本缺陷 (已改): 失败明细只存内存 fail_symbols 结束才打印前 10 → 运行中不可查.
+- v1.4 三项改动 (scripts/backfill_financial_income.py): ① 并发 3→2 (缓解限流);
+  ② 每请求失败自动重试 2 次 (指数退避 1.5s/2.25s, warning 逐次记录); ③ 失败
+  逐条落日志 (warning). 重试逻辑已用 FlakyClient 单测验证 (1 次失败后成功 / 恒失败
+  报重试信息, 调用计数正确).
+- 注意: 运行中的 PID 92834 是 v1.3 逻辑不受影响 (改文件不影响已加载进程), 预计
+  凌晨完成; v1.4 需等其结束后重跑 (幂等, 只补 NULL 行), 会补剩余 + 重试失败.
+- 清理: 临时诊断脚本 /tmp/diag_sina*.py 已用完 (本次诊断方法: 从 DB 抽待补股
+  实测 SinaClient 分类统计 + 失败股重试验证瞬时性).
+
 ### v558: F3/F4/F6 主循环集成测试落地 — 抓到 F6 的 F3 违规 (2026-08-19) — 全量 534 passed
 
 - 新方法 (test_v557_orchestrator_integration.py, 6 项): orchestrator._run() 主循环

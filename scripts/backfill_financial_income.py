@@ -7,15 +7,20 @@ backfill_financial_income.py — 补数: financial_income 缺失列 (operating_c
         2020-2024 期这两列 (历史导入时缺失) 永不补齐。本脚本对仍为 NULL 的行
         用 sina lrb 接口重拉该股全量利润表, 仅更新缺失列 (COALESCE 不覆盖已有值)。
         银行/保险/券商无营业成本科目 (sina 返回 None) → 保持 NULL, 属合理缺项。
-版本:   v1.3 (2026-08-19) — 锁死根因修复: 原共享 1 连接 + 每 200 只才 commit,
-        sqlite3 deferred 事务首条 UPDATE 起持写锁 ~19 分钟/窗口, 锁杀物化轮
-        子进程与 web 调度任务 (database is locked)。重构: fetch 网络并行,
-        UPDATE 串行执行 (主线程单写者), 每 50 只 commit, 锁窗口秒级。
+版本:   v1.4 (2026-08-19) — 失败可诊断化 + 自动重试: v1.3 诊断确认 448 只失败
+        全部为 sina 网络层超时 (SSL handshake/read timeout), 瞬时性 (重试即恢复),
+        与并发负载相关 (7 并发即全超时, 注释"8 并发触发限流")。v1.4 三项:
+        ① 并发 3→2 缓解限流; ② 每请求失败自动重试 2 次 (指数退避 1.5s/2.25s);
+        ③ 失败明细逐条落日志 (原仅存内存, 结束才打印前 10)。
+        v1.3 锁死根因修复: 原共享 1 连接 + 每 200 只才 commit, sqlite3 deferred
+        事务首条 UPDATE 起持写锁 ~19 分钟/窗口, 锁杀物化轮子进程与 web 调度任务
+        (database is locked)。重构: fetch 网络并行, UPDATE 串行执行 (主线程单写者),
+        每 50 只 commit, 锁窗口秒级。
         v1.2 扩展: income 补 total_profit/income_tax_expense + cashflow 4 列 (同源 llb);
         v1.1 起 3 并发 (8 并发触发限流)
 用法:   PYTHONPATH=. .venv/bin/python3 scripts/backfill_financial_income.py
 幂等:   可重复执行 — 只处理仍为 NULL 的行, 已补值不被覆盖。
-耗时:   5560 股 × 2 请求 × 3 并发 ≈ 5-8 小时 (每 200 股打点)。
+耗时:   5560 股 × 2 请求 × 2 并发 ≈ 6-10 小时 (每 50 只打点)。
 """
 import sqlite3
 import time
@@ -28,8 +33,9 @@ from quant.utils.logger import get_logger
 
 _log = get_logger("scripts.backfill_financial_income")
 
-_WORKERS = 3
+_WORKERS = 2  # v1.4: 3→2 缓解 sina 限流 (7 并发实测全超时)
 _COMMIT_EVERY = 50  # v1.3: 短事务 — 每 50 只 commit, 锁窗口秒级 (原 200 只 ≈ 19 分钟)
+_MAX_RETRIES = 2  # v1.4: 每请求失败自动重试 2 次 (网络瞬时超时重试即恢复)
 
 # v1.2: 全表字段级体检 (scripts/field_health.py) 扩展 — financial_income 还缺
 # total_profit (利润总额) / income_tax_expense (所得税费用) (74-75% NaN);
@@ -51,14 +57,22 @@ _CF_CN = {
 
 def _fetch_updates(client, symbol: str) -> tuple[list, str | None]:
     """单股票: 拉 lrb + llb → 组装 UPDATE 参数列表. 只 fetch 不写库 (v1.3).
-    返回 (updates, 失败信息或 None); updates 元素 = (table, set_clause, params)."""
+    返回 (updates, 失败信息或 None); updates 元素 = (table, set_clause, params).
+    v1.4: 每报告类型失败自动重试 _MAX_RETRIES 次 (指数退避), 仍失败返回该类型错误。"""
     updates: list = []
     for report_type, table, cn_map in (("lrb", "financial_income", _INC_CN),
                                        ("llb", "financial_cashflow", _CF_CN)):
-        try:
-            df = client.get_financial_report(symbol, report_type=report_type, num=50)
-        except Exception as e:
-            return updates, f"{report_type} {type(e).__name__}: {e}"
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                df = client.get_financial_report(symbol, report_type=report_type, num=50)
+                break
+            except Exception as e:
+                if attempt < _MAX_RETRIES:
+                    _log.warning(f"{symbol} {report_type} 第{attempt + 1}次失败, "
+                                 f"退避后重试: {type(e).__name__} {e}")
+                    time.sleep(1.5 ** (attempt + 1))
+                    continue
+                return updates, f"{report_type} 重试{_MAX_RETRIES}次仍失败 {type(e).__name__}: {e}"
         if df is None or df.empty:
             continue
         for _, raw in df.iterrows():
@@ -108,6 +122,7 @@ def main() -> None:
             done += 1
             if err:
                 fail_symbols.append((futs[fut], err))
+                _log.warning(f"补数失败 {futs[fut]}: {err}")  # v1.4: 逐条落日志 (原仅内存)
             pending.extend(updates)
             if done % _COMMIT_EVERY == 0:
                 for table, set_clause, params in pending:

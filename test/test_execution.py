@@ -1,18 +1,29 @@
 """测试 ExecutionEngine — 模拟交易执行 + 资金管理.
 
 模板 3 (TDD): 确定性输入, 状态隔离.
-每个测试前清理该 strategy 的旧数据, 防止历史运行残留污染.
+v555: 库隔离 — 原直写真实 trades.db (quant/data/trades.db) 且仅靠 _cleanup_strategy
+清理, 测试失败即残留 (2026-08-19 13:29 残留 8 行事故). 现 autouse fixture 将
+trade_repo.TRADE_DB 重定向到 tmp 库, 测试永不触碰真实库.
 """
 import pytest
 import sqlite3
 from quant.execution.engine import ExecutionEngine, Order
 
-TRADE_DB = "quant/data/trades.db"
+import quant.data.repos.trade_repo as tr_mod
+
+
+@pytest.fixture(autouse=True)
+def _isolate_trade_db(tmp_path, monkeypatch):
+    """隔离: 模块 TRADE_DB 常量 → tmp 库 (TradeRepo() 无参构造走此路径)."""
+    db = str(tmp_path / "trades.db")
+    monkeypatch.setattr(tr_mod, "TRADE_DB", db)
+    return db
 
 
 def _cleanup_strategy(strategy: str):
     """删除指定 strategy 的所有交易记录, 确保测试隔离."""
-    conn = sqlite3.connect(TRADE_DB)
+    tr_mod.TradeRepo()._ensure_schema()  # tmp 库首次清理前建表
+    conn = sqlite3.connect(tr_mod.TRADE_DB)
     conn.execute("DELETE FROM sim_trades WHERE strategy=?", (strategy,))
     conn.execute("DELETE FROM strategy_config WHERE strategy=?", (strategy,))
     conn.commit()

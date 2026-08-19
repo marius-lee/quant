@@ -48,9 +48,14 @@ class ExecutionEngine:
       这是为了支持 vnpy 券商对接, 同时不破坏回测路径。
     """
 
-    def __init__(self, db_path: str = TRADE_DB, cost_model: CostModel | None = None,
+    def __init__(self, db_path: str = None, cost_model: CostModel | None = None,
                  broker_adapter=None):
-        self.db_path = db_path
+        # v555: db_path 默认参数改运行时取值 — 原 `db_path: str = TRADE_DB` 在
+        # import 时绑定真实路径, 测试 monkeypatch trade_repo.TRADE_DB 常量无效,
+        # 隔离失败的测试直写真实 trades.db (污染事故根因).
+        # 运行时从 trade_repo 模块读: 测试 monkeypatch 该模块常量即可全链路隔离.
+        import quant.data.repos.trade_repo as _tr_mod
+        self.db_path = db_path or _tr_mod.TRADE_DB
         self.cost_model = cost_model if cost_model is not None else CostModel.from_config()
         self.broker_adapter = broker_adapter  # ADR-036: 外部券商适配器 (None=模拟)
         # Schema auto-managed by TradeRepo.__init__()

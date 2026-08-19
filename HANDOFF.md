@@ -1,3 +1,27 @@
+### v555 补充: 测试写库隔离根因修复 — Engine/DataStore 默认参数 import 时绑定 (test-v555)
+
+**根因补查**: 首轮清理后复测发现 test_execution/test_v554 在全量下仍写真实库 —
+ExecutionEngine.__init__(db_path: str = TRADE_DB) 与 DataStore.__init__(db_path=MARKET_DB)
+默认参数在 **import 时求值绑定**, 测试 monkeypatch trade_repo/store 模块常量无效.
+execute 内部 repo = TradeRepo(self.db_path) 新建实例 → 测试注入的 eng.repo 被忽略,
+T+1 测试 sell 直接写入真实库 (600000 假卖出 4 条, 13:49-13:55, 已清).
+
+**修复 (根因级)**:
+- engine.py / data/store.py: 默认参数改 None + or TRADE_DB/MARKET_DB 运行时取值,
+  Engine 从 trade_repo 模块常量读 (与测试 monkeypatch 目标同源)
+- test_execution.py: autouse fixture monkeypatch tr_mod.TRADE_DB → tmp 库
+  (原直写真实库, 失败即残留 — 13:29 残留事故源); _cleanup 前 _ensure_schema
+- test_v554: TestEngineT1Precheck 去掉无效的 eng.repo 注入 (execute 内部自建 repo,
+  self.db_path 已是 tmp)
+- 再次清理真实库: 600000 假卖出 4 条 + 校验 quant 45 条真实记录完好
+- **验证**: 全量 511 passed 后真实库零新增 (600000=0, t_*=0, quant=45 不变)
+
+**防护规则 (测试写库类用例)**:
+1. 禁止依赖 env 变量隔离 (TradeRepo 不看 env)
+2. monkeypatch 目标必须与生产代码读取常量同模块同符号
+3. 构造器默认参数禁止绑定模块常量 (import 时求值), 一律运行时取值
+4. 测试前后断言真实库行数不变 (防回归)
+
 ### v555: 测试污染事故 — trades.db 误写真实库 26 行已清 (test-v555)
 
 **事故**: 用户绩效 tab 看到交易记录 created_at=2026-08-19 12:01:53 (date=2024-05-06 等虚拟

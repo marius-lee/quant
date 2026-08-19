@@ -104,9 +104,11 @@ class DataStore:
     v435: 读查询分流到 DuckDB (列式并行)，写入仍走 SQLite 事务。
     """
 
-    def __init__(self, db_path: str = MARKET_DB,
+    def __init__(self, db_path: str = None,
                  tushare_token: str = None):
-        self.db_path = db_path
+        # v555: 默认参数改运行时取值 (原 import 时绑定 MARKET_DB,
+        # 测试 monkeypatch 模块常量无效 → 测试库隔离失败直写真实 market.db)
+        self.db_path = db_path or MARKET_DB
         # tushare token 优先级: 显式传参 > 环境变量 > config.yaml (来源: HANDOFF test-v168)
         _token = tushare_token
         if not _token:

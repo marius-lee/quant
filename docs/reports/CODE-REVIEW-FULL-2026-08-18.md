@@ -584,3 +584,12 @@ scripts/field_health.py 全表字段级扫描 (v547 事件后)。39 列超 5% �
 
 **教训**: 写库类测试必须显式 db_path 注入或 monkeypatch 模块常量, 禁用环境变量;
 事故排查先备份后精确删除 (按 id/strategy), 不动真实记录。
+
+## §31 v555 补充: 测试写库隔离根因修复 — 默认参数 import 时绑定 (511 passed)
+
+复测发现 test_execution/test_v554 全量下仍写真实库: ExecutionEngine/DataStore 的
+db_path 默认参数在 import 时求值绑定真实路径, monkeypatch 模块常量无效。
+修复: 默认参数改 None 运行时取值 (Engine 与测试 monkeypatch 同源);
+test_execution autouse fixture tmp 库隔离; 清理 600000 假卖出 4 条;
+全量 511 passed 后真实库零新增 (防护规则: 禁用 env 隔离/同模块同符号 monkeypatch/
+默认参数禁止绑定常量/测试前后断言真实库行数).

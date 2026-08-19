@@ -135,8 +135,7 @@ class TestEngineT1Precheck:
         repo = TradeRepo()
         repo.record_trade("quant", "2026-08-19", "600000", "buy", 10.0, 200, conn=None)
         from quant.execution.engine import ExecutionEngine
-        eng = ExecutionEngine()
-        eng.repo = repo
+        eng = ExecutionEngine()  # v555: 运行时读 trade_repo.TRADE_DB (tmp 隔离)
         broker = MagicMock()
         broker.name = "vnpy"
         broker.is_connected.return_value = True

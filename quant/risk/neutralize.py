@@ -272,19 +272,45 @@ def _build_neutralize_projection(
 
     industries: index=symbol, 行业分类
     market_caps: index=symbol, 总市值
+
+    v550: 支持单 None — v501 设计语义 "pivot 无 PIT → 列缺失, 下游 neutralize
+    自动降级 (industry-only 或跳过市值)" 从未实现: market_caps=None 时
+    market_caps.dropna() 直接 AttributeError, B32 (08-18) 将其从 warning 升级为
+    阻断后 signals/phase8 全崩。现实现降级: 单 None → 只投影可用维度。
     """
-    common = market_caps.dropna().index.intersection(industries.dropna().index)
-    if len(common) < _MIN_COMMON:
-        raise ValueError(f"_build_neutralize_projection: only {len(common)} common stocks")
+    if industries is None and market_caps is None:
+        raise ValueError("_build_neutralize_projection: both industries and market_caps are None")
+    if market_caps is None:
+        # v550: industry-only 投影 (跳过市值) — X = [1, 行业哑变量]
+        common = industries.dropna().index
+        if len(common) < _MIN_COMMON:
+            raise ValueError(f"_build_neutralize_projection: only {len(common)} common stocks")
+        ind_series = industries.loc[common]
+        ind_counts = ind_series.value_counts()
+        valid_inds = ind_counts[ind_counts >= 3].index
+        ind_series = ind_series.where(ind_series.isin(valid_inds), "other")
+        ind_dummies = pd.get_dummies(ind_series, drop_first=True).astype(np.float64)
+        X = np.column_stack([np.ones(len(common)), ind_dummies.values])
+    elif industries is None:
+        # v550: 市值-only 投影 (跳过行业)
+        common = market_caps.dropna().index
+        if len(common) < _MIN_COMMON:
+            raise ValueError(f"_build_neutralize_projection: only {len(common)} common stocks")
+        log_mcap = np.log(np.asarray(market_caps.loc[common].values, dtype=np.float64))
+        X = np.column_stack([np.ones(len(common)), log_mcap])
+    else:
+        common = market_caps.dropna().index.intersection(industries.dropna().index)
+        if len(common) < _MIN_COMMON:
+            raise ValueError(f"_build_neutralize_projection: only {len(common)} common stocks")
 
-    log_mcap = np.log(np.asarray(market_caps.loc[common].values, dtype=np.float64))
-    ind_series = industries.loc[common]
-    ind_counts = ind_series.value_counts()
-    valid_inds = ind_counts[ind_counts >= 3].index
-    ind_series = ind_series.where(ind_series.isin(valid_inds), "other")
-    ind_dummies = pd.get_dummies(ind_series, drop_first=True).astype(np.float64)
+        log_mcap = np.log(np.asarray(market_caps.loc[common].values, dtype=np.float64))
+        ind_series = industries.loc[common]
+        ind_counts = ind_series.value_counts()
+        valid_inds = ind_counts[ind_counts >= 3].index
+        ind_series = ind_series.where(ind_series.isin(valid_inds), "other")
+        ind_dummies = pd.get_dummies(ind_series, drop_first=True).astype(np.float64)
 
-    X = np.column_stack([np.ones(len(common)), log_mcap, ind_dummies.values])
+        X = np.column_stack([np.ones(len(common)), log_mcap, ind_dummies.values])
     try:
         XtX_inv = np.linalg.inv(X.T @ X)
     except np.linalg.LinAlgError:

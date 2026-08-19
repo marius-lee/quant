@@ -3933,3 +3933,11 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
 - **修复 v1.3**: fetch (网络) 3 线程并行, UPDATE 串行执行 (主线程单写者), 每 50 只 commit — 锁窗口秒级; 实测补数运行中 5/5 写成功 (修复前 0/20)
 - **教训**: sqlite3 连接默认 deferred 事务, 共享连接 + 批量 commit = 长写锁; 多线程写必须显式事务边界
 - **待办**: 用户重启 web (63886 卡死 + daily_repair 76816 卡 running → auto-abort 清理) → 调度恢复 → 数据补齐后重跑物化
+
+## 2026-08-19: signals 调度失败根因 (v550) — neutralize 单 None 崩溃
+
+- **症状**: 09:01 orchestrator signals 失败 ×2: step 3 neutralize FAILED: 'NoneType' object has no attribute 'dropna'
+- **根因**: quant/risk/neutralize.py:276 `market_caps.dropna()` — market_caps=None (pipeline 426: get_fundamentals 无 market_cap 列, v501 PIT 语义"列缺失→降级"从未实现) + industries 非 None → 进入 neutralize_factors_batch → 276 行 None 崩。B32 (08-18, warning→阻断) 将旧静默降级放大为硬失败; phase8 回测 07-30/07-31/08-03/08-06 同日失败已证实非新回归
+- **修复 v550**: _build_neutralize_projection 支持单 None — market_caps=None → industry-only 投影 (X=[1,行业哑变量]); industries=None → 市值-only; 两者有 → 原逻辑。落实 v501 设计语义
+- **验证**: test_v550 5 项通过; `bash scripts/run_task.sh signals 2026-08-19` → STATUS=OK, 2 targets (17.2s)
+- **待办**: 用户重启 web 使 orchestrator 加载新代码 (09:30 execute 前)

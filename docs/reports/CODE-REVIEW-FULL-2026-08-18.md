@@ -479,3 +479,14 @@ scripts/field_health.py 全表字段级扫描 (v547 事件后)。39 列超 5% �
 **修复 (v1.3)**: fetch 网络并行 (线程池), UPDATE 串行 (主线程单写者), 每 50 只 commit。实测: 补数运行中连续写 5/5 成功 (修复前 0/20)。
 
 **通用约束**: 多线程共享 sqlite3 连接必须显式事务边界 (每批 commit ≤ 秒级); 禁止"共享连接 + 批量 commit"模式。
+
+## §25 v550: signals 调度失败根因 — neutralize 单 None 崩溃 (B32 放大 v501 未实现语义)
+
+**症状**: 09:01 orchestrator signals 两次失败: step 3 neutralize FAILED (B32): 'NoneType' object has no attribute 'dropna'。phase8 回测 07-30/07-31/08-03/08-06 同错 (08-18 18:21) — 非新回归。
+
+**根因链**:
+1. v501: fundamentals market_cap 仅来自 fund_val_piv PIT pivot; get_fundamentals (signals 路径) 从不含 market_cap 列; 注释承诺 "下游 neutralize 自动降级 (industry-only 或跳过市值)" — **从未实现**
+2. neutralize._build_neutralize_projection:276: market_caps=None 时 None.dropna() AttributeError; neutralize_factors_batch:338 仅挡"两者都 None"
+3. B32 (08-18): neutralize 失败 warning→阻断 — 旧静默降级变成硬失败
+
+**修复**: _build_neutralize_projection 三态: 单 None → 只投影可用维度 (industry-only X=[1,dummies] / 市值-only X=[1,log_mcap]); 双有 → 原逻辑。test_v550 5 项; run_task.sh signals 实测 STATUS=OK (2 targets, 17.2s)。

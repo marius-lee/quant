@@ -4328,3 +4328,23 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
 - 验证: test_v562 新增 daily_repair 可见+cron 已配置断言; 4 passed。
 - 早间链耗时待实测: scripts/measure_daily_repair.py (用户执行,
   评估 08:00-08:30 半小时窗口是否够, 是否需提前至 06:00)。
+
+### v562c: 早间链 06:00 起跑 + adj_factor 兜底资格修正 (2026-08-20)
+
+- 用户实测 scripts/measure_daily_repair.py: 6 表待处理, fund_flow 单表
+  ~50min (500 只 × 5s 东财限流), 6 表串行 1.5-2h.
+- 历史 task_runs 实锤: daily_repair 连续 4 天 (08-15~08-19) 无一成功 —
+  08-15/16/17 timeout (08:00 触发 08:30 被 grace_s=1800 标 aborted),
+  08-18 34s failed, 08-19 进程已死. 30min 窗口必然不够.
+- 修改:
+  1. manifest daily_repair: schedule 08:00→06:00, window (06:00,08:30),
+     grace_s/timeout_s 1800→10800 (3h). 周六不与 weekly_eval 并发
+     (orchestrator 先阻塞等 daily_repair 完成再 spawn weekly_eval,
+     runners.py run_daily_repair 阻塞式).
+  2. repair.py:82 硬编码 grace_seconds=1800 → spec("daily_repair").grace_s
+     (与 evening.py 同款模式, 防 _tk_start 去重与 manifest 错位).
+  3. table_registry.py adj_factor: repair_eligible=True→False (mode=none
+     无 sync_main, 早间链无法兜底 → 每天白进待处理列表且永远 skip+still;
+     晚间链独立 stage 管理).
+  4. status.py daily_repair schedule 标签 08:00→06:00.
+- 验证: 全量 546 passed.

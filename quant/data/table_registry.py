@@ -208,6 +208,9 @@ REGISTRY: dict[str, TableSpec] = {
     "adj_factor": TableSpec(
         table="adj_factor", date_col="date", mode="none",
         min_rows_per_day=None, slo_days=15,
+        repair_eligible=False,   # v562: mode=none 无 sync_main, 早间链无法兜底
+                                 # (晚间链独立 stage 管理), 缺省 True 导致每天
+                                 # 白进待处理列表且永远 skip+still
         desc="复权因子 (事件型: 仅调整日有行; 独立 stage, 失败在晚间链层面)"),
     "fund_flow": TableSpec(
         table="fund_flow", date_col="date", mode="rollback",

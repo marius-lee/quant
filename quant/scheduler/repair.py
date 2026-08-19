@@ -78,7 +78,8 @@ def _ensure_factor_cache(today: str) -> list[str]:
 def _run(today: str):
     from quant.utils.logger import set_trace_id as _sid
     _sid(today[:8])
-    rid = _tk_start("daily_repair", today, grace_seconds=1800)
+    from quant.scheduler.manifest import spec
+    rid = _tk_start("daily_repair", today, grace_seconds=spec("daily_repair").grace_s)
     if rid is None:
         _log.info(f"[{today}] daily_repair already running, skip duplicate trigger")
         return

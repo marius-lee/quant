@@ -125,8 +125,14 @@ _DAYLINE: list[TaskSpec] = [
         desc="daily_data → adj_factor → factor_cache → attribution → lgb/xgb",
     ),
     TaskSpec(
-        name="daily_repair", label="早间补拉", schedule="08:00",
-        window=(time(8, 0), time(8, 30)), grace_s=1800, timeout_s=1800,
+        name="daily_repair", label="早间补拉", schedule="06:00",
+        # v562: 窗口 08:00-08:30 → 06:00-08:30 — 实测 fund_flow 单表 ~50min
+        # (500 只 × 5s 东财限流), 6 表串行 1.5-2h > 30min 窗口. 历史连续 4 天
+        # (08-15~08-19) 全在 08:30 被 grace_s=1800 标 aborted, 从未成功.
+        # 06:00 起跑: 留足 2.5h 缓冲, 赶在 signals 08:30 前完成 (T+1 源
+        # 凌晨已发布). 周六不与 weekly_eval 并发: orchestrator 先阻塞等
+        # daily_repair 完成再 spawn weekly_eval (runners.py run_daily_repair).
+        window=(time(6, 0), time(8, 30)), grace_s=10800, timeout_s=10800,
         mode="subprocess", group="盘后",
         # v479: 晚间链审计失败的表现在 08:00 重试 (T+1 迟发数据此时已发布),
         # 在 signals 08:30 之前完成; 非交易日亦运行 (周末覆盖周五晚间链缺口)

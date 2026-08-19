@@ -57,7 +57,7 @@ def register_all():
              desc="OMS 对账闭环: 持仓/现金/订单三账核对, break 超阈值告警")
     register("daily_data",   "19:00",       label="数据拉取",
              desc="拉取当日 A 股日线行情，更新 market.db")
-    register("daily_repair", "08:00",       label="早间补拉",
+    register("daily_repair", "06:00",       label="早间补拉",
              desc="重试昨日审计失败表 (T+1 迟发) + weekly_full 7 天兜底 + factor_cache 缺口兜底")
     register("adj_factor",   "daily_data完成后", label="复权因子同步",
              desc="tushare+baostock 双源同步复权因子, 每晚1批(晚间链子进程)")

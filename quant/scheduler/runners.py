@@ -301,6 +301,10 @@ class MonitorRunner(BaseRunner):
 
         # 窗口结束，停止线程
         self.stop()
+        # v555: 窗口结束必须写 ok — 原仅 log, task_runs 永卡 running,
+        # web 显示"盘中风控运行中" (15:01 实证 2026-08-19).
+        # daemon 崩溃路径已在 _monitor_daemon 写 failed, 此处兜底成功路径.
+        _tk_finish("monitor", self.today, "ok")
         _log.info(f"[{self.today}] monitor window ended")
 
     def _monitor_daemon(self, today: str):

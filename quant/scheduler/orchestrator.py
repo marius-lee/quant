@@ -185,6 +185,13 @@ def _run():
         if _monitor_runner is not None and not _monitor_runner.is_alive():
             _log.warning(f"[{today}] monitor daemon thread exited "
                          f"(status={status.get('monitor')}); will restart next poll")
+            # v555: 重置前兜底 finish — daemon 自退时 MonitorRunner.run() 已写 ok;
+            # 但 B23 重置发生在 run() 的 finish 之前 (线程先死, 主循环后重置) 时
+            # 状态仍 running, 若清理分支 (runner 已置 None) 不再 finish →
+            # task_runs 永卡 running, web 恒显示"盘中风控运行中" (2026-08-19 实证).
+            # 崩溃路径由 daemon 写 failed, 此处仅兜底 running 残留.
+            if status.get("monitor") == "running":
+                _tk_finish("monitor", today, "ok")
             _monitor_runner = None
             _monitor_thread = None
 

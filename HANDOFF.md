@@ -1,3 +1,24 @@
+### v555 补充 2: monitor 收盘后状态永卡 running 修复 (2026-08-19 实证 15:31)
+
+**现象**: 15:31 web 仍显示"盘中风控运行中". 实锤: task_runs monitor running/finished_at=None,
+但日志显示 daemon 15:00:16 已正常自退 ("monitor stopped — market closed (15:00)").
+
+**根因链**:
+1. MonitorRunner.run() 窗口结束后仅 log, 无 _tk_finish → 成功路径永卡 running
+2. orchestrator B23 重置分支: daemon 自退后 is_alive() False → _monitor_runner 置 None;
+   而清理分支 (not in_window and runner is not None) 因 runner 已 None 不再 finish →
+   两处兜底同时失效. (15:00:04 snapshot_close 同步阻塞主循环 3.5 分钟,
+   恰好让 B23 先于清理分支执行, 暴露该缺口)
+
+**修复 (双保险)**:
+- runners.py MonitorRunner.run(): stop() 后 _tk_finish("monitor", today, "ok")
+  (崩溃路径已由 _monitor_daemon 写 failed, finish 幂等不覆盖)
+- orchestrator.py B23 分支: 重置前若 status=='running' 兜底 _tk_finish ok
+- 今日遗留行手动修复: finish('monitor','2026-08-19','ok')
+- 验证: 全量 511 passed
+
+**教训**: 长驻窗口任务 (monitor) 的成功完成信号 = 窗口结束/线程退出, 必须每个
+退出路径都写 finish; "清理分支 runner 非 None" 假设在线程先死后重置场景下不成立.
 ### v555 补充: 测试写库隔离根因修复 — Engine/DataStore 默认参数 import 时绑定 (test-v555)
 
 **根因补查**: 首轮清理后复测发现 test_execution/test_v554 在全量下仍写真实库 —

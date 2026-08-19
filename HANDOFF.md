@@ -13,7 +13,9 @@
 **修复 (双保险)**:
 - runners.py MonitorRunner.run(): stop() 后 _tk_finish("monitor", today, "ok")
   (崩溃路径已由 _monitor_daemon 写 failed, finish 幂等不覆盖)
-- orchestrator.py B23 分支: 重置前若 status=='running' 兜底 _tk_finish ok
+- orchestrator.py B23 分支: 重置前兜底 _tk_finish ok — 仅窗口已关闭时兜底
+  (收盘后线程死=正常自退); 盘中线程死=崩溃, 崩溃 finish 失败时保持 running
+  交重试逻辑, 不得伪装 ok
 - 今日遗留行手动修复: finish('monitor','2026-08-19','ok')
 - 验证: 全量 511 passed
 

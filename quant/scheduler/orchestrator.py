@@ -189,8 +189,11 @@ def _run():
             # 但 B23 重置发生在 run() 的 finish 之前 (线程先死, 主循环后重置) 时
             # 状态仍 running, 若清理分支 (runner 已置 None) 不再 finish →
             # task_runs 永卡 running, web 恒显示"盘中风控运行中" (2026-08-19 实证).
-            # 崩溃路径由 daemon 写 failed, 此处仅兜底 running 残留.
-            if status.get("monitor") == "running":
+            # 仅窗口已关闭时兜底 ok (收盘后线程死=正常自退); 盘中线程死=崩溃,
+            # 崩溃路径由 daemon 写 failed, 若 failed 也写失败则保持 running
+            # 交 _should_run/重试逻辑处理, 不得伪装成 ok.
+            if (status.get("monitor") == "running"
+                    and not ALL["monitor"].in_window(hhmm, now.weekday())):
                 _tk_finish("monitor", today, "ok")
             _monitor_runner = None
             _monitor_thread = None

@@ -389,33 +389,36 @@ class TradeRepo:
     # ── Positions ───────────────────────────────────────────
 
     def get_positions(self, strategy: str = "quant", mode: str = "live") -> list[dict]:
+        # v554 (P1-2): 单 SQL 全量行 + FIFO 撮合 (带日期).
+        # 原实现: buys/sells 分组聚合 → buy_time=MIN(created_at):
+        #   1. created_at=写入时刻 → 回测恒为运行时间 → time_stop 判定未来天数, 永不触发
+        #   2. MIN 覆盖全历史首买 → 清仓重买后旧批次日期仍生效,
+        #      v532 清仓重买判定 (buy_time > last_sell) 被架空, 旧仓 peak/tp1 污染新仓
+        # 现: buy_time = 当前 FIFO 剩余批次的最早买入日期 (PIT, 含实盘同日多次买入)
         c = self._conn()
         try:
-            buys = c.execute(
-                f"SELECT {ST_SYMBOL}, SUM({ST_SHARES}), SUM({ST_PRICE}*{ST_SHARES})/SUM({ST_SHARES}), MAX({ST_BOARD_COUNT}), "
-                f"MIN(datetime({ST_CREATED_AT}, 'localtime')) "
-                f"FROM sim_trades WHERE {ST_SIDE}='buy' AND {ST_STRATEGY}=? AND {ST_MODE}=? GROUP BY {ST_SYMBOL}",
+            rows = c.execute(
+                f"SELECT {ST_SYMBOL}, {ST_SIDE}, {ST_PRICE}, {ST_SHARES}, {ST_DATE}, {ST_BOARD_COUNT} "
+                f"FROM sim_trades WHERE {ST_STRATEGY}=? AND {ST_MODE}=? "
+                f"ORDER BY {ST_SYMBOL}, id",
                 (strategy, mode)).fetchall()
-            sells = c.execute(
-                f"SELECT {ST_SYMBOL}, SUM({ST_SHARES}) FROM sim_trades "
-                f"WHERE {ST_SIDE}='sell' AND {ST_STRATEGY}=? AND {ST_MODE}=? GROUP BY {ST_SYMBOL}",
-                (strategy, mode)).fetchall()
-            sell_map = {r[0]: r[1] for r in sells}
-            # B-20: 持仓成本价改用 FIFO (与 get_average_cost/卖出 pnl 同口径),
-            # 原 SQL 是全历史买入加权平均
-            # B-20 fix: FIFO 成本计算改用批量查询 (P1-19: 消除 N+1 per-symbol SQL)
-            _all_syms = [r[0] for r in buys if r[1] > sell_map.get(r[0], 0)]
-            _fifo_costs = self.get_fifo_costs_batch(strategy, _all_syms, mode)
+            grouped: dict[str, list] = {}
+            for r in rows:
+                grouped.setdefault(r[0], []).append((r[1], r[2], r[3], r[4], r[5]))
             result = []
-            for r in buys:
-                if r[1] <= sell_map.get(r[0], 0):
+            for sym, sym_rows in grouped.items():
+                lots = self._fifo_lots_from_rows(sym_rows)
+                total = sum(s for _, s, _ in lots)
+                if total <= 0:
                     continue
-                fifo_cost = _fifo_costs.get(r[0], 0.0)
+                cost = sum(p * s for p, s, _ in lots) / total
+                _buy_max_bc = max((bc for side, _, _, _, bc in sym_rows if side == "buy"), default=0)
                 result.append({
-                    "symbol": r[0],
-                    "price": round(fifo_cost, 4) if fifo_cost else (round(r[2], 4) if r[2] else 0),
-                    "shares": max(0, r[1] - sell_map.get(r[0], 0)),
-                    "board_count": r[3] or 0, "buy_time": r[4],
+                    "symbol": sym,
+                    "price": round(cost, 4),
+                    "shares": total,
+                    "board_count": _buy_max_bc or 0,
+                    "buy_time": lots[0][2],
                 })
             return result
         finally:
@@ -582,12 +585,16 @@ class TradeRepo:
         return {sym: self._fifo_cost_from_rows(grouped.get(sym, [])) for sym in symbols}
 
     @staticmethod
-    def _fifo_cost_from_rows(rows: list) -> float:
-        """Static FIFO: rows = [(side, price, shares), ...] ordered by id."""
-        lots: list[list] = []  # [price, remaining_shares]
-        for side, price, shares in rows:
+    def _fifo_lots_from_rows(rows: list) -> list:
+        """v554: FIFO 撮合剩余批次 (含买入日期), rows = [(side, price, shares[, date]), ...]
+        按 id 序 (时间序). 返回 [(price, remaining_shares, buy_date_or_None), ...],
+        最早买入在前 — 剩余批次的最早日期 = 当前持仓的 PIT 买入日期."""
+        lots: list[list] = []
+        for row in rows:
+            side, price, shares = row[0], row[1], row[2]
+            _date = row[3] if len(row) > 3 else None
             if side == "buy":
-                lots.append([float(price), int(shares)])
+                lots.append([float(price), int(shares), _date])
             else:
                 rem = int(shares)
                 while rem > 0 and lots:
@@ -596,10 +603,16 @@ class TradeRepo:
                     rem -= take
                     if lots[0][1] == 0:
                         lots.pop(0)
-        total_shares = sum(s for _, s in lots)
+        return lots
+
+    @staticmethod
+    def _fifo_cost_from_rows(rows: list) -> float:
+        """Static FIFO: rows = [(side, price, shares), ...] ordered by id."""
+        lots = TradeRepo._fifo_lots_from_rows(rows)
+        total_shares = sum(s for _, s, _ in lots)
         if total_shares <= 0:
             return 0.0
-        return sum(p * s for p, s in lots) / total_shares
+        return sum(p * s for p, s, _ in lots) / total_shares
 
     def get_open_position_cost(self, strategy: str, mode: str = "live") -> float:
         row = self._query_one(
@@ -745,9 +758,12 @@ class TradeRepo:
         return {}
 
     def get_last_sell_time(self, symbol: str) -> str:
-        """v532: 最近一次卖出时间 (清仓重买判定 — 旧 peak/tp1 不残留)."""
+        """v532: 最近一次卖出时间 (清仓重买判定 — 旧 peak/tp1 不残留).
+        v554: MAX(date) 交易日期 (PIT) — 原 MAX(created_at)=写入时刻,
+        回测中恒晚于模拟日 → buy_time>last_sell 恒成立, 判定被架空;
+        与 get_positions.buy_time (date 粒度) 同口径比较."""
         row = self._query_one(
-            f"SELECT MAX(datetime({ST_CREATED_AT}, 'localtime')) FROM sim_trades "
+            f"SELECT MAX({ST_DATE}) FROM sim_trades "
             f"WHERE {ST_SYMBOL}=? AND {ST_SIDE}='sell'", (symbol,))
         return row[0] if row and row[0] else None
 

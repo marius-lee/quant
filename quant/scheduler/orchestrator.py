@@ -286,11 +286,15 @@ def _run():
                         _log.info(f"[{today}] evening chain subprocess OK (attempt {_evening_retries})")
                         _evening_done = True
                         _evening_runner = None
-                    elif _evening_retries >= _MAX_TASK_RETRIES:
-                        _log.error(f"[{today}] evening chain max retries exhausted "
-                                   f"({_MAX_TASK_RETRIES}) — factor_cache 缺口由次日 08:00 daily_repair 兜底")
-                        _evening_done = True
+                    else:
+                        # v554 (P1-3): 失败必须置 None — 原仅在上限分支置 None,
+                        # 失败后 runner 恒非 None → 窗口内剩余时间永不重试,
+                        # 上限逻辑形同虚设 (同一天永远只有 1 次尝试)
                         _evening_runner = None
+                        if _evening_retries >= _MAX_TASK_RETRIES:
+                            _log.error(f"[{today}] evening chain max retries exhausted "
+                                       f"({_MAX_TASK_RETRIES}) — factor_cache 缺口由次日 08:00 daily_repair 兜底")
+                            _evening_done = True
 
         _time.sleep(POLL)
 

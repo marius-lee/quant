@@ -171,9 +171,11 @@ class OrderManager:
                 continue
 
             # ── V: 流动性检查 — 单量 > 日均量1% → 跳过 ──
+            # v554 (P1-1): volume 已是股数 (quote.py:106 腾讯手×100 已转),
+            # 原 ×100 二次放大 → 阈值虚严 100 倍, V-check 永不触发 (形同虚设)
             _daily_vol = q.get("volume", 0) or 0
             if _daily_vol > 0:
-                _order_pct = po.target_shares / (_daily_vol * 100) if _daily_vol * 100 > 0 else 1.0
+                _order_pct = po.target_shares / _daily_vol
                 if _order_pct > VOLUME_LIMIT_PCT and not force_now:
                     _log.info(f"[order_manager] SKIP {po.symbol}: "
                               f"order={po.target_shares}股 > {VOLUME_LIMIT_PCT*100:.0f}% vol, wait")

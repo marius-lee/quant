@@ -1,3 +1,52 @@
+### v554: 全代码审查第三轮 — 数据链/执行链/优化链 17 处修复 (test-v554)
+
+**背景**: 用户对"查了 5 次还有 bug"不满, 要求全代码行为级最终审查。4 个 agent 并行
+(执行链 A / 优化链 B / 回测链 C / 因子链 D) + 逐条亲验 (文件:行号+手算/脚本复现), 排除
+tc_band 误报 1 条 (B 对 D 错: buy_cost 含本金, 拦截机制正确, 不修)。
+
+**P0 数据链 (前视/幸存者偏差)**:
+- store.py 物化面板 + pipeline.py 回测快照: total_mv/roe/pe/eps/bvps 原用 stocks 当前
+  快照铺全历史 (2026-07-26 P0-4 只修了 live 路径) → 置 NaN + daily_valuation PIT 覆盖,
+  无 PIT 源 (roe/eps/bvps) 诚实 NaN, 因子按缺失处理; 被排除列全补 NaN 占位防 KeyError
+- ic.py: compute_ic 新增 start 参数, 完整评估窗口不再被 lookback+5 截断 (原 IC 序列
+  仅 ~126 天=半年, phase3/4/7 的 CPCV/PBO/DSR 全在半年样本上运行)
+- stats_cache.py: eval_start 注入时取全窗口 (原 [-lookback:] 截断使 phase7 注入无效);
+  评估池改为窗口边界 PIT (UniverseRepo start/end_date, 原无 as_of=当前存续股) +
+  排名窗口用评估窗口尾 (原 date('now') 用当前流动性选历史样本)
+
+**P1 回测链**:
+- loop.py: ATR 面板 shift(1) — 当日 TR 含当日 H/L/C (收盘才知), 止损判定在开盘,
+  原 atr_panel[today] 用当日行情=前视; 实盘 _compute_atr 用 date<as_of 不含当日 → 两口径分裂
+- loop.py DSR: n_trials 显式传因子数 (原误取 factor.evaluation.n_symbols=800 股票数,
+  方差惩罚虚高 ~10 倍; De Prado: n_trials=候选策略/因子数量)
+- trade_repo.py: get_positions 重构为单 SQL + FIFO 带日期撮合, buy_time=剩余批次最早
+  date (原 MIN(created_at): 回测恒运行时刻→time_stop 永不触发; 全历史首买→清仓重买后
+  旧 peak/tp1 污染新仓); get_last_sell_time 改 MAX(date); stop_loss 比较改 date 粒度
+- engine.py: T+1 预检前置到券商卖出循环之前 (原先券商成交再拦 T+1 → 账本/券商分歧)
+- order_manager.py: V-check 去二次 ×100 (quote.py:106 腾讯手→股已转, 原阈值虚严 100 倍
+  永不触发, 流动性检查形同虚设)
+
+**P1 因子合成/调度**:
+- synth.py sleeve: 分母改"有值因子数" (原=入选 top-N 数+1, 分子=全因子求和 →
+  高覆盖中游股 0.82 碾压单因子第1名 0.495, 覆盖率主导 alpha 而非置信度)
+- orchestrator.py: 晚间链失败后 _evening_runner 置 None (原仅上限分支置 None → 窗口内
+  永不重试, 重试上限形同虚设)
+
+**P1 优化链**:
+- portfolio.py _iterative_clip 重写: 裁剪后 Σ≥1 等比缩放一次收敛; Σ<1 剩余容量只分给
+  未超限者 (超限集单调扩张 ≤n 轮); 不可行 (n×max_single<1) 返回全 max_single 最大 deploy
+  (原: 振荡不收敛/静默超限 6 次/25-75% 资金闲置)
+- 整手截断残差回收: _recycle_residual_cash 5 处调用点 (portfolio×4 + kelly), 贪心补手
+  成本最低 1 手, 受 regime cap + max_single×capital 双重约束 (不突破集中度)
+- hrp.py: 零方差股 (停牌/无成交) 三处 (簇方差 inv=0 / IVP 分支 / 最终权重压 0) —
+  原 floor 1e-8 → inv=1e8 → 该股垄断 ~100% 权重
+- kelly.py _alpha_proportional: 负 alpha clip(0) (A股不能做空, 原 Σw≠1 → 仅 15% 资金部署)
+
+**验证**: test_v554_audit_fixes.py 17 项新增 (iterative_clip 4/HRP/kelly/sleeve 覆盖度/
+buy_time FIFO 3/last_sell/重买判定 date 粒度/engine T+1 券商不成交/V-check 单位/
+orchestrator 状态机/残差回收 2); 修正 test_synth (固化旧分母语义 0.82→1.225 新正确值) +
+test_portfolio 微调; **全量 511 passed**; 回测烟测待物化重启后跑
+
 ### v529: blocked 因子永不恢复修复 + 单因子 force 物化 + ocfp 2020-2022 缺口闭环 (test-v529)
 
 **背景**: 东财回填 (v527) 后 sue 恢复, 但 ocfp 2020-2022 物化 4 小时 (42 段) 后 meta

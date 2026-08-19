@@ -48,6 +48,11 @@ def compute_ic(*,
                store=None,
                lookback=60,
                status_filter="backtesting",
+               # v554 (P0-2): 评估窗口起点 — 原隐式 lookback*2 天且内部砍半
+               # (IC 序列仅 ~126 点=半年, phase3/4/7 的 CPCV/PBO/DSR 全在半年样本
+               # 上运行, 与 phase1 "2010→今天" 声称不符). 传入后完整窗口生效,
+               # 砍半逻辑退化为纯 warmup 段.
+               start=None,
                # Mode B: 预计算因子值
                factor_values=None,
                forward_1d=None,
@@ -93,8 +98,11 @@ def compute_ic(*,
 
     end_dt = pd.Timestamp(date)
     from quant.factor.windows import max_factor_calendar_days
-    _ic_factor_min = max_factor_calendar_days(factor_names)
-    start_dt = end_dt - pd.Timedelta(days=max(lookback * 2, _ic_factor_min))
+    # v554 (P0-2): start 显式注入时按 start 起取全窗口 (评估用), 默认行为不变
+    if start is not None:
+        start_dt = min(pd.Timestamp(start), end_dt - pd.Timedelta(days=1))
+    else:
+        start_dt = end_dt - pd.Timedelta(days=max(lookback * 2, _ic_factor_min))
     # 用中国A股交易日历 + 日期上限, 修复 pd.bdate_range 默认美国日历导致的 KeyError
     from quant.execution.calendar import is_trading_day
     all_dates = pd.date_range(start=start_dt, end=end_dt, freq="B")
@@ -102,7 +110,8 @@ def compute_ic(*,
     for d in reversed(all_dates):
         if is_trading_day(d.date()):
             trading_days.append(d.strftime("%Y-%m-%d"))
-        if len(trading_days) >= lookback + 5:
+        # v554: start 注入时取全窗口, 不截断 (原上限 lookback+5 使长窗口失效)
+        if start is None and len(trading_days) >= lookback + 5:
             break
     if len(trading_days) < 30:
         _log.warning("compute_ic: only %d trading days before %s, skipping", len(trading_days), date)

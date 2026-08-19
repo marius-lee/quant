@@ -1277,8 +1277,9 @@ class FactorStore:
         ph_stocks = ",".join("?" * len(symbols))
 
         val_df = pd.read_sql_query(
-            "SELECT symbol, date, pe_ttm, pb, ps_ttm, pcf_ttm, market_cap FROM daily_valuation "
-            "WHERE date >= ? AND date <= ? ORDER BY date",
+            f"SELECT symbol, date, pe_ttm, pb, ps_ttm, pcf_ttm, market_cap, source "
+            f"FROM daily_valuation "
+            f"WHERE date >= ? AND date <= ? ORDER BY date",
             mconn, params=(val_start, val_end)
         )
         stocks_df = pd.read_sql_query(
@@ -1294,8 +1295,21 @@ class FactorStore:
 
         if not val_df.empty:
             val_df["date"] = pd.to_datetime(val_df["date"])
+            # v554 (P0-1): 三源三单位换算 (与 live 路径 data/store.py P0-2 同口径)
+            # — eastmoney 写元, jqdata/tushare 写万元; 无 source 列时按 jqdata 假设 ×1e4
+            _mc = val_df["market_cap"]
+            _src = val_df["source"] if "source" in val_df.columns else None
+            if _src is not None:
+                _conv = pd.Series(1.0, index=_mc.index)
+                _conv[_src == "jqdata"] = 1e4
+                _conv[_src == "tushare"] = 1e4
+                val_df["total_mv"] = _mc * _conv
+            else:
+                val_df["total_mv"] = _mc * 1e4
+            val_df["pe"] = val_df["pe_ttm"]  # compute_ep_ratio 优先 pe_ttm
             val_piv = val_df.pivot(index="date", columns="symbol",
-                                   values=["pe_ttm", "pb", "market_cap"]).ffill()
+                                   values=["pe_ttm", "pb", "market_cap",
+                                           "total_mv", "pe"]).ffill()
         else:
             val_piv = None
 
@@ -1311,11 +1325,20 @@ class FactorStore:
             close_piv = None
             high_52w = None
 
+        # v554 (P0-1): 基本面快照列全 PIT 化 — 原 _static_cols 把 stocks 当前快照的
+        # total_mv/roe/pe/eps/bvps 铺到全部历史日期 (前视, 污染回测+IC评估+LGB训练,
+        # 2026-07-26 P0-4 只修了 live 路径, 物化端漏修)。与 live 同口径:
+        # 快照列置 NaN (诚实缺数据), 逐日由 daily_valuation PIT 覆盖;
+        # 无 PIT 源 (roe/eps/bvps) → NaN, 因子按缺失处理。industry 由 v502 PIT 覆盖。
         _static_cols = {c: stocks_df[c] for c in stocks_df.columns
-                        if c not in ("pe_ttm", "pb", "market_cap", "close_latest", "high_52w")}
+                        if c not in ("pe_ttm", "pb", "market_cap", "close_latest",
+                                     "high_52w", "total_mv", "roe", "pe", "eps", "bvps")}
         _static_index = stocks_df.index
-        _fallback = {c: stocks_df[c] for c in ("pe_ttm", "pb", "market_cap")
-                     if c in stocks_df.columns}
+        # 全部被排除列显式补 NaN 占位 (覆盖外日期 df 仍含这些列,
+        # 下游 null_roe 派生/pe 过滤依赖列存在; 原 _fallback 提供快照=前视)
+        for _c in ("pe_ttm", "pb", "market_cap", "close_latest", "high_52w",
+                   "total_mv", "roe", "pe", "eps", "bvps"):
+            _static_cols[_c] = pd.Series(np.nan, index=_static_index)
 
         # v502 (PIT industry): industry_history → per-date 最大段 Series.
         # 静态 stocks_df["industry"] (tushare 申万当前快照) 为后视, 逐日替换.
@@ -1333,11 +1356,13 @@ class FactorStore:
         result = {}
         for date_str in chunk_dates:
             ts = pd.Timestamp(date_str)
-            _dyn = dict(_fallback)
+            # v554: 删除 _fallback (stocks 快照 pe_ttm/pb/market_cap) —
+            # 覆盖外日期 → NaN (与 live "覆盖外日期 → NaN" 一致), 原快照回退=前视
+            _dyn = {}
 
             if val_piv is not None and ts in val_piv.index:
                 row = val_piv.loc[ts]
-                for col in ["pe_ttm", "pb", "market_cap"]:
+                for col in ["pe_ttm", "pb", "market_cap", "total_mv", "pe"]:
                     if col in row.index.get_level_values(0):
                         _dyn[col] = row[col].reindex(_static_index)
 

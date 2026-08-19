@@ -533,3 +533,35 @@ scripts/field_health.py 全表字段级扫描 (v547 事件后)。39 列超 5% �
 | P2-10 | position_meta 每 30s 全持仓写库 | 仅变化时写 |
 
 连带: risk_only 分支 hard stop 后旧持仓致 ATR 兜底双卖 → 刷新对齐 B3。
+
+## §29 v554: 全代码行为级审查 — 数据/执行/优化三链 17 处修复 (511 passed)
+
+**背景**: 用户对"查了 5 次还有 bug"不满 → 4 agent 并行全库行为审查 (A 执行链 / B 优化链 / C 回测链 / D 因子链), 每条亲验 (文件:行号 + 手算/脚本复现) 后才算数。
+
+**误报排除 (验证矩阵)**: D agent 报 "tc_band 条件数学上恒假" — **亲验排除**: cost.py:99 buy_cost 含本金 (value+commission+impact), portfolio.py:428 cost = sell_cost+buy_cost−buy_val = 纯费用正数, 拦截机制正确, 不修。
+
+### P0 数据链 (前视/幸存者偏差)
+
+| # | 问题 | 证据 | 修复 |
+|---|---|---|---|
+| P0-1 | 物化面板 + 回测快照用 stocks 当前快照铺全历史 (total_mv/roe/pe/eps/bvps) — 2026-07-26 P0-4 只修 live 路径 | store.py:1284-1315 `_static_cols`+`_fallback`; loop.py:432-434 | 置 NaN + daily_valuation PIT pivot 覆盖; 排除列补 NaN 占位; pipeline.py:193-228 同口径 |
+| P0-2 | IC 评估仅 ~126 交易日 (半年样本跑 CPCV/PBO/DSR) | ic.py:100-106 `compute_days=trading_days[lookback//2:]` | compute_ic 加 start 参数, 全窗口 |
+| P0-3 | 评估池 = 当前存活 top-800 (退市股系统性剔除 → 幸存者高估) | stats_cache.py:69-91 无 as_of + `date('now')` 排名 | UniverseRepo 传窗口边界; 排名窗口用评估窗口尾; eval_start 全窗口不截断 |
+
+### P1 执行/回测/合成/调度
+
+| # | 问题 | 证据 | 修复 |
+|---|---|---|---|
+| P1-1 | T+1 阻断单先券商成交后拦 → 账本/券商分歧 | engine.py:211-231 broker 循环在 T+1 检查前 | 预检前置, 券商循环跳过 t1_blocked |
+| P1-2 | buy_time=MIN(created_at): 回测恒运行时刻→time_stop 永不触发; 全历史首买→重买后旧 peak/tp1 污染新仓 | trade_repo.py:396; loop.py time_stop | 单 SQL + FIFO 带日期撮合, buy_time=剩余批次最早 date; last_sell 改 MAX(date); 比较 date 粒度 |
+| P1-3 | V-check 二次 ×100 → 阈值虚严 100 倍永不触发 | quote.py:106 已手→股; order_manager.py:176 | 去 ×100 |
+| P1-4 | 回测 ATR 面板含当日 H/L/C (前视), 实盘不含当日 → 双口径分裂 | loop.py:653-672 `_tr` 用当日 | `_atr_df.shift(1)` |
+| P1-5 | DSR n_trials 用股票数 800 (方差惩罚虚高 ~10 倍) | loop.py:154 `_require_cfg("factor.evaluation.n_symbols")` | 显式传因子数 |
+| P1-6 | sleeve 分母=入选数+1, 分子=全因子求和 → 覆盖度主导 | synth.py:142-167 | 分母改有值因子数 |
+| P1-7 | 晚间链失败后 runner 不置 None → 重试上限形同虚设 | orchestrator.py:275-293 | 失败即置 None |
+| P1-8 | _iterative_clip 振荡/静默超限/不可行闲置 25-75% | portfolio.py:103-134 | 重写: 等比缩放一次收敛 + 单调迭代 + 不可行最大 deploy |
+| P1-9 | 整手 int() 截断无残差回收, 多标的闲置 5-15% 资金 | portfolio.py:793-864, kelly.py:203-219 | _recycle_residual_cash 5 处, 受 regime cap + max_single×capital 约束 |
+| P1-10 | HRP 零方差股垄断 ~100% 权重 | hrp.py:104-105,161-165 floor 1e-8 | 簇方差 inv=0 + IVP 分支 + 最终权重压 0 |
+| P1-11 | _alpha_proportional 负权重 Σw≠1 → 15% 部署 | kelly.py:152-156 | clip(0) 再归一 |
+
+**验证**: test_v554_audit_fixes.py 17 项; 修正固化旧 bug 语义的 test_synth (0.82→1.225) 与 test_portfolio 微调; 全量 **511 passed**。回测烟测待物化重启后跑。

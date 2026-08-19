@@ -105,32 +105,37 @@ def _iterative_clip(w, max_single, max_iter=20):
 
     算法: 反复裁剪超限权重, 剩余分配给未超限的。超限数单调递减, 保证收敛。
     来源: 2026-07-21 audit H6; De Prado & Lewis (2019) Ch.3.
+    v554 (P1): 重写 — 原"裁剪→整体归一"在超限集上振荡
+    (裁 A→归 B 超→裁 B→归 A 超), max_iter 内可能不收敛:
+      1. n×max_single ≥ 1 但归一后每只 > max_single 时, 静默返回超限权重 6 次
+      2. 不可行 (n×max_single<1) 返回 Σ<1 权重 (25-75% 资金闲置) 仅 warning
+    新算法: 裁剪后 Σ≥1 → 等比缩放 (缩小不制造超限, 一次收敛);
+    Σ<1 → 剩余容量只分配给未超限者 (超限集单调扩张 ≤ n 轮收敛);
+    不可行 → 等权最大 deploy + warning.
     """
     import numpy as np
     w = np.asarray(w, dtype=float).copy()
+    w = np.clip(w, 0.0, max_single)
+    if w.sum() >= 1.0:
+        return w / w.sum()  # 等比缩放 ≤ max_single (系数 ≤ 1), 一次收敛
     for _ in range(max_iter):
-        over = w > max_single
-        if not over.any():
+        over = w >= max_single - 1e-12
+        if over.all():
             break
-        if over.all():  # P1-11 fix: 全超限, clip 到 max_single 后判断可行性
-            w = np.full(len(w), max_single)
-            total = w.sum()
-            if total >= 1.0:
-                w = w / total  # 可行: 归一后仍 ≤ max_single
-                break
-            # 不可行: max_single * n < 1, 无法同时满足 sum=1 和 ≤ max_single
-            logger = get_logger("optimizer.portfolio")
-            logger.warning(
-                "iterative_clip: infeasible constraint max_single=%.4f for %d stocks "
-                "(max_single*n=%.4f < 1), returning clipped weights (sum=%.4f < 1)",
-                max_single, len(w), total, total
-            )
-            return w
-        w[over] = max_single
-        s = w.sum()
-        if s <= 0:
-            return np.ones(len(w)) / len(w)
-        w = w / s
+        gap = 1.0 - w[over].sum()
+        free = ~over
+        fs = w[free].sum()
+        if fs > 0:
+            w[free] = w[free] / fs * gap
+        w[free] = np.minimum(w[free], max_single)
+    if len(w) * max_single < 1.0:
+        logger = get_logger("optimizer.portfolio")
+        logger.warning(
+            "iterative_clip: infeasible constraint max_single=%.4f for %d stocks "
+            "(max_single*n=%.4f < 1), returning clipped weights (sum=%.4f < 1)",
+            max_single, len(w), len(w) * max_single, w.sum()
+        )
+        return np.full(len(w), max_single)  # 不可行下最大 deploy (Σ=n*max_single<1)
     return w
 
 
@@ -713,6 +718,26 @@ class PortfolioConstructor:
             )
         return TargetPortfolio(lots[lots > 0], round(cash, 2), "equal_weight", total_value)
 
+    def _recycle_residual_cash(self, lots, prices, cash, max_lots_per_stock, capital=0):
+        """v554 (P1-2): 整手 int() 截断残差回收 — int(alloc/手) 对每只股票
+        系统性向下截断 (均值亏 ~半手/股), 多标的下资金闲置 5-15%, 小资金
+        (Micro ¥2-5k) 更甚. 剩余现金贪心补 1 手 (手成本低者优先),
+        直到现金不足最便宜一手或全部达到 regime cap / max_single 权重上限.
+        补仓市值不得超过 max_single×capital, 防止回收突破集中度约束."""
+        if cash <= 0 or lots.sum() <= 0:
+            return lots, cash
+        _cap = getattr(self, "max_single", None)
+        for sym in sorted(lots.index, key=lambda s: prices[s] * LOT_SIZE):
+            if lots[sym] >= max_lots_per_stock:
+                continue
+            cost = prices[sym] * LOT_SIZE
+            if _cap and (lots[sym] + 1) * cost > _cap * capital:
+                continue
+            if cash >= cost:
+                lots[sym] += 1
+                cash -= cost
+        return lots, cash
+
     def _score_weighted_rounding(
         self, alpha: pd.Series, prices: pd.Series, capital: float,
         max_lots_per_stock: int = 999,
@@ -739,6 +764,7 @@ class PortfolioConstructor:
                 if cost <= cash:
                     lots[sym] = n_lots
                     cash -= cost
+        lots, cash = self._recycle_residual_cash(lots, p, cash, max_lots_per_stock, capital)
         total_value = (lots * p * LOT_SIZE).sum()
         return TargetPortfolio(lots[lots > 0], round(cash, 2), "score_weighted", total_value)
 
@@ -796,6 +822,7 @@ class PortfolioConstructor:
                 if cost <= cash:
                     lots[sym] = n_lots
                     cash -= cost
+        lots, cash = self._recycle_residual_cash(lots, p, cash, 999, capital)
         total_value = (lots * p * LOT_SIZE).sum()
         return TargetPortfolio(lots[lots > 0], round(cash, 2), "mean_variance", total_value)
 
@@ -832,6 +859,7 @@ class PortfolioConstructor:
                 if cost <= cash:
                     lots[sym] = n_lots
                     cash -= cost
+        lots, cash = self._recycle_residual_cash(lots, p, cash, 999, capital)
         total_value = (lots * p * LOT_SIZE).sum()
         return TargetPortfolio(lots[lots > 0], round(cash, 2), "hrp", total_value)
 
@@ -862,6 +890,7 @@ class PortfolioConstructor:
                     if cost <= cash:
                         lots[sym] = n_lots
                         cash -= cost
+        lots, cash = self._recycle_residual_cash(lots, prices, cash, 999, capital)
         tv = (lots * prices.loc[top] * LOT_SIZE).fillna(0).sum()
         if lots.sum() == 0:
             return self._kelly_greedy(alpha, prices, capital)

@@ -67,25 +67,35 @@ def compute_factor_stats(
     store = DataStore()
 
     # 1. 选择样本股票 — 统一用 UniverseRepo (survivorship-free, 与 loop.py 一致)
+    # v554 (P0-3): 传入评估窗口边界 — 原调用无 as_of, get_symbols 返回当前存续股,
+    # 退市/衰败股被系统性排除 → 历史 IC 幸存者偏差高估 (评估与回测池口径分裂)
     if symbols is None:
         from quant.data.repos.universe_repo import UniverseRepo
-        all_symbols = UniverseRepo().get_symbols(exclude_market="BJ")
+        _eval_end_s = eval_end or datetime.today().strftime("%Y-%m-%d")
+        all_symbols = UniverseRepo().get_symbols(
+            exclude_market="BJ",
+            start_date=eval_start or None,
+            end_date=_eval_end_s,
+        )
         if n_symbols and n_symbols > 0 and len(all_symbols) > n_symbols:
             # 按流动性排名截断 (与 backtest/loop.py 的 rank_by_turnover 逻辑一致)
+            # v554: 排名窗口用评估窗口尾部, 原 date('now') 用当前流动性选历史样本
             conn = store._connect()
             stock_window = int(lookback * 1.5)
             min_days = max(5, lookback // 2)
             placeholders = ",".join("?" * len(all_symbols))
+            _win_start = (pd.Timestamp(_eval_end_s)
+                          - pd.Timedelta(days=stock_window)).strftime("%Y-%m-%d")
             rows = conn.execute(f"""
                 SELECT symbol, AVG(amount) as avg_amt
                 FROM daily
                 WHERE symbol IN ({placeholders})
-                  AND date >= date('now', '-{stock_window} days')
+                  AND date >= ? AND date <= ?
                 GROUP BY symbol
                 HAVING COUNT(*) >= {min_days}
                 ORDER BY avg_amt DESC
                 LIMIT ?
-            """, all_symbols + [n_symbols]).fetchall()
+            """, all_symbols + [_win_start, _eval_end_s, n_symbols]).fetchall()
             symbols = [r[0] for r in rows]
         else:
             symbols = all_symbols
@@ -113,7 +123,11 @@ def compute_factor_stats(
         "SELECT DISTINCT date FROM daily WHERE date >= ? AND date <= ? ORDER BY date",
         (start_date, end_date)
     ).fetchall()
-    eval_dates = [pd.Timestamp(r[0]) for r in eval_dates_raw][-lookback:]
+    # v554 (P0-2/P1-7): eval_start 注入时窗口取全 (原 [-lookback:] 截断,
+    # phase7 训练窗口注入无效 — fold 只用 [end-126天, end], 前 1/4 数据被丢)
+    eval_dates = [pd.Timestamp(r[0]) for r in eval_dates_raw]
+    if not eval_start:
+        eval_dates = eval_dates[-lookback:]
     eval_date_strs = [d.strftime("%Y-%m-%d") for d in eval_dates]
     store.close()
 
@@ -137,6 +151,8 @@ def compute_factor_stats(
         date=eval_date_strs[-1],
         symbols=symbols,
         lookback=lookback,
+        # v554 (P1-7): 注入评估窗口起点 — 原缺失使 phase7 fold 的 eval_start 无效
+        start=eval_date_strs[0] if eval_start else None,
         status_filter=None,  # 已传 factor_names, 不额外过滤
     )
 

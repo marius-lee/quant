@@ -210,8 +210,15 @@ def generate_signals(date_str: str = None, capital: float = None, strategy: str 
         if fund_high_52w is not None and _ts in fund_high_52w.index:
             _dyn["high_52w"] = fund_high_52w.loc[_ts]
         fundamentals = pd.DataFrame({
+            # v554 (P0-1): 快照列全 PIT 化 — 原保留 stocks 快照的 total_mv/roe/pe/
+            # eps/bvps (回测非物化路径前视, 与物化面板 store.py 同源同修)。
+            # 置 NaN 诚实缺数据, 由 _dyn (daily_valuation PIT pivot) 覆盖;
+            # industry 由 industry_piv (v502, pipeline:407) 逐日覆盖。
             **{c: fund_stocks_df[c] for c in fund_stocks_df.columns
-               if c not in ("pe_ttm", "pb", "market_cap", "close_latest", "high_52w")},
+               if c not in ("pe_ttm", "pb", "market_cap", "close_latest", "high_52w",
+                            "total_mv", "roe", "pe", "eps", "bvps")},
+            **{_c: pd.Series(np.nan, index=fund_stocks_df.index)
+               for _c in ("total_mv", "roe", "pe", "eps", "bvps")},
             **_dyn,
         }, index=fund_stocks_df.index)
         # derive ROE

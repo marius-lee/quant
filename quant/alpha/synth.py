@@ -138,10 +138,16 @@ def sleeve_compose(
 
     # 对所有出现过的股票计算 mean-rank 和入选因子数
     score_map = {}
+    occ_map = {}
     factor_count = {}
     for name, rank_dict in all_ranks.items():
         for sym, rpct in rank_dict.items():
             score_map[sym] = score_map.get(sym, 0.0) + rpct
+            # v554 (P1-2): 有值因子计数 — 原分母 = 入选 top-N 因子数+1,
+            # 而分子是全部有值因子的 rank 求和 → 高覆盖平庸股 (10 因子中游)
+            # 得分 (0.82) 碾压单因子第一名 (0.495), 覆盖率主导 alpha 而非置信度;
+            # 分母改为有值因子数 → mean_rank = 真实平均分位
+            occ_map[sym] = occ_map.get(sym, 0) + 1
             # v418: 原第143行 `factor_count[sym] = factor_count.get(sym, 0)` 每轮重置计数,
             # 多因子同时入 top-N 时 count 恒 ≤1, 下方 0.2×count bonus 永远无效
             if sym in top_sets.get(name, set()):
@@ -158,11 +164,10 @@ def sleeve_compose(
     score_map = {s: score_map[s] for s in selected_syms if s in score_map}
     factor_count = {s: factor_count.get(s, 0) for s in selected_syms}
 
-    # mean-rank: 均值(出现在哪些因子的分位), 再乘以入选因子数加权
+    # mean-rank: 有值因子的平均分位, 再乘多因子确认奖励
     result_map = {}
     for sym in score_map:
-        occ = factor_count.get(sym, 0) + 1  # +1 防止全 zero
-        mean_rank = score_map[sym] / occ
+        mean_rank = score_map[sym] / occ_map[sym]
         # bonus for multi-factor confirmation
         result_map[sym] = mean_rank * (1.0 + 0.2 * factor_count.get(sym, 0))
 

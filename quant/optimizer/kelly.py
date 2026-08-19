@@ -150,10 +150,13 @@ def compute_kelly_fractions(
 
 
 def _alpha_proportional(alpha: pd.Series) -> pd.Series:
-    """退化为 alpha 得分比例分配 (等权的变体)."""
-    if alpha.sum() == 0:
-        return pd.Series(1.0 / max(len(alpha), 1), index=alpha.index)
-    return alpha / alpha.sum()
+    """退化为 alpha 得分比例分配 (等权的变体).
+    v554 (P1-4): alpha 含负值时 clip(0) — 原 alpha/alpha.sum() 直接归一,
+    负权重压低 Σw (A股不能做空, 实测仅 ~15% 资金部署)."""
+    a = alpha.clip(lower=0)
+    if a.sum() == 0:
+        return pd.Series(1.0 / max(len(a), 1), index=alpha.index)
+    return a / a.sum()
 
 
 def compute_lot_allocation(
@@ -209,13 +212,14 @@ def compute_lot_allocation(
                 lots[sym] = n_lots
                 cash -= cost
 
-    # 残差分配: 把剩余现金按最便宜能买的股票分配
-    if cash > 0 and lots.sum() == 0:
-        # 全部股票都买不起 → 买最便宜的 1 手
-        cheapest_sym = top_prices.idxmin()
-        cheapest_cost = top_prices[cheapest_sym] * lot_size
-        if cash >= cheapest_cost:
-            lots[cheapest_sym] = 1
-            cash -= cheapest_cost
+    # v554 (P1-2): 整手截断残差回收 — int(alloc/手) 系统性截断, 剩余现金
+    # 贪心补 1 手 (手成本低者优先), 直至现金不足或全部达上限.
+    # 原实现仅处理 lots.sum()==0 极端情况, 常态闲置不回收.
+    if cash > 0:
+        for sym in sorted(top_alpha.index, key=lambda s: top_prices[s] * lot_size):
+            cost = top_prices[sym] * lot_size
+            if cash >= cost:
+                lots[sym] += 1
+                cash -= cost
 
     return lots[lots > 0], round(cash, 2)

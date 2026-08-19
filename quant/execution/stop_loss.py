@@ -378,7 +378,8 @@ class RiskManager:
         from quant.data.repos.trade_repo import TradeRepo
         try:
             last_sell = TradeRepo().get_last_sell_time(symbol)
-            return bool(last_sell) and buy_time[:19] > last_sell[:19]
+            # v554: buy_time 与 last_sell 均为 date 粒度 (YYYY-MM-DD), 前缀比较
+            return bool(last_sell) and buy_time[:10] > last_sell[:10]
         except Exception as _e:
             _log.debug("last_sell query failed for %s (non-fatal): %s", symbol, _e)
             return False

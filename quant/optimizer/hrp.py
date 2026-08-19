@@ -76,11 +76,16 @@ def _recursive_bisection(cov: np.ndarray, sorted_idx: list, link: np.ndarray = N
         """簇方差 — B17 (2026-08-18): 原 diag(cov).sum() 等权口径
         (忽略协方差与权重), 高波动簇方差失真 → alpha 分配偏斜.
         用 IVP (逆方差组合, López de Prado 2016) 权重: var = w' Σ w,
-        w ∝ 1/diag(Σ), 纯对角输入时退化为调和均值口径."""
+        w ∝ 1/diag(Σ), 纯对角输入时退化为调和均值口径.
+        v554 (P1-3): 零方差股 (diag≤0, 停牌/无成交) inv 置 0 —
+        原 floor 1e-8 → inv=1e8 → w≈1 → 簇方差≈0 → alpha≈1 → 该股垄断 ~100% 权重."""
         if np.size(cov_block) == 1:
             return float(np.asarray(cov_block).flat[0])
         diag = np.diag(cov_block)
         inv = 1.0 / np.maximum(diag, 1e-8)
+        inv[diag <= 0] = 0.0
+        if inv.sum() <= 0:
+            return float(np.max(diag))
         w = inv / inv.sum()
         return float(w @ cov_block @ w)
 
@@ -162,6 +167,9 @@ def hrp_weights(cov: np.ndarray, linkage_method: str = "ward") -> np.ndarray:
     if _off.size and np.allclose(_off, 0.0):
         _log.debug("HRP: zero correlation, inverse-variance weights")
         ivp = 1.0 / np.maximum(np.diag(cov), 1e-8)
+        ivp[np.diag(cov) <= 0] = 0.0  # v554: 零方差股不参与 IVP
+        if ivp.sum() <= 0:
+            return np.ones(n) / n
         return ivp / ivp.sum()
 
     # 3. Quasi-diagonal 排序
@@ -169,6 +177,14 @@ def hrp_weights(cov: np.ndarray, linkage_method: str = "ward") -> np.ndarray:
 
     # 4. 递归二分分配权重 (v418: 传 link 走树切分)
     weights = _recursive_bisection(cov, sorted_idx, link)
+
+    # v554 (P1-3): 最终出口 — 零方差股 (停牌/无成交, diag≤0) 权重压 0 再归一,
+    # 防止叶分配 factor 直达零方差股 (~100% 单票); 全零时退回等权
+    _diag = np.diag(cov)
+    weights[_diag <= 0] = 0.0
+    if weights.sum() <= 0:
+        return np.ones(n) / n
+    weights = weights / weights.sum()
 
     _log.debug("HRP: %d assets, linkage=%s, weights range [%.4f, %.4f]",
                n, linkage_method, weights.min(), weights.max())

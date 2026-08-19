@@ -20,13 +20,14 @@ class TestSleeveCompose:
         # f1 top 2: A(0.9), B(0.5)
         # f2 top 2: B(0.8), D(0.7)
         # union: A, B, D
-        # test-v397: mean-rank × (1 + 0.2 × factor_count)
-        # A: score_map=0.90+0.25=1.25, 1 factor top-N, mean_rank=0.625 → 0.625×1.2=0.750
-        # B: score_map=0.75+1.00=1.75, 2 factors top-N, mean_rank=0.583 → 0.583×1.4=0.817
-        # D: score_map=0.25+0.75=1.00, 1 factor top-N, mean_rank=0.500 → 0.500×1.2=0.600
+        # v554: mean_rank = Σrank_pct / 有值因子数 (原分母=入选数+1, 覆盖率主导)
+        # rank(pct=True): 最大=1.0
+        # A: f1=1.00 + f2=0.25 → 1.25/2=0.625 → ×1.2 (入选1因子)=0.750
+        # B: f1=0.75 + f2=1.00 → 1.75/2=0.875 → ×1.4 (入选2因子)=1.225
+        # D: f1=0.25 + f2=0.75 → 1.00/2=0.500 → ×1.2 (入选1因子)=0.600
         assert set(result.index) == {'A', 'B', 'D'}
         assert result["A"] == pytest.approx(0.75, abs=0.02)
-        assert result["B"] == pytest.approx(0.82, abs=0.02)
+        assert result["B"] == pytest.approx(1.225, abs=0.02)
         assert result["D"] == pytest.approx(0.60, abs=0.02)
 
     def test_overlap_sleeve(self):

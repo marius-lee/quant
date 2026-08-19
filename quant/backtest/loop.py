@@ -142,10 +142,12 @@ def _persist_backtest_result(strategy, start, end, capital, metrics, diagnosis, 
 
 
 
-def _compute_dsr(returns: pd.Series) -> float | None:
+def _compute_dsr(returns: pd.Series, n_trials: int = None) -> float | None:
     """ADR-041: Compute Deflated Sharpe Ratio for statistical significance.
     Bailey & Lopez de Prado (2014). DSR < 0.5 → likely overfit.
     v406: 修复三重 bug — 传数组而非 float, 缺 n_obs, 返回 dict 当 tuple 解包.
+    v554: n_trials 显式传入 — 原取 factor.evaluation.n_symbols (股票数 800) 当
+    试验次数, 方差惩罚虚高 ~10 倍 (De Prado: n_trials=候选策略/因子数量).
     """
     try:
         from quant.evaluation.deflated_sharpe import deflated_sharpe_ratio
@@ -160,10 +162,9 @@ def _compute_dsr(returns: pd.Series) -> float | None:
         # 年化 SR + 日频 n_obs → 方差放大 ~252 倍 → DSR 恒 1.0 (虚假显著).
         # 用每日 SR 参与 DSR 计算 (De Prado 2018 Eq.7.2, 与 cpcv_dsr 口径统一).
         sr = float(np.mean(excess) / np.std(excess)) if np.std(excess) > 0 else 0.0
-        n_factors = _require_cfg("factor.evaluation.n_symbols")
         result = deflated_sharpe_ratio(
             observed_sr=sr,
-            n_trials=max(n_factors, 1),
+            n_trials=max(n_trials or 1, 1),
             n_obs=len(vals),
             skewness=-0.5, kurtosis=8.0,
         )
@@ -268,7 +269,7 @@ def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
         "info_ratio": ir,
         "beta": beta,
         # ADR-041: DSR (Deflated Sharpe Ratio)
-        "dsr": _compute_dsr(returns),
+        "dsr": _compute_dsr(returns, n_trials=len(bt_factor_names)),
     }
 
 
@@ -665,6 +666,11 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             _w = (_atr_period - 1) / _atr_period
             for _i in range(_atr_period, len(_tr_df)):
                 _atr_df.iloc[_i] = _atr_df.iloc[_i - 1] * _w + _tr_df.iloc[_i] / _atr_period
+            # v554 (P1): 面板 shift(1) — 当日 TR 含当日 H/L/C (收盘才可知),
+            # 止损判定在当日开盘 (prices=open), 原 atr_panel[today] 用当日行情 = 前视;
+            # 实盘 _compute_atr 用 date < as_of 不含当日 → 两口径分裂。
+            # shift(1) 后 atr_panel[today] = 截至昨日收盘的 ATR, 与 DB 版一致。
+            _atr_df = _atr_df.shift(1)
             _ctx_atr_panel = {
                 _d.strftime("%Y-%m-%d"): {s: float(v) for s, v in _row.dropna().items()}
                 for _d, _row in _atr_df.iterrows()

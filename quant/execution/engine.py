@@ -209,26 +209,12 @@ class ExecutionEngine:
         # v534: 卖出单双路径 — 券商先成交, 成功才进账本 (零 fallback).
         # simulated adapter 内部已写账本 (自管执行) → 排除, 防双重写入;
         # 真实券商 (vnpy/ctp/xtp) 注入且未连接 → RuntimeError 拒绝模拟。
-        _adapter = getattr(self, "broker_adapter", None)
-        if _adapter is not None and getattr(_adapter, "name", "") != "simulated":
-            if not _adapter.is_connected():
-                raise RuntimeError(
-                    f"卖出无法执行: broker adapter {_adapter.name} 未连接 — 拒绝模拟成交 "
-                    f"(v534 P0-1: 账本/券商双账风险). 请恢复券商连接后重试")
-            for e in entries:
-                if e["side"] == "sell":
-                    r = _adapter.sell(e["symbol"], e["price"], e["shares"],
-                                      order_type="MARKET")
-                    if not r.success:
-                        raise RuntimeError(
-                            f"券商卖出失败 {e['symbol']}: {r.error} — 拒绝写账本 (v534 P0-1)")
-                    logger.info(f"[{date}] broker sell: {e['symbol']} {e['shares']}股 "
-                                f"@¥{e['price']:.2f} status={r.status}")
-
         # 批量除权检测
         skip_symbols = self._check_ex_dividend_batch(buy_symbols, buy_prices, date)
 
-        # 处理除权标记和卖单 T+1 检查
+        # v554 (P0-1): T+1 预检前置 — 原检查在券商卖出循环之后:
+        # T+1 被阻断的卖单已在券商成交 (真实持仓已减) 但未记账 → 账本/券商分歧,
+        # 次日重启后券商侧缺仓而账本显示持仓 (双账风险). 预检先标记, 券商循环跳过.
         for e in entries:
             symbol = e["symbol"]
             side = e["side"]
@@ -256,6 +242,24 @@ class ExecutionEngine:
                 else:
                     e["pnl"] = 0.0
                     e["pnl_pct"] = 0.0
+
+        _adapter = getattr(self, "broker_adapter", None)
+        if _adapter is not None and getattr(_adapter, "name", "") != "simulated":
+            if not _adapter.is_connected():
+                raise RuntimeError(
+                    f"卖出无法执行: broker adapter {_adapter.name} 未连接 — 拒绝模拟成交 "
+                    f"(v534 P0-1: 账本/券商双账风险). 请恢复券商连接后重试")
+            for e in entries:
+                if e["side"] == "sell" and e.get("t1_blocked"):
+                    continue
+                if e["side"] == "sell":
+                    r = _adapter.sell(e["symbol"], e["price"], e["shares"],
+                                      order_type="MARKET")
+                    if not r.success:
+                        raise RuntimeError(
+                            f"券商卖出失败 {e['symbol']}: {r.error} — 拒绝写账本 (v534 P0-1)")
+                    logger.info(f"[{date}] broker sell: {e['symbol']} {e['shares']}股 "
+                                f"@¥{e['price']:.2f} status={r.status}")
 
         # ── Phase 2: 写入 (事务内) ──
         conn = repo._conn()

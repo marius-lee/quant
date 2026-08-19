@@ -73,6 +73,12 @@ def _run_loop(monkeypatch, now, max_sleeps, patch_callbacks=None):
     monkeypatch.setattr(orch, "_tk_start", patch_callbacks.get(
         "tk_start", lambda *a, **k: _count("tk_start")))
     monkeypatch.setattr(orch, "_tk_finish", patch_callbacks.get("tk_finish", lambda *a, **k: None))
+    # v560 fix (2026-08-19): _check_timeouts 连真实 MARKET_DB — 集成测试
+    # patch 的 manifest.ALL 不含 evening_chain → fallback 300s → 把生产
+    # task_runs 里真实 running 的晚间链行误标 aborted (当晚实测 20:51:30
+    # 生产 evening_chain 被测试进程标 timeout, 6666s > 300s)。
+    # 超时判定逻辑已有独立单测 (test_v556_audit_fixes.py), 此处隔离不碰库。
+    monkeypatch.setattr(orch, "_check_timeouts", lambda today: None)
 
     if "runner_cls" in patch_callbacks:
         monkeypatch.setattr(runners_mod, "SubprocessRunner", patch_callbacks["runner_cls"])

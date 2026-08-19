@@ -4269,3 +4269,21 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
 开盘双轨合并去重、加仓闸门 4 场景: 摊平拦截/追涨拦截/盈利回踩放行/新仓不受
 影响/回测 ohlc.high 判定); 旧测试 test_risk_manager.py + test_v553.py 更新
 阈值注释与断言 (8%→5%)。全量 542 passed。
+
+### v560-fix: 集成测试污染生产 task_runs — _check_timeouts 测试隔离 (2026-08-19)
+
+- 现象: 当晚跑全量 pytest 时 (20:45-20:53), 生产 task_runs 里 running 的
+  evening_chain (19:00 启动, pid=22320) 被标 aborted error='timeout',
+  日志出现 "evening_chain subprocess exceeded timeout_s=1" + 批量
+  "orchestrator started" (同一秒 5-6 条)。
+- 根因: test_v557_orchestrator_integration.py 驱动真实 orchestrator._run()
+  主循环, 主循环调用 _check_timeouts → 连真实 MARKET_DB → 看到生产 running
+  晚间链行 → 测试 patch 的 manifest.ALL 不含 evening_chain → fallback 300s
+  → 6666s > 300s → 误标 aborted。timeout_s=1 是 test_v556_audit_fixes.py
+  构造的测试 spec (非生产配置, manifest 实为 27000s 从未被改)。
+- 修复: _run_loop() 内 monkeypatch orch._check_timeouts → no-op
+  (超时判定逻辑已有独立单测 test_v556, 集成测试不碰生产库)。
+- 生产恢复: 被污染行 evening_chain 改回 running (晚间链子进程 evening.py
+  自管 _tk_finish, 跑完自动收尾); 生产链 pid=22320 全程未被杀, factor_cache
+  阶段健康推进 (DuckDB 全量重同步 957 万行完成, turnover backfill 5201 股完成)。
+- 验证: test_v557+test_v556 23 passed 且不触碰生产 task_runs; 全量 542 passed。

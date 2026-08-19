@@ -4315,3 +4315,16 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
   均无 → "等待调度"。同时补了 running 分支的 last_run 显示。
 - 测试: test/test_v562_scheduler_crossday.py 3 项 (跨天 running→运行中 /
   昨日 ok 今日未跑→等待调度 / 今日 ok 覆盖昨日 running); 全量 545 passed。
+
+### v562b: 调度页面补显 daily_repair — 注册缺失 + 页面超时阈值 (2026-08-20)
+
+- 用户发现: 每日 08:00 早间补拉 (daily_repair) 不在调度任务列表显示。
+- 根因: status.py register_all() 未注册 daily_repair (manifest 有定义,
+  但页面任务清单来自 status.py 注册表 → 显示缺失)。
+- 修复: status.py 注册 daily_repair (08:00, 早间补拉); web/app.py
+  _API_TIMEOUTS 补 daily_repair: 1800 (与 manifest timeout_s 一致)。
+  evening_chain 是 orchestrator 编排入口 (内部各阶段各自落 task_runs),
+  非独立任务, 不注册 (用户指正)。
+- 验证: test_v562 新增 daily_repair 可见+cron 已配置断言; 4 passed。
+- 早间链耗时待实测: scripts/measure_daily_repair.py (用户执行,
+  评估 08:00-08:30 半小时窗口是否够, 是否需提前至 06:00)。

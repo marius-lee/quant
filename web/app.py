@@ -923,7 +923,8 @@ def api_scheduler():
             # 任务专属超时检测 (与 orchestrator._check_timeouts 阈值一致)
             try:
                 _API_TIMEOUTS = {"signals": 900, "execute": 600, "monitor": None,
-                                 "attribution": 900, "weekly_eval": 7200}
+                                 "attribution": 900, "weekly_eval": 7200,
+                                 "daily_repair": 1800}
                 started = datetime.fromisoformat(run["started_at"])
                 elapsed = (datetime.now() - started).total_seconds()
                 limit = _API_TIMEOUTS.get(key)

@@ -87,3 +87,10 @@ class TestCrossDayRunning:
         data = _api_scheduler_json()
         st = _task_state(data, "signals")
         assert st["status"] == "success", f"今日 ok 应覆盖昨日 running, got {st['status']}"
+
+    def test_daily_repair_visible_and_configured(self, isolated_runs):
+        # v562: daily_repair (早间补拉) 此前未注册 → 调度页不显示;
+        # 注册后应出现在任务列表且 cron 已配置.
+        data = _api_scheduler_json()
+        st = _task_state(data, "daily_repair")
+        assert st["cron"] == "已配置", f"daily_repair 应显示已配置, got {st['cron']}"

@@ -1,6 +1,6 @@
-"""早间补拉链 — 每日 08:00 (subprocess, manifest daily_repair).
+"""早间补拉链 — 每日 05:00 (subprocess, manifest daily_repair).
 
-v479: 晚间链完成后审计失败的表现在次日 08:00 重试 —
+v479: 晚间链完成后审计失败的表现在次日 05:00 重试 —
 T+1 迟发数据 (margin/lhb/limit_up) 此时已发布, 修复在 signals (08:30) 之前完成.
 
 额外兜底:

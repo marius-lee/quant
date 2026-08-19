@@ -40,6 +40,13 @@ def all_tasks() -> list[dict]:
 
 def register_all():
     """注册所有调度任务 — 单一真相源."""
+    # v562d: daily_repair 置首位 — 页面按注册顺序渲染 (web/app.py all_tasks
+    # 原样输出, 不排序), 05:00 起跑是全天最早任务; 原排在 daily_data (19:00)
+    # 之后顺序错乱. schedule 05:00 — 周六与 weekly_eval (06:00) 错开:
+    # orchestrator 周六阻塞等 daily_repair 完成才 spawn weekly_eval (v556),
+    # 06:00 起跑会压缩周六评估窗口; 05:00 起跑 07:00 前完成, 评估正常启动.
+    register("daily_repair", "05:00",       label="早间补拉",
+             desc="重试昨日审计失败表 (T+1 迟发) + weekly_full 7 天兜底 + factor_cache 缺口兜底")
     register("signals",      "08:30",       label="信号生成",
              desc="计算所有 using 因子，生成 Alpha 信号与目标持仓", has_multiprocess=True)
     register("execute",      "09:30",       label="交易执行",
@@ -57,8 +64,6 @@ def register_all():
              desc="OMS 对账闭环: 持仓/现金/订单三账核对, break 超阈值告警")
     register("daily_data",   "19:00",       label="数据拉取",
              desc="拉取当日 A 股日线行情，更新 market.db")
-    register("daily_repair", "06:00",       label="早间补拉",
-             desc="重试昨日审计失败表 (T+1 迟发) + weekly_full 7 天兜底 + factor_cache 缺口兜底")
     register("adj_factor",   "daily_data完成后", label="复权因子同步",
              desc="tushare+baostock 双源同步复权因子, 每晚1批(晚间链子进程)")
     register("factor_cache", "adj_factor完成后", label="因子物化",

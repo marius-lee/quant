@@ -4348,3 +4348,18 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
      晚间链独立 stage 管理).
   4. status.py daily_repair schedule 标签 08:00→06:00.
 - 验证: 全量 546 passed.
+
+### v562d: 早间链 05:00 起跑 + 调度列表首位 (2026-08-20)
+
+- 用户指出: ① daily_repair 在调度列表位置不对 (页面按 status.py 注册
+  顺序渲染, v562b 加在 daily_data 19:00 之后, 而它是全天最早任务);
+  ② 周六 06:00 与 weekly_eval (06:00) 冲突 — orchestrator 周六阻塞等
+  daily_repair 完成 (runners.py run_daily_repair) 才 spawn weekly_eval,
+  06:00 起跑 1.5-2h 压缩周六评估窗口。
+- 修改:
+  1. status.py: daily_repair 注册移至首位, schedule 05:00 (页面即按
+     时间先后排列).
+  2. manifest.py: daily_repair schedule 05:00, window (05:00, 08:30),
+     grace 3h 不变 (05:00 起跑 07:00 前完成, weekly_eval 正常启动).
+  3. repair.py 文档字符串同步 05:00.
+- 验证: 页面顺序 daily_repair 首位; 相关测试 6 passed.

@@ -4302,3 +4302,16 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
   后再同步); 已手动全量重同步补齐当日 5210 行, verify match=True。
 - 验证: 全量重同步 8322941 rows 49s, DuckDB 08-19=5210 行, verify True;
   duckdb/daily_data 相关测试 16 passed。
+
+### v562: 调度页面跨天状态修复 — 跨天 running 误显示"等待调度" (2026-08-20)
+
+- 现象: 用户报告过了 23:59:59 所有调度任务状态都变"等待调度", 即使任务
+  仍在运行中。
+- 根因: web/app.py api_scheduler 原查询 WHERE date = today — task_runs.date
+  是任务触发日, 晚间链 19:00 触发可跨天运行 (实测 08-19 晚间链 01:29:47
+  才完成)。跨天后查不到 running 记录 → 全部落入"等待调度"分支。
+- 修复: 查询近 3 天记录; 全局最新记录 running 且未完成 → "运行中" (与
+  触发日无关); 今日状态判定用今日最新记录 (ok/failed/aborted/skipped/lunch);
+  均无 → "等待调度"。同时补了 running 分支的 last_run 显示。
+- 测试: test/test_v562_scheduler_crossday.py 3 项 (跨天 running→运行中 /
+  昨日 ok 今日未跑→等待调度 / 今日 ok 覆盖昨日 running); 全量 545 passed。

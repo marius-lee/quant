@@ -12,11 +12,11 @@ from quant.config.paths import TRADE_DB, MARKET_DB, BACKTEST_DB  # crash → app
 from web.services import PositionService, BacktestService, StockService, SignalService  # P2-5
 from quant.config.loader import get as cfg, validate; validate()  # 启动时校验 config.yaml 类型
 from quant.data.store import market_conn  # P69: 统一连接层
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from flask import Flask, jsonify, render_template, request
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v561"
+VERSION = "test-v562"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 
@@ -856,20 +856,36 @@ def api_scheduler():
     # (B22 每 30s 全日期检测), web 只读展示; 界面超时显示由下方
     # _API_TIMEOUTS 只读检测覆盖.
     db_runs = {}  # task_name → {status, finished_at, error, summary}
+    db_runs_today = {}  # task_name → 今日最新记录 (仅今日状态判定)
     try:
         conn = sqlite3.connect(MARKET_DB)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=5000")
-        # 取每个任务今天的最新一条记录
+        # v562: 查询近 3 天 (含昨天) — task_runs.date 是任务触发日, 晚间链
+        # 19:00 触发可跨天运行至凌晨 (实测 08-19 晚间链 01:29 才完成);
+        # 原 WHERE date = today 在跨天后查不到 running 记录 → 全部误显示
+        # "等待调度"。运行状态跨天连续, 判定规则:
+        #   - 全局最新记录 running 且未完成 → 运行中 (与触发日无关)
+        #   - 今日有记录 → 按今日状态展示
+        #   - 否则 → 等待调度
+        recent = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
         rows = conn.execute(
-            "SELECT task_name, status, started_at, finished_at, error, summary "
-            "FROM task_runs WHERE date = ? ORDER BY id DESC",
-            (today_str,)
+            "SELECT task_name, status, started_at, finished_at, error, summary, date "
+            "FROM task_runs WHERE date >= ? ORDER BY date DESC, id DESC",
+            (recent,)
         ).fetchall()
         for r in rows:
             key = r["task_name"]
-            if key not in db_runs:  # 第一条是最新的
+            if key not in db_runs:  # 第一条是全局最新
                 db_runs[key] = {
+                    "status": r["status"],
+                    "started_at": r["started_at"],
+                    "finished_at": r["finished_at"],
+                    "error": r["error"],
+                    "summary": r["summary"],
+                }
+            if r["date"] == today_str and key not in db_runs_today:  # 今日最新
+                db_runs_today[key] = {
                     "status": r["status"],
                     "started_at": r["started_at"],
                     "finished_at": r["finished_at"],
@@ -901,6 +917,7 @@ def api_scheduler():
         key = t["key"]
         has_cron = key in cron_tasks
         run = db_runs.get(key)
+        run_today = db_runs_today.get(key)
 
         if run and run["status"] == "running" and run["finished_at"] is None:
             # 任务专属超时检测 (与 orchestrator._check_timeouts 阈值一致)
@@ -921,36 +938,37 @@ def api_scheduler():
                 else:
                     t["status_label"] = _badge("blue", "运行中")
                     t["status"] = "running"
+                t["last_run"] = (run["started_at"] or "")[:16].replace("T", " ")
             except Exception:
                 t["status_label"] = _badge("blue", "运行中")
                 t["status"] = "running"
-        elif run and run["status"] == "lunch":
+                t["last_run"] = (run["started_at"] or "")[:16].replace("T", " ")
+        elif run_today and run_today["status"] == "lunch":
             t["status_label"] = _badge("yellow", "午休中")
             t["status"] = "lunch"
-            t["last_run"] = (run["started_at"] or "")[:16].replace("T", " ")
-            t["last_run"] = (run["started_at"] or "")[:16].replace("T", " ")
-        elif run and run["status"] == "ok":
+            t["last_run"] = (run_today["started_at"] or "")[:16].replace("T", " ")
+        elif run_today and run_today["status"] == "ok":
             t["status_label"] = _badge("green", "今日已执行")
             t["status"] = "success"
-            t["last_run"] = (run["finished_at"] or run["started_at"] or "")[:16].replace("T", " ")
-        elif run and run["status"] == "failed":
-            err = run["error"] or "未知错误"
+            t["last_run"] = (run_today["finished_at"] or run_today["started_at"] or "")[:16].replace("T", " ")
+        elif run_today and run_today["status"] == "failed":
+            err = run_today["error"] or "未知错误"
             t["status_label"] = _badge("red", "今日失败")
             t["status"] = "error"
             t["error_msg"] = err[:120]
-            t["last_run"] = (run["finished_at"] or run["started_at"] or "")[:16].replace("T", " ")
-        elif run and run["status"] == "aborted":
-            err = run["error"] or "任务异常终止"
+            t["last_run"] = (run_today["finished_at"] or run_today["started_at"] or "")[:16].replace("T", " ")
+        elif run_today and run_today["status"] == "aborted":
+            err = run_today["error"] or "任务异常终止"
             t["status_label"] = _badge("yellow", "异常终止")
             t["status"] = "aborted"
             t["error_msg"] = err[:120]
-            t["last_run"] = (run["finished_at"] or run["started_at"] or "")[:16].replace("T", " ")
-        elif run and run["status"] == "skipped":
+            t["last_run"] = (run_today["finished_at"] or run_today["started_at"] or "")[:16].replace("T", " ")
+        elif run_today and run_today["status"] == "skipped":
             # C10 (CODE-REVIEW): lgb_train 无 lightgbm 时落 skipped,
             # 修复前落入 else → 显示"未配置"(误导). 展示为独立的黄色徽标.
             t["status_label"] = _badge("yellow", "今日跳过")
             t["status"] = "skipped"
-            t["last_run"] = (run["finished_at"] or run["started_at"] or "")[:16].replace("T", " ")
+            t["last_run"] = (run_today["finished_at"] or run_today["started_at"] or "")[:16].replace("T", " ")
         elif has_cron:
             t["status_label"] = _badge("gray", "等待调度")
             t["status"] = "pending"

@@ -215,9 +215,14 @@ def compute_lot_allocation(
     # v554 (P1-2): 整手截断残差回收 — int(alloc/手) 系统性截断, 剩余现金
     # 贪心补 1 手 (手成本低者优先), 直至现金不足或全部达上限.
     # 原实现仅处理 lots.sum()==0 极端情况, 常态闲置不回收.
+    # v555 (E3): 回收加 max_single 集中度守卫 — 与 portfolio._recycle_residual_cash
+    # 一致; 原无守卫时补 1 手可把单票市值推至资本 2× 上限 (Small 层实测风险)
     if cash > 0:
+        _cap = float(_require_cfg("risk.max_single_position"))
         for sym in sorted(top_alpha.index, key=lambda s: top_prices[s] * lot_size):
             cost = top_prices[sym] * lot_size
+            if (lots[sym] + 1) * cost > _cap * capital:
+                continue
             if cash >= cost:
                 lots[sym] += 1
                 cash -= cost

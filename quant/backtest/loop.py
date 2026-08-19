@@ -173,7 +173,7 @@ def _compute_dsr(returns: pd.Series, n_trials: int = None) -> float | None:
         return None
 
 
-def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
+def _compute_backtest_metrics(equity_curve, benchmark_returns=None, n_trials: int = None):
     """Compute Sharpe, MDD, CAGR, win rate, Sortino, Calmar, Alpha, IR, Beta from equity curve."""
     ann_days = _require_cfg("market.annual_trading_days")
     df = pd.DataFrame(equity_curve)
@@ -269,7 +269,7 @@ def _compute_backtest_metrics(equity_curve, benchmark_returns=None):
         "info_ratio": ir,
         "beta": beta,
         # ADR-041: DSR (Deflated Sharpe Ratio)
-        "dsr": _compute_dsr(returns, n_trials=len(bt_factor_names)),
+        "dsr": _compute_dsr(returns, n_trials=n_trials),
     }
 
 
@@ -845,16 +845,21 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
         store.close()
 
         # ── Compute metrics ──
-        metrics = _compute_backtest_metrics(equity_curve, _bm_returns)
+        # v555: n_trials 显式传参 — 原模块级函数引用 run_backtest 局部
+        # bt_factor_names 必抛 NameError, 回测最后一步必崩 (v554 引入)
+        metrics = _compute_backtest_metrics(equity_curve, _bm_returns,
+                                            n_trials=len(bt_factor_names))
 
         # test-v397 (Problem 8): OOS split
         if oos_start_date:
             _is_curve = [e for e in equity_curve if e["date"] < oos_start_date]
             _oos_curve = [e for e in equity_curve if e["date"] >= oos_start_date]
             if len(_is_curve) >= 5:
-                metrics["is"] = _compute_backtest_metrics(_is_curve, _bm_returns)
+                metrics["is"] = _compute_backtest_metrics(_is_curve, _bm_returns,
+                                                          n_trials=len(bt_factor_names))
             if len(_oos_curve) >= 5:
-                metrics["oos"] = _compute_backtest_metrics(_oos_curve, _bm_returns)
+                metrics["oos"] = _compute_backtest_metrics(_oos_curve, _bm_returns,
+                                                           n_trials=len(bt_factor_names))
             metrics["oos_start_date"] = oos_start_date
             _log.info("OOS split: IS %d days, OOS %d days", len(_is_curve), len(_oos_curve))
 

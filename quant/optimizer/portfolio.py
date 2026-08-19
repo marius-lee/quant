@@ -101,7 +101,7 @@ def _stock_sigma(symbol: str, log_returns: pd.DataFrame = None) -> float:
     return _DEFAULT_SIGMA_DAILY
 
 def _iterative_clip(w, max_single, max_iter=20):
-    """迭代裁剪+重归一化: 保证所有权重 ≤ max_single 且 sum=1。
+    """迭代裁剪+重归一化: 所有权重 ≤ max_single; Σ=1 在可行时达成。
 
     算法: 反复裁剪超限权重, 剩余分配给未超限的。超限数单调递减, 保证收敛。
     来源: 2026-07-21 audit H6; De Prado & Lewis (2019) Ch.3.
@@ -112,6 +112,9 @@ def _iterative_clip(w, max_single, max_iter=20):
     新算法: 裁剪后 Σ≥1 → 等比缩放 (缩小不制造超限, 一次收敛);
     Σ<1 → 剩余容量只分配给未超限者 (超限集单调扩张 ≤ n 轮收敛);
     不可行 → 等权最大 deploy + warning.
+    v555 (E2): 稀疏正权输入 (MV 负权置 0) 且全部正权股已到限时,
+    剩余 gap 无处分配 (0 权股无 alpha 信号, 强买违背优化意图) —
+    合法保留现金但必须显式告警, 禁止静默返回 Σ<1.
     """
     import numpy as np
     w = np.asarray(w, dtype=float).copy()
@@ -127,6 +130,16 @@ def _iterative_clip(w, max_single, max_iter=20):
         fs = w[free].sum()
         if fs > 0:
             w[free] = w[free] / fs * gap
+        else:
+            # v555 (E2): free 集全 0 = 所有正权股均已到限, gap 无处可分配.
+            # 稀疏正权 (MV) 的合法状态 — 保留现金, 显式告警不静默.
+            logger = get_logger("optimizer.portfolio")
+            logger.warning(
+                "iterative_clip: all positive-weight names at max_single, "
+                "gap=%.4f unallocatable (sparse weights), returning sum=%.4f < 1",
+                gap, w.sum(),
+            )
+            break
         w[free] = np.minimum(w[free], max_single)
     if len(w) * max_single < 1.0:
         logger = get_logger("optimizer.portfolio")

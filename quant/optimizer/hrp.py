@@ -140,11 +140,19 @@ def hrp_weights(cov: np.ndarray, linkage_method: str = "ward") -> np.ndarray:
             Outperform Out-of-Sample", Journal of Portfolio Management.
     """
     n = cov.shape[0]
+    diag = np.diag(cov)
 
     if n <= 2:
-        # 退化: 等权
+        # 退化: 等权 — v555 (E5): 零方差股同样压 0 (与 n≥3 分支一致),
+        # 原早退绕过零方差处理, 2 资产+1 零方差股仍得 50/50
+        w = np.ones(n) / n
+        if n == 2:
+            w[diag <= 0] = 0.0
+            s = w.sum()
+            if s > 0:
+                w = w / s
         _log.debug("HRP: n=%d ≤ 2, returning equal weight", n)
-        return np.ones(n) / n
+        return w
 
     # 1. 相关系数 → 距离矩阵
     corr = _correlation_from_cov(cov)

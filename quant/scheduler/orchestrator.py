@@ -189,24 +189,34 @@ def _run():
             # 但 B23 重置发生在 run() 的 finish 之前 (线程先死, 主循环后重置) 时
             # 状态仍 running, 若清理分支 (runner 已置 None) 不再 finish →
             # task_runs 永卡 running, web 恒显示"盘中风控运行中" (2026-08-19 实证).
-            # 仅窗口已关闭时兜底 ok (收盘后线程死=正常自退); 盘中线程死=崩溃,
-            # 崩溃路径由 daemon 写 failed, 若 failed 也写失败则保持 running
-            # 交 _should_run/重试逻辑处理, 不得伪装成 ok.
-            if (status.get("monitor") == "running"
-                    and not ALL["monitor"].in_window(hhmm, now.weekday())):
-                _tk_finish("monitor", today, "ok")
+            # 窗口已关闭 → 兜底 ok (收盘后线程死=正常自退);
+            # 窗口内 → 兜底 failed (盘中线程死=崩溃, 且 daemon 崩溃 finish 失败
+            # 未落 failed 时, _should_run 对 running 恒返回 False, 不兜底 failed
+            # 则当日风控永不重启 — v555 之前注释"交重试逻辑"不成立)
+            _in_window = ALL["monitor"].in_window(hhmm, now.weekday())
+            if status.get("monitor") in ("running", "lunch"):
+                # F5: 'lunch' 为午休 stage, daemon 午休崩溃后行永卡 'lunch'
+                # (task_log.finish 原仅认 'running'), 一并兜底
+                _tk_finish("monitor", today, "ok" if not _in_window else "failed",
+                           error=None if not _in_window else "monitor daemon died in window")
             _monitor_runner = None
             _monitor_thread = None
 
         # —— 周度评估 (周六 06:00-12:00) ——
         _weekly = ALL.get("weekly_eval")
         if _weekly and not _weekly_done:
-            if _should_run(_weekly, hhmm, now.weekday(), status, aborted):
+             if _should_run(_weekly, hhmm, now.weekday(), status, aborted):
                 _log.info(f"[{today}] 06:00-12:00 — spawning weekly eval subprocess")
                 if _evening_runner is None:
                     _evening_runner = SubprocessRunner(today)
                 # v532: 失败不置 done — 窗口内由 _should_run (failed 预算) 重试
-                _weekly_done = _evening_runner.run_weekly_eval()
+                # v555 (F3): try/except 与 inline 分支同 — SubprocessRunner 构造/
+                # Popen/DB 查询异常冒泡会杀死整个主循环, 当日调度全瘫
+                try:
+                    _weekly_done = _evening_runner.run_weekly_eval()
+                except Exception as _we:
+                    _log.exception(f"[{today}] weekly eval crashed (orchestrator continues): {_we}")
+                    _weekly_done = False
                 _evening_runner = None
 
         # —— 超时/僵尸自愈: 所有日期统一检测 (B22, 2026-08-18) ——
@@ -220,8 +230,12 @@ def _run():
             _rep = ALL.get("daily_repair")
             if _rep and not _repair_done and _should_run(_rep, hhmm, now.weekday(), status, aborted):
                 _log.info(f"[{today}] 08:00 — spawning daily repair (weekend)")
-                # v532: 失败不置 done — 窗口内重试 (预算 2)
-                _repair_done = SubprocessRunner(today).run_daily_repair()
+                # v532: 失败不置 done — 窗口内重试 (预算 2); v555 (F3) 同 weekly
+                try:
+                    _repair_done = SubprocessRunner(today).run_daily_repair()
+                except Exception as _re:
+                    _log.exception(f"[{today}] daily repair crashed (orchestrator continues): {_re}")
+                    _repair_done = False
             _time.sleep(POLL)
             continue
 
@@ -278,7 +292,12 @@ def _run():
         _rep = ALL.get("daily_repair")
         if _rep and not _repair_done and _should_run(_rep, hhmm, now.weekday(), status, aborted):
             _log.info(f"[{today}] 08:00 — spawning daily repair subprocess")
-            _repair_done = SubprocessRunner(today).run_daily_repair()
+            # v555 (F3): 同 weekly — 异常不得杀死主循环
+            try:
+                _repair_done = SubprocessRunner(today).run_daily_repair()
+            except Exception as _re:
+                _log.exception(f"[{today}] daily repair crashed (orchestrator continues): {_re}")
+                _repair_done = False
 
         # —— 19:00+ — 晚间链 subprocess ——
         _even = ALL.get("evening_chain")
@@ -289,8 +308,14 @@ def _run():
                     _log.info(f"[{today}] 19:00 — spawning evening chain subprocess "
                               f"(attempt={_evening_retries + 1}/{_MAX_TASK_RETRIES})")
                     _evening_runner = SubprocessRunner(today)
-                    # v532: 阻塞等待完成; 失败时预算内自动重跑, 返回成败
-                    _ok = _evening_runner.run_evening_chain()
+                    # v532: 阻塞等待完成 (v555: _wait_done 内超时看护);
+                    # 失败时预算内自动重跑, 返回成败
+                    # v555 (F3): 异常不得杀死主循环
+                    try:
+                        _ok = _evening_runner.run_evening_chain()
+                    except Exception as _ee:
+                        _log.exception(f"[{today}] evening chain crashed (orchestrator continues): {_ee}")
+                        _ok = False
                     _evening_retries += 1
                     if _ok:
                         _log.info(f"[{today}] evening chain subprocess OK (attempt {_evening_retries})")

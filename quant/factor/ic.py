@@ -98,6 +98,9 @@ def compute_ic(*,
 
     end_dt = pd.Timestamp(date)
     from quant.factor.windows import max_factor_calendar_days
+    # v555: 恢复 _ic_factor_min — v554 删除赋值但 else 分支仍引用,
+    # start=None 默认路径 (web 因子面板/周度评估/日报归因) 必抛 NameError
+    _ic_factor_min = max_factor_calendar_days(factor_names)
     # v554 (P0-2): start 显式注入时按 start 起取全窗口 (评估用), 默认行为不变
     if start is not None:
         start_dt = min(pd.Timestamp(start), end_dt - pd.Timedelta(days=1))

@@ -593,3 +593,13 @@ db_path 默认参数在 import 时求值绑定真实路径, monkeypatch 模块�
 test_execution autouse fixture tmp 库隔离; 清理 600000 假卖出 4 条;
 全量 511 passed 后真实库零新增 (防护规则: 禁用 env 隔离/同模块同符号 monkeypatch/
 默认参数禁止绑定常量/测试前后断言真实库行数).
+
+## §32 v556: 全量自查回归修复 — 12 处问题, 2 个 v554 NameError 崩溃 (520 passed)
+
+用户质疑"改了几处又弄坏几处"后, 对 f9159fe(08-18) 起全部改动做 3 路并行回归审查:
+- D1 回测 metrics NameError (bt_factor_names 模块级引用局部变量) — 必崩
+- D2 compute_ic start=None NameError (web/周度/日报归因全炸) — 真实数据验证
+- E1 stop_loss 同日卖出后买回判定失效 (id 序修复, 兼容 test_v533 monkeypatch)
+- F1-F5 调度链 6 处: 阻塞冻结/预算双计/无 try/窗口内崩溃卡死/lunch 永卡
+- D3 stats_cache min() 让 eval_start 真正生效; E2/E3/E5 优化链加固
+测试新增 9 项, 全量 520 passed, 真实库零污染.

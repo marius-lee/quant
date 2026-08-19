@@ -378,8 +378,20 @@ class RiskManager:
         from quant.data.repos.trade_repo import TradeRepo
         try:
             last_sell = TradeRepo().get_last_sell_time(symbol)
-            # v554: buy_time 与 last_sell 均为 date 粒度 (YYYY-MM-DD), 前缀比较
-            return bool(last_sell) and buy_time[:10] > last_sell[:10]
+            # v554→v555 (E1): date 粒度比较跨日重买; 同日先卖后买
+            # (TP2 清仓→当日买回) 用 id 序区分先后 (INSERT 顺序=业务顺序) —
+            # 原 v554 仅 [:10] 前缀比较, 同日判定失效, 旧仓 meta 污染新仓
+            if not last_sell:
+                return False
+            buy_date = buy_time[:10]
+            if buy_date > last_sell[:10]:
+                return True
+            if buy_date == last_sell[:10]:
+                info = TradeRepo().get_last_sell_ts(symbol)
+                sell_id = info[1] if info else None
+                buy_id = TradeRepo().get_buy_ts(symbol, buy_date)
+                return bool(sell_id and buy_id and buy_id > sell_id)
+            return False
         except Exception as _e:
             _log.debug("last_sell query failed for %s (non-fatal): %s", symbol, _e)
             return False

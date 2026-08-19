@@ -405,10 +405,24 @@ class SubprocessRunner(BaseRunner):
         return self._last_rc == 0
 
     def _wait_done(self, s: TaskSpec) -> None:
-        """阻塞轮询直到子进程完成 (含重试预算内自动重跑)."""
+        """阻塞轮询直到子进程完成 (v555 加超时看护).
+
+        v532 起阻塞式等待 → orchestrator 主循环冻结 → _check_timeouts 在
+        阻塞期间永不执行, 子进程挂死时无任何自愈 → 调度永久冻结 (F1).
+        v555: 本函数内按 manifest timeout_s 看护, 超时 terminate 返回失败,
+        由 orchestrator 重试预算接管 (task_runs 行卡 running 由主循环恢复后
+        _check_timeouts 按 pid 死亡标 aborted 自愈).
+        """
+        deadline = time.time() + (s.timeout_s or 0)
         while self._proc is not None:
             self._wait_subprocess(s)
             if self._proc is not None:
+                if deadline and time.time() > deadline:
+                    _log.error(f"[{self.today}] {s.name} subprocess exceeded "
+                               f"timeout_s={s.timeout_s}, terminating")
+                    self.cleanup()
+                    self._last_rc = 1
+                    break
                 _time.sleep(POLL)
 
     def _run_subprocess(self, s: TaskSpec) -> None:
@@ -444,15 +458,10 @@ class SubprocessRunner(BaseRunner):
         else:
             _log.warning(f"[{self.today}] subprocess failed (rc={ret}), cleanup")
             _cleanup_evening_children(self.today)
-            # v532 fix: 原重试逻辑只计数不重跑 (死代码) — 晚间链失败后
-            # orchestrator 把失败当成功 (exit(1) 后 _proc=None → done),
-            # signals 次日用旧缓存。现在预算内真正重新 spawn。
-            if self._retries < _MAX_TASK_RETRIES:
-                self._retries += 1
-                _log.warning(f"[{self.today}] retry {self._retries}/{_MAX_TASK_RETRIES} — respawning")
-                self._run_subprocess(s)
-            else:
-                _log.error(f"[{self.today}] subprocess exhausted retries ({_MAX_TASK_RETRIES})")
+            # v555 (F2): 移除内部 respawn — 原 v532 内部重试 (≤2) 与
+            # orchestrator 级 _evening_retries/_repair_done/_weekly_done 重试
+            # 双重叠加, 每晚最多 9 次完整链 spawn, 远超声明的预算 2.
+            # 预算统一归 orchestrator 单一真相源: 失败返回 rc → 上层计数重试.
 
     def cleanup(self) -> None:
         """清理残留进程."""

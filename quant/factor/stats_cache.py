@@ -118,7 +118,10 @@ def compute_factor_stats(
     start_date = (pd.Timestamp(end_date)
                   - pd.Timedelta(days=lookback * 1.5)).strftime("%Y-%m-%d")
     if eval_start:
-        start_date = max(start_date, eval_start)
+        # v555 (D3): min — 原 max 恒取 end-lookback*1.5 (窗口仍 ~126 天),
+        # eval_start (如 phase7 12 个月训练窗起点) 远早时永远被吃掉,
+        # v554 声称的"完整窗口注入"实际未生效
+        start_date = min(start_date, eval_start)
     eval_dates_raw = conn.execute(
         "SELECT DISTINCT date FROM daily WHERE date >= ? AND date <= ? ORDER BY date",
         (start_date, end_date)

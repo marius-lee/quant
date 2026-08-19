@@ -1,3 +1,48 @@
+### v556: 全量自查揪出 12 处问题 (2026-08-19) — 含 2 个 v554 引入的 NameError 崩溃
+
+用户质疑后对 f9159fe(08-18) 以来全部改动做系统性回归审查 (3 路子代理并行),
+实锤: **v554/v555 有 2 个直接崩溃 + 1 个同日判定回归 + 调度链 6 处状态机缺口**。
+全部修复, 全量 520 passed (新增 test_v556 9 项)。
+
+**v554 引入 (我的错, 必须认)**:
+- D1 loop.py: _compute_backtest_metrics 模块级函数引用 run_backtest 局部
+  bt_factor_names → **回测最后一步必抛 NameError** (测试未触达该函数)
+- D2 ic.py: v554 删 _ic_factor_min 赋值但 else 分支仍引用 → **compute_ic
+  start=None 全炸** (web 因子面板/周度评估 phase2/3/日报归因), 真实数据验证修复
+- E1 stop_loss: buy_time[:10] vs last_sell[:10] 同日恒 False → TP2 清仓当日
+  买回时旧 peak/tp1 污染新仓 (v554 仅[:10]比较回归); 修复: 跨日用 date,
+  同日用 id 序 (INSERT 顺序=业务顺序, created_at 秒级同秒不可区分弃用)
+
+**调度链 (F 系, 含 v532/v554/v555 累积)**:
+- F1 _wait_done 阻塞冻结主循环 → _check_timeouts 失效, 挂死子进程=调度永久
+  冻结; 修复: _wait_done 内按 manifest timeout_s 超时 terminate 交重试预算
+- F2 重试预算双重计数 (内部 respawn × orchestrator 级 = 每晚最多 9 次 spawn);
+  修复: 移除内部 respawn, 预算归 orchestrator 单一真相源
+- F3 子进程三分支 (evening/weekly/repair) 无 try/except → 异常杀死主循环;
+  修复: 全部包裹 (与 inline 分支一致)
+- F4 B23 窗口内崩溃+running → _should_run 对 running 恒 False, 当日风控永不
+  重启; 修复: 窗口内兜底 finish failed (触发重试), 窗口外 ok (正常自退)
+- F5 monitor 'lunch' stage 行 finish 被跳过 → 午休崩溃 failed 不落库, 预算
+  恒 0 崩溃-重启死循环 + lunch 永卡; 修复: task_log.finish 覆盖 'lunch'
+- D3 stats_cache: v554 eval_start 注入用 max() 恒被 end-180d 吃掉 (声称修复
+  未生效); 修复: min() 取更早起点
+
+**优化链**:
+- E2 _iterative_clip 稀疏正权 (free 集全 0) 静默返回 Σ<1; 修复: 显式告警
+  (MV 保留现金为合法输出, 不强买 0 权股, docstring 同步)
+- E3 kelly 残差回收缺 max_single 守卫 (与 portfolio._recycle_residual_cash
+  不一致); 修复: 加 risk.max_single_position 守卫
+- E5 hrp n≤2 早退绕过零方差压 0; 修复: 早退分支同步零方差处理
+
+**记录不改 (非回归/低危)**: E4 V-check 用盘中累计量 (语义), F6 周六 weekly
+阻塞吞 repair 窗口, F7 web 并发 _check_timeouts 标 aborted (既有).
+
+**教训**: (1) 新增/改名方法必须 grep 全部 monkeypatch 调用方 (E1 碰了
+test_v533 的 monkeypatch 目标, 首轮全量 1 failed); (2) 测试覆盖缺口 =
+"511 passed 仍漏 2 个 NameError"; (3) 修"崩溃静默丢失"类 bug 必须同时核查
+正常完成路径 (B23 教训). D4: 物化面板 PIT 修复对现有缓存不生效, 需
+bash scripts/materialize_full.sh (force) 重建后回测才用新口径.
+
 ### v555 补充 2: monitor 收盘后状态永卡 running 修复 (2026-08-19 实证 15:31)
 
 **现象**: 15:31 web 仍显示"盘中风控运行中". 实锤: task_runs monitor running/finished_at=None,

@@ -169,8 +169,11 @@ def finish(task_name: str, date: str, status: str,
                 f"task_log.finish({task_name}, {date}): no row found"
             )
         rid, cur_status = row
-        if cur_status != 'running':
+        if cur_status not in ('running', 'lunch'):
             # v368: 防御 — 已被 _check_timeouts 标为 aborted 时不抛异常
+            # v555 (F5): 'lunch' 是 monitor 的午休 stage (占 status 列),
+            # 午休崩溃时 finish(failed) 若跳过则失败不落库 → 重试预算恒 0
+            # → 午休期间崩溃-重启死循环, 且行永卡 'lunch' 无法自愈
             import logging
             _finish_log = logging.getLogger("task_log")
             _finish_log.warning(

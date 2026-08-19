@@ -767,6 +767,25 @@ class TradeRepo:
             f"WHERE {ST_SYMBOL}=? AND {ST_SIDE}='sell'", (symbol,))
         return row[0] if row and row[0] else None
 
+    def get_last_sell_ts(self, symbol: str):
+        """v555: (日期, 最后卖出 id) — 同日卖出后买回判定 (E1 修复).
+
+        get_last_sell_time 只有 date 粒度, 同日先卖后买 (TP2 清仓→当日
+        买回) 时 buy_time[:10] == last_sell[:10] 判定失效, 旧仓 peak/tp1
+        污染新仓. 同日先后用 id 序判定 (INSERT 顺序=业务顺序, 实盘/回测
+        均成立; created_at 秒级精度同日同秒无法区分, 弃用)."""
+        row = self._query_one(
+            f"SELECT MAX({ST_DATE}), MAX(id) FROM sim_trades "
+            f"WHERE {ST_SYMBOL}=? AND {ST_SIDE}='sell'", (symbol,))
+        return row if row and row[0] else None
+
+    def get_buy_ts(self, symbol: str, day: str) -> int | None:
+        """v555: 某交易日最后一笔买入的 id (同日先后判定用)."""
+        row = self._query_one(
+            f"SELECT MAX(id) FROM sim_trades "
+            f"WHERE {ST_SYMBOL}=? AND {ST_SIDE}='buy' AND {ST_DATE}=?", (symbol, day))
+        return row[0] if row and row[0] else None
+
     def get_position_meta_max(self, symbol: str) -> dict:
         """B9: 回载某 symbol 的历史峰值/TP1 标记 (MAX 聚合, 跨日持久).
 

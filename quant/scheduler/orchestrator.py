@@ -232,8 +232,9 @@ def _run():
                     and _should_run(_weekly, hhmm, now.weekday(), status, aborted):
                 if _evening_runner is None:
                     _log.info(f"[{today}] 06:00-12:00 — spawning weekly eval subprocess")
-                    _evening_runner = SubprocessRunner(today)
+                    # v557 (F6+F3): 构造/Popen 异常必须隔离 — 冒泡会杀死主循环
                     try:
+                        _evening_runner = SubprocessRunner(today)
                         _evening_runner._run_subprocess(_weekly)  # spawn only, 立即返回
                     except Exception as _we:
                         _log.exception(f"[{today}] weekly eval spawn crashed "

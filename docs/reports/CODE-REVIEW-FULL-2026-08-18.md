@@ -610,3 +610,10 @@ E4 V-check 基准改历史日量 (盘中累计量早盘虚低误 skip, daily.vol
 ×100 转股, 失败 warning 兜底盘中量); F6 weekly 非阻塞 spawn+轮询 (不再吞
 周六 daily_repair 窗口, 超时归 _check_timeouts); F7 web 移除写库 _check_timeouts
 (并发误标 aborted 消除, web 只读展示). 测试 +2, 全量 528 passed, 真实库零污染.
+
+## §34 v558: F3/F4/F6 主循环集成测试 — 534 passed
+
+test_v557_orchestrator_integration.py 落地 6 项集成测试: 纯 monkeypatch 驱动真实
+_run() 主循环 (patch 源模块 + 主线程 sleep 计数 + SystemExit 终止), 逐轮断言
+spawn/poll/finish 序列. 集成测试抓到 F6 自身 F3 违规 (SubprocessRunner 构造在
+try 外, orchestrator.py:235) 并修复. 修复前"无法单测"的主循环路径现全部可测.

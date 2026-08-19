@@ -1,3 +1,24 @@
+### v558: F3/F4/F6 主循环集成测试落地 — 抓到 F6 的 F3 违规 (2026-08-19) — 全量 534 passed
+
+- 新方法 (test_v557_orchestrator_integration.py, 6 项): orchestrator._run() 主循环
+  纯 monkeypatch 驱动 — 函数内 import 语句每次调用重新执行 → patch 源模块
+  (runners/cal/manifest/datetime/time.sleep) 全部生效; time.sleep 仅主线程计数,
+  第 N 次抛 SystemExit 终止循环 (后台 quote-refresh 线程直接快进返回). 逐轮断言
+  spawn/poll/finish 调用序列, 无需真实进程/真实周六.
+  - F6: weekly spawn 单次 + 每轮 poll + 完成置 done; 失败窗口内重试 (spawn 计数 2);
+    repair 在 weekly 运行期仍触发 (修复前阻塞版主循环冻结 sleep 永不计数 → 测试失败)
+  - F3: SubprocessRunner 构造抛异常 → 主循环继续 (修复前异常冒泡杀死主循环);
+    repair 首轮崩溃下轮恢复 + weekly 不受影响
+  - F4: 窗口内线程假死 + running → 兜底 failed → 下轮重启 (spawn 2+); 窗口外线程死
+    → 兜底 ok 且不重启 (时钟推进模拟窗口关闭)
+- 集成测试抓到真 bug: F6 代码里 SubprocessRunner(today) 构造在 try 外 (orchestrator.py:235),
+  构造异常仍会冒泡杀死主循环 (违反 F3) → 已修复 (构造移入 try/except). 这正是此前
+  声称"无法单测"的主循环路径 — 实为缺少注入方法, 现可测.
+- 修 F4 测试场景: status 初始 running → _should_run 恒 False 永不 spawn (场景错误,
+  改空状态由 fake _tk_start 落库 running); 时间跨窗口用可变时钟 (fake_tk_start 推进 _fixed).
+- 驱动脚本期间注意: 全局 patch time.sleep 会误伤 state_broker 后台线程 (抢 sleep 计数
+  并抛 SystemExit) → 仅主线程计数.
+
 ### v557: E4/F6/F7 三项"记录不改"全改 (2026-08-19) — 全量 528 passed
 
 - E4 V-check 基准改历史日量 (order_manager.py): quote volume 是盘中累计量,

@@ -16,7 +16,7 @@ from datetime import date, datetime
 from flask import Flask, jsonify, render_template, request
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v557"
+VERSION = "test-v558"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 

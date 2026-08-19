@@ -63,7 +63,7 @@
 | `high` | REAL | 最高价 |
 | `low` | REAL | 最低价 |
 | `close` | REAL | 收盘价 |
-| `volume` | REAL | 成交量（股） |
+| `volume` | REAL | 成交量（手）— v557 实测: 600000 2026-08-18=610626 手≈6100 万股, ×100 转股; 原标注"股"有误 |
 | `amount` | REAL | 成交额（元） |
 | `turnover` | REAL | 换手率（%） |
 

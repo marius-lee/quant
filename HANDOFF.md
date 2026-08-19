@@ -4229,3 +4229,43 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
 **连带修复**: risk_only 分支 (execution_model) hard stop 后不刷新持仓 → v553 ATR=0 兜底对已清仓 symbol 重复触发双卖 → 刷新对齐 B3 模式 (test_risk_only_stop_fires 捕获)
 
 **验证**: test_v553.py 15 项新增 (Wilder 手算/TP1 半仓/TP2 清仓/ATR 兜底/trail 保本数学/time_stop_hard/meta 变化检测/kind 字段); 修正 4 个既有测试 (C4 TP2 语义、ATR=0 兜底、P0-4 数据边界); **全量 494 passed**; 回测烟测待物化重启后跑
+
+### v560: 业界标准止损/加仓优化 — 双轨止损接入盘中 + 加仓闸门 (2026-08-19) — 全量 542 passed
+
+**根因复盘 (实盘数据铁证)**: 600331/600162 止损太慢的根因不是 ATR 止损失效,
+而是**固定百分比硬止损 check_hard_stop 从未接入盘中 30s 循环** (只回测/开盘跑):
+- 600331: 8/14 最低 12.30 已击穿 -8% 止损位 12.576, 但盘中只跑 ATR 止损
+  (当日止损位 12.213 未触及); 阴跌中 ATR 收缩止损位随之下移 (12.233→12.213→
+  12.230→12.276→12.324), 温水煮青蛙, 8/19 才触发, 实亏 -9.9% (-¥418)
+- 600162: 同理, 8/17 最低 4.60 已击穿 -5% 线但无盘中硬止损, 8/19 ATR 才触发
+  实亏 -15.3% (-¥80.6)
+
+**三项修复 (参数均有文献来源, 写入 config.yaml)**:
+1. **双轨止损接入盘中** (quant/scheduler/monitor.py + execute.py 开盘):
+   monitor 30s 循环补跑 check_hard_stop, execute 开盘 ATR 检查后合并硬止损
+   (同 symbol 去重防双卖); 业界标准: 固定% 是绝对底线, ATR 是波动自适应,
+   并存取更早触发 (TradeStation/MultiCharts 双轨语义)
+2. **止损收紧 8% → 5%** (config risk.stop_loss_pct): 来源 Van Tharp 单笔风险
+   预算 + Kestner《Quantitative Trading Strategies》趋势策略 5% 上限;
+   用户 2026-08-19 指令
+3. **加仓闸门** (quant/execution/execution_model.py `_apply_add_gate`):
+   buy 订单中已持仓 symbol 的加仓单须满足 ① 盈利 (现价>成本, Van Tharp 金字塔
+   禁亏损摊平) ② 回踩 (现价<当日高点, Chandelier Exit 体系禁追涨), 否则丢弃。
+   根因: 600744 7/23 浮盈 +13.6% 时追高加仓 200股@8.42 (复盘确认: 该笔不在
+   当日信号里, 属执行层无信号追涨), 次日回调 -10.5% 吐光利润 (净 -¥176)
+- config 新增 risk.add_gate_enabled: true (来源注释已写入)
+
+**模拟验证**: -5% 硬止损接入后, 600331 8/13 触发 (实亏收敛 -9.9%→-5%),
+600162 8/17 触发 (-15.3%→约 -6%)
+
+**逐笔复盘脚本** scripts/review_trades.py (只读, 幂等):
+`PYTHONPATH=. .venv/bin/python scripts/review_trades.py [strategy] [--start 日期]`
+产出: 每笔买入对照信号 rank/score/reason; 亏损卖出 vs 买入信号; 汇总
+(加仓笔/无信号买入/高得分亏损笔)。首次运行结果: 23 笔买入中 2 笔加仓
+(600744 7/22, 002465 8/06), 2 笔无信号执行层买入 (002132, 600744 7/23 追高),
+12/14 亏损卖出在买入时得分≥0 → 选股信号与持仓管理问题并存。
+
+**测试**: test/test_v560_stop_add_gate.py 8 项 (硬止损 5% 触发/3% 不触发、
+开盘双轨合并去重、加仓闸门 4 场景: 摊平拦截/追涨拦截/盈利回踩放行/新仓不受
+影响/回测 ohlc.high 判定); 旧测试 test_risk_manager.py + test_v553.py 更新
+阈值注释与断言 (8%→5%)。全量 542 passed。

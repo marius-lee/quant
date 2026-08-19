@@ -117,9 +117,9 @@ def test_v553_atr_zero_falls_back_to_pct_stop():
 
 
 def test_v553_atr_zero_no_stop_when_within_pct():
-    """ATR=0 且 -5% > -8% → 不触发 (未跌破固定底线)."""
+    """ATR=0 且 -5% > -5% 内 → 不触发 (v560: 底线 8% → 5%, -5% 精确边界内)."""
     rm = _mk_rm()
-    sigs = rm.check([_pos()], _quotes(95.0), "2026-08-19",
+    sigs = rm.check([_pos()], _quotes(97.0), "2026-08-19",
                     atr_panel={"2026-08-19": {"600000": 0.0}})
     assert sigs == []
 

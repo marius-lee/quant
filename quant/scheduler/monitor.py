@@ -258,6 +258,28 @@ def _run_continuous_inner(today: str, stop_event=None):
             # 内部统一回载 (DB 模式 MAX 聚合) — 原手动 get_position_meta(当天)
             # 只取当日行, 跨日峰值丢失且不加载 _tp1_hit.
             signals = rm.check(positions, quotes, today)
+            # v560 (2026-08-19): 固定百分比硬止损接入盘中 — 双轨止损落地。
+            # 根因复盘: 600331 8/14 最低 12.30 已击穿 -8% 止损位 12.576, 但盘中
+            # 30s 循环只跑 ATR 止损 (当日止损位 12.213 未触及), 固定硬止损
+            # check_hard_stop 仅回测/开盘执行 → 阴跌中 ATR 收缩导致止损位随之下移
+            # (温水煮青蛙), 拖到 8/19 ATR 止损位缩至 12.324 才触发, 实亏 -9.9%。
+            # 业界标准 (TradeStation/MultiCharts 双轨): 固定% 是绝对底线, ATR 是
+            # 波动自适应, 并存取更早触发, 盘中逐 30s 检查。此处补齐盘中这一轨。
+            _prices_map = {}
+            for _p in positions:
+                _q = quotes.get(_p["symbol"], {}) or {}
+                _px = _q.get("price", 0) or 0
+                if _px > 0:
+                    _prices_map[_p["symbol"]] = _px
+                else:
+                    _prices_map[_p["symbol"]] = _p.get("price", 0)
+            _hard_stops = rm.check_hard_stop(positions, _prices_map)
+            if _hard_stops:
+                _covered = {s["symbol"] for s in signals}
+                for _hs in _hard_stops:
+                    if _hs["symbol"] not in _covered:
+                        signals.append(_hs)
+                        _m.inc("scheduler.monitor.stop_loss_hard")
             for sig in signals:
                 sym = sig["symbol"]
                 cur = sig["price"]

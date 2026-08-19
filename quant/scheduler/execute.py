@@ -174,6 +174,13 @@ def _run(today: str):
     _open_quotes = {p["symbol"]: {"price": float(prices.get(p["symbol"], 0) or 0)}
                     for p in current_positions}
     _open_sigs = _rm.check(current_positions, _open_quotes, today)
+    # v560 (2026-08-19): 固定百分比硬止损同步进开盘 — 双轨止损 (固定% 底线 +
+    # ATR 自适应) 与盘中 monitor 一致, 取更早触发。根因: 600331 8/14 击穿 -8%
+    # 止损位但开盘检查仅跑 ATR, 固定硬止损盘中从不执行 (详见 monitor.py v560)。
+    _hard_open = _rm.check_hard_stop(
+        current_positions, {s: float(p) for s, p in prices.items() if p > 0})
+    _open_sigs = _open_sigs + [h for h in _hard_open
+                               if h["symbol"] not in {s["symbol"] for s in _open_sigs}]
     for _sig in _open_sigs:
         _sym = _sig["symbol"]
         _q = quotes.get(_sym, {})
@@ -210,6 +217,8 @@ def _run(today: str):
     _ctx = ExecutionContext(
         engine=engine, strategy=strategy, today=today, prices=prices,
         cost_model=cost_model, repo=repo,
+        day_high={sym: float(q.get("high", 0) or 0) for sym, q in quotes.items()
+                  if q.get("high")},
     )
     _res = LiveExecutionModel().run(targets, _ctx, risk_only=not _rebalance)
     buys_done = _res.buys if _res.buys_mode == "limit_placed" else 0

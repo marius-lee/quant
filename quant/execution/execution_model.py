@@ -20,6 +20,7 @@ from quant.config.constants import _require_cfg
 from quant.execution.cost import CostModel
 from quant.execution.engine import ExecutionEngine, Order
 from quant.execution.stop_loss import RiskManager
+from quant.monitor.metrics import metrics as _m
 from quant.optimizer.rebalance import compute_trades, validate_orders
 from quant.utils.logger import get_logger
 
@@ -39,6 +40,7 @@ class ExecutionContext:
     repo: object = None          # TradeRepo — Live 熔断/冷却需要; 回测可 None
     risk_manager: RiskManager = None  # 注入以共享 cooloff store; None 则按模式自建
     ohlc: dict = None            # B8: 回测 {symbol: {open,high,low,prev_close}} — 一字板涨跌停判定
+    day_high: dict = None        # v560: 实盘当日高点 {symbol: float} — 加仓闸门回踩判定
 
 
 @dataclass
@@ -111,6 +113,56 @@ class ExecutionModel(ABC):
         已连接先券商后账本 (原子), 未连接 RuntimeError 零 fallback。
         """
         ctx.engine.execute(orders, ctx.today, ctx.strategy)
+
+    def _apply_add_gate(self, orders: list, positions: list,
+                        ctx: ExecutionContext) -> list:
+        """v560 (2026-08-19): 加仓闸门 — 禁止追涨加仓 (业界标准金字塔加仓)。
+
+        过滤 buy 订单中针对"已持仓 symbol"的加仓单, 满足以下两条才放行:
+          1. 盈利: 现价 > 成本 (Van Tharp 金字塔 — 只在盈利仓上加, 禁亏损摊平)
+          2. 回踩: 现价 < 当日高点 (Chandelier Exit 体系 — 追涨不追)
+        被拦截的加仓单丢弃 (保留当前持仓, 不加仓)。
+
+        来源: Van Tharp《Trade Your Way to Financial Freedom》(1987) 金字塔加仓;
+        Chuck LeBeau Chandelier Exit (1992)。实盘复盘: 600744 浮盈 +13.6% 时
+        追高加仓 200股@8.42, 次日回调 -10.5% 吐光利润 (净 -¥176)。
+        """
+        gate_enabled = _require_cfg("risk.add_gate_enabled", True)
+        if not gate_enabled:
+            return orders
+        held_costs = {p["symbol"]: p.get("price", 0) for p in positions}
+        if not held_costs:
+            return orders
+        day_high = getattr(ctx, "day_high", None) or {}
+        ohlc_high = {}
+        if getattr(ctx, "ohlc", None):
+            for sym, o in ctx.ohlc.items():
+                h = (o or {}).get("high")
+                if h:
+                    ohlc_high[sym] = float(h)
+        gated = []
+        for o in orders:
+            if o.side != "buy" or o.symbol not in held_costs:
+                gated.append(o)
+                continue
+            cost = held_costs.get(o.symbol, 0) or 0
+            cur = float(ctx.prices.get(o.symbol, 0) or 0)
+            if cost <= 0 or cur <= 0:
+                gated.append(o)
+                continue
+            if cur <= cost:
+                _log.warning(f"[{ctx.today}] add-gate: {o.symbol} 亏损({cur:.2f}≤成本{cost:.2f}) "
+                             f"不加仓 (Van Tharp: 禁亏损摊平)")
+                _m.inc("execution.add_gate.blocked_loss")
+                continue
+            high = day_high.get(o.symbol) or ohlc_high.get(o.symbol)
+            if high and cur >= high:
+                _log.warning(f"[{ctx.today}] add-gate: {o.symbol} 追涨(现价{cur:.2f}≥当日高{high:.2f}) "
+                             f"不加仓 (Chandelier: 回踩才加)")
+                _m.inc("execution.add_gate.blocked_chase")
+                continue
+            gated.append(o)
+        return gated
 
     def run(self, targets: list, ctx: ExecutionContext,
             risk_only: bool = False) -> ExecutionResult:
@@ -220,6 +272,14 @@ class ExecutionModel(ABC):
             capital=total_capital, cash=cash,
             skip_cash_feasibility=self.skip_cash_feasibility,
         ) if (target_lots or current_lots) else []
+
+        # ── 3.5 加仓闸门 (v560, 业界标准金字塔加仓) ──
+        # 来源: Van Tharp《Trade Your Way to Financial Freedom》— 金字塔加仓
+        # 只在盈利仓上加, 禁止亏损摊平; Chandelier Exit 体系 (Chuck LeBeau) —
+        # 回踩才加, 追涨 (现价≥当日高点) 不追。
+        # 根因复盘: 600744 7/23 在浮盈 +13.6% 时追高加仓 200股@8.42,
+        # 次日回调 -10.5% 吐光利润 (净 -¥176) — 追涨加仓是最大败笔之二。
+        orders = self._apply_add_gate(orders, positions, ctx)
 
         # ── 4. 校验 + 按 alpha 裁剪 (两侧统一, 原回测失败全丢) ──
         if orders:

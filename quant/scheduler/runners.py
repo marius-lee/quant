@@ -413,14 +413,15 @@ class SubprocessRunner(BaseRunner):
         由 orchestrator 重试预算接管 (task_runs 行卡 running 由主循环恢复后
         _check_timeouts 按 pid 死亡标 aborted 自愈).
         """
-        deadline = time.time() + (s.timeout_s or 0)
+        deadline = _time.time() + (s.timeout_s or 0)
         while self._proc is not None:
             self._wait_subprocess(s)
             if self._proc is not None:
-                if deadline and time.time() > deadline:
+                if deadline and _time.time() > deadline:
                     _log.error(f"[{self.today}] {s.name} subprocess exceeded "
                                f"timeout_s={s.timeout_s}, terminating")
                     self.cleanup()
+                    self._proc = None
                     self._last_rc = 1
                     break
                 _time.sleep(POLL)

@@ -1,3 +1,26 @@
+### v556 补充: 逐项修复证据 + 补测 6 项 (2026-08-19) — 全量 526 passed
+
+12 项修复逐项证据 (每项: 代码位置 + 测试/验证):
+- D1 loop.py NameError → test_v556::TestBacktestMetricsNtrials ✓
+- D2 ic.py NameError → 真实运行验证 (compute_ic Mode A start=None 走通,
+  到 factor_cache miss 而非 NameError, 2026-08-19 17:02) ✓
+- E1 stop_loss 同日重买 → test_v556::TestStopLossSameDayRebuy 3 项 ✓
+- E2 iterative_clip 稀疏告警 → TestIterativeClipSparse ✓
+- E3 kelly 残差守卫 → TestKellyResidualCap (修复前 20 手/只=20%,
+  修复后 ≤5 手=5%) ✓
+- E5 hrp n≤2 零方差 → TestHrpN2ZeroVariance 2 项 ✓
+- F1 _wait_done 超时看护 → TestSubprocessTimeoutGuard 3 项 —
+  **测试抓到生产代码命名冲突**: 原 time.time() 中 time 是 datetime.time 类
+  (runners.py import as _time), 已改 _time.time() + 超时分支补 _proc=None ✓
+- F2 预算归一 → TestSubprocessNoInternalRespawn (断言失败不再内部 respawn) ✓
+- F3 子进程 try/except → git diff 证据 (三处包裹, 与 inline 分支一致) +
+  语法验证; 主循环集成路径无法单测 (orchestrator._run 依赖真实调度环境)
+- F4 B23 窗口内 failed 兜底 → 代码证据 (B23 分支状态机: 窗口内 failed
+  触发重试 / 窗口外 ok 正常自退 / failed 已落不重复写)
+- F5 lunch 永卡 → TestTaskLogLunchFinish 2 项 (failed/ok 均覆盖 lunch 行) ✓
+- D3 stats_cache min → TestStatsCacheEvalStart (断言 SQL 起点=eval_start,
+  修复前 max 吃掉窗口) ✓
+
 ### v556: 全量自查揪出 12 处问题 (2026-08-19) — 含 2 个 v554 引入的 NameError 崩溃
 
 用户质疑后对 f9159fe(08-18) 以来全部改动做系统性回归审查 (3 路子代理并行),

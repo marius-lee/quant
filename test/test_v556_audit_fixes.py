@@ -155,3 +155,142 @@ class TestIterativeClipSparse:
         assert np.all(out <= 0.05 + 1e-9)
         # 正权股已到限 → Σ = 0.60 保留现金 (稀疏 MV 合法状态, 显式告警)
         assert out.sum() == pytest.approx(0.6)
+
+
+class TestKellyResidualCap:
+    """E3: 残差回收不得突破 max_single 集中度 (Small 层 5%×capital)."""
+
+    def test_recycle_respects_max_single(self):
+        from quant.optimizer.kelly import compute_lot_allocation
+        n = 5
+        alpha = pd.Series([1.0] * n, index=[f"s{i}" for i in range(n)])
+        prices = pd.Series([10.0] * n, index=alpha.index)
+        capital = 100000.0
+        lots, cash = compute_lot_allocation(alpha, prices, capital=capital,
+                                            ic_map=None, lot_size=100)
+        # kelly 等权: 0.2 × fraction(0.5) = 0.1 → clip(max_single=0.05) → 5 手/只
+        max_mv = 0.05 * capital
+        assert cash >= 0
+        assert lots.sum() > 0
+        for sym in lots.index:
+            mv = lots[sym] * prices[sym] * 100
+            # 修复前: 残差回收无守卫, 每只补到 20 手 (20000 = 20% > 5000)
+            assert mv <= max_mv + 1e-6, \
+                f"{sym} 市值 {mv} > max_single 上限 {max_mv}"
+
+
+class TestSubprocessTimeoutGuard:
+    """F1: _wait_done 超时看护 — 挂死子进程不得永久冻结 orchestrator 主循环."""
+
+    def _spec(self, timeout_s):
+        from datetime import time
+        from quant.scheduler.manifest import TaskSpec
+        return TaskSpec(name="evening_chain", label="x", schedule="19:00",
+                        window=(time(19, 0), time(23, 59)),
+                        timeout_s=timeout_s, mode="subprocess")
+
+    def test_wait_done_timeout_terminates(self, monkeypatch):
+        import quant.scheduler.runners as runners
+        from quant.scheduler.runners import SubprocessRunner
+        runner = SubprocessRunner("2026-08-19")
+
+        class FakeProc:
+            def poll(self):
+                return None  # 永不退出
+
+        runner._proc = FakeProc()
+        cleaned = []
+        runner.cleanup = lambda: cleaned.append(1)
+        monkeypatch.setattr(runners, "POLL", 0.05)
+        runner._wait_done(self._spec(timeout_s=1))
+        assert cleaned == [1], "超时后必须 terminate"
+        assert runner._last_rc == 1
+        assert runner._proc is None
+
+    def test_wait_done_success_returns(self, monkeypatch):
+        import quant.scheduler.runners as runners
+        from quant.scheduler.runners import SubprocessRunner
+        runner = SubprocessRunner("2026-08-19")
+        runner._proc = None
+        monkeypatch.setattr(runners, "POLL", 0.05)
+        runner._wait_done(self._spec(timeout_s=1))
+        assert runner._last_rc is None
+
+    def test_wait_done_no_timeout_spec_no_deadline(self, monkeypatch):
+        import quant.scheduler.runners as runners
+        from quant.scheduler.runners import SubprocessRunner
+        runner = SubprocessRunner("2026-08-19")
+        runner._proc = None
+        monkeypatch.setattr(runners, "POLL", 0.05)
+        # timeout_s=None → deadline 无效, 只轮询一次即返回
+        runner._wait_done(self._spec(timeout_s=None))
+        assert runner._last_rc is None
+
+
+class TestSubprocessNoInternalRespawn:
+    """F2: 移除内部 respawn — 重试预算归 orchestrator 单一真相源."""
+
+    def _spec(self):
+        from datetime import time
+        from quant.scheduler.manifest import TaskSpec
+        return TaskSpec(name="evening_chain", label="x", schedule="19:00",
+                        window=(time(19, 0), time(23, 59)), mode="subprocess")
+
+    def test_failed_subprocess_not_respawned(self, monkeypatch):
+        import quant.scheduler.runners as runners
+        from quant.scheduler.runners import SubprocessRunner
+        runner = SubprocessRunner("2026-08-19")
+
+        class FakeProc:
+            def poll(self):
+                return 1  # 失败退出
+
+        runner._proc = FakeProc()
+        spawns = []
+        runner._run_subprocess = lambda s: spawns.append(1)
+        monkeypatch.setattr(runners, "_cleanup_evening_children", lambda today: None)
+        runner._wait_subprocess(self._spec())
+        assert spawns == [], "失败后不得在内部再次 respawn (v532 双预算问题)"
+        assert runner._last_rc == 1
+        assert runner._proc is None
+
+
+class TestStatsCacheEvalStart:
+    """D3: eval_start 注入取更早起点 (min) — 12 个月训练窗口真正生效."""
+
+    def test_eval_start_takes_earlier_window(self, monkeypatch):
+        import quant.data.store as ds_mod
+        calls = []
+
+        class FakeRows:
+            def __init__(self, rows):
+                self._r = rows
+
+            def fetchall(self):
+                return self._r
+
+        class FakeConn:
+            def execute(self, sql, params=()):
+                calls.append((sql, params))
+                return FakeRows([])
+
+            def close(self):
+                pass
+
+        class FakeStore:
+            def _connect(self):
+                return FakeConn()
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(ds_mod, "DataStore", FakeStore)
+        from quant.factor.stats_cache import compute_factor_stats
+        compute_factor_stats(symbols=["600000"], factor_names=["amount_avg"],
+                             lookback=120, eval_start="2025-01-01",
+                             eval_end="2026-06-30")
+        q = [p for s, p in calls if "SELECT DISTINCT date" in s]
+        assert q, "DISTINCT date query not executed"
+        # end-180d = 2026-01-01; min(end-180d, eval_start) = 2025-01-01
+        # 修复前 max() → 2026-01-01 (窗口仍 ~126 天, v554 声称修复未生效)
+        assert q[0][0] == "2025-01-01"

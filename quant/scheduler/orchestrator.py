@@ -202,29 +202,12 @@ def _run():
             _monitor_runner = None
             _monitor_thread = None
 
-        # —— 周度评估 (周六 06:00-12:00) ——
-        _weekly = ALL.get("weekly_eval")
-        if _weekly and not _weekly_done:
-             if _should_run(_weekly, hhmm, now.weekday(), status, aborted):
-                _log.info(f"[{today}] 06:00-12:00 — spawning weekly eval subprocess")
-                if _evening_runner is None:
-                    _evening_runner = SubprocessRunner(today)
-                # v532: 失败不置 done — 窗口内由 _should_run (failed 预算) 重试
-                # v555 (F3): try/except 与 inline 分支同 — SubprocessRunner 构造/
-                # Popen/DB 查询异常冒泡会杀死整个主循环, 当日调度全瘫
-                try:
-                    _weekly_done = _evening_runner.run_weekly_eval()
-                except Exception as _we:
-                    _log.exception(f"[{today}] weekly eval crashed (orchestrator continues): {_we}")
-                    _weekly_done = False
-                _evening_runner = None
-
         # —— 超时/僵尸自愈: 所有日期统一检测 (B22, 2026-08-18) ——
         # 原 _check_timeouts 仅非交易日分支调用 → 交易日内 inline 任务挂死
         # (signals/execute/reconcile) 无人清理, 行卡 running 永久阻塞调度.
         _check_timeouts(today)
 
-        # —— 非交易日: 周度评估 + 早间补拉 ——
+        # —— 非交易日: 早间补拉 + 周度评估 (spawn 非阻塞, 不冻结主循环) ——
         if not is_trading_day():
             # v479: 非交易日也允许早间补拉 (周末覆盖周五晚间链缝隙, 如 margin T+1)
             _rep = ALL.get("daily_repair")
@@ -236,6 +219,38 @@ def _run():
                 except Exception as _re:
                     _log.exception(f"[{today}] daily repair crashed (orchestrator continues): {_re}")
                     _repair_done = False
+
+            # —— 周度评估 (周六 06:00-12:00): 非阻塞 spawn + 轮询 ——
+            # v556 (F6): 原 run_weekly_eval() 阻塞主循环, 周六评估 2h+ 期间
+            # 08:00-08:30 daily_repair 窗口被吞 → 周五晚间链缺口周末不补.
+            # 现 spawn 单次返回, 每轮 poll 子进程 rc (子进程写阶段行, 无
+            # weekly_eval 总行, 不能靠 task_runs 状态轮询); 失败不置 done,
+            # 窗口内由 _should_run 重试 (与 v532 语义一致). 超时仍由
+            # _check_timeouts 兜底 (grace_s=43200).
+            _weekly = ALL.get("weekly_eval")
+            if _weekly and not _weekly_done \
+                    and _should_run(_weekly, hhmm, now.weekday(), status, aborted):
+                if _evening_runner is None:
+                    _log.info(f"[{today}] 06:00-12:00 — spawning weekly eval subprocess")
+                    _evening_runner = SubprocessRunner(today)
+                    try:
+                        _evening_runner._run_subprocess(_weekly)  # spawn only, 立即返回
+                    except Exception as _we:
+                        _log.exception(f"[{today}] weekly eval spawn crashed "
+                                       f"(orchestrator continues): {_we}")
+                        _evening_runner = None
+                else:
+                    try:
+                        _evening_runner._wait_subprocess(_weekly)  # 单次 poll, 非阻塞
+                    except Exception as _we:
+                        _log.exception(f"[{today}] weekly eval poll crashed: {_we}")
+                        _evening_runner = None
+                    if _evening_runner is not None and _evening_runner._proc is None:
+                        _weekly_done = _evening_runner._last_rc == 0
+                        if not _weekly_done:
+                            _log.warning(f"[{today}] weekly eval failed "
+                                         f"(rc={_evening_runner._last_rc}) — will retry")
+                        _evening_runner = None
             _time.sleep(POLL)
             continue
 

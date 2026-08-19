@@ -28,6 +28,31 @@ from datetime import datetime, time
 from dataclasses import dataclass
 from typing import Optional
 from quant.config.constants import _require_cfg
+
+
+def _prev_day_volume(symbol: str, today: str) -> Optional[float]:
+    """v556 (E4): 前一交易日成交量 (股) — V-check 基准.
+
+    quote 的 volume 是盘中累计量, 09:35 时仅占全日 ~5%, 1% 阈值把
+    正常大单推迟到 14:50 force_fill (增大滑点与不成交风险).
+    以历史日量为基准; 查询失败返回 None → 调用方兜底盘中量.
+    daily.volume 单位=手 (实测 2026-08-18 600000=610626 手 ≈6100 万股,
+    浦发日成交合理; DATA_DICTIONARY 文档标注"股"有误, 以实测为准).
+    """
+    try:
+        from quant.config.paths import MARKET_DB
+        conn = sqlite3.connect(MARKET_DB, timeout=10)
+        try:
+            row = conn.execute(
+                "SELECT volume FROM daily WHERE symbol=? AND date < ? AND volume > 0 "
+                "ORDER BY date DESC LIMIT 1", (symbol, today)).fetchone()
+        finally:
+            conn.close()
+        if row and row[0]:
+            return float(row[0]) * 100  # 手→股
+    except Exception as _e:
+        _log.warning("V-check prev-day volume query failed for %s: %s", symbol, _e)
+    return None
 from quant.execution.cost import CostModel
 from quant.config.paths import TRADE_DB
 
@@ -173,7 +198,11 @@ class OrderManager:
             # ── V: 流动性检查 — 单量 > 日均量1% → 跳过 ──
             # v554 (P1-1): volume 已是股数 (quote.py:106 腾讯手×100 已转),
             # 原 ×100 二次放大 → 阈值虚严 100 倍, V-check 永不触发 (形同虚设)
-            _daily_vol = q.get("volume", 0) or 0
+            # v556 (E4): 基准改前一交易日历史量 — 盘中累计量早盘虚低
+            # (09:35 仅全日 ~5%), 1% 阈值把正常大单推迟至 14:50 force_fill
+            _daily_vol = _prev_day_volume(po.symbol, datetime.now().strftime("%Y-%m-%d"))
+            if _daily_vol is None:
+                _daily_vol = q.get("volume", 0) or 0  # 兜底: 盘中累计量
             if _daily_vol > 0:
                 _order_pct = po.target_shares / _daily_vol
                 if _order_pct > VOLUME_LIMIT_PCT and not force_now:

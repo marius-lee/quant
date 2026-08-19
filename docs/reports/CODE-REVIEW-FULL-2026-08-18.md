@@ -603,3 +603,10 @@ test_execution autouse fixture tmp 库隔离; 清理 600000 假卖出 4 条;
 - F1-F5 调度链 6 处: 阻塞冻结/预算双计/无 try/窗口内崩溃卡死/lunch 永卡
 - D3 stats_cache min() 让 eval_start 真正生效; E2/E3/E5 优化链加固
 测试新增 9 项, 全量 520 passed, 真实库零污染.
+
+## §33 v557: E4/F6/F7 三项修复 — 528 passed
+
+E4 V-check 基准改历史日量 (盘中累计量早盘虚低误 skip, daily.volume 实测手,
+×100 转股, 失败 warning 兜底盘中量); F6 weekly 非阻塞 spawn+轮询 (不再吞
+周六 daily_repair 窗口, 超时归 _check_timeouts); F7 web 移除写库 _check_timeouts
+(并发误标 aborted 消除, web 只读展示). 测试 +2, 全量 528 passed, 真实库零污染.

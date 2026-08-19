@@ -179,6 +179,38 @@ class TestKellyResidualCap:
                 f"{sym} 市值 {mv} > max_single 上限 {max_mv}"
 
 
+class TestPrevDayVolume:
+    """E4: V-check 基准改历史日量 (盘中累计量早盘虚低 → 大单误 skip)."""
+
+    def test_prev_day_volume_hand_to_share(self, tmp_path, monkeypatch):
+        import sqlite3
+        import quant.config.paths as paths_mod
+        db = str(tmp_path / "mkt.db")
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE daily (symbol TEXT, date TEXT, volume REAL)")
+        conn.execute("INSERT INTO daily VALUES ('600000','2026-08-18',610626.86)")
+        conn.execute("INSERT INTO daily VALUES ('600000','2026-08-17',571526.51)")
+        conn.commit()
+        conn.close()
+        monkeypatch.setattr(paths_mod, "MARKET_DB", db)
+        from quant.scheduler.order_manager import _prev_day_volume
+        v = _prev_day_volume("600000", "2026-08-19")
+        # daily.volume 单位=手 (实测 610626 手≈6100 万股) → ×100 转股
+        assert v == pytest.approx(61062686.0)
+
+    def test_prev_day_volume_none_when_no_history(self, tmp_path, monkeypatch):
+        import sqlite3
+        import quant.config.paths as paths_mod
+        db = str(tmp_path / "mkt_empty.db")
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE daily (symbol TEXT, date TEXT, volume REAL)")
+        conn.commit()
+        conn.close()
+        monkeypatch.setattr(paths_mod, "MARKET_DB", db)
+        from quant.scheduler.order_manager import _prev_day_volume
+        assert _prev_day_volume("999999", "2026-08-19") is None
+
+
 class TestSubprocessTimeoutGuard:
     """F1: _wait_done 超时看护 — 挂死子进程不得永久冻结 orchestrator 主循环."""
 

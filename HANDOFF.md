@@ -1,3 +1,20 @@
+### v557: E4/F6/F7 三项"记录不改"全改 (2026-08-19) — 全量 528 passed
+
+- E4 V-check 基准改历史日量 (order_manager.py): quote volume 是盘中累计量,
+  09:35 仅全日 ~5% → 1% 阈值把正常大单推迟到 14:50 force_fill (滑点+不成交).
+  新增 _prev_day_volume (查前一交易日 daily, 实测 daily.volume 单位=手
+  (600000=610626 手≈6100 万股), ×100 转股; DATA_DICTIONARY 标注"股"有误以
+  实测为准); 查询失败 warning + 兜底盘中量. 测试 TestPrevDayVolume 2 项.
+- F6 weekly 非阻塞化 (orchestrator.py): 原 run_weekly_eval() 阻塞主循环,
+  周六评估 2h+ 期间 08:00-08:30 daily_repair 窗口被吞 (周五晚间链缺口周末
+  不补). 改 spawn 单次返回 + 每轮 poll 子进程 rc (子进程写阶段行, 无总行,
+  不能靠 task_runs 轮询); 失败不置 done 窗口内重试 (语义同 v532);
+  超时由 _check_timeouts 兜底 (grace_s=43200). 非交易日分支 repair 优先.
+- F7 web 移除写库 _check_timeouts (web/app.py:853): web 查询时标 aborted
+  与 orchestrator 并发, 合法运行任务超 grace 被误标 → finish 跳过 →
+  行恒 aborted + 冗余重跑 + 预算误耗 (v425 引入). 超时自愈归 orchestrator
+  (B22 每 30s), web 只读展示; 界面超时显示由 _API_TIMEOUTS 只读检测覆盖.
+
 ### v556 补充: 逐项修复证据 + 补测 6 项 (2026-08-19) — 全量 526 passed
 
 12 项修复逐项证据 (每项: 代码位置 + 测试/验证):

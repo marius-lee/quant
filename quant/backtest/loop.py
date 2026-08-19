@@ -657,8 +657,14 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
                 (_h - _prev_c).abs().values,
                 (_l - _prev_c).abs().values,
             ])
-            _atr_df = pd.DataFrame(_tr, index=_h.index, columns=_h.columns).rolling(
-                window=_atr_period, min_periods=_atr_period).mean()
+            # v553: Wilder SMMA — 与实盘 _compute_atr 同口径 (原 rolling mean = SMA,
+            # 回测/实盘 ATR 数值分裂且偏离 TradeStation 标准)。
+            # 种子 = 前 period 个 TR 的 SMA (rolling), 之后递归 (ATR*19+TR)/20。
+            _tr_df = pd.DataFrame(_tr, index=_h.index, columns=_h.columns)
+            _atr_df = _tr_df.rolling(_atr_period, min_periods=_atr_period).mean()
+            _w = (_atr_period - 1) / _atr_period
+            for _i in range(_atr_period, len(_tr_df)):
+                _atr_df.iloc[_i] = _atr_df.iloc[_i - 1] * _w + _tr_df.iloc[_i] / _atr_period
             _ctx_atr_panel = {
                 _d.strftime("%Y-%m-%d"): {s: float(v) for s, v in _row.dropna().items()}
                 for _d, _row in _atr_df.iterrows()

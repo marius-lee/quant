@@ -164,6 +164,45 @@ def _run(today: str):
     if limit_down_symbols:
         current_positions = [p for p in current_positions if p["symbol"] not in limit_down_symbols]
 
+    # ── Step 3.7: 开盘 ATR 止损 (v553) ──
+    # 双轨语义: ATR 止损 = 波动自适应出场; 固定 stop_loss_pct (check_hard_stop) =
+    # 绝对最大亏损底线 — 并存取更早触发, 非重复冗余。
+    # 原 09:30-09:35 空窗: execute 只跑固定 8%, ATR 止损 (monitor) 09:35 才启动 —
+    # 跳空低开 -3%~-8% 区间无保护。此处用开盘价补跑完整 ATR 检查。
+    from quant.execution.stop_loss import RiskManager as _RM
+    _rm = _RM()
+    _open_quotes = {p["symbol"]: {"price": float(prices.get(p["symbol"], 0) or 0)}
+                    for p in current_positions}
+    _open_sigs = _rm.check(current_positions, _open_quotes, today)
+    for _sig in _open_sigs:
+        _sym = _sig["symbol"]
+        _q = quotes.get(_sym, {})
+        _bid = _q.get("bid_volume", 0) or 0
+        _last = float(prices.get(_sym, 0) or 0)
+        _prev = _q.get("prev_close", 0)
+        if _prev > 0 and _last > 0:
+            _lp = 0.20 if _sym.startswith(("68", "30")) else (
+                0.30 if _sym[:1] in ("4", "8") or _sym.startswith("92") else 0.10)
+            _ld = round(_prev * (1 - _lp), 2)
+            if abs(_last - _ld) <= 0.02 and _bid == 0:
+                _log.warning(f"[{today}] open-stop {_sym} 跌停封死 (bid=0), "
+                             f"跳过 — 留给盘中 monitor 重试")
+                continue
+        _cost = next((pp.get("price", 0) for pp in current_positions
+                      if pp["symbol"] == _sym), 0)
+        _pnl = (_last / _cost - 1) * 100 if _cost > 0 else 0
+        engine.execute([Order(symbol=_sym, side="sell", shares=_sig["shares"],
+                              price=round(_sig["price"], 2), cost=5.0)],
+                       today, strategy=strategy)
+        _m.inc("scheduler.execute.open_stop")
+        _log.warning(f"[{today}] OPEN-STOP: {_sym} {_sig['shares']}股 "
+                     f"@¥{_sig['price']:.2f} ({_sig['reason']}) PnL={_pnl:+.1f}%")
+        if _sig["reason"].startswith("hard_sl"):
+            _rm.set_cooloff(_sym, today)
+        elif _sig["reason"].startswith("trail_sl"):
+            _rm.set_cooloff(_sym, today,
+                            days=_require_cfg("risk.trail_sl_cooloff_days"))
+
     # ── Step 4-6: 统一执行链 ──
     from quant.execution.execution_model import (
         ExecutionContext, LiveExecutionModel,

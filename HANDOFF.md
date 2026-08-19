@@ -3970,3 +3970,26 @@ Small 层资金量充分 (≥¥100K), Kelly 公式的连续分配成立。
 
 **验证**: 语法 8 文件全 OK; 全量 pytest 479 passed; 补数 v1.3 运行中 (PID 92834, 5061 只) 连续写 15/15 成功 (间隔 1s 持续 15s, 锁窗口秒级)
 **通用规则 (已写入本教训)**: sqlite3 默认 deferred 事务 — 首条 DML 起持写锁到 commit; **禁止网络请求/CPU 密集计算落在写事务窗口内**; 批量写者必须每小批 commit (≤秒级锁窗口); 所有写连接必须 timeout≥30
+
+## 2026-08-19: v553 — 止损止盈专业标准对齐 (审查 10 项全落地)
+
+审查 (用户发起的业务标准对照): 框架对齐 TradeStation/MultiCharts/vnpy 主流水准, 但发现 1 个真实 bug + 2 个设计缺陷 + 精度/对齐差距。逐项修复:
+
+**P0 (bug)**:
+1. monitor triggered_stop 单 key `{sym}:profit` 覆盖 TP1/TP2/trail_lock — TP1 触发后**当天剩余时段止盈全停摆** → key 按 reason 细分 (`{sym}:tp1`/`tp2`/`trail_lock`), loss 侧保持单 key (止损=清仓防双卖)
+2. TP2 只卖剩仓一半 (偶数整手永远留 25% 尾巴, 横盘无限期持有) → **TP2 直接清仓** (rest=shares)
+
+**P1**:
+3. ATR=0 (上市<21日) 静默跳过 = 新股裸奔 → **固定 stop_loss_pct 兜底** (hard_sl_pct), 违背零 fallback 哲学已修
+4. docstring 称 EMA 实为 SMA → **Wilder SMMA** (种子=SMA20 + 递归 (ATR*19+TR)/20), 实盘 _compute_atr 与回测 atr_panel (loop.py) 同口径统一
+
+**P2**:
+5+6. 开盘 09:30-09:35 ATR 空窗 (execute 只跑固定 8%) → **execute Step 3.7 开盘 ATR 止损** (开盘价全量 check, 跌停封死跳过留盘中重试); 双轨语义文档化: ATR=波动自适应出场, 固定 8%=绝对亏损底线, 并存取更早触发
+7. 盘中止损卖出无跌停预检 → `_execute_sell` 加预检, **卖不出返回 False 不记 triggered_stop key, 下轮 30s 重试**
+8. time_stop 只对浮亏 → **>2×max_hold_days 无条件退出** (time_stop_hard, 盈利停滞不再无限占用资金)
+9. breakeven (TP1 后保本): **审查确认为误报** — trail_lock/trail_sl 触发线 = peak-2×ATR ≥ 成本+0.5×ATR 恒高于保本线, TP1 后利润不会吐光, 数学覆盖, 不引入死代码 (test_v553 数学验证)
+10. position_meta 每 30s 全持仓写库 → **仅状态变化时写** (peak 新高 / tp1_hit 翻真)
+
+**连带修复**: risk_only 分支 (execution_model) hard stop 后不刷新持仓 → v553 ATR=0 兜底对已清仓 symbol 重复触发双卖 → 刷新对齐 B3 模式 (test_risk_only_stop_fires 捕获)
+
+**验证**: test_v553.py 15 项新增 (Wilder 手算/TP1 半仓/TP2 清仓/ATR 兜底/trail 保本数学/time_stop_hard/meta 变化检测/kind 字段); 修正 4 个既有测试 (C4 TP2 语义、ATR=0 兜底、P0-4 数据边界); **全量 494 passed**; 回测烟测待物化重启后跑

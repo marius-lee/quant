@@ -271,31 +271,36 @@ def _run_continuous_inner(today: str, stop_event=None):
                             pnl_pct = (cur / cost - 1)
                         break
 
-                # Q7-2 拆分: trail_lock 是锁利出场 (止盈性质, 原误标止损+冷却)
-                _is_profit = ("TP" in reason.upper()) or reason.startswith("trail_lock")
-                if _is_profit:
-                    tp_key = f"{sym}:profit"
+                # v553: key 按出场细分拆分 — 原 {sym}:profit 单 key, TP1 触发后
+                # 当天 TP2/trail_lock 全部被压制 (止盈中途停摆); loss 侧保持
+                # 单 key (止损=清仓, 防同轮重复卖出)。
+                _kind = sig.get("kind", "loss")
+                if _kind in ("profit", "breakeven"):
+                    tp_key = f"{sym}:{reason.split('(')[0].lower()}"
                     if tp_key not in triggered_stop:
-                        _execute_sell(today, sym, sell_shares, cur, "止盈", round(pnl_pct * 100, 1))
-                        triggered_stop.add(tp_key)
-                        alerts.append(f"{sym} 止盈 {pnl_pct*100:.0f}% ({reason})")
-                        _m.inc("scheduler.monitor.stop_profit")
+                        # v553: 跌停封死卖不出 → 不记 key, 下轮 30s 重试
+                        if _execute_sell(today, sym, sell_shares, cur, "止盈",
+                                         round(pnl_pct * 100, 1), quotes):
+                            triggered_stop.add(tp_key)
+                            alerts.append(f"{sym} 止盈 {pnl_pct*100:.0f}% ({reason})")
+                            _m.inc("scheduler.monitor.stop_profit")
                 else:
                     sl_key = f"{sym}:loss"
                     if sl_key not in triggered_stop:
-                        _execute_sell(today, sym, sell_shares, cur, "止损", round(pnl_pct * 100, 1))
-                        # Q7-2 重构: 冷却按出场性质分档 (TradeRepo meta KV) —
-                        # hard_sl 亏损出场 → 5 天 (stop_loss_cooloff_days);
-                        # trail_sl 峰值回撤 (常为盈利后) → 2 天 (trail_sl_cooloff_days);
-                        # time_stop 温和出场 → 不冷却
-                        if reason.startswith("hard_sl"):
-                            rm.set_cooloff(sym, today)
-                        elif reason.startswith("trail_sl"):
-                            rm.set_cooloff(sym, today,
-                                           days=_require_cfg("risk.trail_sl_cooloff_days"))
-                        triggered_stop.add(sl_key)
-                        alerts.append(f"{sym} 止损 {pnl_pct*100:.0f}% ({reason})")
-                        _m.inc("scheduler.monitor.stop_loss")
+                        if _execute_sell(today, sym, sell_shares, cur, "止损",
+                                         round(pnl_pct * 100, 1), quotes):
+                            # Q7-2 重构: 冷却按出场性质分档 (TradeRepo meta KV) —
+                            # hard_sl 亏损出场 → 5 天 (stop_loss_cooloff_days);
+                            # trail_sl 峰值回撤 (常为盈利后) → 2 天 (trail_sl_cooloff_days);
+                            # time_stop 温和出场 → 不冷却
+                            if reason.startswith("hard_sl"):
+                                rm.set_cooloff(sym, today)
+                            elif reason.startswith("trail_sl"):
+                                rm.set_cooloff(sym, today,
+                                               days=_require_cfg("risk.trail_sl_cooloff_days"))
+                            triggered_stop.add(sl_key)
+                            alerts.append(f"{sym} 止损 {pnl_pct*100:.0f}% ({reason})")
+                            _m.inc("scheduler.monitor.stop_loss")
 
         status = "ok" if not alerts else "⚠ " + "; ".join(alerts)
         if alerts:
@@ -310,14 +315,34 @@ def _run_continuous_inner(today: str, stop_event=None):
 
 
 def _execute_sell(today: str, symbol: str, shares: int, price: float,
-                  reason: str, pnl_pct: float):
+                  reason: str, pnl_pct: float, quotes: dict = None) -> bool:
     """执行卖出订单 — v534: 双路径收敛 engine.execute (ADR-036 落实).
 
     原实现自管 adapter: 未连接/失败回退模拟执行 = 账本清、券商留 → 双账
     翻倍风险 (v532 只修 execution_model, 漏此盘中路径); 成功后又漏写账本。
     v534: 统一走 engine.execute 双路径 — 券商先成交成功才写账本, 未连接
     RuntimeError 零 fallback (宁可留仓不双账)。
+    v553: 跌停封死 (bid=0 且现价≈跌停价) 不卖出, 返回 False —
+    调用方不记 triggered_stop key, 下一轮 30s 重试 (execute 开盘有跌停预检,
+    盘中止损路径原无此保护, 卖不出时账本与实际脱节)。
     """
+    if quotes:
+        q = quotes.get(symbol) or {}
+        bid_vol = q.get("bid_volume", 0) or 0
+        last_price = q.get("price", 0) or price or 0
+        prev_close = q.get("prev_close", 0)
+        if prev_close > 0 and last_price > 0:
+            if symbol.startswith(("68", "30")):
+                limit_pct = 0.20
+            elif symbol[:1] in ("4", "8") or symbol.startswith("92"):
+                limit_pct = 0.30
+            else:
+                limit_pct = 0.10
+            limit_down = round(prev_close * (1 - limit_pct), 2)
+            if abs(last_price - limit_down) <= 0.02 and bid_vol == 0:
+                _log.warning(f"[monitor] {reason}: {symbol} 跌停封死 (bid=0, "
+                             f"px={last_price}), 跳过卖出, 下轮重试")
+                return False
     engine = ExecutionEngine(broker_adapter=get_broker_adapter())
     engine.execute(
         [Order(symbol=symbol, side="sell", shares=shares,
@@ -325,6 +350,7 @@ def _execute_sell(today: str, symbol: str, shares: int, price: float,
         today, strategy="quant")
     _log.warning(f"[monitor] {reason}: {symbol} {shares}股 @¥{price:.2f} "
                  f"PnL={pnl_pct:+.1f}%")
+    return True
 
 
 def _engine_sell(today: str, symbol: str, shares: int, price: float):

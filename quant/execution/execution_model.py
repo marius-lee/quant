@@ -135,6 +135,9 @@ class ExecutionModel(ABC):
                            price=st["price"], cost=0)], ctx)
                 rm.set_cooloff(st["symbol"], ctx.today)
                 result.stopped_out.append(st["symbol"])
+                # v553: 刷新持仓 — 原不刷新, ATR 兜底 (ATR=0 固定%止损) 对
+                # 已清仓 symbol 用旧持仓重复触发 → 同一 symbol 双卖出
+                positions = ctx.engine.get_positions(ctx.strategy)
             # v410: ATR 动态止盈止损 (回测↔实盘一致)
             _quotes = {s: {"price": p} for s, p in ctx.prices.items() if p > 0}
             atr_stops = rm.check(positions, _quotes, ctx.today,

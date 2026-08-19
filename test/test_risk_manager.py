@@ -70,12 +70,18 @@ def test_cooloff_db_store():
 
 
 def test_atr_check_still_works():
-    """重构未破坏现有 ATR check() — 无 ATR 数据时返回空."""
+    """重构未破坏现有 ATR check() — v553: ATR 不可用 (上市<21日) 时
+    固定 stop_loss_pct (8%) 兜底 — 原静默跳过 = 新股裸奔."""
     rm = RiskManager(cooloff_store={})
-    # 不存在的 symbol → ATR=0 → 跳过
+    # 不存在的 symbol → ATR=0 → 固定 8% 兜底: -10% ≤ -8% → 触发
     out = rm.check([{"symbol": "999999", "price": 10.0, "shares": 100}],
                    {"999999": {"price": 9.0}}, "2026-07-25")
-    assert out == []
+    assert len(out) == 1
+    assert out[0]["reason"].startswith("hard_sl_pct")
+    # -5% > -8% → 不触发
+    out2 = rm.check([{"symbol": "999999", "price": 10.0, "shares": 100}],
+                    {"999999": {"price": 9.5}}, "2026-07-25")
+    assert out2 == []
 
 
 def test_cooloff_tiers():

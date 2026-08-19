@@ -515,3 +515,21 @@ scripts/field_health.py 全表字段级扫描 (v547 事件后)。39 列超 5% �
 **验证**: 8 文件语法 OK; 全量 pytest 479 passed; 补数运行中 15/15 连续写成功 (锁窗口秒级)。
 
 **通用规则**: sqlite3 默认 deferred 事务, 首条 DML 持写锁到 commit; 禁止网络/CPU 密集计算在事务内; 批量写每小批 commit; 所有写连接 timeout≥30。
+
+## §28 v553: 止损止盈专业标准对齐 — 审查 10 项全落地 (494 passed)
+
+用户对照专业量化软件 (TradeStation/MultiCharts/vnpy) 审查止盈止损业务逻辑, 发现 1 bug + 2 设计缺陷 + 5 对齐差距。全部修复:
+
+| # | 问题 | 修复 |
+|---|---|---|
+| P0-1 | monitor `{sym}:profit` 单 key, TP1 后当天 TP2/trail_lock 全被压制 | key 按 reason 细分 |
+| P0-2 | TP2 只卖剩仓一半, 25% 尾巴横盘无限期持有 | TP2 直接清仓 |
+| P1-3 | ATR=0 (上市<21日) 静默跳过, 新股裸奔 | 固定 8% 兜底 hard_sl_pct |
+| P1-4 | docstring 称 EMA 实为 SMA, 偏离 Wilder 标准 | Wilder SMMA, 实盘/回测同口径 |
+| P2-5/6 | 09:30-09:35 ATR 止损空窗; 双轨语义未定义 | execute 开盘 ATR 止损; ATR=波动出场/8%=亏损底线文档化 |
+| P2-7 | 盘中止损卖出无跌停预检, 卖不出账本脱节 | 预检 + 失败不记 key 下轮重试 |
+| P2-8 | time_stop 只对浮亏, 盈利停滞无限占用资金 | 2×max_hold_days 无条件退出 |
+| P2-9 | "TP1 后保本" — 审查修正: trail 线 = peak-2ATR ≥ 成本+0.5ATR 数学恒覆盖, 不引入 breakeven 死代码 | test_v553 数学验证 |
+| P2-10 | position_meta 每 30s 全持仓写库 | 仅变化时写 |
+
+连带: risk_only 分支 hard stop 后旧持仓致 ATR 兜底双卖 → 刷新对齐 B3。

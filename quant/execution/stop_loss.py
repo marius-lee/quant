@@ -1,19 +1,28 @@
 """ATR 动态止损止盈 — 业界标准三重体系.
 
 每条规则基于 ATR(20) 动态计算，不硬编码百分比:
-  ATR = EMA(max(H-L, |H-C_prev|, |L-C_prev|), 20)
+  ATR = Wilder SMMA(max(H-L, |H-C_prev|, |L-C_prev|), 20)
+        (v553: 原误用 SMA — docstring 称 EMA; Wilder 平滑 = 种子前20日SMA
+         + 递归 (ATR*19+TR)/20, TradeStation/MultiCharts/vnpy 通用口径)
 
 止盈三重:
-  TP1 (2×ATR): 现价≥成本+2ATR → 卖50%
-  TP2 (3×ATR): 现价≥成本+3ATR → 卖剩余50%
-  移动锁利: 盈利超2ATR后，从最高点回撤1.5ATR → 全卖
+  TP1 (2×ATR): 现价≥成本+2ATR → 卖半仓 (整手向下, <200股仅标记不卖)
+  TP2 (3×ATR): 已TP1 且现价≥成本+3ATR → 卖剩余全部 (v553: 原只卖剩仓一半,
+       偶数整手永远留 25% 尾巴, 横盘时无限期持有)
+  移动锁利: 盈利超2ATR后, 从最高点回撤1.5ATR → 全卖
 
-止损三重:
+止损:
   初始止损: 现价≤成本-2ATR → 全卖
-  移动止损: 现价≤最高-2ATR → 全卖
-  时间止损: 持仓>20天+浮亏 → 全卖
+  移动止损: 盈利≥TP1水平后 现价≤最高-2ATR → 全卖
+  移动止损: 盈利≥TP1水平后 现价≤最高-2ATR → 全卖 (触发线 = peak-2×ATR
+       ≥ 成本+0.5×ATR, TP1 后保本由它数学覆盖 — v553 审查确认, 不另设 breakeven)
+  时间止损: 持仓>20天+浮亏 → 全卖; 持仓>40天(2×max_hold_days)无条件 → 全卖 (v553)
+  ATR兜底: 上市<21日 ATR不可用 → 固定 stop_loss_pct 止损 (v553: 原静默跳过,
+       新股完全裸奔 — 违背零 fallback 哲学)
 
-集成: quant/scheduler/monitor.py 盘中循环调用
+每个信号带 kind 字段 (profit/loss), 供 monitor 判定出场性质与冷却分档。
+
+集成: quant/scheduler/monitor.py 盘中循环调用; execute.py 开盘 ATR 止损 (v553)
 """
 import sqlite3
 from quant.data.repos._base import DatabaseManager, os
@@ -28,8 +37,22 @@ _CACHE = {}  # symbol -> (atr, ts)
 _CACHE_MAX = 4096  # test-v466 (BT-2): 有界 — 回测2年×多持仓会无限增长
 
 
+def _wilders_atr_from_trs(trs: list, period: int = 20) -> float:
+    """Wilder SMMA ATR 纯函数 (v553): 种子 = 前 period 个 TR 的 SMA,
+    之后 ATR_t = (ATR_{t-1}×(period-1) + TR_t) / period. 供测试直接验证."""
+    if len(trs) < period:
+        return 0.0
+    atr = float(np.mean(trs[:period]))
+    for tr in trs[period:]:
+        atr = (atr * (period - 1) + tr) / period
+    return atr
+
+
 def _compute_atr(symbol: str, period: int = 20, as_of: str = None) -> float:
-    """从 market.db daily 表计算 ATR(period), PIT 截止到 as_of 前一天. 缓存 120 秒."""
+    """从 market.db daily 表计算 ATR(period), PIT 截止到 as_of 前一天. 缓存 120 秒.
+
+    v553: Wilder SMMA 平滑 (原 SMA); 需要全历史递归, 拉取全部 date < as_of 行.
+    """
     if as_of is None:
         raise ValueError("as_of is required — 回测必须传入当天日期, 防止未来行情前视")
     now = __import__('time').time()
@@ -44,23 +67,22 @@ def _compute_atr(symbol: str, period: int = 20, as_of: str = None) -> float:
     conn = DatabaseManager.market()
     rows = conn.execute(
         "SELECT high, low, close FROM daily WHERE symbol=? AND date < ? "
-        "ORDER BY date DESC LIMIT ?",
-        (symbol, as_of, period + 1)
+        "ORDER BY date ASC",
+        (symbol, as_of)
     ).fetchall()
     conn.close()
 
-    if len(rows) < period:
-        return 0.0
+    if len(rows) < period + 1:
+        return 0.0  # v553: 上市 < period+1 日 → 0, 调用方 fallback 固定%止损
 
-    rows.reverse()  # 从旧到新
-    tr_values = []
-    prev_close = rows[0][2]  # 前一天收盘
+    prev_close = rows[0][2]  # 最早一天收盘
+    trs = []
     for high, low, close in rows[1:]:
         tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
-        tr_values.append(tr)
+        trs.append(tr)
         prev_close = close
 
-    atr = float(np.mean(tr_values)) if tr_values else 0.0
+    atr = _wilders_atr_from_trs(trs, period)
     if len(_CACHE) >= _CACHE_MAX:
         _CACHE.clear()
     _CACHE[key] = (atr, now)
@@ -210,12 +232,19 @@ class RiskManager:
                 atr = float(_panel_atr)
             else:
                 atr = _compute_atr(sym, self.atr_period, today)
-            if atr <= 0:
-                continue
 
             gain = cur - cost
             pnl_pct = gain / cost
-            atr_pct = atr / cost
+
+            # ── v553: ATR 不可用 (上市<period+1日) → 固定百分比止损兜底,
+            # 原静默 continue = 新股裸奔, 无任何止损保护 ──
+            if atr <= 0:
+                _sl_pct = _require_cfg("risk.stop_loss_pct")
+                if pnl_pct <= -_sl_pct:
+                    results.append({"symbol": sym, "action": "sell", "shares": shares,
+                                    "price": cur, "kind": "loss",
+                                    "reason": "hard_sl_pct({:.1%})".format(pnl_pct)})
+                continue
 
             # ── 已触发的目标标记 (从持仓额外字段或存储读) ──
             # B9 (2026-08-18): 跨日回载 _tp1_hit/_peak — 原 get_positions 不加载,
@@ -232,6 +261,7 @@ class RiskManager:
                 if _meta:
                     p.setdefault("_tp1_hit", _meta.get("_tp1_hit", False))
                     p.setdefault("_peak", _meta.get("_peak") or cost)
+                p["_loaded_meta"] = _meta  # v553: 供末尾变化检测 (仅变化时写库)
             tp1_hit = p.get("_tp1_hit", False)
             peak = max(p.get("_peak", cost), cur)
             p["_peak"] = peak  # 持久化peak, trailing stop需要历史峰值 (2026-07-21 audit H8)
@@ -252,31 +282,38 @@ class RiskManager:
                     if sell_shares >= shares:
                         sell_shares = shares
                     results.append({"symbol": sym, "action": "sell", "shares": sell_shares,
-                                    "price": cur, "reason": "TP1(+{:.1f}ATR)".format(self.atr_mult_tp1)})
+                                    "price": cur, "kind": "profit",
+                                    "reason": "TP1(+{:.1f}ATR)".format(self.atr_mult_tp1)})
                 tp1_hit = True
                 p["_tp1_hit"] = True  # 持久化, 防止同轮次重复触发 (2026-07-21 audit C6)
 
             elif tp1_hit and gain >= self.atr_mult_tp2 * atr:
-                # C4: TP2 卖剩仓 — 不可能再 =0 (修前 100股残留时算 0)
-                rest = shares - max(100, (shares // 2 // 100) * 100)
-                if rest <= 0 or rest > shares:
-                    rest = shares
-                results.append({"symbol": sym, "action": "sell", "shares": rest,
-                                "price": cur, "reason": "TP2(+{:.1f}ATR)".format(self.atr_mult_tp2)})
+                # v553: TP2 清仓 — 原 rest = shares - 再一半, 偶数整手剩仓
+                # (200/400/600股) 永远留一半, 最终 25% 仓位靠 trail_lock/横盘无限期持有
+                results.append({"symbol": sym, "action": "sell", "shares": shares,
+                                "price": cur, "kind": "profit",
+                                "reason": "TP2(+{:.1f}ATR)".format(self.atr_mult_tp2)})
 
             elif tp1_hit and peak > cost + self.atr_mult_tp1 * atr:
                 dd_from_peak = (peak - cur) / peak if peak > 0 else 0
                 if dd_from_peak >= self.atr_mult_trail * atr / peak:
                     results.append({"symbol": sym, "action": "sell", "shares": shares,
-                                    "price": cur, "reason": "trail_lock({:.1f}ATR dd)".format(self.atr_mult_trail)})
+                                    "price": cur, "kind": "profit",
+                                    "reason": "trail_lock({:.1f}ATR dd)".format(self.atr_mult_trail)})
                     continue
 
             # ════════════════════════════════
             # 止损
             # ════════════════════════════════
+            # v553 审查 #9 (TP1 后保本): 经数学验证为误报 — trail_lock/trail_sl
+            # 触发线 = peak - sl×ATR ≥ (cost+tp1×ATR) - sl×ATR = cost + 0.5×ATR
+            # (tp1_hit → peak ≥ cost+2×ATR, sl=2) 恒高于成本, TP1 后任何回落到
+            # 保本线的价格必先触发移动止损 (峰值回撤), 利润不会吐光。
+            # 故不引入 breakeven 死代码分支; hard_sl (成本-2ATR) 保留为极端闪崩底线。
             if gain <= -self.atr_mult_sl * atr:
                 results.append({"symbol": sym, "action": "sell", "shares": shares,
-                                "price": cur, "reason": "hard_sl(-{:.1f}ATR)".format(self.atr_mult_sl)})
+                                "price": cur, "kind": "loss",
+                                "reason": "hard_sl(-{:.1f}ATR)".format(self.atr_mult_sl)})
                 continue
 
             # C4: trail_sl 需盈利 ≥ TP1 水平 (peak ≥ cost + tp1×ATR) 才启用 —
@@ -284,27 +321,41 @@ class RiskManager:
             if peak >= cost + self.atr_mult_tp1 * atr \
                     and (peak - cur) >= self.atr_mult_sl * atr:
                 results.append({"symbol": sym, "action": "sell", "shares": shares,
-                                "price": cur, "reason": "trail_sl({:.1f}ATR from peak)".format(self.atr_mult_sl)})
+                                "price": cur, "kind": "loss",
+                                "reason": "trail_sl({:.1f}ATR from peak)".format(self.atr_mult_sl)})
                 continue
 
-            # time stop
+            # time stop — v553: 盈利停滞退出 — 持仓 > 2×max_hold_days 无条件退出
+            # (原仅浮亏触发, 盈利横盘仓无限期占用资金 = opportunity cost)
             buy_time = p.get("buy_time", "")
-            if buy_time and pnl_pct < 0:
+            if buy_time:
                 from datetime import datetime as _dt
                 days = (_dt.strptime(today, "%Y-%m-%d") - _dt.strptime(buy_time[:10], "%Y-%m-%d")).days
-                if days > self.max_hold_days:
+                if pnl_pct < 0 and days > self.max_hold_days:
                     results.append({"symbol": sym, "action": "sell", "shares": shares,
-                                    "price": cur, "reason": "time_stop({}d)".format(days)})
+                                    "price": cur, "kind": "loss",
+                                    "reason": "time_stop({}d)".format(days)})
+                elif days > self.max_hold_days * 2:
+                    results.append({"symbol": sym, "action": "sell", "shares": shares,
+                                    "price": cur, "kind": "loss",
+                                    "reason": "time_stop_hard({}d)".format(days)})
 
         # test-v313 + B9: 持久化峰值和止盈标记 (进程重启后恢复)
         # B9 (2026-08-18): 存储模式与 cooloff 同构 — dict=内存(回测), None=DB(实盘)
+        # v553: 仅状态变化时写 (原每 30s 全持仓写库 = 写放大)
         self._today = today
         try:
             for p in positions:
-                if p.get("_peak") or p.get("_tp1_hit"):
-                    self._meta_set(p["symbol"],
-                                   p.get("_tp1_hit", False),
-                                   p.get("_peak", 0))
+                if not (p.get("_peak") or p.get("_tp1_hit")):
+                    continue
+                cur_peak = p.get("_peak") or 0
+                cur_tp1 = bool(p.get("_tp1_hit"))
+                loaded = p.get("_loaded_meta") or {}
+                changed = (cur_tp1 and not loaded.get("_tp1_hit", False)) or \
+                          (cur_peak > (p.get("price") or 0)
+                           and cur_peak > (loaded.get("_peak") or 0))
+                if changed:
+                    self._meta_set(p["symbol"], cur_tp1, cur_peak)
         except Exception as _e:
             _log.debug("position_meta save failed (non-fatal): %s", _e)
 

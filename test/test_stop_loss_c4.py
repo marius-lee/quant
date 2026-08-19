@@ -78,9 +78,11 @@ def test_tp2_residual_lot_sells_rest_not_zero():
 
 
 def test_tp2_300_shares_sells_rest():
+    """v553: TP2 清仓语义 — TP1 已触发后剩余 300 股全部卖出
+    (原卖 200 留 100, 偶数整手永远留 25% 尾巴横盘无限期持有)."""
     pos = _pos(shares=300, _tp1_hit=True)  # TP1 已卖 100 → 剩 200
     res = _check(pos, 124.0)
-    assert tp_share(res, "TP2") == 200
+    assert tp_share(res, "TP2") == 300
 
 
 def test_trail_sl_needs_tp1_level_profit():

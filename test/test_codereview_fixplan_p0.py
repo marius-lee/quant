@@ -162,6 +162,7 @@ class TestP04ATRDateBound:
         conn.executescript("""
             CREATE TABLE daily(symbol TEXT, date TEXT, high REAL, low REAL, close REAL);
             INSERT INTO daily VALUES
+            ('600519','2023-12-29', 95, 90, 93),
             ('600519','2024-01-01', 100, 95, 98),
             ('600519','2024-01-02', 105, 99, 103),
             ('600519','2024-01-03', 110, 104, 108),

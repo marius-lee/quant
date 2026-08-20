@@ -9,12 +9,12 @@
 
 | # | 任务 | 验收标准 | 预估工时 |
 |---|------|----------|----------|
-| 4.1 | **WAL 监听器** - 基于 SQLite WAL 模式的实时变更捕获 | 毫秒级捕获 INSERT/UPDATE/DELETE，零丢失 | 3h |
-| 4.2 | **Schema 演进处理** - 自动检测并应用 Schema 变更 | ALTER TABLE 自动应用，向后兼容 | 2h |
-| 4.3 | **Exactly-once 语义** - 幂等写入 + 位点管理 + 事务边界 | 重复运行不重复数据，崩溃可恢复 | 3h |
-| 4.4 | **多表同步编排** - 依赖感知的拓扑排序同步 | FK 依赖自动解析，并行度自适应 | 2h |
-| 4.5 | **增量同步性能优化** - 批量 UPSERT + 列裁剪 + 向量化 | 百万行/秒吞吐，延迟 <100ms | 2h |
-| 4.6 | **CDC 监控与告警** - 延迟/积压/错误率实时监控 | P99 延迟 <1s，积压告警 | 1.5h |
+| 4.1 | ✅ **WAL 监听器** - WALListener + TriggerBasedListener 变更捕获 | 毫秒级捕获 INSERT/UPDATE/DELETE，支持 WAL/Trigger 双模式 | 3h |
+| 4.2 | ✅ **Schema 演进处理** - SchemaEvolutionManager 自动 ALTER TABLE/ADD/DROP/RENAME | 自动应用，向后兼容 | 2h |
+| 4.3 | ✅ **Exactly-once 语义** - IncrementalSyncer 幂等写入 + 位点管理 + 事务边界 | 重复运行不重复，崩溃可恢复 | 3h |
+| 4.4 | ✅ **多表同步编排** - CDCSyncerOrchestrator 拓扑排序、并行/串行、失败重试 | FK 依赖自动解析，并行度自适应 | 2h |
+| 4.5 | ✅ **增量同步性能优化** - VectorizedUpserter 列式批量 UPSERT + 列裁剪 + 预编译语句缓存 | 百万行/秒吞吐，延迟 <100ms | 2h |
+| 4.6 | ✅ **CDC 监控与告警** - CDCMonitor 实时指标 + 告警规则引擎 + Prometheus 导出 | P99 延迟 <1s，积压/错误率/资源告警 | 1.5h |
 
 ---
 

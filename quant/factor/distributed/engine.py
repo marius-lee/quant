@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Callable
 from concurrent.futures import ThreadPoolExecutor
 from quant.factor.distributed.partitioner import Partition, create_partitioner
-from quant.factor.distributed.ray_config import init_ray, shutdown_ray, factor_task
+from quant.factor.distributed.ray_config import init_ray, shutdown_ray, factor_task, get_actor_pool
 from quant.factor.distributed.aggregator import FactorResultAggregator, ComputeResult
 from quant.utils.logger import get_logger
 
@@ -52,6 +52,8 @@ class DistributedFactorEngine:
         partition_kwargs: Optional[Dict] = None,
         ray_config: Optional[Dict] = None,
         max_concurrent_tasks: int = 0,  # 0 = 无限制 (受 Ray 资源限制)
+        use_actor_pool: bool = False,  # 是否使用 Actor 池复用 DB 连接
+        actor_pool_size: int = 0,  # Actor 池大小 (0=自动, 根据 CPU 核心数)
     ):
         self.start_date = start_date
         self.end_date = end_date
@@ -61,11 +63,14 @@ class DistributedFactorEngine:
         self.partition_kwargs = partition_kwargs or {}
         self.ray_config = ray_config or {}
         self.max_concurrent_tasks = max_concurrent_tasks
+        self.use_actor_pool = use_actor_pool
+        self.actor_pool_size = actor_pool_size
 
         # 运行时状态
         self._partitions: List[Partition] = []
         self._aggregator = FactorResultAggregator()
         self._ray_initialized = False
+        self._actor_pool = None
 
     def prepare(self) -> List[Partition]:
         """准备分区 (不启动 Ray)."""
@@ -91,6 +96,17 @@ class DistributedFactorEngine:
         )
         self._partitions = partitioner.partition()
         logger.info(f"Prepared {len(self._partitions)} partitions for {self.start_date} - {self.end_date}")
+
+        # 初始化 Actor 池 (如果启用)
+        if self.use_actor_pool and ray.is_initialized():
+            from quant.factor.distributed.ray_config import get_actor_pool
+            pool_size = self.actor_pool_size or max(1, len(self._partitions) // 2)
+            self._actor_pool = get_actor_pool(
+                pool_size=pool_size,
+                factor_store_config={"db_path": "quant/data/factor_cache.db"},
+            )
+            logger.info(f"Actor pool initialized with {pool_size} actors")
+
         return self._partitions
 
     def run(self) -> Dict[str, Any]:
@@ -131,70 +147,132 @@ class DistributedFactorEngine:
     def _submit_tasks(self) -> List[ray.ObjectRef]:
         """提交所有分区计算任务到 Ray."""
 
-        @ray.remote(num_cpus=1, max_retries=3, retry_exceptions=True)
-        def compute_partition(partition: Partition, factor_store_config: dict) -> ComputeResult:
-            """Ray Task: 计算单个分区."""
-            task_start = time.perf_counter()
-            pid = partition.partition_id
-
-            try:
-                # 延迟导入避免序列化问题
-                from quant.factor.store import FactorStore
-
-                # 创建 FactorStore (每个 Task 独立实例)
-                fs = FactorStore(**factor_store_config)
-
-                # 执行物化
-                result = fs.materialize(
-                    dates=partition.dates,
-                    factors=partition.factors,
-                    symbols=partition.symbols,
-                    force=False,
-                )
-
-                elapsed_ms = (time.perf_counter() - task_start) * 1000
-                rows = result.get("n_rows", 0)
-
-                fs.close()
-
-                return ComputeResult(
-                    partition_id=pid,
-                    success=True,
-                    rows_written=rows,
-                    elapsed_ms=elapsed_ms,
-                    metadata={"dates": len(partition.dates), "factors": len(partition.factors)},
-                )
-
-            except Exception as e:
-                elapsed_ms = (time.perf_counter() - task_start) * 1000
-                logger.error(f"Partition {pid} failed: {e}")
-                return ComputeResult(
-                    partition_id=pid,
-                    success=False,
-                    elapsed_ms=elapsed_ms,
-                    error=str(e),
-                )
-
         # 准备 FactorStore 配置 (可序列化)
         factor_store_config = {
             "db_path": "quant/data/factor_cache.db",
         }
 
-        # 提交任务
-        futures = []
-        for partition in self._partitions:
-            future = compute_partition.remote(partition, factor_store_config)
-            futures.append(future)
+        if self.use_actor_pool and self._actor_pool:
+            # 使用 Actor 池模式
+            @ray.remote(num_cpus=1, max_retries=3, retry_exceptions=True)
+            def compute_partition_with_actor(partition: Partition, actor_pool_ref) -> ComputeResult:
+                """Ray Task: 使用 Actor 池计算单个分区."""
+                task_start = time.perf_counter()
+                pid = partition.partition_id
 
-            # 控制并发提交速率 (避免 OOM)
-            if self.max_concurrent_tasks and len(futures) >= self.max_concurrent_tasks:
-                # 等待一部分完成
-                ready, futures = ray.wait(futures, num_returns=max(1, len(futures) // 2), timeout=60)
-                self._collect_results(ready)
-                futures = list(futures)  # 剩余未完成
+                actor = None
+                try:
+                    # 从 Actor 池获取 Actor
+                    actor = ray.get(actor_pool_ref.acquire.remote(timeout=30.0))
+                    
+                    # 执行物化
+                    result = ray.get(actor.materialize.remote(
+                        partition.dates,
+                        partition.factors,
+                        partition.symbols,
+                        False,
+                    ))
 
-        logger.info(f"Submitted {len(futures)} partition tasks to Ray")
-        return futures
+                    elapsed_ms = (time.perf_counter() - task_start) * 1000
+                    rows = result.get("n_rows", 0)
+
+                    return ComputeResult(
+                        partition_id=pid,
+                        success=True,
+                        rows_written=rows,
+                        elapsed_ms=elapsed_ms,
+                        metadata={"dates": len(partition.dates), "factors": len(partition.factors)},
+                    )
+
+                except Exception as e:
+                    elapsed_ms = (time.perf_counter() - task_start) * 1000
+                    logger.error(f"Partition {pid} failed: {e}")
+                    return ComputeResult(
+                        partition_id=pid,
+                        success=False,
+                        elapsed_ms=elapsed_ms,
+                        error=str(e),
+                    )
+                finally:
+                    # 释放 Actor 回池
+                    if actor:
+                        actor_pool_ref.release.remote(actor)
+
+            # 提交任务 - 传递 Actor pool 引用
+            futures = []
+            for partition in self._partitions:
+                future = compute_partition_with_actor.remote(partition, self._actor_pool)
+                futures.append(future)
+
+                # 控制并发提交速率 (避免 OOM)
+                if self.max_concurrent_tasks and len(futures) >= self.max_concurrent_tasks:
+                    ready, futures = ray.wait(futures, num_returns=max(1, len(futures) // 2), timeout=60)
+                    self._collect_results(ready)
+                    futures = list(futures)
+
+        else:
+            # 原有模式: 每个 Task 创建独立 FactorStore
+            @ray.remote(num_cpus=1, max_retries=3, retry_exceptions=True)
+            def compute_partition(partition: Partition, factor_store_config: dict) -> ComputeResult:
+                """Ray Task: 计算单个分区."""
+                task_start = time.perf_counter()
+                pid = partition.partition_id
+
+                try:
+                    # 延迟导入避免序列化问题
+                    from quant.factor.store import FactorStore
+
+                    # 创建 FactorStore (每个 Task 独立实例)
+                    fs = FactorStore(**factor_store_config)
+
+                    # 执行物化
+                    result = fs.materialize(
+                        dates=partition.dates,
+                        factors=partition.factors,
+                        symbols=partition.symbols,
+                        force=False,
+                    )
+
+                    elapsed_ms = (time.perf_counter() - task_start) * 1000
+                    rows = result.get("n_rows", 0)
+
+                    fs.close()
+
+                    return ComputeResult(
+                        partition_id=pid,
+                        success=True,
+                        rows_written=rows,
+                        elapsed_ms=elapsed_ms,
+                        metadata={"dates": len(partition.dates), "factors": len(partition.factors)},
+                    )
+
+                except Exception as e:
+                    elapsed_ms = (time.perf_counter() - task_start) * 1000
+                    logger.error(f"Partition {pid} failed: {e}")
+                    return ComputeResult(
+                        partition_id=pid,
+                        success=False,
+                        elapsed_ms=elapsed_ms,
+                        error=str(e),
+                    )
+
+            # 准备 FactorStore 配置 (可序列化)
+            factor_store_config = {
+                "db_path": "quant/data/factor_cache.db",
+            }
+
+            # 提交任务
+            futures = []
+            for partition in self._partitions:
+                future = compute_partition.remote(partition, factor_store_config)
+                futures.append(future)
+
+                # 控制并发提交速率 (避免 OOM)
+                if self.max_concurrent_tasks and len(futures) >= self.max_concurrent_tasks:
+                    # 等待一部分完成
+                    ready, futures = ray.wait(futures, num_returns=max(1, len(futures) // 2), timeout=60)
+                    self._collect_results(ready)
+                    futures = list(futures)  # 剩余未完成
 
     def _collect_results(self, futures: List[ray.ObjectRef]):
         """收集任务结果."""

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Callable
 from concurrent.futures import ThreadPoolExecutor
 from quant.factor.distributed.partitioner import Partition, create_partitioner
-from quant.factor.distributed.ray_config import init_ray, shutdown_ray, factor_task, get_actor_pool
+from quant.factor.distributed.ray_config import init_ray, shutdown_ray, factor_task, get_actor_pool, auto_select_partition_strategy
 from quant.factor.distributed.aggregator import FactorResultAggregator, ComputeResult
 from quant.utils.logger import get_logger
 
@@ -85,6 +85,22 @@ class DistributedFactorEngine:
             self.symbols = UniverseRepo().get_symbols(exclude_market='BJ')
             logger.info(f"Auto-discovered {len(self.symbols)} symbols (excl. BJ)")
 
+        # 自动选择分区策略 (如果用户未显式指定 partition_kwargs 中的策略相关参数)
+        if not self.partition_kwargs.get('strategy_locked', False):
+            from quant.factor.distributed.ray_config import auto_select_partition_strategy
+            import ray
+            cluster_cpus = ray.available_resources().get('CPU', 1) if ray.is_initialized() else 1
+            strategy, kwargs = auto_select_partition_strategy(
+                num_factors=len(self.factors),
+                num_symbols=len(self.symbols),
+                num_dates=len(self.get_trading_dates()),
+                cluster_cpus=int(cluster_cpus),
+            )
+            if strategy != self.partition_strategy:
+                logger.info(f"Auto-selected partition strategy: {self.partition_strategy} -> {strategy}")
+                self.partition_strategy = strategy
+            self.partition_kwargs.update(kwargs)
+
         # 创建分区器
         partitioner = create_partitioner(
             self.partition_strategy,
@@ -108,6 +124,11 @@ class DistributedFactorEngine:
             logger.info(f"Actor pool initialized with {pool_size} actors")
 
         return self._partitions
+
+    def get_trading_dates(self) -> List[str]:
+        """获取交易日列表."""
+        from quant.execution.calendar import get_trading_dates
+        return get_trading_dates(self.start_date, self.end_date)
 
     def run(self) -> Dict[str, Any]:
         """执行分布式因子物化."""

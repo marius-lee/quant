@@ -11,7 +11,7 @@
 |---|------|----------|----------|
 | 3.1 | ✅ **Ray Cluster 模式完善** - KubeRay CRD 支持、Actor 池、内存监控、自动分区策略 | 生产集群可横向扩展，支持 `mode: local/cluster/k8s` | 3h |
 | 3.2 | ✅ **Actor 复用池** - `FactorStore` Actor 池化，避免每 Task 重复初始化 DB 连接 | 单 Task 开销 <50ms，吞吐提升 2x | 3h |
-| 3.3 | **分区策略自动选择** - 基于因子数/日期数/符号数自动选 `date`/`factor`/`composite` | 无需手动配置，自适应最优 | 2h |
+| 3.3 | 🔄 **分区策略自动选择** - 基于因子数/日期数/符号数自动选 `date`/`factor`/`composite` | 无需手动配置，自适应最优 | 2h |
 | 3.4 | **增量物化** - 仅物化 `latest_cached_date+1` 到 `today`，跳过已缓存日期 | 日增量 <5min，全量回补可控 | 2h |
 | 3.5 | **内存压力保护** - `ray.wait` 批量收集 + `object_store_memory` 监控 + OOM 自动重试 | 无 OOM Crash，大分区自动拆分 | 2h |
 | 3.4 | **因子级重试隔离** - 单因子失败不影响其他，失败因子进入 `quarantine` 待人工 | 部分失败不阻塞整体 | 1.5h |

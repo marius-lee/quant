@@ -54,6 +54,7 @@ class DistributedFactorEngine:
         max_concurrent_tasks: int = 0,  # 0 = 无限制 (受 Ray 资源限制)
         use_actor_pool: bool = False,  # 是否使用 Actor 池复用 DB 连接
         actor_pool_size: int = 0,  # Actor 池大小 (0=自动, 根据 CPU 核心数)
+        incremental: bool = True,  # 是否启用增量物化 (仅物化新增日期)
     ):
         self.start_date = start_date
         self.end_date = end_date
@@ -65,6 +66,7 @@ class DistributedFactorEngine:
         self.max_concurrent_tasks = max_concurrent_tasks
         self.use_actor_pool = use_actor_pool
         self.actor_pool_size = actor_pool_size
+        self.incremental = incremental
 
         # 运行时状态
         self._partitions: List[Partition] = []
@@ -111,6 +113,9 @@ class DistributedFactorEngine:
             **self.partition_kwargs,
         )
         self._partitions = partitioner.partition()
+        # 增量模式: 过滤已缓存的分区
+        self._partitions = self.filter_incremental_partitions(self._partitions)
+        
         logger.info(f"Prepared {len(self._partitions)} partitions for {self.start_date} - {self.end_date}")
 
         # 初始化 Actor 池 (如果启用)
@@ -129,6 +134,41 @@ class DistributedFactorEngine:
         """获取交易日列表."""
         from quant.execution.calendar import get_trading_dates
         return get_trading_dates(self.start_date, self.end_date)
+
+    def get_cached_dates(self) -> set:
+        """获取已缓存的日期集合 (用于增量物化)."""
+        from quant.factor.store import FactorStore
+        fs = FactorStore(db_path="quant/data/factor_cache.db")
+        try:
+            cached = fs.get_cached_dates(self.factors[0] if self.factors else None)
+            return set(cached) if cached else set()
+        finally:
+            fs.close()
+
+    def filter_incremental_partitions(self, partitions: List[Partition]) -> List[Partition]:
+        """增量模式: 过滤掉已缓存的日期分区."""
+        if not self.incremental:
+            return partitions
+        
+        cached_dates = self.get_cached_dates()
+        if not cached_dates:
+            return partitions
+        
+        filtered = []
+        for p in partitions:
+            new_dates = [d for d in p.dates if d not in cached_dates]
+            if new_dates:
+                filtered.append(Partition(
+                    partition_id=p.partition_id,
+                    dates=new_dates,
+                    factors=p.factors,
+                    symbols=p.symbols,
+                    metadata=p.metadata,
+                ))
+        
+        logger.info(f"Incremental mode: {len(partitions)} -> {len(filtered)} partitions "
+                    f"({sum(len(p.dates) for p in partitions)} -> {sum(len(p.dates) for p in filtered)} dates)")
+        return filtered
 
     def run(self) -> Dict[str, Any]:
         """执行分布式因子物化."""

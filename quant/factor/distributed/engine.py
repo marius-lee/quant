@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Callable
 from concurrent.futures import ThreadPoolExecutor
 from quant.factor.distributed.partitioner import Partition, create_partitioner
-from quant.factor.distributed.ray_config import init_ray, shutdown_ray, factor_task, get_actor_pool, auto_select_partition_strategy
+from quant.factor.distributed.ray_config import init_ray, shutdown_ray, factor_task, get_actor_pool, auto_select_partition_strategy, start_memory_monitor, stop_memory_monitor
 from quant.factor.distributed.aggregator import FactorResultAggregator, ComputeResult
 from quant.utils.logger import get_logger
 
@@ -183,6 +183,13 @@ class DistributedFactorEngine:
         init_ray(self.ray_config)
         self._ray_initialized = True
 
+        # 启动内存压力监控
+        from quant.factor.distributed.ray_config import start_memory_monitor, stop_memory_monitor
+        start_memory_monitor(
+            system_memory_threshold=0.85,
+            check_interval=10,
+        )
+
         try:
             # 提交所有任务
             futures = self._submit_tasks()
@@ -202,8 +209,12 @@ class DistributedFactorEngine:
             return summary
 
         finally:
+            stop_memory_monitor()
             if self._ray_initialized:
                 shutdown_ray()
+                # 关闭 Actor 池
+                from quant.factor.distributed.ray_config import shutdown_actor_pool
+                shutdown_actor_pool()
 
     def _submit_tasks(self) -> List[ray.ObjectRef]:
         """提交所有分区计算任务到 Ray."""

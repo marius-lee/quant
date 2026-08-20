@@ -29,6 +29,8 @@ from dagster import (
     ResourceParam,
     Config,
     RetryPolicy,
+    Backoff,
+    Jitter,
 )
 from datetime import datetime, date, time
 from typing import Optional
@@ -655,13 +657,12 @@ def weekly_eval(
 # evening_chain = daily_data → adj_factor → factor_cache → attribution → [lgb_train, xgb_train]
 
 # 重试策略: 瞬时失败自动恢复，永久失败快速失败
+# 重试策略: 瞬时失败自动恢复，永久失败快速失败
 RETRY_POLICY = RetryPolicy(
     max_retries=3,
-    delay=10,  # 10秒基础延迟
-    backoff=2.0,  # 指数退避
-    jitter=0.1,
-    # 仅重试特定错误类型
-    retry_on_asset_failure=True,
+    delay=10,                   # 10秒基础延迟
+    backoff=Backoff.EXPONENTIAL,  # 指数退避
+    jitter=Jitter.PLUS_MINUS,     # 10% 抖动防雷群效应
 )
 
 daily_job = define_asset_job(
@@ -684,7 +685,7 @@ daily_job = define_asset_job(
     ),
     partitions_def=trading_day_partitions,
     description="交易日全流程: 早间补拉 → 信号 → 执行 → 快照 → 盘中风控 → 对账 → 晚间链",
-    retry_policy=RETRY_POLICY,
+    op_retry_policy=RETRY_POLICY,
 )
 
 weekly_job = define_asset_job(
@@ -692,12 +693,11 @@ weekly_job = define_asset_job(
     selection=AssetSelection.keys("weekly_eval"),
     partitions_def=weekly_partitions,
     description="周六因子评估全流程",
-    retry_policy=RetryPolicy(
-        max_retries=2,  # 周度评估重试少一点
-        delay=60,  # 1分钟基础延迟
-        backoff=2.0,
-        jitter=0.1,
-        retry_on_asset_failure=True,
+    op_retry_policy=RetryPolicy(
+        max_retries=2,      # 周度评估重试少一点
+        delay=60,           # 1分钟基础延迟
+        backoff=Backoff.EXPONENTIAL,
+        jitter=Jitter.PLUS_MINUS,
     ),
 )
 

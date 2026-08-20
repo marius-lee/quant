@@ -117,6 +117,54 @@ def daily_repair(
 
     return {"date": partition_date, "status": "completed"}
 
+@asset(
+    description="分布式因子物化 — 基于 Ray 并行计算 (替代单进程 factor_cache)",
+    partitions_def=trading_day_partitions,
+    kinds={"python", "database", "compute", "ray"},
+    ins={"adj_factor": AssetIn("adj_factor")},
+    metadata={"owner": "quant-research", "priority": "high"},
+)
+def factor_cache_distributed(
+    context: AssetExecutionContext,
+    adj_factor: dict,
+) -> dict:
+    """晚间链第三阶段: 分布式因子缓存物化."""
+    partition_date = context.partition_key
+    context.log.info(f"[{partition_date}] factor_cache_distributed starting")
+
+    from quant.config.constants import _require_cfg
+    from quant.factor.distributed import run_distributed_factorization
+
+    # 检查是否启用分布式模式
+    from quant.config.loader import load as _load_config
+    cfg = _load_config()
+    distributed_enabled = cfg.get('factor', {}).get('distributed', {}).get('enabled', False)
+
+    if not distributed_enabled:
+        context.log.info("Distributed factorization disabled, falling back to single-process")
+        from quant.scheduler.factor_cache import _run as _fc_run
+        _fc_start = _require_cfg("backtest.factor_cache_start")
+        _fc_run(_fc_start, partition_date)
+        return {"date": partition_date, "status": "completed (single-process fallback)"}
+
+    # 分布式执行
+    ray_config = cfg.get('factor', {}).get('distributed', {}).get('ray', {})
+    partition_strategy = cfg.get('factor', {}).get('distributed', {}).get('partition_strategy', 'date')
+    partition_kwargs = cfg.get('factor', {}).get('distributed', {}).get('partition_kwargs', {})
+
+    result = run_distributed_factorization(
+        start_date=_require_cfg('backtest.factor_cache_start'),
+        end_date=partition_date,
+        partition_strategy=partition_strategy,
+        partition_kwargs=partition_kwargs,
+        ray_config=ray_config,
+    )
+
+    context.log.info(f"[{partition_date}] factor_cache_distributed completed: {result}")
+    return {"date": partition_date, "status": "completed", "summary": result}
+
+
+
 
 @asset(
     description="信号生成 — 计算所有using因子, 生成Alpha信号与目标持仓",
@@ -538,6 +586,7 @@ def get_definitions():
             daily_data,
             adj_factor,
             factor_cache,
+            factor_cache_distributed,
             attribution,
             lgb_train,
             xgb_train,

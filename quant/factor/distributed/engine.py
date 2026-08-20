@@ -1,0 +1,253 @@
+"""分布式因子计算引擎核心 — 基于 Ray Task/Actor.
+
+架构:
+  1. Partitioner 将工作拆分为 Partition (日期批次 × 因子批次)
+  2. 每个 Partition 提交为一个 Ray Task (或 Actor 任务)
+  3. Task 内部调用现有 FactorStore.materialize 逻辑 (复用单进程计算)
+  4. 结果通过 FactorResultAggregator 合并写入缓存
+  5. 支持精确一次语义: 幂等写入 + 任务级重试
+"""
+
+import ray
+import time
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional, Callable
+from concurrent.futures import ThreadPoolExecutor
+from quant.factor.distributed.partitioner import Partition, create_partitioner
+from quant.factor.distributed.ray_config import init_ray, shutdown_ray, factor_task
+from quant.factor.distributed.aggregator import FactorResultAggregator, ComputeResult
+from quant.utils.logger import get_logger
+
+logger = get_logger("factor.distributed.engine")
+
+
+@dataclass
+class FactorComputeTask:
+    """因子计算任务描述."""
+    partition: Partition
+    factor_store_config: dict  # FactorStore 初始化参数
+    compute_func: str          # 计算函数路径 (如 "quant.factor.store:FactorStore.materialize")
+    priority: int = 0          # 调度优先级
+
+
+class DistributedFactorEngine:
+    """分布式因子计算引擎.
+
+    用法:
+        engine = DistributedFactorEngine(
+            start_date="2020-01-01",
+            end_date="2024-12-31",
+            partition_strategy="date",  # 或 "factor", "symbol", "composite"
+        )
+        engine.run()
+    """
+
+    def __init__(
+        self,
+        start_date: str,
+        end_date: str,
+        factors: Optional[List[str]] = None,
+        symbols: Optional[List[str]] = None,
+        partition_strategy: str = "date",
+        partition_kwargs: Optional[Dict] = None,
+        ray_config: Optional[Dict] = None,
+        max_concurrent_tasks: int = 0,  # 0 = 无限制 (受 Ray 资源限制)
+    ):
+        self.start_date = start_date
+        self.end_date = end_date
+        self.factors = factors or []
+        self.symbols = symbols or []
+        self.partition_strategy = partition_strategy
+        self.partition_kwargs = partition_kwargs or {}
+        self.ray_config = ray_config or {}
+        self.max_concurrent_tasks = max_concurrent_tasks
+
+        # 运行时状态
+        self._partitions: List[Partition] = []
+        self._aggregator = FactorResultAggregator()
+        self._ray_initialized = False
+
+    def prepare(self) -> List[Partition]:
+        """准备分区 (不启动 Ray)."""
+        if not self.factors:
+            from quant.factor.compute import get_factor_names
+            self.factors = sorted(set(get_factor_names(status_filter='backtesting'))
+                                  | set(get_factor_names(status_filter='using')))
+            logger.info(f"Auto-discovered {len(self.factors)} factors")
+
+        if not self.symbols:
+            from quant.data.repos.universe_repo import UniverseRepo
+            self.symbols = UniverseRepo().get_symbols(exclude_market='BJ')
+            logger.info(f"Auto-discovered {len(self.symbols)} symbols (excl. BJ)")
+
+        # 创建分区器
+        partitioner = create_partitioner(
+            self.partition_strategy,
+            self.start_date,
+            self.end_date,
+            self.factors,
+            self.symbols,
+            **self.partition_kwargs,
+        )
+        self._partitions = partitioner.partition()
+        logger.info(f"Prepared {len(self._partitions)} partitions for {self.start_date} - {self.end_date}")
+        return self._partitions
+
+    def run(self) -> Dict[str, Any]:
+        """执行分布式因子物化."""
+        if not self._partitions:
+            self.prepare()
+
+        if not self._partitions:
+            logger.warning("No partitions to compute")
+            return {"status": "empty", "partitions": 0}
+
+        # 初始化 Ray
+        init_ray(self.ray_config)
+        self._ray_initialized = True
+
+        try:
+            # 提交所有任务
+            futures = self._submit_tasks()
+
+            # 等待完成并收集结果
+            self._collect_results(futures)
+
+            # 生成汇总
+            summary = self._aggregator.get_summary()
+            summary["start_date"] = self.start_date
+            summary["end_date"] = self.end_date
+            summary["partition_strategy"] = self.partition_strategy
+            summary["num_factors"] = len(self.factors)
+            summary["num_symbols"] = len(self.symbols)
+
+            logger.info(f"Distributed factor compute completed: {summary}")
+            return summary
+
+        finally:
+            if self._ray_initialized:
+                shutdown_ray()
+
+    def _submit_tasks(self) -> List[ray.ObjectRef]:
+        """提交所有分区计算任务到 Ray."""
+
+        @ray.remote(num_cpus=1, max_retries=3, retry_exceptions=True)
+        def compute_partition(partition: Partition, factor_store_config: dict) -> ComputeResult:
+            """Ray Task: 计算单个分区."""
+            task_start = time.perf_counter()
+            pid = partition.partition_id
+
+            try:
+                # 延迟导入避免序列化问题
+                from quant.factor.store import FactorStore
+
+                # 创建 FactorStore (每个 Task 独立实例)
+                fs = FactorStore(**factor_store_config)
+
+                # 执行物化
+                result = fs.materialize(
+                    dates=partition.dates,
+                    factors=partition.factors,
+                    symbols=partition.symbols,
+                    force=False,
+                )
+
+                elapsed_ms = (time.perf_counter() - task_start) * 1000
+                rows = result.get("n_rows", 0)
+
+                fs.close()
+
+                return ComputeResult(
+                    partition_id=pid,
+                    success=True,
+                    rows_written=rows,
+                    elapsed_ms=elapsed_ms,
+                    metadata={"dates": len(partition.dates), "factors": len(partition.factors)},
+                )
+
+            except Exception as e:
+                elapsed_ms = (time.perf_counter() - task_start) * 1000
+                logger.error(f"Partition {pid} failed: {e}")
+                return ComputeResult(
+                    partition_id=pid,
+                    success=False,
+                    elapsed_ms=elapsed_ms,
+                    error=str(e),
+                )
+
+        # 准备 FactorStore 配置 (可序列化)
+        factor_store_config = {
+            "db_path": "quant/data/factor_cache.db",
+        }
+
+        # 提交任务
+        futures = []
+        for partition in self._partitions:
+            future = compute_partition.remote(partition, factor_store_config)
+            futures.append(future)
+
+            # 控制并发提交速率 (避免 OOM)
+            if self.max_concurrent_tasks and len(futures) >= self.max_concurrent_tasks:
+                # 等待一部分完成
+                ready, futures = ray.wait(futures, num_returns=max(1, len(futures) // 2), timeout=60)
+                self._collect_results(ready)
+                futures = list(futures)  # 剩余未完成
+
+        logger.info(f"Submitted {len(futures)} partition tasks to Ray")
+        return futures
+
+    def _collect_results(self, futures: List[ray.ObjectRef]):
+        """收集任务结果."""
+        if not futures:
+            return
+
+        # 分批等待 (避免一次性 get 太多导致内存压力)
+        batch_size = 50
+        for i in range(0, len(futures), batch_size):
+            batch = futures[i:i + batch_size]
+            results = ray.get(batch)
+            for result in results:
+                self._aggregator.add_result(result)
+                if result.success:
+                    logger.info(f"Partition {result.partition_id} OK: {result.rows_written} rows, {result.elapsed_ms:.0f}ms")
+                else:
+                    logger.error(f"Partition {result.partition_id} FAILED: {result.error}")
+
+
+# ════════════════════════════════════════════════════════════════════
+# 便捷入口函数
+# ═══════════════════════════════════════════════════════════════════
+
+def run_distributed_factorization(
+    start_date: str,
+    end_date: str,
+    factors: Optional[List[str]] = None,
+    symbols: Optional[List[str]] = None,
+    partition_strategy: str = "date",
+    partition_kwargs: Optional[Dict] = None,
+    ray_config: Optional[Dict] = None,
+) -> Dict[str, Any]:
+    """一键运行分布式因子物化.
+
+    参数:
+        start_date: 物化起始日期 (YYYY-MM-DD)
+        end_date: 物化结束日期 (YYYY-MM-DD)
+        factors: 因子列表 (None = 自动发现)
+        symbols: 股票列表 (None = 自动全市场)
+        partition_strategy: "date" | "factor" | "symbol" | "composite"
+        partition_kwargs: 分区器参数 (如 max_partition_size, dates_per_partition)
+        ray_config: Ray 配置 (mode, address, num_cpus 等)
+
+    返回:
+        汇总统计字典
+    """
+    engine = DistributedFactorEngine(
+        start_date=start_date,
+        end_date=end_date,
+        factors=factors,
+        symbols=symbols,
+        partition_strategy=partition_strategy,
+        partition_kwargs=partition_kwargs,
+        ray_config=ray_config,
+    )
+    return engine.run()

@@ -1,27 +1,26 @@
 """CDC (Change Data Capture) 增量同步引擎.
 
 设计目标:
-  1. 消除全量回补: 基于 WAL/触发器捕获变更, 仅同步增量
-  2. 多源支持: SQLite (主库) → DuckDB (分析库) + 因子缓存增量更新
-  3. 精确一次: 幂等写入 + 位点管理 + 事务边界
-  4. 低延迟: 秒级捕获, 分钟级同步
-  5. 可观测: 同步延迟指标 + 积压监控 + 数据质量校验
+  1. 基于 SQLite WAL 模式的实时变更捕获
+  2. Schema 演进自动处理
+  3. Exactly-once 语义保证
+  4. 多表依赖感知同步编排
+  5. 高性能批量 UPSERT + 内存压力保护
 """
 
-from .capture import ChangeCapture, CaptureConfig, ChangeEvent
-from .sync import IncrementalSyncer, SyncConfig, SyncResult
-from .position import PositionManager, PositionStore
-from .validator import DataValidator, ValidationResult
+from .wal_listener import ChangeEvent, ChangeType, WALListener, get_wal_listener
+from .syncer import IncrementalSyncer, SyncConfig, SyncResult
+from .schema_evolution import SchemaEvolutionManager
+from .orchestrator import CDCSyncerOrchestrator
 
 __all__ = [
-    "ChangeCapture",
-    "CaptureConfig", 
     "ChangeEvent",
+    "ChangeType",
+    "WALListener",
+    "get_wal_listener",
     "IncrementalSyncer",
     "SyncConfig",
     "SyncResult",
-    "PositionManager",
-    "PositionStore",
-    "DataValidator",
-    "ValidationResult",
+    "SchemaEvolutionManager",
+    "CDCSyncerOrchestrator",
 ]

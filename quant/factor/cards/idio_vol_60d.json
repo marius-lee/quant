@@ -3,8 +3,8 @@
   "display_name": "idio_vol_60d",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0251,
-  "icir_12m": 0.1197,
+  "ic_mean_12m": 0.0152,
+  "icir_12m": 0.0991,
   "last_evaluated": "auto",
-  "n_obs": 130
+  "n_obs": 100
 }

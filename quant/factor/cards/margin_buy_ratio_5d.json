@@ -3,8 +3,8 @@
   "display_name": "margin_buy_ratio_5d",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.0251,
-  "icir_12m": -0.1285,
+  "ic_mean_12m": -0.0011,
+  "icir_12m": -0.0072,
   "last_evaluated": "auto",
-  "n_obs": 130
+  "n_obs": 100
 }

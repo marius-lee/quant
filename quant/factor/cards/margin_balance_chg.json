@@ -3,8 +3,8 @@
   "display_name": "margin_balance_chg",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.0133,
-  "icir_12m": -0.1564,
+  "ic_mean_12m": 0.0048,
+  "icir_12m": 0.0693,
   "last_evaluated": "auto",
-  "n_obs": 130
+  "n_obs": 100
 }

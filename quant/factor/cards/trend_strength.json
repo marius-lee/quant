@@ -3,8 +3,8 @@
   "display_name": "trend_strength",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.0228,
-  "icir_12m": -0.1505,
+  "ic_mean_12m": -0.0048,
+  "icir_12m": -0.0421,
   "last_evaluated": "auto",
-  "n_obs": 130
+  "n_obs": 100
 }

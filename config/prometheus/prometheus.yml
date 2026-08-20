@@ -1,0 +1,78 @@
+# Prometheus 配置 - Quant 监控
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'quant-prod'
+    environment: 'production'
+
+# 告警规则
+rule_files:
+  - '/etc/prometheus/rules/*.yml'
+
+# Alertmanager
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+# 抓取配置
+scrape_configs:
+  # Prometheus 自身
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Quant API
+  - job_name: 'quant-api'
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+            - quant
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: quant-api
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: replace
+        target_label: pod
+
+  # Dagster
+  - job_name: 'dagster'
+    static_configs:
+      - targets: ['dagster-webserver:3000', 'dagster-daemon:3000']
+
+  # Ray
+  - job_name: 'ray'
+    static_configs:
+      - targets: ['ray-head:8265']
+
+  # PostgreSQL
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres:5432']
+
+  # Redis
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+
+  # MinIO
+  - job_name: 'minio'
+    static_configs:
+      - targets: ['minio:9000']
+
+  # Node Exporter (主机指标)
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['host.docker.internal:9100']
+
+  # cAdvisor (容器指标)
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['host.docker.internal:8080']
+
+# 远程写入 (可选：发送到长期存储)
+# remote_write:
+#   - url: "https://prometheus-remote-write.example.com/api/v1/write"

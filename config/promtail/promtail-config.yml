@@ -1,0 +1,56 @@
+# Promtail 配置
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # Quant 应用日志
+  - job_name: quant-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: quant
+          service: quant-api
+          __path__: /logs/*.log
+    pipeline_stages:
+      - json:
+          expressions:
+            timestamp: timestamp
+            level: level
+            logger: logger
+            message: message
+            trace_id: trace_id
+            span_id: span_id
+      - labels:
+          level:
+          logger:
+          trace_id:
+          span_id:
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+
+  # Dagster 日志
+  - job_name: dagster-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: dagster
+          __path__: /app/dagster_home/logs/*.log
+
+  # 系统日志
+  - job_name: system-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: system
+          __path__: /var/log/*.log

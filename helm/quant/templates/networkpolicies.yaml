@@ -1,0 +1,103 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "quant.fullname" . }}-deny-all
+  namespace: {{ include "quant.namespace" . }}
+  labels:
+    {{- include "quant.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    {{- if .Values.networkPolicy.defaultDenyIngress }}
+    - Egress
+    {{- end }}
+---
+# 允许 API 入站 (来自 Ingress Controller)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "quant.fullname" . }}-api-ingress
+  namespace: {{ include "quant.namespace" . }}
+  labels:
+    {{- include "quant.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: {{ .Values.quant.ports.http }}
+---
+# 允许服务间通信
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "quant.fullname" . }}-internal
+  namespace: {{ include "quant.namespace" . }}
+  labels:
+    {{- include "quant.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# 允许监控抓取
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "quant.fullname" . }}-monitoring
+  namespace: {{ include "quant.namespace" . }}
+  labels:
+    {{- include "quant.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: {{ .Values.quant.ports.metrics }}
+{{- if .Values.networkPolicy.additionalPolicies }}
+{{- range .Values.networkPolicy.additionalPolicies }}
+---
+{{ toYaml . | indent 0 }}
+{{- end }}
+{{- end }}
+{{- end }}

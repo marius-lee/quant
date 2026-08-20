@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.quant.config.configMap }}
+  namespace: {{ include "quant.namespace" . }}
+  labels:
+    {{- include "quant.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- if .Files.Get "config/config.yaml" }}
+{{ .Files.Get "config/config.yaml" | indent 4 }}
+    {{- else }}
+# 配置文件将通过 CI/CD 注入
+    {{- end }}

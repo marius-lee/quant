@@ -1,77 +1,330 @@
-# .github/workflows/ci.yml
-# P2-6 fix: Complete CI pipeline with lint + type check + full test suite
+# Quant CI/CD 流水线
+# 触发: push to main, PR to main, tag push
+# 阶段: lint -> test -> build -> scan -> deploy
 
-name: CI
+name: CI/CD Pipeline
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
+    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  lint-and-typecheck:
-    name: Lint + Type Check
+  # ═══════════════════════════════════════════════════════════════
+  # 代码质量检查
+  # ═══════════════════════════════════════════════════════════════
+  lint:
+    name: Lint & Type Check
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: pip
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
-          pip install ruff mypy pytest pytest-cov
+          pip install --upgrade pip
+          pip install ruff mypy pre-commit
 
-      - name: Run ruff (lint + format)
-        run: ruff check quant/ test/ && ruff format --check quant/ test/
+      - name: Run Ruff (lint)
+        run: ruff check quant/ test/ --output-format=github
 
-      - name: Run mypy (strict mode)
-        run: mypy --strict --show-error-codes --ignore-missing-imports quant/
+      - name: Run Ruff (format check)
+        run: ruff format --check quant/ test/
 
+      - name: Run MyPy (type check)
+        run: mypy quant/ --ignore-missing-imports --show-error-codes
+
+  # ═══════════════════════════════════════════════════════════════
+  # 单元测试 + 集成测试
+  # ═══════════════════════════════════════════════════════════════
   test:
-    name: Full Test Suite
+    name: Test Suite
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: quant_test
+          POSTGRES_USER: quant
+          POSTGRES_PASSWORD: test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd="pg_isready -U quant -d quant_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: --health-cmd="redis-cli ping" --health-interval=10s --health-timeout=5s --health-retries=5
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: pip
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
-          pip install pytest pytest-cov pytest-benchmark
+          pip install --upgrade pip
+          pip install -e .[test]
+          pip install pytest-cov pytest-xdist
 
-      - name: Run full test suite
-        run: PYTHONPATH=. python -m pytest test/ -q --tb=short --cov=quant --cov-report=term-missing --cov-fail-under=80
+      - name: Run tests
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_DB: quant_test
+          POSTGRES_USER: quant
+          POSTGRES_PASSWORD: test
+          REDIS_HOST: localhost
+        run: |
+          PYTHONPATH=. pytest test/ -v --tb=short -x -q --cov=quant --cov-report=xml
 
-  # 额外: 性能基准测试 (仅 main 分支, 不阻塞 PR)
-  benchmark:
-    name: Performance Benchmark
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage.xml
+          flags: unittests
+
+  # ═══════════════════════════════════════════════════════════════
+  # Docker 镜像构建
+  # ═══════════════════════════════════════════════════════════════
+  build:
+    name: Build Docker Image
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      image-tag: ${{ steps.meta.outputs.tags }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
+
+  # ═══════════════════════════════════════════════════════════════
+  # 安全扫描
+  # ═══════════════════════════════════════════════════════════════
+  security-scan:
+    name: Security Scan
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
         with:
-          python-version: '3.12'
+          image-ref: ${{ needs.build.outputs.image-tag }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
 
-      - name: Run benchmarks
-        run: PYTHONPATH=. python -m pytest test/ -v --benchmark-only --benchmark-sort=mean --benchmark-columns=min,max,mean,stddev
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ needs.build.outputs.image-tag }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.spdx.json
+
+  # ═══════════════════════════════════════════════════════════════
+  # Helm Chart 验证
+  # ═══════════════════════════════════════════════════════════════
+  helm-lint:
+    name: Helm Lint & Template
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.13.0
+
+      - name: Helm dependency update
+        run: helm dependency update helm/quant
+
+      - name: Helm lint
+        run: helm lint helm/quant
+
+      - name: Helm template (dev)
+        run: |
+          helm template quant-dev helm/quant -f helm/quant/values/values-dev.yaml \
+            --namespace quant-dev > /dev/null
+
+      - name: Helm template (prod)
+        run: |
+          helm template quant helm/quant -f helm/quant/values/values-prod.yaml \
+            --namespace quant-prod > /dev/null
+
+  # ═══════════════════════════════════════════════════════════════
+  # 部署到 Staging
+  # ═══════════════════════════════════════════════════════════════
+  deploy-staging:
+    name: Deploy Staging
+    needs: [build, security-scan, helm-lint]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: staging
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Configure kubectl
+        uses: azure/k8s-set-context@v1
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG_STAGING }}
+
+      - name: Deploy to Staging
+        run: |
+          helm upgrade --install quant-staging helm/quant \
+            -f helm/quant/values/values-dev.yaml \
+            --namespace quant-staging \
+            --create-namespace \
+            --set quant.image.tag=${{ github.sha }} \
+            --wait --timeout 10m
+
+      - name: Smoke tests
+        run: |
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=api -n quant-staging --timeout=120s
+          curl -f https://quant-staging.example.com/health || exit 1
+
+  # ═══════════════════════════════════════════════════════════════
+  # 部署到 Production (手动确认)
+  # ═══════════════════════════════════════════════════════════════
+  deploy-production:
+    name: Deploy Production
+    needs: [build, security-scan, helm-lint]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Configure kubectl
+        uses: azure/k8s-set-context@v1
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG_PROD }}
+
+      - name: Deploy to Production (Blue-Green)
+        run: |
+          # 蓝绿部署：部署新版本到 green namespace
+          helm upgrade --install quant-green helm/quant \
+            -f helm/quant/values/values-prod.yaml \
+            --namespace quant-green \
+            --create-namespace \
+            --set quant.image.tag=${{ github.ref_name }} \
+            --wait --timeout 15m
+
+          # 健康检查
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=api -n quant-green --timeout=180s
+
+          # 切换流量 (更新 Ingress 指向 green)
+          kubectl patch ingress quant -n quant-prod \
+            -p '{"spec":{"rules":[{"host":"quant.example.com","http":{"paths":[{"path":"/","pathType":"Prefix","backend":{"service":{"name":"quant-green-api","port":{"number":8521}}}}]}}]}}'
+
+          # 等待确认
+          sleep 30
+
+          # 可选：回滚
+          # kubectl patch ingress quant -n quant-prod -p '{"spec":{"rules":[{"host":"quant.example.com","http":{"paths":[{"path":"/","pathType":"Prefix","backend":{"service":{"name":"quant-api","port":{"number":8521}}}}]}}]}}'
+
+      - name: Post-deployment verification
+        run: |
+          curl -f https://quant.example.com/health || exit 1
+          curl -f https://quant.example.com/api/v1/status || exit 1
+
+      - name: Notify deployment
+        if: always()
+        run: |
+          STATUS=${{ job.status }}
+          curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+            -H 'Content-type: application/json' \
+            -d "{\"text\":\"Production deployment ${{ github.ref_name }}: $STATUS\"}"

@@ -1,0 +1,43 @@
+# Tempo 配置
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9095
+
+distributor:
+  receivers:
+    jaeger:
+      protocols:
+        thrift_http:
+        grpc:
+        thrift_binary:
+        thrift_compact:
+    zipkin:
+    otlp:
+      protocols:
+        http:
+        grpc:
+
+ingester:
+  max_block_duration: 5m
+  max_block_bytes: 1_000_000
+  trace_idle_period: 10s
+  flush_check_period: 30s
+
+compactor:
+  compaction:
+    block_retention: 72h
+    compacted_block_retention: 1h
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /tempo/traces
+    pool:
+      max_workers: 100
+      queue_depth: 10000
+
+overrides:
+  defaults:
+    ingestion_rate_limit_mb: 20
+    ingestion_burst_size_mb: 40

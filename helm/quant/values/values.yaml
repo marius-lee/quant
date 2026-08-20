@@ -1,0 +1,311 @@
+# Quant Helm Chart - 默认配置值
+# 环境特定配置见 values-dev.yaml, values-staging.yaml, values-prod.yaml
+
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+  storageClass: "standard"
+  domain: "quant.example.com"
+  tls:
+    enabled: true
+    secretName: "quant-tls"
+
+# ═══════════════════════════════════════════════════════════════
+# Quant 应用镜像
+# ═══════════════════════════════════════════════════════════════
+quant:
+  image:
+    repository: quant
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+  env:
+    QUANT_CONFIG_PATH: /config/config.yaml
+    QUANT_DATA_DIR: /data
+    QUANT_LOG_DIR: /logs
+    PYTHONPATH: /app
+  config:
+    configMap: quant-config
+    secret: quant-secrets
+  volumes:
+    - name: config
+      configMap:
+        name: quant-config
+    - name: data
+      persistentVolumeClaim:
+        claimName: quant-data
+    - name: logs
+      emptyDir: {}
+  ports:
+    http: 8521
+    metrics: 9090
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 40
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: http
+    initialDelaySeconds: 20
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# ═══════════════════════════════════════════════════════════════
+# Dagster Webserver
+# ═══════════════════════════════════════════════════════════════
+dagster:
+  webserver:
+    enabled: true
+    replicaCount: 1
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 2Gi
+      requests:
+        cpu: 500m
+        memory: 512Mi
+    env:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+    ports:
+      http: 3000
+    livenessProbe:
+      httpGet:
+        path: /server_info
+        port: http
+      initialDelaySeconds: 60
+      periodSeconds: 30
+  daemon:
+    enabled: true
+    replicaCount: 1
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 2Gi
+      requests:
+        cpu: 500m
+        memory: 512Mi
+    env:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+
+# ═══════════════════════════════════════════════════════════════
+# Factor Workers (Ray)
+# ═══════════════════════════════════════════════════════════════
+factor:
+  worker:
+    enabled: true
+    replicaCount: 3
+    resources:
+      limits:
+        cpu: 4000m
+        memory: 8Gi
+      requests:
+        cpu: 1000m
+        memory: 2Gi
+    env:
+      RAY_ADDRESS: ray-head:10001
+  ray:
+    head:
+      enabled: true
+      resources:
+        limits:
+          cpu: 4000m
+          memory: 8Gi
+        requests:
+          cpu: 1000m
+          memory: 2Gi
+      ports:
+        dashboard: 8265
+        ray: 10001
+        redis: 6379
+
+# ═══════════════════════════════════════════════════════════════
+# 依赖服务开关
+# ═══════════════════════════════════════════════════════════════
+postgresql:
+  enabled: true
+  auth:
+    database: quant
+    username: quant
+    # password 从 secret 获取
+  primary:
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 2Gi
+      requests:
+        cpu: 500m
+        memory: 512Mi
+    persistence:
+      size: 50Gi
+
+redis:
+  enabled: true
+  auth:
+    enabled: false
+  master:
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 250m
+        memory: 256Mi
+    persistence:
+      size: 10Gi
+
+minio:
+  enabled: true
+  auth:
+    rootUser: minioadmin
+    # rootPassword 从 secret 获取
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+  persistence:
+    size: 100Gi
+
+# ═══════════════════════════════════════════════════════════════
+# 监控栈
+# ═══════════════════════════════════════════════════════════════
+prometheus:
+  enabled: true
+  server:
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+    persistentVolume:
+      size: 50Gi
+    retention: 30d
+
+grafana:
+  enabled: true
+  adminUser: admin
+  # adminPassword 从 secret 获取
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+  persistence:
+    size: 10Gi
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          url: http://prometheus-server:80
+          access: proxy
+          isDefault: true
+        - name: Loki
+          type: loki
+          url: http://loki:3100
+          access: proxy
+        - name: Tempo
+          type: tempo
+          url: http://tempo:3200
+          access: proxy
+        - name: Alertmanager
+          type: alertmanager
+          url: http://alertmanager:9093
+          access: proxy
+
+loki:
+  enabled: true
+  loki:
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 250m
+        memory: 512Mi
+    persistence:
+      size: 50Gi
+
+tempo:
+  enabled: true
+  tempo:
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 250m
+        memory: 512Mi
+    persistence:
+      size: 50Gi
+
+# ═══════════════════════════════════════════════════════════════
+# Ingress
+# ═══════════════════════════════════════════════════════════════
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+  hosts:
+    - host: quant.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: quant-api
+          port: 8521
+    - host: dagster.quant.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: dagster-webserver
+          port: 3000
+    - host: grafana.quant.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: grafana
+          port: 80
+    - host: prometheus.quant.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: prometheus-server
+          port: 9090
+  tls:
+    - secretName: quant-tls
+      hosts:
+        - quant.example.com
+        - dagster.quant.example.com
+        - grafana.quant.example.com
+        - prometheus.quant.example.com
+
+# ═══════════════════════════════════════════════════════════════
+# 网络策略
+# ═══════════════════════════════════════════════════════════════
+networkPolicy:
+  enabled: true
+  # 默认拒绝所有入站，仅允许显式规则
+  defaultDenyIngress: true

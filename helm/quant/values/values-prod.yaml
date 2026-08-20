@@ -1,0 +1,207 @@
+# Quant Helm Chart - 生产环境配置
+
+global:
+  domain: "quant.example.com"
+  storageClass: "fast-ssd"
+  tls:
+    enabled: true
+    secretName: "quant-tls-prod"
+
+quant:
+  replicaCount: 3
+  resources:
+    limits:
+      cpu: 4000m
+      memory: 4Gi
+    requests:
+      cpu: 1000m
+      memory: 1Gi
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+
+dagster:
+  webserver:
+    replicaCount: 2
+    resources:
+      limits:
+        cpu: 4000m
+        memory: 4Gi
+      requests:
+        cpu: 1000m
+        memory: 1Gi
+  daemon:
+    replicaCount: 2
+    resources:
+      limits:
+        cpu: 4000m
+        memory: 4Gi
+      requests:
+        cpu: 1000m
+        memory: 1Gi
+
+factor:
+  worker:
+    replicaCount: 6
+    resources:
+      limits:
+        cpu: 8000m
+        memory: 16Gi
+      requests:
+        cpu: 2000m
+        memory: 4Gi
+    autoscaling:
+      enabled: true
+      minReplicas: 3
+      maxReplicas: 20
+      targetCPUUtilizationPercentage: 60
+  ray:
+    head:
+      resources:
+        limits:
+          cpu: 8000m
+          memory: 16Gi
+        requests:
+          cpu: 2000m
+          memory: 4Gi
+
+postgresql:
+  primary:
+    resources:
+      limits:
+        cpu: 4000m
+        memory: 8Gi
+      requests:
+        cpu: 1000m
+        memory: 2Gi
+    persistence:
+      size: 200Gi
+    # 高可用配置
+    replication:
+      enabled: true
+      replicaCount: 2
+
+redis:
+  cluster:
+    enabled: true
+    nodes: 6
+  master:
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+    persistence:
+      size: 50Gi
+
+minio:
+  mode: distributed
+  replicas: 4
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+  persistence:
+    size: 500Gi
+
+prometheus:
+  server:
+    resources:
+      limits:
+        cpu: 4000m
+        memory: 8Gi
+      requests:
+        cpu: 1000m
+        memory: 2Gi
+    persistentVolume:
+      size: 200Gi
+    retention: 90d
+  alertmanager:
+    enabled: true
+    replicaCount: 3
+
+grafana:
+  replicaCount: 2
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+  persistence:
+    size: 20Gi
+
+loki:
+  loki:
+    replicaCount: 3
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+    persistence:
+      size: 200Gi
+
+tempo:
+  tempo:
+    replicaCount: 3
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+    persistence:
+      size: 200Gi
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rate-limit: "200"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  tls:
+    - secretName: quant-tls-prod
+      hosts:
+        - quant.example.com
+        - dagster.quant.example.com
+        - grafana.quant.example.com
+        - prometheus.quant.example.com
+        - alertmanager.quant.example.com
+
+networkPolicy:
+  enabled: true
+  defaultDenyIngress: true
+  # 生产环境额外策略
+  additionalPolicies:
+    - name: quant-egress-dns
+      spec:
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: quant
+        policyTypes:
+          - Egress
+        egress:
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: kube-system
+            ports:
+              - protocol: UDP
+                port: 53

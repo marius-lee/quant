@@ -1,0 +1,99 @@
+{
+  "dashboard": {
+    "title": "Quant Trading System Overview",
+    "uid": "quant-overview",
+    "tags": ["quant", "overview"],
+    "timezone": "Asia/Shanghai",
+    "panels": [
+      {
+        "id": 1,
+        "title": "系统健康度",
+        "type": "stat",
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "up{job=~\"quant.*\"}",
+            "legendFormat": "{{job}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              {"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}
+            ],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]
+            }
+          }
+        }
+      },
+      {
+        "id": 2,
+        "title": "API 延迟 P99",
+        "type": "graph",
+        "gridPos": {"x": 6, "y": 0, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{job=\"quant-api\"}[5m]))",
+            "legendFormat": "P99"
+          },
+          {
+            "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job=\"quant-api\"}[5m]))",
+            "legendFormat": "P95"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "因子计算吞吐量",
+        "type": "graph",
+        "gridPos": {"x": 18, "y": 0, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "rate(factor_computed_total[5m])",
+            "legendFormat": "factors/sec"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "数据同步延迟",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "data_sync_lag_seconds",
+            "legendFormat": "{{table}}"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "title": "风控熔断状态",
+        "type": "table",
+        "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "circuit_breaker_status",
+            "format": "table"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "活跃策略数",
+        "type": "stat",
+        "gridPos": {"x": 24, "y": 0, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "count(strategy_status{status=\"running\"})",
+            "legendFormat": "Active"
+          }
+        ]
+      }
+    ],
+    "time": {"from": "now-1h", "to": "now"},
+    "refresh": "10s"
+  }
+}

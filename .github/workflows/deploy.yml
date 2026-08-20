@@ -1,0 +1,122 @@
+# 手动部署工作流
+# 支持: staging/production 环境选择、版本指定、回滚
+
+name: Manual Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      version:
+        description: 'Image tag / version to deploy (default: latest)'
+        required: false
+        default: 'latest'
+        type: string
+      action:
+        description: 'Deploy action'
+        required: true
+        type: choice
+        options:
+          - deploy
+          - rollback
+      rollback-revision:
+        description: 'Helm revision to rollback to (for rollback action)'
+        required: false
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  deploy:
+    name: Deploy to ${{ github.event.inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.13.0
+
+      - name: Configure kubectl
+        uses: azure/k8s-set-context@v1
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG_${{ upper(github.event.inputs.environment) }} }}
+
+      - name: Deploy
+        if: github.event.inputs.action == 'deploy'
+        run: |
+          ENV="${{ github.event.inputs.environment }}"
+          VERSION="${{ github.event.inputs.version }}"
+          
+          if [ "$ENV" = "production" ]; then
+            VALUES_FILE="helm/quant/values/values-prod.yaml"
+            NAMESPACE="quant-prod"
+            RELEASE="quant"
+          else
+            VALUES_FILE="helm/quant/values/values-dev.yaml"
+            NAMESPACE="quant-staging"
+            RELEASE="quant-staging"
+          fi
+          
+          helm upgrade --install "$RELEASE" helm/quant \
+            -f "$VALUES_FILE" \
+            --namespace "$NAMESPACE" \
+            --create-namespace \
+            --set quant.image.tag="$VERSION" \
+            --wait --timeout 10m
+          
+          # 验证
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=api -n "$NAMESPACE" --timeout=120s
+          
+          if [ "$ENV" = "production" ]; then
+            curl -f https://quant.example.com/health || exit 1
+          else
+            curl -f https://quant-staging.example.com/health || exit 1
+          fi
+
+      - name: Rollback
+        if: github.event.inputs.action == 'rollback'
+        run: |
+          ENV="${{ github.event.inputs.environment }}"
+          REVISION="${{ github.event.inputs.rollback-revision }}"
+          
+          if [ "$ENV" = "production" ]; then
+            NAMESPACE="quant-prod"
+            RELEASE="quant"
+          else
+            NAMESPACE="quant-staging"
+            RELEASE="quant-staging"
+          fi
+          
+          if [ -z "$REVISION" ]; then
+            echo "Error: rollback-revision required for rollback action"
+            exit 1
+          fi
+          
+          helm rollback "$RELEASE" "$REVISION" -n "$NAMESPACE" --wait --timeout 5m
+          
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=api -n "$NAMESPACE" --timeout=60s
+
+      - name: Notify
+        if: always()
+        run: |
+          STATUS=${{ job.status }}
+          ENV="${{ github.event.inputs.environment }}"
+          ACTION="${{ github.event.inputs.action }}"
+          VERSION="${{ github.event.inputs.version }}"
+          
+          curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+            -H 'Content-type: application/json' \
+            -d "{\"text\":\"Manual $ACTION to $ENV (v$VERSION): $STATUS\"}"

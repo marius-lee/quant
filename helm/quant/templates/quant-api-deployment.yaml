@@ -1,0 +1,148 @@
+{{- if .Values.quant.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "quant.fullname" . }}-api
+  namespace: {{ include "quant.namespace" . }}
+  labels:
+    {{- include "quant.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  replicas: {{ .Values.quant.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "quant.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "quant.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.quant.ports.metrics }}"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: {{ include "quant.fullname" . }}-api
+      securityContext:
+        {{- include "quant.podSecurityContext" . | nindent 8 }}
+      imagePullSecrets:
+        {{- include "quant.imagePullSecrets" . | nindent 8 }}
+      containers:
+        - name: quant-api
+          image: "{{ .Values.quant.image.repository }}:{{ .Values.quant.image.tag }}"
+          imagePullPolicy: {{ .Values.quant.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.quant.ports.http }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.quant.ports.metrics }}
+              protocol: TCP
+          env:
+            {{- range $key, $value := .Values.quant.env }}
+            - name: {{ $key }}
+              value: "{{ $value }}"
+            {{- end }}
+            - name: POSTGRES_HOST
+              value: {{ include "quant.fullname" . }}-postgresql
+            - name: POSTGRES_DB
+              value: quant
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "quant.fullname" . }}-postgresql
+                  key: postgresql-username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "quant.fullname" . }}-postgresql
+                  key: postgresql-password
+            - name: REDIS_HOST
+              value: {{ include "quant.fullname" . }}-redis-master
+            - name: MINIO_ENDPOINT
+              value: {{ include "quant.fullname" . }}-minio:9000
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "quant.fullname" . }}-minio
+                  key: minio-root-user
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "quant.fullname" . }}-minio
+                  key: minio-root-password
+          envFrom:
+            - configMapRef:
+                name: {{ .Values.quant.config.configMap }}
+              optional: true
+            - secretRef:
+                name: {{ .Values.quant.config.secret }}
+              optional: true
+          volumeMounts:
+            {{- range .Values.quant.volumes }}
+            - name: {{ .name }}
+              mountPath: {{ .mountPath | default (printf "/mnt/%s" .name) }}
+              readOnly: {{ .readOnly | default false }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.quant.resources | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.quant.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.quant.readinessProbe | nindent 12 }}
+          securityContext:
+            {{- include "quant.containerSecurityContext" . | nindent 12 }}
+      volumes:
+        {{- range .Values.quant.volumes }}
+        - name: {{ .name }}
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/component
+                      operator: In
+                      values:
+                        - api
+                topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/component: api
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "quant.fullname" . }}-api
+  namespace: {{ include "quant.namespace" . }}
+  labels:
+    {{- include "quant.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.quant.ports.http }}
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: {{ .Values.quant.ports.metrics }}
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    {{- include "quant.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+{{- end }}

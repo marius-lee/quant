@@ -1,0 +1,142 @@
+# Quant Helm Chart - 开发环境配置
+
+global:
+  domain: "quant-dev.example.com"
+  storageClass: "standard"
+  tls:
+    enabled: false
+
+quant:
+  replicaCount: 1
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+
+dagster:
+  webserver:
+    replicaCount: 1
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+      requests:
+        cpu: 250m
+        memory: 256Mi
+  daemon:
+    replicaCount: 1
+
+factor:
+  worker:
+    replicaCount: 1
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+  ray:
+    head:
+      resources:
+        limits:
+          cpu: 2000m
+          memory: 4Gi
+        requests:
+          cpu: 500m
+          memory: 1Gi
+
+postgresql:
+  primary:
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+      requests:
+        cpu: 250m
+        memory: 256Mi
+    persistence:
+      size: 10Gi
+
+redis:
+  master:
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+    persistence:
+      size: 5Gi
+
+minio:
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  persistence:
+    size: 10Gi
+
+prometheus:
+  server:
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 250m
+        memory: 512Mi
+    persistentVolume:
+      size: 10Gi
+
+grafana:
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+loki:
+  loki:
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 100m
+        memory: 256Mi
+    persistence:
+      size: 10Gi
+
+tempo:
+  tempo:
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 100m
+        memory: 256Mi
+    persistence:
+      size: 10Gi
+
+ingress:
+  enabled: true
+  tls:
+    - secretName: quant-tls-dev
+      hosts:
+        - quant-dev.example.com
+        - dagster-dev.quant.example.com
+        - grafana-dev.quant.example.com
+
+networkPolicy:
+  enabled: false

@@ -1,0 +1,46 @@
+apiVersion: v2
+name: quant
+description: A-share Quantitative Trading System - Helm Chart for Kubernetes
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+home: https://github.com/marius-lee/quant
+maintainers:
+  - name: Quant Team
+    email: quant@example.com
+keywords:
+  - quantitative-trading
+  - factor-computing
+  - risk-management
+  - multi-tenant
+sources:
+  - https://github.com/marius-lee/quant
+dependencies:
+  - name: postgresql
+    version: "12.x.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgresql.enabled
+  - name: redis
+    version: "17.x.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: redis.enabled
+  - name: minio
+    version: "11.x.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: minio.enabled
+  - name: prometheus
+    version: "15.x.x"
+    repository: "https://prometheus-community.github.io/helm-charts"
+    condition: prometheus.enabled
+  - name: grafana
+    version: "6.x.x"
+    repository: "https://grafana.github.io/helm-charts"
+    condition: grafana.enabled
+  - name: loki
+    version: "5.x.x"
+    repository: "https://grafana.github.io/helm-charts"
+    condition: loki.enabled
+  - name: tempo
+    version: "1.x.x"
+    repository: "https://grafana.github.io/helm-charts"
+    condition: tempo.enabled

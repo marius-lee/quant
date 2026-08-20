@@ -1,4 +1,4 @@
-"""多租户核心模块 - 租户模型、命名空间隔离、资源配额、数据共享."""
+"""多租户核心模块 - 租户模型、命名空间隔离、资源配额、数据共享、资源调度."""
 
 from .models import Tenant, TenantStatus, ResourceQuota, ResourceUsage
 from .registry import TenantRegistry, get_tenant_registry
@@ -11,6 +11,16 @@ from .sharing import (
     SharePermission,
     ShareStatus,
     get_data_sharing_manager,
+)
+from .scheduling import (
+    Scheduler,
+    Task,
+    TaskPriority,
+    SchedulingPolicy,
+    FairQueue,
+    PriorityQueue,
+    get_scheduler,
+    init_scheduler,
 )
 
 __all__ = [
@@ -32,4 +42,12 @@ __all__ = [
     "SharePermission",
     "ShareStatus",
     "get_data_sharing_manager",
+    "Scheduler",
+    "Task",
+    "TaskPriority",
+    "SchedulingPolicy",
+    "FairQueue",
+    "PriorityQueue",
+    "get_scheduler",
+    "init_scheduler",
 ]

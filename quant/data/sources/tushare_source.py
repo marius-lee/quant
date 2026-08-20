@@ -42,7 +42,13 @@ class TushareSource(BaseDataSource):
           - stock_basic: 股票列表
           - fund_flow: 资金流
           - margin: 融资融券
-          - ... 更多见 Tushare 文档
+          - lhb: 龙虎榜
+          - northbound: 北向资金
+          - dividend: 分红
+          - income: 利润表
+          - balance: 资产负债表
+          - cashflow: 现金流量表
+          - index_daily: 指数日线
         """
         self._init_client()
         operation = kwargs.pop("operation", "daily")
@@ -54,6 +60,24 @@ class TushareSource(BaseDataSource):
                 return self._fetch_adj_factor(**kwargs)
             elif operation == "stock_basic":
                 return self._fetch_stock_basic(**kwargs)
+            elif operation == "fund_flow":
+                return self._fetch_fund_flow(**kwargs)
+            elif operation == "margin":
+                return self._fetch_margin(**kwargs)
+            elif operation == "lhb":
+                return self._fetch_lhb(**kwargs)
+            elif operation == "northbound":
+                return self._fetch_northbound(**kwargs)
+            elif operation == "dividend":
+                return self._fetch_dividend(**kwargs)
+            elif operation == "income":
+                return self._fetch_income(**kwargs)
+            elif operation == "balance":
+                return self._fetch_balance(**kwargs)
+            elif operation == "cashflow":
+                return self._fetch_cashflow(**kwargs)
+            elif operation == "index_daily":
+                return self._fetch_index_daily(**kwargs)
             else:
                 return DataSourceResult(
                     success=False,
@@ -145,10 +169,249 @@ class TushareSource(BaseDataSource):
         rows = df.to_dict(orient="records")
         return DataSourceResult(success=True, data=rows, rows_affected=len(rows))
 
+    def _fetch_fund_flow(self, symbols: list[str], start_date: str, end_date: str | None = None) -> DataSourceResult:
+        """获取个股资金流."""
+        from datetime import datetime
+        from quant.utils.date import to_compact
+
+        if not symbols:
+            return DataSourceResult(success=True, data=[], rows_affected=0)
+
+        ts_codes = []
+        for s in symbols:
+            if s.startswith("92"):
+                ts_codes.append(f"{s}.BJ")
+            elif s.startswith(("6", "9", "68")):
+                ts_codes.append(f"{s}.SH")
+            else:
+                ts_codes.append(f"{s}.SZ")
+
+        end = end_date or datetime.today().strftime("%Y-%m-%d")
+        df = self._pro.moneyflow(
+            ts_code=",".join(ts_codes),
+            start_date=to_compact(start_date),
+            end_date=to_compact(end),
+        )
+
+        if df is None or df.empty:
+            return DataSourceResult(success=True, data=[], rows_affected=0)
+
+        df["symbol"] = df["ts_code"].str.split(".").str[0]
+        rows = df.to_dict(orient="records")
+        return DataSourceResult(success=True, data=rows, rows_affected=len(rows))
+
+    def _fetch_margin(self, symbols: list[str], start_date: str, end_date: str | None = None) -> DataSourceResult:
+        """获取融资融券数据."""
+        from datetime import datetime
+        from quant.utils.date import to_compact
+
+        if not symbols:
+            return DataSourceResult(success=True, data=[], rows_affected=0)
+
+        ts_codes = []
+        for s in symbols:
+            if s.startswith("92"):
+                ts_codes.append(f"{s}.BJ")
+            elif s.startswith(("6", "9", "68")):
+                ts_codes.append(f"{s}.SH")
+            else:
+                ts_codes.append(f"{s}.SZ")
+
+        end = end_date or datetime.today().strftime("%Y-%m-%d")
+        df = self._pro.margin_detail(
+            ts_code=",".join(ts_codes),
+            start_date=to_compact(start_date),
+            end_date=to_compact(end),
+        )
+
+        if df is None or df.empty:
+            return DataSourceResult(success=True, data=[], rows_affected=0)
+
+        df["symbol"] = df["ts_code"].str.split(".").str[0]
+        rows = df.to_dict(orient="records")
+        return DataSourceResult(success=True, data=rows, rows_affected=len(rows))
+
+    def _fetch_lhb(self, symbols: list[str], start_date: str, end_date: str | None = None) -> DataSourceResult:
+        """获取龙虎榜数据."""
+        from datetime import datetime
+        from quant.utils.date import to_compact
+
+        if not symbols:
+            return DataSourceResult(success=True, data=[], rows_affected=0)
+
+        ts_codes = []
+        for s in symbols:
+            if s.startswith("92"):
+                ts_codes.append(f"{s}.BJ")
+            elif s.startswith(("6", "9", "68")):
+                ts_codes.append(f"{s}.SH")
+            else:
+                ts_codes.append(f"{s}.SZ")
+
+        end = end_date or datetime.today().strftime("%Y-%m-%d")
+        df = self._pro.top_list(
+            ts_code=",".join(ts_codes),
+            start_date=to_compact(start_date),
+            end_date=to_compact(end),
+        )
+
+        if df is None or df.empty:
+            return DataSourceResult(success=True, data=[], rows_affected=0)
+
+        df["symbol"] = df["ts_code"].str.split(".").str[0]
+        rows = df.to_dict(orient="records")
+        return DataSourceResult(success=True, data=rows, rows_affected=len(rows))
+
+    def _fetch_northbound(self, start_date: str, end_date: str | None = None) -> DataSourceResult:
+        """获取北向资金数据."""
+        from datetime import datetime
+        from quant.utils.date import to_compact
+
+        end = end_date or datetime.today().strftime("%Y-%m-%d")
+        df = self._pro.moneyflow_hsgt(
+            start_date=to_compact(start_date),
+            end_date=to_compact(end),
+        )
+
+        if df is None or df.empty:
+            return DataSourceResult(success=True, data=[], rows_affected=0)
+
+        rows = df.to_dict(orient="records")
+        return DataSourceResult(success=True, data=rows, rows_affected=len(rows))
+
+    def _fetch_dividend(self, symbols: list[str], start_date: str, end_date: str | None = None) -> DataSourceResult:
+        """获取分红数据."""
+        from datetime import datetime
+        from quant.utils.date import to_compact
+
+        if not symbols:
+            return DataSourceResult(success=True, data=[], rows_affected=0)
+
+        ts_codes = []
+        for s in symbols:
+            if s.startswith("92"):
+                ts_codes.append(f"{s}.BJ")
+            elif s.startswith(("6", "9", "68")):
+                ts_codes.append(f"{s}.SH")
+            else:
+                ts_codes.append(f"{s}.SZ")
+
+        end = end_date or datetime.today().strftime("%Y-%m-%d")
+        df = self._pro.dividend(
+            ts_code=",".join(ts_codes),
+        )
+
+        if df is None or df.empty:
+            return DataSourceResult(success=True, data=[], rows_affected=0)
+
+        df["symbol"] = df["ts_code"].str.split(".").str[0]
+        rows = df.to_dict(orient="records")
+        return DataSourceResult(success=True, data=rows, rows_affected=len(rows))
+
+    def _fetch_income(self, symbols: list[str], period: str | None = None) -> DataSourceResult:
+        """获取利润表."""
+        if not symbols:
+            return DataSourceResult(success=True, data=[], rows_affected=0)
+
+        ts_codes = []
+        for s in symbols:
+            if s.startswith("92"):
+                ts_codes.append(f"{s}.BJ")
+            elif s.startswith(("6", "9", "68")):
+                ts_codes.append(f"{s}.SH")
+            else:
+                ts_codes.append(f"{s}.SZ")
+
+        df = self._pro.income(
+            ts_code=",".join(ts_codes),
+            period=period,
+            fields="ts_code,ann_date,f_ann_date,end_date,comp_type,revenue,operate_cost,operate_profit,total_profit,n_income,basic_eps,diluted_eps",
+        )
+
+        if df is None or df.empty:
+            return DataSourceResult(success=True, data=[], rows_affected=0)
+
+        df["symbol"] = df["ts_code"].str.split(".").str[0]
+        rows = df.to_dict(orient="records")
+        return DataSourceResult(success=True, data=rows, rows_affected=len(rows))
+
+    def _fetch_balance(self, symbols: list[str], period: str | None = None) -> DataSourceResult:
+        """获取资产负债表."""
+        if not symbols:
+            return DataSourceResult(success=True, data=[], rows_affected=0)
+
+        ts_codes = []
+        for s in symbols:
+            if s.startswith("92"):
+                ts_codes.append(f"{s}.BJ")
+            elif s.startswith(("6", "9", "68")):
+                ts_codes.append(f"{s}.SH")
+            else:
+                ts_codes.append(f"{s}.SZ")
+
+        df = self._pro.balancesheet(
+            ts_code=",".join(ts_codes),
+            period=period,
+            fields="ts_code,ann_date,f_ann_date,end_date,comp_type,total_assets,total_liab,total_hldr_eqy_inc_min_int,total_cur_assets,total_nca,total_cur_liab,total_ncl",
+        )
+
+        if df is None or df.empty:
+            return DataSourceResult(success=True, data=[], rows_affected=0)
+
+        df["symbol"] = df["ts_code"].str.split(".").str[0]
+        rows = df.to_dict(orient="records")
+        return DataSourceResult(success=True, data=rows, rows_affected=len(rows))
+
+    def _fetch_cashflow(self, symbols: list[str], period: str | None = None) -> DataSourceResult:
+        """获取现金流量表."""
+        if not symbols:
+            return DataSourceResult(success=True, data=[], rows_affected=0)
+
+        ts_codes = []
+        for s in symbols:
+            if s.startswith("92"):
+                ts_codes.append(f"{s}.BJ")
+            elif s.startswith(("6", "9", "68")):
+                ts_codes.append(f"{s}.SH")
+            else:
+                ts_codes.append(f"{s}.SZ")
+
+        df = self._pro.cashflow(
+            ts_code=",".join(ts_codes),
+            period=period,
+            fields="ts_code,ann_date,f_ann_date,end_date,comp_type,n_cashflow_act,n_cashflow_inv_act,n_cashflow_fin_act,free_cashflow",
+        )
+
+        if df is None or df.empty:
+            return DataSourceResult(success=True, data=[], rows_affected=0)
+
+        df["symbol"] = df["ts_code"].str.split(".").str[0]
+        rows = df.to_dict(orient="records")
+        return DataSourceResult(success=True, data=rows, rows_affected=len(rows))
+
+    def _fetch_index_daily(self, index_code: str, start_date: str, end_date: str | None = None) -> DataSourceResult:
+        """获取指数日线."""
+        from datetime import datetime
+        from quant.utils.date import to_compact
+
+        end = end_date or datetime.today().strftime("%Y-%m-%d")
+        df = self._pro.index_daily(
+            ts_code=index_code,
+            start_date=to_compact(start_date),
+            end_date=to_compact(end),
+        )
+
+        if df is None or df.empty:
+            return DataSourceResult(success=True, data=[], rows_affected=0)
+
+        rows = df.to_dict(orient="records")
+        return DataSourceResult(success=True, data=rows, rows_affected=len(rows))
+
     def _health_check_impl(self) -> bool:
         """健康检查: 尝试获取单只股票最新行情."""
         try:
             self._init_client()
+            from datetime import datetime
             df = self._pro.daily(
                 ts_code="000001.SZ",
                 start_date=datetime.today().strftime("%Y%m%d"),

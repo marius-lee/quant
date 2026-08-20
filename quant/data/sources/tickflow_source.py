@@ -1,4 +1,4 @@
-"""TickFlow 数据源实现 — 实时行情 + 历史 K 线."""
+"""TickFlow 数据源实现 — 实时行情 + 历史 K 线 + Level-2 + 期权."""
 
 from __future__ import annotations
 from quant.data.sources.base import BaseDataSource, DataSourceConfig, DataSourceResult
@@ -10,8 +10,8 @@ logger = get_logger("data.sources.tickflow")
 class TickFlowSource(BaseDataSource):
     """TickFlow 数据源.
 
-    提供: 实时行情、历史 K 线、Level-2 数据、期权行情.
-    支持免费版(仅历史日K)和注册版(批量 K 线 + 实时行情).
+    提供: 实时行情、历史 K 线、Level-2 数据、期权行情、逐笔、资金流.
+    支持免费版(仅历史日K)和注册版(批量 K 线 + 实时行情 + Level-2 + 期权).
     """
 
     def __init__(self, config: DataSourceConfig):
@@ -54,6 +54,14 @@ class TickFlowSource(BaseDataSource):
                 return self._fetch_quotes(**kwargs)
             elif operation == "klines_batch":
                 return self._fetch_klines_batch(**kwargs)
+            elif operation == "level2":
+                return self._fetch_level2(**kwargs)
+            elif operation == "options":
+                return self._fetch_options(**kwargs)
+            elif operation == "ticks":
+                return self._fetch_ticks(**kwargs)
+            elif operation == "moneyflow":
+                return self._fetch_moneyflow(**kwargs)
             else:
                 return DataSourceResult(
                     success=False,
@@ -125,6 +133,221 @@ class TickFlowSource(BaseDataSource):
                     "close": float(row.get("close", 0)),
                     "volume": float(row.get("volume", 0)),      # 手
                     "amount": float(row.get("amount", 0)) / 1000,  # 元→千元
+                })
+
+        return DataSourceResult(success=True, data=all_rows, rows_affected=len(all_rows))
+
+    def _fetch_quotes(self, symbols: list[str], date: str) -> DataSourceResult:
+        """获取实时行情(含 turnover_rate) — 仅注册版."""
+        from tickflow import TickFlow
+        from quant.config.constants import _require_cfg
+
+        api_key = _require_cfg("data.tickflow_api_key")
+        tf = TickFlow(api_key=api_key)
+
+        codes = [self._tf_code(s) for s in symbols]
+        all_rows = []
+
+        # quotes API 单次最多 5 只
+        for i in range(0, len(codes), 5):
+            chunk = codes[i:i+5]
+            try:
+                df = tf.quotes.get(symbols=chunk, as_dataframe=True)
+            except Exception as e:
+                logger.warning(f"[tickflow] quotes chunk {i} failed: {e}")
+                continue
+
+            if df is None or df.empty:
+                continue
+
+            for _, q in df.iterrows():
+                sym = str(q.get("symbol", "")).split(".")[0]
+                all_rows.append({
+                    "symbol": sym,
+                    "date": date,
+                    "open": float(q.get("open", 0)),
+                    "high": float(q.get("high", 0)),
+                    "low": float(q.get("low", 0)),
+                    "close": float(q.get("last_price", 0)),
+                    "volume": float(q.get("volume", 0)),
+                    "amount": float(q.get("amount", 0)) / 1000,
+                    "turnover": float(q.get("ext.turnover_rate", 0) or 0),
+                })
+
+        return DataSourceResult(success=True, data=all_rows, rows_affected=len(all_rows))
+
+    def _fetch_level2(self, symbols: list[str], date: str | None = None) -> DataSourceResult:
+        """获取 Level-2 逐笔/委托数据 — 仅注册版."""
+        from tickflow import TickFlow
+        from quant.config.constants import _require_cfg
+        from datetime import datetime
+
+        api_key = _require_cfg("data.tickflow_api_key")
+        tf = TickFlow(api_key=api_key)
+
+        codes = [self._tf_code(s) for s in symbols]
+        target_date = date or datetime.today().strftime("%Y-%m-%d")
+        all_rows = []
+
+        for sym, code in zip(symbols, codes):
+            try:
+                # Level-2 逐笔
+                df_trades = tf.level2.trades.get(symbol=code, date=target_date, as_dataframe=True)
+                # Level-2 委托
+                df_orders = tf.level2.orders.get(symbol=code, date=target_date, as_dataframe=True)
+            except Exception as e:
+                logger.warning(f"[tickflow] level2 {code} failed: {e}")
+                continue
+
+            if df_trades is not None and not df_trades.empty:
+                for _, row in df_trades.iterrows():
+                    all_rows.append({
+                        "symbol": sym,
+                        "date": target_date,
+                        "type": "trade",
+                        "time": str(row.get("time", "")),
+                        "price": float(row.get("price", 0)),
+                        "volume": float(row.get("volume", 0)),
+                        "direction": str(row.get("direction", "")),
+                    })
+
+            if df_orders is not None and not df_orders.empty:
+                for _, row in df_orders.iterrows():
+                    all_rows.append({
+                        "symbol": sym,
+                        "date": target_date,
+                        "type": "order",
+                        "time": str(row.get("time", "")),
+                        "price": float(row.get("price", 0)),
+                        "volume": float(row.get("volume", 0)),
+                        "direction": str(row.get("direction", "")),
+                        "order_type": str(row.get("order_type", "")),
+                    })
+
+        return DataSourceResult(success=True, data=all_rows, rows_affected=len(all_rows))
+
+    def _fetch_options(self, symbols: list[str], date: str | None = None) -> DataSourceResult:
+        """获取期权行情 — 仅注册版."""
+        from tickflow import TickFlow
+        from quant.config.constants import _require_cfg
+        from datetime import datetime
+
+        api_key = _require_cfg("data.tickflow_api_key")
+        tf = TickFlow(api_key=api_key)
+
+        codes = [self._tf_code(s) for s in symbols]
+        target_date = date or datetime.today().strftime("%Y-%m-%d")
+        all_rows = []
+
+        for sym, code in zip(symbols, codes):
+            try:
+                df = tf.options.get(symbol=code, date=target_date, as_dataframe=True)
+            except Exception as e:
+                logger.warning(f"[tickflow] options {code} failed: {e}")
+                continue
+
+            if df is None or df.empty:
+                continue
+
+            for _, row in df.iterrows():
+                all_rows.append({
+                    "symbol": sym,
+                    "date": target_date,
+                    "option_code": str(row.get("symbol", "")),
+                    "strike_price": float(row.get("strike_price", 0)),
+                    "expiry_date": str(row.get("expiry_date", "")),
+                    "call_put": str(row.get("call_put", "")),
+                    "open": float(row.get("open", 0)),
+                    "high": float(row.get("high", 0)),
+                    "low": float(row.get("low", 0)),
+                    "close": float(row.get("last_price", 0)),
+                    "volume": float(row.get("volume", 0)),
+                    "amount": float(row.get("amount", 0)) / 1000,
+                    "open_interest": float(row.get("open_interest", 0)),
+                    "implied_vol": float(row.get("implied_vol", 0)),
+                    "delta": float(row.get("delta", 0)),
+                    "gamma": float(row.get("gamma", 0)),
+                    "theta": float(row.get("theta", 0)),
+                    "vega": float(row.get("vega", 0)),
+                })
+
+        return DataSourceResult(success=True, data=all_rows, rows_affected=len(all_rows))
+
+    def _fetch_ticks(self, symbols: list[str], date: str | None = None) -> DataSourceResult:
+        """获取逐笔成交 — 仅注册版."""
+        from tickflow import TickFlow
+        from quant.config.constants import _require_cfg
+        from datetime import datetime
+
+        api_key = _require_cfg("data.tickflow_api_key")
+        tf = TickFlow(api_key=api_key)
+
+        codes = [self._tf_code(s) for s in symbols]
+        target_date = date or datetime.today().strftime("%Y-%m-%d")
+        all_rows = []
+
+        for sym, code in zip(symbols, codes):
+            try:
+                df = tf.ticks.get(symbol=code, date=target_date, as_dataframe=True)
+            except Exception as e:
+                logger.warning(f"[tickflow] ticks {code} failed: {e}")
+                continue
+
+            if df is None or df.empty:
+                continue
+
+            for _, row in df.iterrows():
+                all_rows.append({
+                    "symbol": sym,
+                    "date": target_date,
+                    "time": str(row.get("time", "")),
+                    "price": float(row.get("price", 0)),
+                    "volume": float(row.get("volume", 0)),
+                    "amount": float(row.get("amount", 0)) / 1000,
+                    "direction": str(row.get("direction", "")),
+                })
+
+        return DataSourceResult(success=True, data=all_rows, rows_affected=len(all_rows))
+
+    def _fetch_moneyflow(self, symbols: list[str], start_date: str, end_date: str | None = None) -> DataSourceResult:
+        """获取资金流向 — 仅注册版."""
+        from tickflow import TickFlow
+        from quant.config.constants import _require_cfg
+        from datetime import datetime
+        from quant.utils.date import to_compact
+
+        api_key = _require_cfg("data.tickflow_api_key")
+        tf = TickFlow(api_key=api_key)
+
+        codes = [self._tf_code(s) for s in symbols]
+        end = end_date or datetime.today().strftime("%Y-%m-%d")
+        all_rows = []
+
+        for sym, code in zip(symbols, codes):
+            try:
+                df = tf.moneyflow.get(
+                    symbol=code,
+                    start_date=to_compact(start_date),
+                    end_date=to_compact(end),
+                    as_dataframe=True,
+                )
+            except Exception as e:
+                logger.warning(f"[tickflow] moneyflow {code} failed: {e}")
+                continue
+
+            if df is None or df.empty:
+                continue
+
+            for _, row in df.iterrows():
+                all_rows.append({
+                    "symbol": sym,
+                    "date": str(row.get("date", ""))[:10],
+                    "main_inflow": float(row.get("main_inflow", 0)),
+                    "main_outflow": float(row.get("main_outflow", 0)),
+                    "main_net_inflow": float(row.get("main_net_inflow", 0)),
+                    "retail_inflow": float(row.get("retail_inflow", 0)),
+                    "retail_outflow": float(row.get("retail_outflow", 0)),
+                    "retail_net_inflow": float(row.get("retail_net_inflow", 0)),
                 })
 
         return DataSourceResult(success=True, data=all_rows, rows_affected=len(all_rows))

@@ -23,6 +23,82 @@ class DataSourceStatus(Enum):
     UNKNOWN = "unknown"           # 未知
 
 
+class DataSourceErrorCode(Enum):
+    """统一错误码体系 — 所有数据源统一映射, 便于上层决策重试/降级/告警."""
+    # 通用错误
+    UNKNOWN = "UNKNOWN"
+    TIMEOUT = "TIMEOUT"
+    NETWORK_ERROR = "NETWORK_ERROR"
+    INVALID_PARAMETER = "INVALID_PARAMETER"
+    INVALID_RESPONSE = "INVALID_RESPONSE"
+
+    # 认证/权限
+    AUTH_FAILED = "AUTH_FAILED"
+    PERMISSION_DENIED = "PERMISSION_DENIED"
+    QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
+    RATE_LIMITED = "RATE_LIMITED"
+    IP_BLOCKED = "IP_BLOCKED"
+
+    # 数据质量
+    NO_DATA = "NO_DATA"
+    DATA_STALE = "DATA_STALE"
+    DATA_INCOMPLETE = "DATA_INCOMPLETE"
+    SCHEMA_MISMATCH = "SCHEMA_MISMATCH"
+
+    # 熔断/降级
+    CIRCUIT_OPEN = "CIRCUIT_OPEN"
+    MAX_RETRIES_EXCEEDED = "MAX_RETRIES_EXCEEDED"
+    ALL_SOURCES_FAILED = "ALL_SOURCES_FAILED"
+    FALLBACK_DISABLED = "FALLBACK_DISABLED"
+    DISABLED = "DISABLED"
+
+    # 业务逻辑
+    UNSUPPORTED_OPERATION = "UNSUPPORTED_OPERATION"
+    SYMBOL_NOT_FOUND = "SYMBOL_NOT_FOUND"
+    DATE_OUT_OF_RANGE = "DATE_OUT_OF_RANGE"
+    EXCEPTION = "EXCEPTION"
+
+    @classmethod
+    def is_retryable(cls, code: str) -> bool:
+        """判断错误码是否可重试."""
+        retryable = {
+            cls.TIMEOUT.value,
+            cls.NETWORK_ERROR.value,
+            cls.RATE_LIMITED.value,
+            cls.QUOTA_EXCEEDED.value,
+            cls.DATA_STALE.value,
+        }
+        return code in retryable
+
+    @classmethod
+    def is_fatal(cls, code: str) -> bool:
+        """判断错误码是否致命(不可重试, 需人工干预)."""
+        fatal = {
+            cls.AUTH_FAILED.value,
+            cls.PERMISSION_DENIED.value,
+            cls.IP_BLOCKED.value,
+            cls.INVALID_PARAMETER.value,
+            cls.UNSUPPORTED_OPERATION.value,
+            cls.SYMBOL_NOT_FOUND.value,
+            cls.DATE_OUT_OF_RANGE.value,
+        }
+        return code in fatal
+
+    @classmethod
+    def requires_fallback(cls, code: str) -> bool:
+        """判断是否应触发备源切换."""
+        fallback = {
+            cls.TIMEOUT.value,
+            cls.NETWORK_ERROR.value,
+            cls.RATE_LIMITED.value,
+            cls.QUOTA_EXCEEDED.value,
+            cls.IP_BLOCKED.value,
+            cls.CIRCUIT_OPEN.value,
+            cls.MAX_RETRIES_EXCEEDED.value,
+        }
+        return code in fallback
+
+
 @dataclass
 class DataSourceConfig:
     """数据源配置."""
@@ -134,7 +210,7 @@ class BaseDataSource(abc.ABC):
         """统一获取入口 — 含限流、熔断、重试、审计、降级."""
         if not self.config.enabled:
             return DataSourceResult(
-                success=False, error="source disabled", error_code="DISABLED"
+                success=False, error="source disabled", error_code=DataSourceErrorCode.DISABLED.value
             )
 
         # 熔断检查
@@ -142,7 +218,7 @@ class BaseDataSource(abc.ABC):
             return DataSourceResult(
                 success=False,
                 error="circuit breaker open",
-                error_code="CIRCUIT_OPEN",
+                error_code=DataSourceErrorCode.CIRCUIT_OPEN.value,
                 latency_ms=0,
             )
 
@@ -181,12 +257,17 @@ class BaseDataSource(abc.ABC):
                     return result
                 else:
                     last_error = result.error
-                    self._on_failure(result.error_code)
+                    error_code = result.error_code
+                    self._on_failure(error_code)
+                    # 检查是否为致命错误(不可重试) - 直接返回结果, 不重试、不回退
+                    if DataSourceErrorCode.is_fatal(error_code):
+                        logger.warning(f"[{self.name}] fatal error {error_code}, returning immediately")
+                        return result
 
             except Exception as e:
                 latency_ms = (time.perf_counter() - start) * 1000
                 last_error = str(e)
-                self._on_failure("EXCEPTION")
+                self._on_failure(DataSourceErrorCode.EXCEPTION.value)
 
                 if self._audit:
                     self._audit.record(
@@ -196,7 +277,7 @@ class BaseDataSource(abc.ABC):
                         latency_ms=latency_ms,
                         rows=0,
                         error=last_error,
-                        error_code="EXCEPTION",
+                        error_code=DataSourceErrorCode.EXCEPTION.value,
                     )
 
                 if self._circuit_breaker:
@@ -224,7 +305,7 @@ class BaseDataSource(abc.ABC):
         return DataSourceResult(
             success=False,
             error=last_error or "unknown error",
-            error_code="MAX_RETRIES_EXCEEDED",
+            error_code=DataSourceErrorCode.MAX_RETRIES_EXCEEDED.value,
             latency_ms=0,
         )
 
@@ -244,7 +325,7 @@ class BaseDataSource(abc.ABC):
         return DataSourceResult(
             success=False,
             error="all sources including fallbacks failed",
-            error_code="ALL_SOURCES_FAILED",
+            error_code=DataSourceErrorCode.ALL_SOURCES_FAILED.value,
         )
 
     def health_check(self) -> bool:

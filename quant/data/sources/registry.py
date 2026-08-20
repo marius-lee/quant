@@ -1,7 +1,17 @@
-"""数据源注册表 — 单例管理所有数据源实例、配置、依赖注入."""
+"""数据源注册表 — 单例管理所有数据源实例、配置、依赖注入.
+
+新增:
+  - 自动发现: 扫描 `quant.data.sources.*` 模块自动注册 BaseDataSource 子类
+  - 热重载: 监控 config.yaml 变更, 自动重载配置并重建实例
+  - 插件式扩展: 通过 entry_points 或约定目录动态加载第三方源
+"""
 
 from __future__ import annotations
+import importlib
+import inspect
+import os
 import threading
+import time
 from typing import Any
 
 from quant.utils.logger import get_logger
@@ -31,6 +41,7 @@ class DataSourceRegistry:
       3. 注入共享组件(限流器、熔断器、审计器)
       4. 提供统一的获取/健康检查/状态查询接口
       5. 支持按优先级/分组/标签查询
+      6. 自动发现 + 热重载 + 插件扩展
     """
 
     _instance: "DataSourceRegistry | None" = None
@@ -51,16 +62,11 @@ class DataSourceRegistry:
         self._sources: dict[str, BaseDataSource] = {}
         self._configs: dict[str, DataSourceConfig] = {}
         self._source_classes: dict[str, type[BaseDataSource]] = {}
+        self._config_mtime: float = 0
+        self._reload_lock = threading.Lock()
 
-        # 自动注册内置源
-        self._source_classes.update({
-            "tushare": TushareSource,
-            "baostock": BaostockSource,
-            "akshare": AkshareSource,
-            "tickflow": TickFlowSource,
-            "tencent": TencentSource,
-            "pytdx": PytdxSource,
-        })
+        # 自动发现并注册内置源 (支持插件式扩展)
+        self._auto_discover_sources()
 
         # 共享组件
         self._rate_limiters: dict[str, DistributedRateLimiter | TokenBucketLimiter] = {}
@@ -70,10 +76,40 @@ class DataSourceRegistry:
         # 状态目录
         self._state_dir = _require_cfg("data.sources.state_dir", "/tmp/quant_sources")
 
+    def _auto_discover_sources(self):
+        """自动发现并注册所有 BaseDataSource 子类."""
+        # 1. 内置源 (显式列表, 保证顺序和优先级)
+        builtin_sources = {
+            "tushare": TushareSource,
+            "baostock": BaostockSource,
+            "akshare": AkshareSource,
+            "tickflow": TickFlowSource,
+            "tencent": TencentSource,
+            "pytdx": PytdxSource,
+        }
+        self._source_classes.update(builtin_sources)
+
+        # 2. 扫描 quant.data.sources 包下所有模块
+        try:
+            from quant.data import sources as sources_pkg
+            for _, modname, ispkg in inspect.getmembers(sources_pkg, inspect.ismodule):
+                if modname.startswith("_") or ispkg:
+                    continue
+                module = importlib.import_module(f"quant.data.sources.{modname}")
+                for name, obj in inspect.getmembers(module, inspect.isclass):
+                    if (issubclass(obj, BaseDataSource) and obj is not BaseDataSource
+                            and obj not in self._source_classes.values()):
+                        # 约定: 类名去掉 Source 后缀转小写作为 key
+                        key = name.replace("Source", "").lower()
+                        self._source_classes[key] = obj
+                        logger.debug(f"auto-discovered source: {key} -> {name}")
+        except Exception as e:
+            logger.warning(f"auto-discovery failed: {e}")
+
     def register_source_class(self, name: str, cls: type[BaseDataSource]):
-        """注册数据源实现类."""
+        """手动注册数据源实现类 (插件式扩展入口)."""
         self._source_classes[name] = cls
-        logger.debug(f"registered source class: {name} -> {cls.__name__}")
+        logger.info(f"registered source class: {name} -> {cls.__name__}")
 
     def load_from_config(self):
         """从 config.yaml 加载并初始化所有数据源."""
@@ -154,6 +190,146 @@ class DataSourceRegistry:
             else:
                 logger.warning(f"no implementation class registered for source: {name}")
 
+    # ══════════════════════════════════════════════════════════════════
+    # 热重载支持
+    # ══════════════════════════════════════════════════════════════════
+
+    def _get_config_mtime(self) -> float:
+        """获取配置文件修改时间."""
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "config.yaml")
+            return os.path.getmtime(config_path)
+        except Exception:
+            return 0
+
+    def maybe_reload(self) -> bool:
+        """检查配置变更并热重载.
+
+        Returns:
+            True if reloaded, False if no changes.
+        """
+        with self._reload_lock:
+            current_mtime = self._get_config_mtime()
+            if current_mtime == self._config_mtime:
+                return False
+
+            logger.info("config.yaml changed, reloading data sources...")
+            self._config_mtime = current_mtime
+            self.reload_from_config()
+            return True
+
+    def _shutdown_all(self):
+        """关闭所有数据源和共享组件."""
+        for name, source in self._sources.items():
+            try:
+                if hasattr(source, "shutdown"):
+                    source.shutdown()
+            except Exception as e:
+                logger.warning(f"shutdown source {name} failed: {e}")
+        self._sources.clear()
+        self._configs.clear()
+        self._rate_limiters.clear()
+        self._circuit_breakers.clear()
+        if self._audit:
+            self._audit.close()
+            self._audit = None
+        logger.info("all data sources shutdown")
+
+    # ══════════════════════════════════════════════════════════════════
+    # 原有接口 (保持兼容)
+    # ══════════════════════════════════════════════════════════════════
+
+    def register_source_class(self, name: str, cls: type[BaseDataSource]):
+        """手动注册数据源实现类 (插件式扩展入口)."""
+        self._source_classes[name] = cls
+        logger.info(f"registered source class: {name} -> {cls.__name__}")
+
+    def load_from_config(self):
+        """从 config.yaml 加载并初始化所有数据源."""
+        cfg = _load_config()
+        sources_cfg = cfg.get("data", {}).get("sources", {})
+
+        # 先创建共享审计器
+        self._audit = DataSourceAudit(
+            max_memory_entries=_require_cfg("data.sources.audit.max_memory_entries", 10000),
+            enable_prometheus=_require_cfg("data.sources.audit.enable_prometheus", True),
+        )
+
+        for name, source_cfg in sources_cfg.items():
+            if not source_cfg.get("enabled", True):
+                logger.info(f"source {name} disabled in config, skipping")
+                continue
+
+            # 创建配置对象
+            config = DataSourceConfig(
+                name=name,
+                rate_limit_rps=source_cfg.get("rate_limit_rps", 10.0),
+                rate_limit_burst=source_cfg.get("rate_limit_burst", 20),
+                rate_limit_daily=source_cfg.get("rate_limit_daily"),
+                failure_threshold=source_cfg.get("failure_threshold", 5),
+                timeout_threshold=source_cfg.get("timeout_threshold", 30.0),
+                error_rate_threshold=source_cfg.get("error_rate_threshold", 0.5),
+                recovery_timeout=source_cfg.get("recovery_timeout", 300.0),
+                half_open_max_calls=source_cfg.get("half_open_max_calls", 3),
+                max_retries=source_cfg.get("max_retries", 3),
+                base_retry_delay=source_cfg.get("base_retry_delay", 1.0),
+                max_retry_delay=source_cfg.get("max_retry_delay", 60.0),
+                retry_jitter=source_cfg.get("retry_jitter", 0.1),
+                connect_timeout=source_cfg.get("connect_timeout", 10.0),
+                read_timeout=source_cfg.get("read_timeout", 30.0),
+                fallback_sources=source_cfg.get("fallback_sources", []),
+                enabled=source_cfg.get("enabled", True),
+                priority=source_cfg.get("priority", 100),
+            )
+            self._configs[name] = config
+
+            # 创建限流器(跨进程或单进程)
+            if source_cfg.get("distributed_rate_limit", False):
+                rl_config = RateLimitConfig(
+                    rps=config.rate_limit_rps,
+                    burst=config.rate_limit_burst,
+                    daily_limit=config.rate_limit_daily,
+                    key_prefix=f"src_{name}",
+                )
+                limiter = DistributedRateLimiter(rl_config, self._state_dir)
+            else:
+                limiter = TokenBucketLimiter(RateLimitConfig(
+                    rps=config.rate_limit_rps,
+                    burst=config.rate_limit_burst,
+                    daily_limit=config.rate_limit_daily,
+                ))
+            self._rate_limiters[name] = limiter
+
+            # 创建熔断器
+            cb_config = CircuitBreakerConfig(
+                failure_threshold=config.failure_threshold,
+                timeout_threshold=config.timeout_threshold,
+                error_rate_threshold=config.error_rate_threshold,
+                recovery_timeout=config.recovery_timeout,
+                half_open_max_calls=config.half_open_max_calls,
+            )
+            self._circuit_breakers[name] = CircuitBreaker(name, cb_config)
+
+            # 实例化数据源
+            if name in self._source_classes:
+                source = self._source_classes[name](config)
+                source.inject_dependencies(
+                    rate_limiter=limiter,
+                    circuit_breaker=self._circuit_breakers[name],
+                    audit=self._audit,
+                )
+                self._sources[name] = source
+                logger.info(f"initialized data source: {name} ({self._source_classes[name].__name__})")
+            else:
+                logger.warning(f"no implementation class registered for source: {name}")
+
+        self._config_mtime = self._get_config_mtime()
+
+    def reload_from_config(self):
+        """热重载入口: 关闭旧实例 -> 重新加载配置."""
+        self._shutdown_all()
+        self.load_from_config()
+
     def get(self, name: str) -> BaseDataSource | None:
         """获取数据源实例."""
         return self._sources.get(name)
@@ -214,8 +390,7 @@ class DataSourceRegistry:
 
     def shutdown(self):
         """关闭所有资源."""
-        if self._audit:
-            self._audit.close()
+        self._shutdown_all()
         logger.info("data source registry shutdown")
 
 

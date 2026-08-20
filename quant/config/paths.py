@@ -27,6 +27,9 @@ FACTOR_CACHE_DB = _os.path.join(DATA_DIR, "factor_cache.db")
 # ── 监控域 ──
 METRICS_DB    = _os.path.join(DATA_DIR, "metrics.db")
 
+# ── 日志目录 ──
+LOGS_DIR = _os.path.join(_PROJECT_ROOT, "logs")
+
 # ── 其他数据文件 ──
 TRADE_CALENDAR = _os.path.join(DATA_DIR, "trade_calendar.json")
 OPTUNA_DIR     = DATA_DIR

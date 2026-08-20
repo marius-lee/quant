@@ -55,6 +55,7 @@ class DistributedFactorEngine:
         use_actor_pool: bool = False,  # 是否使用 Actor 池复用 DB 连接
         actor_pool_size: int = 0,  # Actor 池大小 (0=自动, 根据 CPU 核心数)
         incremental: bool = True,  # 是否启用增量物化 (仅物化新增日期)
+        quarantine_failed_factors: bool = True,  # 是否隔离失败因子
     ):
         self.start_date = start_date
         self.end_date = end_date
@@ -67,12 +68,14 @@ class DistributedFactorEngine:
         self.use_actor_pool = use_actor_pool
         self.actor_pool_size = actor_pool_size
         self.incremental = incremental
+        self.quarantine_failed_factors = quarantine_failed_factors
 
         # 运行时状态
         self._partitions: List[Partition] = []
         self._aggregator = FactorResultAggregator()
         self._ray_initialized = False
         self._actor_pool = None
+        self._quarantined_factors: set = set()  # 隔离的失败因子
 
     def prepare(self) -> List[Partition]:
         """准备分区 (不启动 Ray)."""
@@ -362,6 +365,61 @@ class DistributedFactorEngine:
                     logger.info(f"Partition {result.partition_id} OK: {result.rows_written} rows, {result.elapsed_ms:.0f}ms")
                 else:
                     logger.error(f"Partition {result.partition_id} FAILED: {result.error}")
+                    # 隔离失败因子
+                    if self.quarantine_failed_factors:
+                        self._quarantine_failed_factors(result)
+
+    def _quarantine_failed_factors(self, result: ComputeResult):
+        """隔离失败的因子."""
+        # 从 partition_id 或 metadata 中提取因子名称
+        failed_factors = result.metadata.get("failed_factors", [])
+        if not failed_factors:
+            # 尝试从 partition_id 推断
+            pid = result.partition_id
+            if "_f" in pid:
+                # composite_d{di}_f{fi} 格式
+                try:
+                    fi = int(pid.split("_f")[-1])
+                    if fi < len(self.factors):
+                        failed_factors = [self.factors[fi]]
+                except (ValueError, IndexError):
+                    pass
+        
+        for factor in failed_factors:
+            if factor not in self._quarantined_factors:
+                self._quarantined_factors.add(factor)
+                logger.warning(f"Factor quarantined: {factor} (reason: {result.error})")
+        
+        # 持久化隔离列表
+        self._save_quarantine_list()
+
+    def _save_quarantine_list(self):
+        """保存隔离列表到文件."""
+        import json
+        quarantine_file = "quant/data/factor_quarantine.json"
+        try:
+            with open(quarantine_file, 'w') as f:
+                json.dump({
+                    "quarantined_factors": list(self._quarantined_factors),
+                    "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                }, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to save quarantine list: {e}")
+
+    def load_quarantine_list(self):
+        """加载隔离列表."""
+        import json
+        quarantine_file = "quant/data/factor_quarantine.json"
+        try:
+            with open(quarantine_file, 'r') as f:
+                data = json.load(f)
+                self._quarantined_factors = set(data.get("quarantined_factors", []))
+                logger.info(f"Loaded {len(self._quarantined_factors)} quarantined factors")
+        except FileNotFoundError:
+            self._quarantined_factors = set()
+        except Exception as e:
+            logger.warning(f"Failed to load quarantine list: {e}")
+            self._quarantined_factors = set()
 
 
 # ════════════════════════════════════════════════════════════════════

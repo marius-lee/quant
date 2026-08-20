@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: quant-postgres
+    environment:
+      POSTGRES_DB: dagster
+      POSTGRES_USER: dagster
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dagster}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dagster"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  dagster-daemon:
+    image: ${DAGSTER_IMAGE:-quant-dagster:latest}
+    container_name: quant-dagster-daemon
+    command: dagster-daemon run
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      DAGSTER_POSTGRES_HOST: postgres
+      DAGSTER_POSTGRES_PORT: 5432
+      DAGSTER_POSTGRES_DB: dagster
+      DAGSTER_POSTGRES_USER: dagster
+      DAGSTER_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dagster}
+      PYTHONPATH: /opt/dagster
+    volumes:
+      - dagster_home:/opt/dagster/dagster_home
+      - ./quant:/opt/dagster/quant
+      - ./config.yaml:/opt/dagster/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+
+  dagster-webserver:
+    image: ${DAGSTER_IMAGE:-quant-dagster:latest}
+    container_name: quant-dagster-webserver
+    command: dagster-webserver -h 0.0.0.0 -p 3000
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      DAGSTER_POSTGRES_HOST: postgres
+      DAGSTER_POSTGRES_PORT: 5432
+      DAGSTER_POSTGRES_DB: dagster
+      DAGSTER_POSTGRES_USER: dagster
+      DAGSTER_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dagster}
+      PYTHONPATH: /opt/dagster
+    ports:
+      - "3000:3000"
+    volumes:
+      - dagster_home:/opt/dagster/dagster_home
+      - ./quant:/opt/dagster/quant
+      - ./config.yaml:/opt/dagster/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+
+  # 可选: Dagster Code Location (如果需要独立部署)
+  # dagster-code-location:
+  #   image: ${DAGSTER_IMAGE:-quant-dagster:latest}
+  #   container_name: quant-dagster-code-location
+  #   command: dagster api grpc -h 0.0.0.0 -p 4000 -f quant/orchestrator/dagster_assets.py
+  #   environment:
+  #   PYTHONPATH: /opt/dagster
+  # ports:
+  #   - "4000:4000"
+  # volumes:
+  #   - ./quant:/opt/dagster/quant
+  #   - ./config.yaml:/opt/dagster/config.yaml:ro
+
+volumes:
+  postgres_data:
+  dagster_home:

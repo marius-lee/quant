@@ -1,4 +1,4 @@
- [build-system]
+[build-system]
  requires = ["setuptools>=75.0"]
  build-backend = "setuptools.build_meta"
 
@@ -8,6 +8,11 @@
  readme = "README.md"
  requires-python = ">=3.12"
  dynamic = ["version", "dependencies", "optional-dependencies"]
+ dependencies = [
+   "dagster>=1.7",
+   "dagster-webserver>=1.7",
+   "dagster-postgres>=1.7",
+ ]
 
  [project.urls]
  homepage = "https://github.com/mariusto/quant"
@@ -23,11 +28,11 @@
  [tool.setuptools]
  packages = [
    "alpha", "backtest", "benchmark", "config", "core",
-   "data", "data.repos",
+   "data", "data.repos", "data.sources",
    "evaluation", "execution",
    "factor", "factor.compute", "factor.compute.price",
    "monitor", "optimizer", "quant", "quant.scheduler",
-   "regime", "risk", "scripts", "utils", "web",
+   "regime", "risk", "scripts", "utils", "web", "orchestrator",
  ]
 
  [tool.setuptools.dynamic]
@@ -36,6 +41,14 @@
 
  [tool.setuptools.dynamic.optional-dependencies]
  dev = {file = ["requirements-dev.txt"]}
+
+ [tool.dagster]
+ project_name = "quant"
+ module_name = "quant.orchestrator.dagster_assets"
+ code_location_name = "quant_prod"
+
+ [tool.dagster.python_environment]
+ python_version = "3.12"
 
  # ═══════════════════════════════════════════════════════════
  # Linting — Ruff (mirrors RD-Agent settings)
@@ -87,7 +100,7 @@
    "numpy", "pandas", "scipy", "sklearn",
    "lightgbm", "xgboost", "plotly", "matplotlib", "seaborn",
    "flask", "yaml", "tqdm", "optuna", "hmmlearn",
-   "tickflow", "akshare", "tushare",
+   "tickflow", "akshare", "tushare", "dagster",
  ]
  ignore_missing_imports = true
 

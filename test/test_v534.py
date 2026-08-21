@@ -2,7 +2,7 @@
 import pandas as pd
 import pytest
 
-from quant.execution.broker_adapter import BrokerAdapter, OrderResult, SimulatedAdapter
+from quant.execution.broker_adapter import BrokerAdapter, OrderResult, SimulatedAdapter, BrokerConfig, BrokerType
 from quant.execution.cost import CostModel
 from quant.execution.engine import ExecutionEngine, Order
 
@@ -19,6 +19,48 @@ class FakeBroker(BrokerAdapter):
         self._sell_success = sell_success
         self.sell_calls = []
 
+    # 实现抽象方法 (同步包装器模式，用于测试)
+    def _connect_impl(self):
+        return True
+    
+    def _disconnect_impl(self):
+        pass
+    
+    async def _submit_order_impl(self, request):
+        from quant.execution.broker_adapter import OrderResponse, OrderStatus
+        return OrderResponse(
+            order_id=f"FAKE_{uuid.uuid4().hex[:8]}",
+            client_order_id=request.client_order_id,
+            symbol=request.symbol,
+            status=OrderStatus.FILLED if self._sell_success else OrderStatus.REJECTED,
+            message="OK" if self._sell_success else "Failed"
+        )
+    
+    async def _cancel_order_impl(self, order_id):
+        return True
+    
+    async def _query_orders_impl(self):
+        return []
+    
+    async def _query_trades_impl(self):
+        return []
+    
+    async def _query_positions_impl(self):
+        return []
+    
+    async def _query_account_impl(self):
+        from quant.execution.broker_adapter import Account
+        return Account(account_id="FAKE", cash=0.0)
+
+    # 兼容旧 API
+    name = "fake_broker"
+
+    def __init__(self, connected=True, sell_success=True):
+        super().__init__(BrokerConfig(broker_type=BrokerType.SIMULATOR, name="fake_broker", account_id=""))
+        self._connected = connected
+        self._sell_success = sell_success
+        self.sell_calls = []
+
     def connect(self):
         return True
 
@@ -26,6 +68,7 @@ class FakeBroker(BrokerAdapter):
         pass
 
     def buy(self, symbol, price, shares, order_type="LIMIT"):
+        from quant.execution.broker_adapter import OrderResult
         return OrderResult(success=True, symbol=symbol, side="buy",
                            status="filled", is_simulated=True)
 

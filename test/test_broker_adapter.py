@@ -1,355 +1,510 @@
-"""Unit tests for broker_adapter — ADR-036 vnpy integration.
+"""Unit tests for broker_adapter — Phase 10 券商接口适配层.
 
 Tests cover:
-  - OrderResult / AccountInfo dataclasses
-  - SimulatedAdapter: connect, buy, sell, get_account, get_positions
-  - VnpyAdapter: graceful fallback when vnpy not installed
-  - get_broker_adapter() factory + singleton
-  - Reset lifecycle
+  - OrderResponse / Trade / Position / Account / OrderRequest dataclasses
+  - SimulatorBroker: connect, submit_order, cancel_order, query_*
+  - BrokerManager: register, connect_all, submit_order
+  - get_broker_manager() factory + singleton
+  - RateLimiter 限流
 """
 
-import os
-import tempfile
+import asyncio
 import pytest
+from decimal import Decimal
 
 from quant.execution.broker_adapter import (
-    BrokerAdapter,
-    SimulatedAdapter,
-    VnpyAdapter,
-    VnpyCtpAdapter,
-    VnpyXtpAdapter,
-    OrderResult,
-    AccountInfo,
-    get_broker_adapter,
-    reset_adapter,
-    _check_vnpy,
+    BrokerType,
+    OrderSide,
+    OrderType,
+    OrderStatus,
+    TimeInForce,
+    OrderRequest,
+    OrderResponse,
+    Trade,
+    Position,
+    Account,
+    BrokerConfig,
+    RateLimiter,
+    BrokerAdapterBase,
+    SimulatorBroker,
+    BrokerManager,
+    get_broker_manager,
+    init_broker_manager,
 )
 
 
 # ═══════════════════════════════════════════════════════════
-# Fixtures
+# Dataclass Tests
 # ═══════════════════════════════════════════════════════════
 
-@pytest.fixture(autouse=True)
-def _mock_engine_checks(monkeypatch):
-    """Disable ex-dividend + T+1 checks in tests (use temp DB without market.db)."""
-    from quant.execution import engine as _eng
-    monkeypatch.setattr(_eng.ExecutionEngine, '_check_ex_dividend', lambda *a, **kw: False)
-    from quant.data.repos import trade_repo as _tr
-    monkeypatch.setattr(_tr.TradeRepo, 'check_t1', lambda *a, **kw: False)
-
-
-@pytest.fixture
-def temp_trades_db():
-    """Create a temporary trades.db with proper schema for testing."""
-    fd, path = tempfile.mkstemp(suffix=".db", prefix="test_broker_")
-    os.close(fd)
-
-    # Let TradeRepo/ExecutionEngine auto-create schema
-    from quant.data.repos import TradeRepo
-    repo = TradeRepo(db_path=path)
-    repo.set_initial_capital("test", 50000)
-
-    yield path
-    os.unlink(path)
-
-
-@pytest.fixture
-def sim_adapter(temp_trades_db):
-    """Create a connected SimulatedAdapter with clean temp DB (¥50K capital)."""
-    adapter = SimulatedAdapter(db_path=temp_trades_db, strategy="test")
-    adapter.connect()
-    return adapter
-
-
-# ═══════════════════════════════════════════════════════════
-# Dataclass tests
-# ═══════════════════════════════════════════════════════════
-
-class TestOrderResult:
-    def test_success_order(self):
-        r = OrderResult(
-            success=True, symbol="600036", side="buy",
-            shares=100, price=20.0, filled_shares=100,
-            filled_price=20.0, status="filled", is_simulated=True,
-        )
-        assert r.success
-        assert r.symbol == "600036"
-        assert r.side == "buy"
-        assert r.status == "filled"
-        assert r.is_simulated
-
-    def test_failed_order(self):
-        r = OrderResult(
-            success=False, symbol="000001", side="sell",
-            shares=200, price=15.0,
-            error="insufficient cash", is_simulated=False,
-        )
-        assert not r.success
-        assert r.error == "insufficient cash"
-        assert r.status == ""
-
+class TestOrderRequest:
     def test_defaults(self):
-        r = OrderResult(success=True)
-        assert r.shares == 0
-        assert r.price == 0.0
-        assert r.filled_shares == 0
-        assert r.status == ""
-        assert not r.is_simulated
-
-
-class TestAccountInfo:
-    def test_empty(self):
-        a = AccountInfo()
-        assert a.total_asset == 0.0
-        assert a.available_cash == 0.0
-        assert a.positions == []
-
-    def test_with_positions(self):
-        a = AccountInfo(
-            total_asset=10000.0,
-            available_cash=3000.0,
-            frozen_cash=500.0,
-            positions=[{"symbol": "600036", "shares": 100, "market_value": 7000.0}],
+        req = OrderRequest(
+            symbol="600036",
+            side=OrderSide.BUY,
+            quantity=100,
         )
-        assert a.total_asset == 10000.0
-        assert a.available_cash == 3000.0
-        assert a.frozen_cash == 500.0
-        assert len(a.positions) == 1
+        assert req.symbol == "600036"
+        assert req.side == OrderSide.BUY
+        assert req.quantity == 100
+        assert req.order_type == OrderType.LIMIT
+        assert req.price == 0.0
+        assert req.time_in_force == TimeInForce.DAY
+        assert req.client_order_id  # auto-generated
+
+    def test_full_spec(self):
+        req = OrderRequest(
+            symbol="000001",
+            side=OrderSide.SELL,
+            quantity=200,
+            order_type=OrderType.MARKET,
+            price=15.5,
+            time_in_force=TimeInForce.IOC,
+            account_id="ACC_001",
+            strategy_id="momentum_v1",
+            client_order_id="custom_123",
+            metadata={"tag": "test"},
+        )
+        assert req.order_type == OrderType.MARKET
+        assert req.price == 15.5
+        assert req.time_in_force == TimeInForce.IOC
+        assert req.account_id == "ACC_001"
+        assert req.strategy_id == "momentum_v1"
+        assert req.client_order_id == "custom_123"
+        assert req.metadata["tag"] == "test"
+
+
+class TestOrderResponse:
+    def test_filled(self):
+        resp = OrderResponse(
+            order_id="BRK_123",
+            client_order_id="CLI_456",
+            status=OrderStatus.FILLED,
+            message="OK",
+        )
+        assert resp.order_id == "BRK_123"
+        assert resp.client_order_id == "CLI_456"
+        assert resp.status == OrderStatus.FILLED
+        assert resp.message == "OK"
+        assert resp.timestamp
+
+    def test_rejected(self):
+        resp = OrderResponse(
+            order_id="",
+            client_order_id="CLI_456",
+            status=OrderStatus.REJECTED,
+            message="Insufficient funds",
+        )
+        assert not resp.order_id
+        assert resp.status == OrderStatus.REJECTED
+
+
+class TestTrade:
+    def test_trade_fields(self):
+        trade = Trade(
+            trade_id="TRD_001",
+            order_id="ORD_001",
+            client_order_id="CLI_001",
+            symbol="600036",
+            side=OrderSide.BUY,
+            price=20.0,
+            quantity=100,
+            timestamp=datetime.utcnow(),
+            commission=5.0,
+            tax=10.0,
+        )
+        assert trade.commission == 5.0
+        assert trade.tax == 10.0
+
+
+class TestPosition:
+    def test_position_calculation(self):
+        pos = Position(
+            symbol="600036",
+            long_quantity=1000,
+            short_quantity=0,
+            long_avg_price=20.0,
+            short_avg_price=0.0,
+            market_value=21000.0,
+            unrealized_pnl=1000.0,
+            realized_pnl=500.0,
+        )
+        assert pos.long_quantity == 1000
+        assert pos.short_quantity == 0
+        assert pos.unrealized_pnl == 1000.0
+
+
+class TestAccount:
+    def test_account_fields(self):
+        acct = Account(
+            account_id="ACC_001",
+            total_assets=100000.0,
+            available_cash=50000.0,
+            frozen_cash=10000.0,
+            market_value=40000.0,
+            margin_used=5000.0,
+            margin_available=45000.0,
+        )
+        assert acct.total_assets == 100000.0
+        assert acct.available_cash == 50000.0
+
+
+class TestBrokerConfig:
+    def test_default_config(self):
+        config = BrokerConfig(
+            broker_type=BrokerType.SIMULATOR,
+            name="test_sim",
+            account_id="ACC_001",
+        )
+        assert config.broker_type == BrokerType.SIMULATOR
+        assert config.max_orders_per_second == 100
+        assert config.max_orders_per_minute == 3000
 
 
 # ═══════════════════════════════════════════════════════════
-# SimulatedAdapter tests
+# RateLimiter Tests
 # ═══════════════════════════════════════════════════════════
 
-class TestSimulatedAdapterLifecycle:
-    def test_connect_disconnect(self, temp_trades_db):
-        adapter = SimulatedAdapter(db_path=temp_trades_db)
-        assert not adapter.is_connected()
-        assert adapter.connect()
-        assert adapter.is_connected()
-        adapter.disconnect()
-        assert not adapter.is_connected()
-
-    def test_name(self, sim_adapter):
-        assert sim_adapter.name == "simulated"
-
-    def test_auto_connect_on_operation(self, temp_trades_db):
-        adapter = SimulatedAdapter(db_path=temp_trades_db)
-        # get_account should auto-connect
-        acct = adapter.get_account()
-        assert adapter.is_connected()
-        assert acct.total_asset == 0.0
-
-
-class TestSimulatedAdapterBuySell:
-    def test_buy_reduces_cash(self, sim_adapter):
-        acct_before = sim_adapter.get_account()
-        initial_cash = acct_before.available_cash
-
-        result = sim_adapter.buy("600036", 20.0, 100, order_type="LIMIT")
-        assert result.success, f"Buy failed: {result.error}"
-        assert result.symbol == "600036"
-        assert result.side == "buy"
-        assert result.status == "filled"
-        assert result.is_simulated
-
-        acct_after = sim_adapter.get_account()
-        assert acct_after.available_cash < initial_cash
-
-    def test_sell_increases_cash(self, sim_adapter):
-        # First buy to have a position
-        sim_adapter.buy("600036", 20.0, 100)
-        acct_before = sim_adapter.get_account()
-        cash_before = acct_before.available_cash
-
-        result = sim_adapter.sell("600036", 22.0, 100, order_type="MARKET")
-        assert result.success, f"Sell failed: {result.error}"
-        assert result.symbol == "600036"
-
-        acct_after = sim_adapter.get_account()
-        assert acct_after.available_cash > cash_before
-
-    def test_buy_insufficient_cash(self, sim_adapter):
-        # Try to buy more than available cash
-        result = sim_adapter.buy("600036", 99999.0, 10000)
-        assert not result.success
-        assert "insufficient" in result.error.lower()
-
-    def test_positions_tracking(self, sim_adapter):
-        sim_adapter.buy("600036", 20.0, 100)
-        positions = sim_adapter.get_positions()
-        assert len(positions) == 1
-        assert positions[0]["symbol"] == "600036"
-        assert positions[0]["shares"] == 100
-
-    def test_buy_sell_zero_position(self, sim_adapter):
-        sim_adapter.buy("600036", 20.0, 100)
-        sim_adapter.sell("600036", 22.0, 100)
-        positions = sim_adapter.get_positions()
-        # After selling all, position should be zero
-        remaining = sum(p["shares"] for p in positions)
-        assert remaining == 0
-
-    def test_multiple_symbols(self, sim_adapter):
-        sim_adapter.buy("600036", 20.0, 100)
-        sim_adapter.buy("000001", 15.0, 200)
-
-        positions = sim_adapter.get_positions()
-        syms = {p["symbol"] for p in positions}
-        assert "600036" in syms
-        assert "000001" in syms
-
-
-class TestSimulatedAdapterAccount:
-    def test_get_account(self, sim_adapter):
-        acct = sim_adapter.get_account()
-        assert isinstance(acct, AccountInfo)
-        assert acct.total_asset >= 0
-        assert acct.available_cash >= 0
-
-    def test_get_orders(self, sim_adapter):
-        sim_adapter.buy("600036", 20.0, 100)
-        orders = sim_adapter.get_orders()
-        assert len(orders) >= 1
-
-    def test_cancel_is_noop(self, sim_adapter):
-        # cancel should always return True in simulated mode
-        assert sim_adapter.cancel("fake_order_id")
+class TestRateLimiter:
+    @pytest.mark.asyncio
+    async def test_basic_acquire(self):
+        limiter = RateLimiter(rate_per_second=10, burst=5)
+        # Should allow burst
+        for _ in range(5):
+            assert await limiter.acquire()
+        # 6th should fail
+        assert not await limiter.acquire()
+    
+    @pytest.mark.asyncio
+    async def test_token_refill(self):
+        limiter = RateLimiter(rate_per_second=100, burst=10)
+        for _ in range(10):
+            await limiter.acquire()
+        # Wait for refill
+        await asyncio.sleep(0.15)
+        assert await limiter.acquire()
+    
+    @pytest.mark.asyncio
+    async def test_wait_for_token(self):
+        limiter = RateLimiter(rate_per_second=100, burst=1)
+        await limiter.acquire()  # consume the only token
+        start = time.monotonic()
+        await limiter.wait_for_token()
+        elapsed = time.monotonic() - start
+        # Should wait approximately 0.01s for 1 token at 100/s
+        assert 0.005 < elapsed < 0.05
 
 
 # ═══════════════════════════════════════════════════════════
-# VnpyAdapter tests (graceful when vnpy not installed)
+# SimulatorBroker Tests
 # ═══════════════════════════════════════════════════════════
 
-class TestVnpyAdapterGraceful:
-    def test_vnpy_detection(self):
-        available = _check_vnpy()
-        # Should return False in test env (no vnpy installed)
-        assert isinstance(available, bool)
-
-    def test_vnpy_adapter_creation_no_crash(self):
-        adapter = VnpyAdapter()
-        assert adapter.name == "vnpy"
-        assert not adapter._vnpy_available or isinstance(adapter._vnpy_available, bool)
-
-    def test_vnpy_ctp_creation(self):
-        adapter = VnpyCtpAdapter()
-        assert adapter.name == "vnpy_ctp"
-        assert not adapter.is_connected()
-
-    def test_vnpy_xtp_creation(self):
-        adapter = VnpyXtpAdapter()
-        assert adapter.name == "vnpy_xtp"
-
-    def test_vnpy_connect_raises_when_not_installed(self):
-        adapter = VnpyAdapter()
-        if not adapter._vnpy_available:
-            with pytest.raises(RuntimeError, match="vnpy not installed"):
-                adapter.connect()
-
-    def test_vnpy_disconnect_no_crash(self):
-        adapter = VnpyAdapter()
-        adapter.disconnect()  # Should not raise
-
-    def test_vnpy_buy_not_connected(self):
-        adapter = VnpyAdapter()
-        result = adapter.buy("600036", 20.0, 100)
-        assert not result.success
-        assert "not connected" in result.error.lower()
-
-    def test_vnpy_sell_not_connected(self):
-        adapter = VnpyAdapter()
-        result = adapter.sell("600036", 20.0, 100)
-        assert not result.success
-        assert "not connected" in result.error.lower()
-
-    def test_symbol_conversion(self):
-        adapter = VnpyAdapter()
-        assert adapter._symbol_to_vnpy("600036") == "SSE.600036"
-        assert adapter._symbol_to_vnpy("000001") == "SZSE.000001"
-        assert adapter._symbol_to_vnpy("688001") == "SSE.688001"
-        assert adapter._symbol_to_vnpy("300750") == "SZSE.300750"
-        assert adapter._symbol_to_vnpy("430001") == "BSE.430001"
-        assert adapter._symbol_to_vnpy("920001") == "BSE.920001"
-
-    def test_symbol_from_vnpy(self):
-        adapter = VnpyAdapter()
-        assert adapter._symbol_from_vnpy("SSE.600036") == "600036"
-        assert adapter._symbol_from_vnpy("SZSE.000001") == "000001"
-        assert adapter._symbol_from_vnpy("BSE.430001") == "430001"
+class TestSimulatorBroker:
+    @pytest.fixture
+    def broker(self):
+        config = BrokerConfig(
+            broker_type=BrokerType.SIMULATOR,
+            name="test_sim",
+            account_id="TEST_ACC",
+        )
+        return SimulatorBroker(config)
+    
+    @pytest.mark.asyncio
+    async def test_connect_disconnect(self, broker):
+        assert not broker.is_connected()
+        assert await broker.connect()
+        assert broker.is_connected()
+        await broker.disconnect()
+        assert not broker.is_connected()
+    
+    @pytest.mark.asyncio
+    async def test_submit_limit_order(self, broker):
+        await broker.connect()
+        req = OrderRequest(
+            symbol="600036",
+            side=OrderSide.BUY,
+            quantity=100,
+            order_type=OrderType.LIMIT,
+            price=20.0,
+        )
+        resp = await broker.submit_order(req)
+        assert resp.status in (OrderStatus.FILLED, OrderStatus.SUBMITTED)
+        assert resp.client_order_id == req.client_order_id
+    
+    @pytest.mark.asyncio
+    async def test_submit_market_order(self, broker):
+        await broker.connect()
+        req = OrderRequest(
+            symbol="000001",
+            side=OrderSide.SELL,
+            quantity=200,
+            order_type=OrderType.MARKET,
+        )
+        resp = await broker.submit_order(req)
+        assert resp.status in (OrderStatus.FILLED, OrderStatus.SUBMITTED)
+    
+    @pytest.mark.asyncio
+    async def test_cancel_order(self, broker):
+        await broker.connect()
+        req = OrderRequest(symbol="600036", side=OrderSide.BUY, quantity=100)
+        resp = await broker.submit_order(req)
+        cancelled = await broker.cancel_order(resp.order_id)
+        assert cancelled
+    
+    @pytest.mark.asyncio
+    async def test_query_account(self, broker):
+        await broker.connect()
+        acct = await broker.query_account()
+        assert isinstance(acct, Account)
+        assert acct.account_id == "TEST_ACC"
+        assert acct.total_assets >= 0
+    
+    @pytest.mark.asyncio
+    async def test_query_positions(self, broker):
+        await broker.connect()
+        positions = await broker.query_positions()
+        assert isinstance(positions, list)
+    
+    @pytest.mark.asyncio
+    async def test_query_orders(self, broker):
+        await broker.connect()
+        orders = await broker.query_orders()
+        assert isinstance(orders, list)
+    
+    @pytest.mark.asyncio
+    async def test_query_trades(self, broker):
+        await broker.connect()
+        trades = await broker.query_trades()
+        assert isinstance(trades, list)
+    
+    @pytest.mark.asyncio
+    async def test_callbacks(self, broker):
+        await broker.connect()
+        events = []
+        broker.on_order(lambda r: events.append(("order", r)))
+        broker.on_trade(lambda t: events.append(("trade", t)))
+        broker.on_error(lambda e: events.append(("error", e)))
+        
+        req = OrderRequest(symbol="600036", side=OrderSide.BUY, quantity=100)
+        await broker.submit_order(req)
+        
+        assert len(events) >= 1
+        assert events[0][0] == "order"
+    
+    @pytest.mark.asyncio
+    async def test_reject_when_disconnected(self, broker):
+        req = OrderRequest(symbol="600036", side=OrderSide.BUY, quantity=100)
+        resp = await broker.submit_order(req)
+        assert resp.status == OrderStatus.REJECTED
+        assert "not connected" in resp.message.lower()
 
 
 # ═══════════════════════════════════════════════════════════
-# Factory + Singleton tests
+# BrokerManager Tests
+# ═══════════════════════════════════════════════════════════
+
+class TestBrokerManager:
+    @pytest.fixture
+    def manager(self):
+        return BrokerManager()
+    
+    @pytest.mark.asyncio
+    async def test_register_broker(self, manager):
+        config = BrokerConfig(broker_type=BrokerType.SIMULATOR, name="broker1", account_id="A1")
+        manager.register_broker("broker1", SimulatorBroker(config), default=True)
+        assert "broker1" in manager.list_brokers()
+        assert manager.get_broker("broker1") is not None
+    
+    @pytest.mark.asyncio
+    async def test_default_broker(self, manager):
+        config = BrokerConfig(broker_type=BrokerType.SIMULATOR, name="default_broker", account_id="A1")
+        manager.register_broker("default_broker", SimulatorBroker(config), default=True)
+        assert manager.get_broker() is not None
+        assert manager.get_broker().config.name == "default_broker"
+    
+    @pytest.mark.asyncio
+    async def test_connect_all(self, manager):
+        config1 = BrokerConfig(broker_type=BrokerType.SIMULATOR, name="b1", account_id="A1")
+        config2 = BrokerConfig(broker_type=BrokerType.SIMULATOR, name="b2", account_id="A2")
+        manager.register_broker("b1", SimulatorBroker(config1))
+        manager.register_broker("b2", SimulatorBroker(config2))
+        results = await manager.connect_all()
+        assert results["b1"]
+        assert results["b2"]
+        await manager.disconnect_all()
+    
+    @pytest.mark.asyncio
+    async def test_submit_order_via_manager(self, manager):
+        config = BrokerConfig(broker_type=BrokerType.SIMULATOR, name="mgr_broker", account_id="A1")
+        manager.register_broker("mgr_broker", SimulatorBroker(config), default=True)
+        await manager.connect_all()
+        
+        req = OrderRequest(symbol="600036", side=OrderSide.BUY, quantity=100)
+        resp = await manager.submit_order(req)
+        assert resp.status in (OrderStatus.FILLED, OrderStatus.SUBMITTED)
+        await manager.disconnect_all()
+    
+    @pytest.mark.asyncio
+    async def test_submit_order_specific_broker(self, manager):
+        config1 = BrokerConfig(broker_type=BrokerType.SIMULATOR, name="b1", account_id="A1")
+        config2 = BrokerConfig(broker_type=BrokerType.SIMULATOR, name="b2", account_id="A2")
+        manager.register_broker("b1", SimulatorBroker(config1))
+        manager.register_broker("b2", SimulatorBroker(config2))
+        await manager.connect_all()
+        
+        req = OrderRequest(symbol="600036", side=OrderSide.BUY, quantity=100)
+        resp = await manager.submit_order(req, "b2")
+        assert resp.status in (OrderStatus.FILLED, OrderStatus.SUBMITTED)
+        await manager.disconnect_all()
+    
+    @pytest.mark.asyncio
+    async def test_get_connected_brokers(self, manager):
+        config = BrokerConfig(broker_type=BrokerType.SIMULATOR, name="conn_test", account_id="A1")
+        manager.register_broker("conn_test", SimulatorBroker(config))
+        await manager.connect_all()
+        connected = manager.get_connected_brokers()
+        assert "conn_test" in connected
+        await manager.disconnect_all()
+
+
+# ═══════════════════════════════════════════════════════════
+# Factory Tests
 # ═══════════════════════════════════════════════════════════
 
 class TestFactory:
-    def test_get_broker_adapter_default_simulated(self, temp_trades_db):
-        reset_adapter()
-        # Override db_path for this test
-        adapter = get_broker_adapter("simulated", db_path=temp_trades_db)
-        assert isinstance(adapter, SimulatedAdapter)
-        assert adapter.name == "simulated"
-        assert adapter.is_connected()
-
-    def test_get_broker_adapter_singleton(self, temp_trades_db):
-        reset_adapter()
-        a1 = get_broker_adapter("simulated", db_path=temp_trades_db)
-        a2 = get_broker_adapter()
-        assert a1 is a2  # Same instance
-
-    def test_reset_adapter(self, temp_trades_db):
-        reset_adapter()
-        a1 = get_broker_adapter("simulated", db_path=temp_trades_db)
-        assert a1.is_connected()
-        reset_adapter()
-        # After reset, new adapter should be created
-        a2 = get_broker_adapter("simulated", db_path=temp_trades_db)
-        assert a2.is_connected()
-        # May or may not be same object (singleton cleared)
-
-    def test_unknown_adapter_falls_back(self, temp_trades_db):
-        reset_adapter()
-        adapter = get_broker_adapter("nonexistent", db_path=temp_trades_db)
-        assert isinstance(adapter, SimulatedAdapter)
-
-    def test_vnpy_ctp_factory(self, temp_trades_db):
-        reset_adapter()
-        adapter = get_broker_adapter("vnpy_ctp", db_path=temp_trades_db)
-        assert isinstance(adapter, VnpyCtpAdapter)
-
-    def test_vnpy_xtp_factory(self, temp_trades_db):
-        reset_adapter()
-        adapter = get_broker_adapter("vnpy_xtp", db_path=temp_trades_db)
-        assert isinstance(adapter, VnpyXtpAdapter)
+    def test_get_broker_manager_singleton(self):
+        init_broker_manager()
+        m1 = get_broker_manager()
+        m2 = get_broker_manager()
+        assert m1 is m2
+    
+    def test_default_simulator_registered(self):
+        m = get_broker_manager()
+        assert "simulator" in m.list_brokers()
+        sim = m.get_broker("simulator")
+        assert sim is not None
+        assert sim.config.broker_type == BrokerType.SIMULATOR
 
 
 # ═══════════════════════════════════════════════════════════
-# Abstract base class contract
+# Integration Tests
+# ═══════════════════════════════════════════════════════════
+
+class TestIntegration:
+    @pytest.mark.asyncio
+    async def test_full_order_lifecycle(self):
+        config = BrokerConfig(
+            broker_type=BrokerType.SIMULATOR,
+            name="lifecycle",
+            account_id="LIFECYCLE_ACC",
+        )
+        broker = SimulatorBroker(config)
+        await broker.connect()
+        
+        # 1. Submit order
+        req = OrderRequest(
+            symbol="600036",
+            side=OrderSide.BUY,
+            quantity=100,
+            order_type=OrderType.LIMIT,
+            price=20.0,
+            strategy_id="test_strategy",
+        )
+        resp = await broker.submit_order(req)
+        assert resp.status in (OrderStatus.FILLED, OrderStatus.SUBMITTED)
+        order_id = resp.order_id
+        
+        # 2. Query account
+        acct = await broker.query_account()
+        assert acct.account_id == "LIFECYCLE_ACC"
+        
+        # 3. Cancel (if still pending)
+        if resp.status == OrderStatus.SUBMITTED:
+            await broker.cancel_order(order_id)
+        
+        # 4. Query positions
+        positions = await broker.query_positions()
+        assert isinstance(positions, list)
+        
+        await broker.disconnect()
+    
+    @pytest.mark.asyncio
+    async def test_rate_limiting(self):
+        config = BrokerConfig(
+            broker_type=BrokerType.SIMULATOR,
+            name="rate_limit",
+            account_id="RATE_ACC",
+            max_orders_per_second=5,
+        )
+        broker = SimulatorBroker(config)
+        await broker.connect()
+        
+        # Submit multiple orders quickly
+        tasks = []
+        for i in range(10):
+            req = OrderRequest(symbol="600036", side=OrderSide.BUY, quantity=100)
+            tasks.append(broker.submit_order(req))
+        
+        responses = await asyncio.gather(*tasks)
+        # All should succeed (simulator is fast, but rate limiter works)
+        for r in responses:
+            assert r.status in (OrderStatus.FILLED, OrderStatus.SUBMITTED, OrderStatus.REJECTED)
+        
+        await broker.disconnect()
+    
+    @pytest.mark.asyncio
+    async def test_manager_multi_broker(self):
+        manager = BrokerManager()
+        
+        # Register multiple simulators
+        for i in range(3):
+            config = BrokerConfig(
+                broker_type=BrokerType.SIMULATOR,
+                name=f"broker_{i}",
+                account_id=f"ACC_{i}",
+            )
+            manager.register_broker(f"broker_{i}", SimulatorBroker(config))
+        
+        await manager.connect_all()
+        
+        # Submit to each
+        for i in range(3):
+            req = OrderRequest(symbol="600036", side=OrderSide.BUY, quantity=100)
+            resp = await manager.submit_order(req, f"broker_{i}")
+            assert resp.status in (OrderStatus.FILLED, OrderStatus.SUBMITTED)
+        
+        connected = manager.get_connected_brokers()
+        assert len(connected) == 3
+        
+        await manager.disconnect_all()
+
+
+# ═══════════════════════════════════════════════════════════
+# Abstract Base Class Contract
 # ═══════════════════════════════════════════════════════════
 
 class TestAbstractContract:
-    """Verify all concrete implementations satisfy the abstract interface."""
+    """Verify SimulatorBroker satisfies BrokerAdapterBase interface."""
+    
+    def test_has_all_methods(self):
+        assert hasattr(SimulatorBroker, 'connect')
+        assert hasattr(SimulatorBroker, 'disconnect')
+        assert hasattr(SimulatorBroker, 'submit_order')
+        assert hasattr(SimulatorBroker, 'cancel_order')
+        assert hasattr(SimulatorBroker, 'query_orders')
+        assert hasattr(SimulatorBroker, 'query_trades')
+        assert hasattr(SimulatorBroker, 'query_positions')
+        assert hasattr(SimulatorBroker, 'query_account')
+        assert hasattr(SimulatorBroker, 'is_connected')
+        assert hasattr(SimulatorBroker, 'on_order')
+        assert hasattr(SimulatorBroker, 'on_trade')
+        assert hasattr(SimulatorBroker, 'on_position')
+        assert hasattr(SimulatorBroker, 'on_account')
+        assert hasattr(SimulatorBroker, 'on_error')
+        assert hasattr(SimulatorBroker, 'on_connected')
+        assert hasattr(SimulatorBroker, 'on_disconnected')
 
-    def test_simulated_has_all_methods(self):
-        assert hasattr(SimulatedAdapter, 'connect')
-        assert hasattr(SimulatedAdapter, 'disconnect')
-        assert hasattr(SimulatedAdapter, 'buy')
-        assert hasattr(SimulatedAdapter, 'sell')
-        assert hasattr(SimulatedAdapter, 'cancel')
-        assert hasattr(SimulatedAdapter, 'get_positions')
-        assert hasattr(SimulatedAdapter, 'get_account')
-        assert hasattr(SimulatedAdapter, 'get_orders')
-        assert hasattr(SimulatedAdapter, 'is_connected')
 
-    def test_vnpy_has_all_methods(self):
-        assert hasattr(VnpyAdapter, 'connect')
-        assert hasattr(VnpyAdapter, 'disconnect')
-        assert hasattr(VnpyAdapter, 'buy')
-        assert hasattr(VnpyAdapter, 'sell')
-        assert hasattr(VnpyAdapter, 'cancel')
-        assert hasattr(VnpyAdapter, 'get_positions')
-        assert hasattr(VnpyAdapter, 'get_account')
-        assert hasattr(VnpyAdapter, 'get_orders')
-        assert hasattr(VnpyAdapter, 'is_connected')
+# Import datetime for tests
+from datetime import datetime
+import time

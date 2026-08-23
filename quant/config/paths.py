@@ -45,3 +45,7 @@ BENTOML_STORE_PATH = _os.path.join(DATA_DIR, "bentoml")
 # ── MLflow / BentoML 路径 (v436 Phase 3) ──
 MLFLOW_TRACKING_URI = _os.environ.get("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
 BENTOML_STORE_PATH = _os.path.join(DATA_DIR, "bentoml")
+
+def get_market_db_path() -> str:
+    """Get MARKET_DB path at runtime (for testing patching)."""
+    return MARKET_DB

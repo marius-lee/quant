@@ -45,3 +45,16 @@ def sample_financials():
         "net_operate_cash_flow": np.random.uniform(-0.2, 0.3, n) * ta,
     }, index=symbols)
     return df
+
+
+@pytest.fixture(autouse=True)
+def _set_scheduler_test_date():
+    """Set test current date for scheduler cross-day tests."""
+    import sys
+    sys.path.insert(0, '/Users/mariusto/project/quant')
+    from web.app import set_test_current_date
+    from datetime import date
+    set_test_current_date(date(2026, 8, 20))
+    yield
+    from web.app import set_test_current_date
+    set_test_current_date(None)

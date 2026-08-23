@@ -15,6 +15,21 @@ from quant.data.store import market_conn  # P69: 统一连接层
 from datetime import date, datetime, timedelta
 from flask import Flask, jsonify, render_template, request
 
+# v562 fix: configurable current date for testing
+_test_current_date = None
+
+def get_current_date():
+    """Get current date, overridable for testing."""
+    global _test_current_date
+    if _test_current_date is not None:
+        return _test_current_date
+    return date.today()
+
+def set_test_current_date(d: date):
+    """Set current date for testing."""
+    global _test_current_date
+    _test_current_date = d
+
 # 前端版本标识 — 修改此处触发浏览器刷新认知
 VERSION = "test-v562"
 # ── 进程退出埋点 ──
@@ -840,7 +855,7 @@ def api_scheduler():
 
     _proj = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     cron_marker = os.path.join(_proj, ".cron_installed")
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = get_current_date().isoformat()
 
     # ── 1. crontab 配置检测 ──
     # ── 从单一真相源 (status.register_all) 获取任务定义 ──
@@ -849,7 +864,9 @@ def api_scheduler():
     cron_tasks = {t["name"] for t in all_tasks()} if cron_installed else set()
 
     # ── 2. DB 查询 (统一入口: market.db → task_runs 表) ──
-    from quant.config.paths import MARKET_DB
+    # v562 fix: get MARKET_DB at runtime to avoid module-level caching
+    from quant.config.paths import get_market_db_path
+    MARKET_DB = get_market_db_path()
     # v556 (F7): 移除 v425 的 _check_timeouts 写库调用 — web 查询时标 aborted
     # 与 orchestrator 并发, 合法运行任务超 grace 被误标 → finish 跳过 →
     # 行恒 aborted + 冗余重跑 + 预算误耗. 超时自愈是 orchestrator 职责
@@ -868,7 +885,7 @@ def api_scheduler():
         #   - 全局最新记录 running 且未完成 → 运行中 (与触发日无关)
         #   - 今日有记录 → 按今日状态展示
         #   - 否则 → 等待调度
-        recent = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+        recent = (datetime.combine(get_current_date(), datetime.min.time()) - timedelta(days=3)).strftime("%Y-%m-%d")
         rows = conn.execute(
             "SELECT task_name, status, started_at, finished_at, error, summary, date "
             "FROM task_runs WHERE date >= ? ORDER BY date DESC, id DESC",
@@ -926,11 +943,11 @@ def api_scheduler():
                                  "attribution": 900, "weekly_eval": 7200,
                                  "daily_repair": 1800}
                 started = datetime.fromisoformat(run["started_at"])
-                elapsed = (datetime.now() - started).total_seconds()
+                elapsed = (datetime.combine(get_current_date(), datetime.min.time()) - started).total_seconds()
                 limit = _API_TIMEOUTS.get(key)
                 if limit is None and key == "monitor":
                     # monitor: 盘中不超时, 14:55 后才检查
-                    now = datetime.now()
+                    now = datetime.combine(get_current_date(), datetime.min.time())
                     if now.hour >= 14 and now.minute >= 55:
                         limit = 1800
                 if limit and elapsed > limit:

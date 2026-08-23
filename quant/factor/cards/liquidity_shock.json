@@ -3,8 +3,8 @@
   "display_name": "liquidity_shock",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.0182,
-  "icir_12m": -0.2137,
+  "ic_mean_12m": -0.0198,
+  "icir_12m": -0.2316,
   "last_evaluated": "auto",
-  "n_obs": 100
+  "n_obs": 98
 }

@@ -3,8 +3,8 @@
   "display_name": "tail_risk",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0076,
-  "icir_12m": 0.0679,
+  "ic_mean_12m": 0.0077,
+  "icir_12m": 0.068,
   "last_evaluated": "auto",
-  "n_obs": 100
+  "n_obs": 98
 }

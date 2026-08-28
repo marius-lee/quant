@@ -1,0 +1,54 @@
+# Quant Dagster Orchestrator Systemd Service
+# 安装: sudo cp dagster-orchestrator.service /etc/systemd/system/
+# 启用: sudo systemctl enable dagster-orchestrator
+# 启动: sudo systemctl start dagster-orchestrator
+# 查看: sudo journalctl -u dagster-orchestrator -f
+
+[Unit]
+Description=Quant Dagster Orchestrator - A股量化选股调度器 (Dagster 模式)
+Documentation=https://github.com/your-org/quant
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=mariusto
+Group=staff
+WorkingDirectory=/Users/mariusto/project/quant
+Environment=QUANT_ORCHESTRATOR=dagster
+Environment=DAGSTER_HOME=/tmp/dagster_home
+Environment=PYTHONPATH=/Users/mariusto/project/quant
+Environment=PATH=/Users/mariusto/project/quant/.venv/bin:/usr/local/bin:/usr/bin:/bin
+# 从 .env.dagster 加载敏感配置
+EnvironmentFile=-/Users/mariusto/project/quant/.env.dagster
+
+# 启动命令: 启动 dagster-daemon + webserver
+ExecStart=/bin/bash -c 'cd /Users/mariusto/project/quant && export DAGSTER_HOME=/tmp/dagster_home QUANT_ORCHESTRATOR=dagster PYTHONPATH=/Users/mariusto/project/quant && . ./.env.dagster 2>/dev/null || true; nohup .venv/bin/dagster-daemon run --module-name quant.orchestrator.dagster_assets > /tmp/dagster_home/daemon.log 2>&1 & echo $! > /tmp/quant_dagster_daemon.pid; nohup .venv/bin/dagster-webserver -h 0.0.0.0 -p 3001 -m quant.orchestrator.dagster_assets > /tmp/dagster_home/webserver.log 2>&1 & echo $! > /tmp/quant_dagster_webserver.pid; sleep 5; echo "Dagster services started"'
+
+# 停止命令
+ExecStop=/bin/bash -c 'kill $(cat /tmp/quant_dagster_daemon.pid 2>/dev/null) 2>/dev/null || true; kill $(cat /tmp/quant_dagster_webserver.pid 2>/dev/null) 2>/dev/null || true; echo "Dagster services stopped"'
+
+# 重启策略: 异常退出自动重启
+Restart=on-failure
+RestartSec=30
+StartLimitInterval=600
+StartLimitBurst=5
+
+# 资源限制
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dagster-orchestrator
+
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/Users/mariusto/project/quant/logs /Users/mariusto/project/quant/data /tmp/dagster_home /tmp/quant_dagster_*.pid
+
+[Install]
+WantedBy=multi-user.target

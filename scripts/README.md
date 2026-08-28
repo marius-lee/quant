@@ -6,7 +6,7 @@
 
 | 脚本 | 用途 |
 |------|------|
-| `restart.sh` | 重启 Web 服务 |
+| `restart.sh [legacy|dagster]` | 重启 Web 服务 + 编排器 (legacy=30s轮询默认, dagster=Dagster Daemon) |
 | `run_task.sh` / `run_task.py` | 手动触发调度任务 (signals/execute/monitor/attribution/daily_data/factor_cache/weekly) |
 | `setup_cron.sh` | 安装 crontab 定时调度 |
 | `init_data.py` | 数据源初始化 (全量/行业/日线/基本面/基准指数) |
@@ -55,6 +55,23 @@ bash scripts/eval_standard.sh      # 五阶段标准评估 (CPCV+walk-forward+PB
 | `backfill_financials.py` | sina 三表财务回填 (v525; 实测覆盖率仅 7-14%, 已被东财源取代, 保留备用) |
 
 顺序: `industry_pit_activate.sh` 一键执行 (等同步 → 校验 → 重物化) → `restart.sh` 重启。
+
+## Dagster 新架构 (v565)
+
+| 脚本 | 用途 |
+|------|------|
+| `restart.sh dagster` | 启动 Web + 切换 Dagster 模式 (QUANT_ORCHESTRATOR=dagster) |
+| `start_dagster.sh start [dev|prod]` | 管理 Dagster Daemon + PostgreSQL (Docker) |
+| `start_dagster.sh stop/restart/logs/clean/status` | Dagster 服务生命周期管理 |
+
+使用方式:
+```bash
+# 切换到 Dagster 模式
+bash scripts/restart.sh dagster
+bash scripts/start_dagster.sh start dev
+# Web UI: http://localhost:8521 (编排器模式显示在 /api/scheduler)
+# Dagster UI: http://localhost:3000
+```
 
 ## 测试
 

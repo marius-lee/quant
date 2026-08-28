@@ -12,6 +12,13 @@
 <!-- ════════════ Sidebar ════════════ -->
 <nav class="sidebar">
   <div class="sidebar-logo">盈迹</div>
+  <!-- v565: 编排器模式指示器 -->
+  <div class="orchestrator-mode-bar">
+    <span class="mode-badge" id="orchestrator-mode-badge">
+      <span class="mode-badge-dot" id="mode-badge-dot"></span>
+      <span id="mode-badge-text">{{ orchestrator_mode }}</span>
+    </span>
+  </div>
   <div class="sidebar-tabs">
     <button class="sidebar-tab active" data-tab="overview" aria-label="概览">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
@@ -33,6 +40,9 @@
   </button>
   <button class="sidebar-tab" data-tab="systems" aria-label="系统">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="4"/><rect x="6" y="6" width="12" height="6" rx="1"/><line x1="9" y1="15" x2="9" y2="18"/><line x1="15" y1="15" x2="15" y2="18"/></svg>
+  </button>
+  <button class="sidebar-tab" data-tab="canary" aria-label="灰度发布">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
   </button>
 </div>
   <div class="sidebar-bottom">
@@ -343,6 +353,180 @@
       <span id="phase8-msg" style="font-size:0.8rem;margin-left:8px"></span>
     </div>
   </div>
+</section>
+
+<!-- ════════════ TAB: 灰度发布 (v570) ════════════ -->
+<section class="tab-content" id="tab-canary">
+  <div class="section">
+    <div class="section-header">
+      <h2>灰度发布管理</h2>
+      <span class="meta" id="meta-canary">—</span>
+    </div>
+    <div class="kpi-strip" id="kpi-canary-overview" style="grid-template-columns:repeat(6,1fr);margin-bottom:16px">
+      <div class="kpi"><div class="label">总灰度数</div><div class="value" id="kpi-canary-total">—</div></div>
+      <div class="kpi"><div class="label">运行中</div><div class="value" id="kpi-canary-running">—</div></div>
+      <div class="kpi"><div class="label">已暂停</div><div class="value" id="kpi-canary-paused">—</div></div>
+      <div class="kpi"><div class="label">已完成</div><div class="value" id="kpi-canary-completed">—</div></div>
+      <div class="kpi"><div class="label">已失败</div><div class="value" id="kpi-canary-failed">—</div></div>
+      <div class="kpi"><div class="label">回滚中</div><div class="value" id="kpi-canary-rolling">—</div></div>
+    </div>
+
+    <div class="section">
+      <div class="section-header">
+        <h2>创建新灰度发布</h2>
+        <span class="meta">支持多阶段渐进式发布、自动回滚、A/B 对比</span>
+      </div>
+      <div class="grid-2">
+        <div class="section">
+          <div class="section-header"><h3>基本信息</h3></div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:12px">
+            <div>
+              <label style="font-size:0.85rem;color:var(--text2);display:block;margin-bottom:4px">灰度ID</label>
+              <input id="canary-id" placeholder="e.g. momentum_v2" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)">
+            </div>
+            <div>
+              <label style="font-size:0.85rem;color:var(--text2);display:block;margin-bottom:4px">名称</label>
+              <input id="canary-name" placeholder="动量策略v2灰度发布" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)">
+            </div>
+            <div>
+              <label style="font-size:0.85rem;color:var(--text2);display:block;margin-bottom:4px">初始流量</label>
+              <input id="canary-traffic" type="number" min="0.01" max="1" step="0.01" value="0.01" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)">
+            </div>
+          </div>
+          <div style="margin-top:12px">
+            <label style="font-size:0.85rem;color:var(--text2);display:block;margin-bottom:4px">策略 IDs (逗号分隔)</label>
+            <input id="canary-strategies" placeholder="momentum_v2,mean_reversion" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)">
+          </div>
+          <div style="margin-top:12px">
+            <label style="font-size:0.85rem;color:var(--text2);display:block;margin-bottom:4px">账户 IDs (逗号分隔)</label>
+            <input id="canary-accounts" placeholder="ACC_001,ACC_002" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)">
+          </div>
+        </div>
+        <div class="section">
+          <div class="section-header"><h3>发布阶段配置</h3></div>
+          <div id="canary-phases" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-top:12px">
+            <div class="phase-card" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px" data-phase="0">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <span class="phase-badge" style="background:var(--accent);color:#fff;padding:2px 8px;border-radius:4px;font-size:0.75rem">阶段 1</span>
+                <span class="phase-name" style="font-weight:600">cold_start</span>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+                <div><label style="font-size:0.75rem;color:var(--text2)">流量 %</label><input id="phase0-traffic" type="number" step="0.01" min="0" max="1" value="0.01" style="width:100%;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)"></div>
+                <div><label style="font-size:0.75rem;color:var(--text2)">持续(小时)</label><input id="phase0-duration" type="number" step="0.1" min="0" value="1" style="width:100%;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)"></div>
+              </div>
+              <input type="hidden" id="phase0-name" value="cold_start">
+            </div>
+            <div class="phase-card" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px" data-phase="1">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <span class="phase-badge" style="background:var(--accent);color:#fff;padding:2px 8px;border-radius:4px;font-size:0.75rem">阶段 2</span>
+                <span class="phase-name" style="font-weight:600">small_scale</span>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+                <div><label style="font-size:0.75rem;color:var(--text2)">流量 %</label><input id="phase1-traffic" type="number" step="0.01" min="0" max="1" value="0.05" style="width:100%;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)"></div>
+                <div><label style="font-size:0.75rem;color:var(--text2)">持续(小时)</label><input id="phase1-duration" type="number" step="0.1" min="0" value="2" style="width:100%;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)"></div>
+              </div>
+              <input type="hidden" id="phase1-name" value="small_scale">
+            </div>
+            <div class="phase-card" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px" data-phase="2">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <span class="phase-badge" style="background:var(--accent);color:#fff;padding:2px 8px;border-radius:4px;font-size:0.75rem">阶段 3</span>
+                <span class="phase-name" style="font-weight:600">medium_scale</span>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+                <div><label style="font-size:0.75rem;color:var(--text2)">流量 %</label><input id="phase2-traffic" type="number" step="0.01" min="0" max="1" value="0.10" style="width:100%;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)"></div>
+                <div><label style="font-size:0.75rem;color:var(--text2)">持续(小时)</label><input id="phase2-duration" type="number" step="0.1" min="0" value="4" style="width:100%;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)"></div>
+              </div>
+              <input type="hidden" id="phase2-name" value="medium_scale">
+            </div>
+            <div class="phase-card" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px" data-phase="3">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <span class="phase-badge" style="background:var(--accent);color:#fff;padding:2px 8px;border-radius:4px;font-size:0.75rem">阶段 4</span>
+                <span class="phase-name" style="font-weight:600">large_scale</span>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+                <div><label style="font-size:0.75rem;color:var(--text2)">流量 %</label><input id="phase3-traffic" type="number" step="0.01" min="0" max="1" value="0.25" style="width:100%;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)"></div>
+                <div><label style="font-size:0.75rem;color:var(--text2)">持续(小时)</label><input id="phase3-duration" type="number" step="0.1" min="0" value="8" style="width:100%;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)"></div>
+              </div>
+              <input type="hidden" id="phase3-name" value="large_scale">
+            </div>
+            <div class="phase-card" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px" data-phase="4">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <span class="phase-badge" style="background:var(--accent);color:#fff;padding:2px 8px;border-radius:4px;font-size:0.75rem">阶段 5</span>
+                <span class="phase-name" style="font-weight:600">half_release</span>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+                <div><label style="font-size:0.75rem;color:var(--text2)">流量 %</label><input id="phase4-traffic" type="number" step="0.01" min="0" max="1" value="0.50" style="width:100%;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)"></div>
+                <div><label style="font-size:0.75rem;color:var(--text2)">持续(小时)</label><input id="phase4-duration" type="number" step="0.1" min="0" value="12" style="width:100%;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)"></div>
+              </div>
+              <input type="hidden" id="phase4-name" value="half_release">
+            </div>
+            <div class="phase-card" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px" data-phase="5">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <span class="phase-badge" style="background:var(--accent);color:#fff;padding:2px 8px;border-radius:4px;font-size:0.75rem">阶段 6</span>
+                <span class="phase-name" style="font-weight:600">full_release</span>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+                <div><label style="font-size:0.75rem;color:var(--text2)">流量 %</label><input id="phase5-traffic" type="number" step="0.01" min="0" max="1" value="1.00" style="width:100%;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)"></div>
+                <div><label style="font-size:0.75rem;color:var(--text2)">持续(小时)</label><input id="phase5-duration" type="number" step="0.1" min="0" value="0" style="width:100%;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)"></div>
+              </div>
+              <input type="hidden" id="phase5-name" value="full_release">
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:16px;display:flex;gap:12px;flex-wrap:wrap">
+          <button onclick="createCanary()" style="padding:10px 24px;background:var(--accent);border:none;border-radius:4px;color:#fff;font-weight:600;cursor:pointer">创建灰度发布</button>
+          <button onclick="loadCanaryList()" style="padding:10px 24px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer">刷新列表</button>
+        </div>
+      </div>
+
+      <!-- 灰度发布列表 -->
+      <div class="section" style="margin-top:24px">
+        <div class="section-header">
+          <h2>灰度发布列表</h2>
+          <span class="meta" id="meta-canary-list">—</span>
+        </div>
+        <div id="table-canary"></div>
+      </div>
+
+      <!-- 灰度详情与控制面板 -->
+      <div class="section" id="canary-detail" style="display:none;margin-top:24px">
+        <div class="section-header">
+          <h2>灰度详情: <span id="detail-canary-name"></h2>
+          <span class="meta" id="detail-meta">—</span>
+        </div>
+        <div class="kpi-strip" id="kpi-canary-detail" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+          <div class="kpi"><div class="label">状态</div><div class="value" id="det-status">—</div></div>
+          <div class="kpi"><div class="label">当前阶段</div><div class="value" id="det-phase">—</div></div>
+          <div class="kpi"><div class="label">流量比例</div><div class="value" id="det-traffic">—</div></div>
+          <div class="kpi"><div class="label">运行时长</div><div class="value" id="det-duration">—</div></div>
+        </div>
+        <div class="grid-2">
+          <div class="section">
+            <div class="section-header"><h3>控制面板</h3></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+              <button onclick="controlCanary('start')" style="padding:8px 16px;background:var(--accent);border:none;border-radius:4px;color:#fff;cursor:pointer" id="btn-start">启动</button>
+              <button onclick="controlCanary('pause')" style="padding:8px 16px;background:var(--accent);border:none;border-radius:4px;color:#fff;cursor:pointer" id="btn-pause">暂停</button>
+              <button onclick="controlCanary('resume')" style="padding:8px 16px;background:var(--accent);border:none;border-radius:4px;color:#fff;cursor:pointer" id="btn-resume">恢复</button>
+              <button onclick="controlCanary('rollback')" style="padding:8px 16px;background:#dc2626;border:none;border-radius:4px;color:#fff;cursor:pointer" id="btn-rollback">回滚</button>
+              <button onclick="controlCanary('complete')" style="padding:8px 16px;background:#16a34a;border:none;border-radius:4px;color:#fff;cursor:pointer" id="btn-complete">全量发布</button>
+            </div>
+          </div>
+          <div class="section">
+            <div class="section-header"><h3>A/B 测试对比</h3></div>
+            <div id="abtest-results"></div>
+          </div>
+          <div class="section">
+            <div class="section-header"><h3>指标趋势</h3></div>
+            <div class="grid-2">
+              <div class="chart-box" id="chart-canary-pnl"></div>
+              <div class="chart-box" id="chart-canary-sharpe"></div>
+              <div class="chart-box" id="chart-canary-drawdown"></div>
+              <div class="chart-box" id="chart-canary-error-rate"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
 </section>
 
 </main>

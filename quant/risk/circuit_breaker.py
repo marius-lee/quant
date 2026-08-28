@@ -301,3 +301,5 @@ class _CircuitBreakerManager:
     
     def check_all(self) -> list:
         return []
+
+_circuit_breaker_manager = _CircuitBreakerManager()

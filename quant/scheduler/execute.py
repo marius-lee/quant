@@ -52,10 +52,17 @@ def _run(today: str):
         targets = []  # risk_only 不使用 targets
 
     # ADR-036: 初始化 broker adapter (实盘路径 — 非 simulated 时尝试真实券商)
+    # 修复: 确保事件循环存在 (asyncio.get_event_loop() 在非 async 线程会报错)
+    import asyncio
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
     from quant.execution.broker_adapter import get_broker_adapter, reset_adapter
     reset_adapter()  # 每天重置连接
     _broker = get_broker_adapter()
-    _log.info(f"[{today}] broker adapter: {_broker.name} connected={_broker.is_connected()}")
+    _log.info(f"[{today}] broker adapter: {_broker.config.name} connected={_broker.is_connected()}")
 
     engine = ExecutionEngine(broker_adapter=_broker)
     cost_model = CostModel.from_config()

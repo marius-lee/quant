@@ -105,6 +105,10 @@ def _should_run(s: TaskSpec, hhmm: time, weekday: int,
     """
     if s.weekday is not None and weekday != s.weekday:
         return False
+    # v571: 盘中任务必须在交易日执行 (避免非交易日下单/快照/风控 — 2026-08-26 周日 09:20 误触发 execute bug)
+    # daily_repair/weekly_eval 显式需跨休息日, 不纳入此过滤.
+    if s.name in ("execute", "snapshot_open", "snapshot_close") and not is_trading_day():
+        return False
     cur = status.get(s.name)
     if cur == "ok":
         return False

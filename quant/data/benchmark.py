@@ -56,10 +56,39 @@ def sync_benchmark(index_code: str = "000300") -> int:
     last_date = row[0] if row and row[0] else "2020-01-01"
 
     # eastmoney API 需要 YYYYMMDD 格式的日期参数
-    @datasource_retry
+    @datasource_retry(tries=6, delay=2, backoff=3)
     def _fetch_benchmark(symbol, start_date):
-        return ak.stock_zh_index_daily_em(symbol=symbol,
-            start_date=start_date, end_date="20500101")
+        """Fetch benchmark data from eastmoney, fallback to tushare."""
+        try:
+            return ak.stock_zh_index_daily_em(symbol=symbol,
+                start_date=start_date, end_date="20500101")
+        except Exception as e:
+            logger.warning(f"benchmark fetch from eastmoney failed: {e}, trying tushare fallback")
+            try:
+                import tushare as ts
+                from quant.config.constants import _require_cfg
+                pro = ts.pro_api(_require_cfg("data.tushare_token"))
+                # Convert symbol: sh000300 -> 000300.SH
+                ts_code = symbol[2:] + "." + symbol[:2].upper()
+                df = pro.index_daily(ts_code=ts_code, 
+                    start_date=start_date.replace('-', ''), 
+                    end_date="20500101")
+                if df is not None and not df.empty:
+                    # Convert tushare format to akshare format
+                    df = df.rename(columns={
+                        'trade_date': 'date',
+                        'open': 'open',
+                        'high': 'high',
+                        'low': 'low',
+                        'close': 'close',
+                        'vol': 'volume',
+                        'amount': 'amount'
+                    })
+                    df['date'] = pd.to_datetime(df['date'], format='%Y%m%d').dt.strftime('%Y-%m-%d')
+                    return df
+            except Exception as e2:
+                logger.error(f"benchmark fetch from tushare also failed: {e2}")
+            raise
 
     df = _fetch_benchmark(f"sh{index_code}", to_compact(last_date))
     if df is None or df.empty:

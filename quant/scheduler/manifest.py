@@ -68,7 +68,7 @@ _DAYLINE: list[TaskSpec] = [
         has_multiprocess=True,
     ),
     TaskSpec(
-        name="execute", label="交易执行", schedule="09:30",
+        name="execute", label="交易执行", schedule="09:20 (开盘前下单, 09:30开盘)",
         window=(time(9, 20), time(14, 56)),
         depends_attempt=("signals",),  # 原始: signals 尝试过即可 (不要求 ok)
         grace_s=1800, timeout_s=1800,
@@ -141,6 +141,16 @@ _DAYLINE: list[TaskSpec] = [
             "from quant.scheduler.repair import _run;"
         ),
         desc="重试昨日审计失败表 (T+1 迟发) + weekly_full 7 天兜底",
+    ),
+    TaskSpec(
+        name="duckdb_sync", label="DuckDB同步", schedule="daily_data后",
+        window=(time(19, 30), time(22, 0)), grace_s=1800, timeout_s=3600,
+        mode="subprocess", group="盘后",
+        subprocess_cmd=(
+            "from quant.utils.excepthook import setup; setup();"
+            "from quant.scheduler.duckdb_sync import _run;"
+        ),
+        desc="增量同步 SQLite→DuckDB (daily_data 后、factor_cache 前)",
     ),
 ]
 

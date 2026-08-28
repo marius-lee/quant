@@ -318,6 +318,7 @@ class TestF4MonitorCrashRestart:
         assert len(sleeps) >= 4
 
     def test_out_of_window_crash_marks_ok(self, monkeypatch):
+        """F4: 窗口外线程死 = 正常自退 → 兜底 ok; 不重启."""
         from datetime import time as _tm
         from quant.scheduler.manifest import TaskSpec
 
@@ -371,3 +372,59 @@ class TestF4MonitorCrashRestart:
         assert ("ok", None) in calls["finish"], f"窗口外应兜底 ok, got {calls['finish']}"
         assert calls["tk_start"] == 1, f"窗口外 ok 后不得重启, tk_start={calls['tk_start']}"
         assert len(sleeps) >= 3
+
+    def test_market_closed_no_restart_storm(self, monkeypatch):
+        """v565 FIX: 收盘后不再重启 monitor (15:00 实证 3 次连续重启风暴).
+
+        场景: monitor 在收盘后 (窗口已关闭) 仍处 'failed' 状态 (早先崩溃),
+        orchestrator 原逻辑: _should_run 对 'failed' 在重试预算内返回 True
+        → 重启 → 立即退出 (market closed) → 再次標 failed → 风暴.
+        修复: 窗口已关闭时不重启, 保持 'failed' 等待次日重置.
+        """
+        from datetime import time as _tm
+        from quant.scheduler.manifest import TaskSpec
+
+        calls = {"finish": [], "spawn": 0}
+        # 模拟: monitor 先前崩溃留 'failed', 现已收盘
+        status = {"monitor": "failed"}
+
+        class FakeMonitorRunner:
+            def __init__(self, today):
+                self.today = today
+                calls["spawn"] += 1
+
+            def is_alive(self):
+                return False
+
+            def run(self):
+                pass
+
+            def stop(self):
+                pass
+
+        def fake_tk_finish(task, date, st, error=None, summary=None):
+            calls["finish"].append((st, error))
+
+        all_tasks = _manifest(weekly=False, repair=False)
+        all_tasks["monitor"] = TaskSpec(
+            name="monitor", label="盘中风控", schedule="09:35-15:00",
+            window=(_tm(9, 30), _tm(15, 0)), grace_s=21600, timeout_s=21600,
+            mode="monitor")
+
+        # 15:01 — 窗口已关闭, monitor 状态为 'failed'
+        sleeps, _ = _run_loop(
+            monkeypatch, dt_mod.datetime(2026, 8, 19, 15, 1),
+            max_sleeps=5,
+            patch_callbacks={
+                "monitor_cls": FakeMonitorRunner,
+                "manifest_all": all_tasks,
+                "is_trading_day": True,
+                "status": status,
+                "tk_finish": fake_tk_finish,
+                "tk_start": lambda *a, **k: None,
+            },
+        )
+        # 修复前: spawn 多次 (风暴); 修复后: 0 次 (窗口外不重启)
+        assert calls["spawn"] == 0, f"收盘后不应重启 monitor, 但 spawn 了 {calls['spawn']} 次"
+        # 窗口外 'failed' 状态不被覆盖为 'ok' (保持失败状态供人工排查)
+        assert not any(s == "ok" for s, _ in calls["finish"]), "窗口外不应强制标 ok (保持 failed 供排查)"

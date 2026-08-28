@@ -9,7 +9,7 @@
   - 可观测: Dagster UI + 结构化日志 + 指标导出
 """
 
-import time
+import time as _time
 import dagster as dg
 from dagster import (
     asset,
@@ -32,7 +32,7 @@ from dagster import (
     Backoff,
     Jitter,
 )
-from datetime import datetime, date, time
+from datetime import datetime, date, time as _dt_time
 from typing import Optional
 
 # ═══════════════════════════════════════════════════════════════════
@@ -41,7 +41,7 @@ from typing import Optional
 
 trading_day_partitions = DailyPartitionsDefinition(
     start_date="2020-01-01",
-    end_offset=0,  # 运行到今天
+    end_offset=1,  # 包含今天的分区 (end_offset=0 表示到昨天, end_offset=1 表示包含今天)
     timezone="Asia/Shanghai",
 )
 
@@ -139,12 +139,12 @@ def daily_repair(
     partition_date = context.partition_key  # YYYY-MM-DD
     context.log.info(f"[{partition_date}] daily_repair starting")
 
-    start_time = time.perf_counter()
+    start_time = _time.perf_counter()
     
     from quant.scheduler.repair import _run
     _run(partition_date)
     
-    duration_ms = (time.perf_counter() - start_time) * 1000
+    duration_ms = (_time.perf_counter() - start_time) * 1000
     
     # 添加输出元数据
     context.add_output_metadata({
@@ -154,65 +154,6 @@ def daily_repair(
     })
     
     return {"date": partition_date, "status": "completed"}
-
-@asset(
-    description="分布式因子物化 — 基于 Ray 并行计算 (替代单进程 factor_cache)",
-    partitions_def=trading_day_partitions,
-    kinds={"python", "database", "compute", "ray"},
-    ins={"adj_factor": AssetIn("adj_factor")},
-    metadata={"owner": "quant-research", "priority": "high"},
-)
-def factor_cache_distributed(
-    context: AssetExecutionContext,
-    adj_factor: dict,
-) -> dict:
-    """晚间链第三阶段: 分布式因子缓存物化."""
-    partition_date = context.partition_key
-    context.log.info(f"[{partition_date}] factor_cache_distributed starting")
-
-    from quant.config.constants import _require_cfg
-    from quant.factor.distributed import run_distributed_factorization
-
-    # 检查是否启用分布式模式
-    from quant.config.loader import load as _load_config
-    cfg = _load_config()
-    distributed_enabled = cfg.get('factor', {}).get('distributed', {}).get('enabled', False)
-
-    if not distributed_enabled:
-        context.log.info("Distributed factorization disabled, falling back to single-process")
-        from quant.scheduler.factor_cache import _run as _fc_run
-        _fc_start = _require_cfg("backtest.factor_cache_start")
-        _fc_run(_fc_start, partition_date)
-        return {"date": partition_date, "status": "completed (single-process fallback)"}
-
-    # 分布式执行
-    ray_config = cfg.get('factor', {}).get('distributed', {}).get('ray', {})
-    partition_strategy = cfg.get('factor', {}).get('distributed', {}).get('partition_strategy', 'date')
-    partition_kwargs = cfg.get('factor', {}).get('distributed', {}).get('partition_kwargs', {})
-
-    start_time = time.perf_counter()
-    result = run_distributed_factorization(
-        start_date=_require_cfg('backtest.factor_cache_start'),
-        end_date=partition_date,
-        partition_strategy=partition_strategy,
-        partition_kwargs=partition_kwargs,
-        ray_config=ray_config,
-    )
-    
-    duration_ms = (time.perf_counter() - start_time) * 1000
-    
-    context.add_output_metadata({
-        "duration_ms": duration_ms,
-        "partition_date": partition_date,
-        "status": "completed",
-        "summary": str(result),
-    })
-
-    context.log.info(f"[{partition_date}] factor_cache_distributed completed: {result}")
-    return {"date": partition_date, "status": "completed", "summary": result}
-
-
-
 
 @asset(
     description="信号生成 — 计算所有using因子, 生成Alpha信号与目标持仓",
@@ -230,12 +171,12 @@ def signals(
     partition_date = context.partition_key
     context.log.info(f"[{partition_date}] signals starting")
 
-    start_time = time.perf_counter()
+    start_time = _time.perf_counter()
     
     from quant.scheduler.signals import _run
     result = _run(partition_date)
     
-    duration_ms = (time.perf_counter() - start_time) * 1000
+    duration_ms = (_time.perf_counter() - start_time) * 1000
     
     context.add_output_metadata({
         "duration_ms": duration_ms,
@@ -260,16 +201,16 @@ def execute(
     signals: dict,
     trade_repo: ResourceParam[TradeRepoResource],
 ) -> dict:
-    """每日 09:30 运行 (仅调仓日)."""
+    """每日 09:20 运行 (仅调仓日)."""
     partition_date = context.partition_key
     context.log.info(f"[{partition_date}] execute starting")
 
-    start_time = time.perf_counter()
+    start_time = _time.perf_counter()
     
     from quant.scheduler.execute import _run
     result = _run(partition_date)
     
-    duration_ms = (time.perf_counter() - start_time) * 1000
+    duration_ms = (_time.perf_counter() - start_time) * 1000
     
     context.add_output_metadata({
         "duration_ms": duration_ms,
@@ -298,12 +239,12 @@ def snapshot_open(
     partition_date = context.partition_key
     context.log.info(f"[{partition_date}] snapshot_open starting")
 
-    start_time = time.perf_counter()
+    start_time = _time.perf_counter()
     
     from quant.scheduler.snapshot import snapshot_open as _snapshot_open
     result = _snapshot_open(partition_date)
     
-    duration_ms = (time.perf_counter() - start_time) * 1000
+    duration_ms = (_time.perf_counter() - start_time) * 1000
     
     context.add_output_metadata({
         "duration_ms": duration_ms,
@@ -326,22 +267,52 @@ def monitor(
     context: AssetExecutionContext,
     market_db: ResourceParam[MarketDBResource],
 ) -> dict:
-    """09:35-15:00 持续运行 (午休内部暂停). 作为 Sensor 触发的长驻作业."""
+    """09:35-15:00 持续运行 (午休内部暂停). 启动后台守护进程."""
+    import threading
+    import os
+    from datetime import datetime, time
+    from quant.execution.calendar import is_trading_day
+
     partition_date = context.partition_key
     context.log.info(f"[{partition_date}] monitor daemon starting")
 
-    # 注意: 盘中风控适合用 Sensor + 长驻进程, 这里简化为启动标记
-    # 实际运行由 monitor_sensor 触发的独立进程管理
+    # ── 只有交易日且在交易时段内才启动守护进程 ──
+    today = partition_date
+    if not is_trading_day():
+        context.log.info(f"[{today}] non-trading day, skipping monitor daemon")
+        return {"date": today, "status": "skipped_non_trading"}
+
+    now = datetime.now()
+    hhmm = time(now.hour, now.minute)
+
+    # 09:35-15:00 窗口外不启动
+    if not (time(9, 35) <= hhmm <= time(15, 0)):
+        context.log.info(f"[{today}] outside monitor window (09:35-15:00), current={hhmm}")
+        return {"date": today, "status": "skipped_outside_window"}
+
+    # ── 启动后台守护线程 (非阻塞) ──
+    # 使用 threading 避免阻塞 Dagster asset 执行
+    # 传入 stop_event 为 None (Dagster 模式由 Sensor 控制生命周期)
     from quant.scheduler.monitor import _run_continuous
-    # 不直接调用 _run_continuous (会阻塞), 而是记录启动意图
-    # 真实部署时: 由 K8s CronJob 或 systemd 管理 monitor 守护进程
+
+    def _daemon_wrapper():
+        try:
+            _run_continuous(today, stop_event=None)
+        except Exception as e:
+            context.log.error(f"[{today}] monitor daemon crashed: {e}")
+
+    daemon_thread = threading.Thread(target=_daemon_wrapper, daemon=True, name=f"monitor-{today}")
+    daemon_thread.start()
+
+    context.log.info(f"[{today}] monitor daemon thread started (pid={os.getpid()}, thread={daemon_thread.name})")
 
     context.add_output_metadata({
         "partition_date": partition_date,
         "status": "daemon_started",
+        "thread": daemon_thread.name,
     })
 
-    return {"date": partition_date, "status": "daemon_started"}
+    return {"date": partition_date, "status": "daemon_started", "thread": daemon_thread.name}
 
 
 @asset(
@@ -358,12 +329,12 @@ def snapshot_close(
     partition_date = context.partition_key
     context.log.info(f"[{partition_date}] snapshot_close starting")
 
-    start_time = time.perf_counter()
+    start_time = _time.perf_counter()
     
     from quant.scheduler.snapshot import snapshot_close as _snapshot_close
     result = _snapshot_close(partition_date)
     
-    duration_ms = (time.perf_counter() - start_time) * 1000
+    duration_ms = (_time.perf_counter() - start_time) * 1000
     
     context.add_output_metadata({
         "duration_ms": duration_ms,
@@ -392,12 +363,12 @@ def reconcile(
     partition_date = context.partition_key
     context.log.info(f"[{partition_date}] reconcile starting")
 
-    start_time = time.perf_counter()
+    start_time = _time.perf_counter()
     
     from quant.scheduler.reconcile import _run
     result = _run(partition_date)
     
-    duration_ms = (time.perf_counter() - start_time) * 1000
+    duration_ms = (_time.perf_counter() - start_time) * 1000
     
     context.add_output_metadata({
         "duration_ms": duration_ms,
@@ -423,12 +394,12 @@ def daily_data(
     partition_date = context.partition_key
     context.log.info(f"[{partition_date}] daily_data starting")
 
-    start_time = time.perf_counter()
+    start_time = _time.perf_counter()
     
     from quant.scheduler.daily_data import _run
     _run(partition_date)
     
-    duration_ms = (time.perf_counter() - start_time) * 1000
+    duration_ms = (_time.perf_counter() - start_time) * 1000
     
     context.add_output_metadata({
         "duration_ms": duration_ms,
@@ -455,14 +426,14 @@ def adj_factor(
     partition_date = context.partition_key
     context.log.info(f"[{partition_date}] adj_factor starting")
 
-    start_time = time.perf_counter()
+    start_time = _time.perf_counter()
     
     from quant.data.store import DataStore
     store = DataStore()
     result = store.sync_adj_factor(max_batches=1)
     store.close()
     
-    duration_ms = (time.perf_counter() - start_time) * 1000
+    duration_ms = (_time.perf_counter() - start_time) * 1000
     
     context.add_output_metadata({
         "duration_ms": duration_ms,
@@ -475,7 +446,42 @@ def adj_factor(
 
 
 @asset(
-    description="因子物化 — 增量物化因子缓存到 gzip CSV",
+    description="DuckDB 增量同步 — SQLite→DuckDB (daily_data 后、factor_cache 前)",
+    partitions_def=trading_day_partitions,
+    kinds={"python", "database"},
+    ins={"adj_factor": AssetIn("adj_factor")},  # 依赖 adj_factor 成功
+    metadata={"owner": "data-engineering", "priority": "high"},
+)
+def duckdb_sync(
+    context: AssetExecutionContext,
+    adj_factor: dict,
+) -> dict:
+    """晚间链第三阶段: DuckDB 增量同步 (v562f) — 保证 factor_cache 可读最新 DuckDB.
+
+    解决 "factor_cache: DuckDB daily 落后" 拦截物化问题.
+    daily_data 完成后立即同步 SQLite→DuckDB (增量 upsert + 预聚合), 耗时 ~30-60s.
+    """
+    partition_date = context.partition_key
+    context.log.info(f"[{partition_date}] duckdb_sync starting")
+
+    start_time = _time.perf_counter()
+
+    from quant.scheduler.duckdb_sync import _run as _ds_run
+    _ds_run(partition_date)
+
+    duration_ms = (_time.perf_counter() - start_time) * 1000
+
+    context.add_output_metadata({
+        "duration_ms": duration_ms,
+        "partition_date": partition_date,
+        "status": "completed",
+    })
+
+    return {"date": partition_date, "status": "completed"}
+
+
+@asset(
+    description="因子物化 — 增量物化因子缓存到 gzip CSV (Legacy: 单进程, Dagster: 分布式)",
     partitions_def=trading_day_partitions,
     kinds={"python", "database", "compute"},
     ins={"adj_factor": AssetIn("adj_factor")},  # 依赖 adj_factor 成功
@@ -484,25 +490,62 @@ def adj_factor(
 def factor_cache(
     context: AssetExecutionContext,
     adj_factor: dict,
-    factor_store: ResourceParam[FactorStoreResource],
 ) -> dict:
-    """晚间链第三阶段: 因子缓存物化."""
+    """晚间链第三阶段: 因子缓存物化.
+    - Legacy模式: 使用单进程factor_cache._run()
+    - Dagster模式: 使用分布式因子物化 (Ray)
+    """
+    from quant.scheduler import get_orchestrator_mode
+    mode = get_orchestrator_mode()
+    
     partition_date = context.partition_key
-    context.log.info(f"[{partition_date}] factor_cache starting")
+    context.log.info(f"[{partition_date}] factor_cache starting (mode={mode})")
 
-    start_time = time.perf_counter()
+    start_time = _time.perf_counter()
     
-    from quant.config.constants import _require_cfg
-    from quant.scheduler.factor_cache import _run as _fc_run
-    _fc_start = _require_cfg("backtest.factor_cache_start")
-    _fc_run(_fc_start, partition_date)
+    if mode == "dagster":
+        # Dagster模式: 使用分布式引擎
+        from quant.config.constants import _require_cfg
+        from quant.factor.distributed import run_distributed_factorization
+        
+        # 检查是否启用分布式模式 (从config读取)
+        from quant.config.loader import load as _load_config
+        cfg = _load_config()
+        distributed_enabled = cfg.get('factor', {}).get('distributed', {}).get('enabled', False)
+        
+        if not distributed_enabled:
+            context.log.warning("Distributed factorization disabled in config, falling back to single-process")
+            from quant.scheduler.factor_cache import _run as _fc_run
+            _fc_start = _require_cfg("backtest.factor_cache_start")
+            _fc_run(_fc_start, partition_date)
+        else:
+            # 分布式执行
+            ray_config = cfg.get('factor', {}).get('distributed', {}).get('ray', {})
+            partition_strategy = cfg.get('factor', {}).get('distributed', {}).get('partition_strategy', 'date')
+            partition_kwargs = cfg.get('factor', {}).get('distributed', {}).get('partition_kwargs', {})
+            
+            result = run_distributed_factorization(
+                start_date=_require_cfg('backtest.factor_cache_start'),
+                end_date=partition_date,
+                partition_strategy=partition_strategy,
+                partition_kwargs=partition_kwargs,
+                ray_config=ray_config,
+            )
+            context.log.info(f"[{partition_date}] distributed factorization result: {result}")
+    else:
+        # Legacy模式: 使用单进程
+        from quant.config.constants import _require_cfg
+        from quant.scheduler.factor_cache import _run as _fc_run
+        _fc_start = _require_cfg("backtest.factor_cache_start")
+        _fc_run(_fc_start, partition_date)
     
-    duration_ms = (time.perf_counter() - start_time) * 1000
+    duration_ms = (_time.perf_counter() - start_time) * 1000
     
     context.add_output_metadata({
         "duration_ms": duration_ms,
         "partition_date": partition_date,
         "status": "completed",
+        "mode": mode,
     })
 
     return {"date": partition_date, "status": "completed"}
@@ -524,12 +567,12 @@ def attribution(
     partition_date = context.partition_key
     context.log.info(f"[{partition_date}] attribution starting")
 
-    start_time = time.perf_counter()
+    start_time = _time.perf_counter()
     
     from quant.scheduler.attribution import _run
     _run(partition_date)
     
-    duration_ms = (time.perf_counter() - start_time) * 1000
+    duration_ms = (_time.perf_counter() - start_time) * 1000
     
     context.add_output_metadata({
         "duration_ms": duration_ms,
@@ -561,12 +604,12 @@ def lgb_train(
 
     context.log.info(f"[{partition_date}] lgb_train starting")
 
-    start_time = time.perf_counter()
+    start_time = _time.perf_counter()
     
     from quant.scheduler.lgb_train import _run
     _run(partition_date)
     
-    duration_ms = (time.perf_counter() - start_time) * 1000
+    duration_ms = (_time.perf_counter() - start_time) * 1000
     
     context.add_output_metadata({
         "duration_ms": duration_ms,
@@ -598,12 +641,12 @@ def xgb_train(
 
     context.log.info(f"[{partition_date}] xgb_train starting")
 
-    start_time = time.perf_counter()
+    start_time = _time.perf_counter()
     
     from quant.scheduler.xgb_train import _run
     _run(partition_date)
     
-    duration_ms = (time.perf_counter() - start_time) * 1000
+    duration_ms = (_time.perf_counter() - start_time) * 1000
     
     context.add_output_metadata({
         "duration_ms": duration_ms,
@@ -633,12 +676,12 @@ def weekly_eval(
     partition_date = context.partition_key
     context.log.info(f"[{partition_date}] weekly_eval starting")
 
-    start_time = time.perf_counter()
+    start_time = _time.perf_counter()
     
     from quant.scheduler.weekly import _run
     _run(partition_date)
     
-    duration_ms = (time.perf_counter() - start_time) * 1000
+    duration_ms = (_time.perf_counter() - start_time) * 1000
     
     context.add_output_metadata({
         "duration_ms": duration_ms,
@@ -677,8 +720,8 @@ daily_job = define_asset_job(
         "reconcile",
         "daily_data",
         "adj_factor",
+        "duckdb_sync",
         "factor_cache",
-        "factor_cache_distributed",
         "attribution",
         "lgb_train",
         "xgb_train",
@@ -711,6 +754,14 @@ weekly_job = define_asset_job(
 daily_schedule = ScheduleDefinition(
     job=daily_job,
     cron_schedule="0 5 * * 1-5",  # 交易日 05:00 启动 (daily_repair), 后续任务按依赖自动触发
+    execution_timezone="Asia/Shanghai",
+    default_status=DefaultScheduleStatus.RUNNING,
+)
+
+# 晚间链调度: 19:00 启动 daily_data → adj_factor → duckdb_sync → factor_cache → attribution
+daily_data_schedule = ScheduleDefinition(
+    job=daily_job,
+    cron_schedule="0 19 * * 1-5",  # 交易日 19:00 启动 daily_data
     execution_timezone="Asia/Shanghai",
     default_status=DefaultScheduleStatus.RUNNING,
 )
@@ -798,15 +849,15 @@ def get_definitions():
             reconcile,
             daily_data,
             adj_factor,
+            duckdb_sync,
             factor_cache,
-            factor_cache_distributed,
             attribution,
             lgb_train,
             xgb_train,
             weekly_eval,
         ],
         jobs=[daily_job, weekly_job],
-        schedules=[daily_schedule, weekly_schedule],
+        schedules=[daily_schedule, daily_data_schedule, weekly_schedule],
         sensors=[monitor_sensor],
         resources={
             "data_source_registry": DataSourceRegistryResource(),

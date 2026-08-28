@@ -27,9 +27,12 @@ from quant.utils.logger import get_logger, set_trace_id
 _log = get_logger(__name__)
 
 # 依赖顺序即执行顺序; attribution 必须在 factor_cache 之后 (G1/G4 需当日因子缓存)
+# v562f: 新增 duckdb_sync 阶段 (daily_data 后、factor_cache 前) —
+# 解决 "DuckDB daily 落后" 拦截 factor_cache 物化; 每日同步 SQLite→DuckDB
 _CHAIN = [
     ("daily_data", "quant.scheduler.daily_data"),
     ("adj_factor", None),                          # test-v317: 内联执行 (DataStore.sync_adj_factor)
+    ("duckdb_sync", "quant.scheduler.duckdb_sync"),  # 新增: SQLite→DuckDB 增量同步
     ("factor_cache", "quant.scheduler.factor_cache"),
     ("attribution", "quant.scheduler.attribution"),
     ("lgb_train", "quant.scheduler.lgb_train"),    # 仅周一/周四

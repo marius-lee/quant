@@ -1,0 +1,57 @@
+# Quant Orchestrator Systemd Service
+# 安装: sudo cp quant-orchestrator.service /etc/systemd/system/
+# 启用: sudo systemctl enable quant-orchestrator
+# 启动: sudo systemctl start quant-orchestrator
+# 查看: sudo journalctl -u quant-orchestrator -f
+
+[Unit]
+Description=Quant Orchestrator - A股量化选股调度器
+Documentation=https://github.com/your-org/quant
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=mariusto
+Group=staff
+WorkingDirectory=/Users/mariusto/project/quant
+Environment=QUANT_ORCHESTRATOR=legacy
+Environment=PYTHONPATH=/Users/mariusto/project/quant
+Environment=PATH=/Users/mariusto/project/quant/.venv/bin:/usr/local/bin:/usr/bin:/bin
+# 从 .env 加载敏感配置 (TUSHARE_TOKEN 等)
+EnvironmentFile=-/Users/mariusto/project/quant/.env
+
+# 启动命令
+ExecStart=/Users/mariusto/project/quant/.venv/bin/python3 -c "
+from quant.utils.excepthook import setup; setup()
+from quant.scheduler import start_all
+start_all()
+import time
+while True:
+    time.sleep(60)
+"
+
+# 重启策略: 异常退出自动重启，最多 5 次/10分钟
+Restart=on-failure
+RestartSec=30
+StartLimitInterval=600
+StartLimitBurst=5
+
+# 资源限制
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=quant-orchestrator
+
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/Users/mariusto/project/quant/logs /Users/mariusto/project/quant/data /tmp
+
+[Install]
+WantedBy=multi-user.target

@@ -13,7 +13,8 @@ from quant.config.constants import (
 from quant.factor.registry import _cs_zscore
 
 from quant.utils.logger import get_logger as _get_logger
-from quant.data.store import market_conn as _market_conn
+import sqlite3
+from quant.config.paths import MARKET_DB as _MARKET_DB
 
 _log = _get_logger("factor.compute")
 
@@ -125,6 +126,78 @@ def compute_limit_up_streak(data: "pd.DataFrame", date: str, window: int = 0, au
     if (result == 0).all():
         return result.rename("zt_streak")
     return _cs_zscore(result).rename("zt_streak")
+
+
+def compute_limit_up_seal_strength(data: "pd.DataFrame", date: str, window: int = 20, aux=None) -> "pd.Series":
+    """涨停封单强度因子 (A股独有异象): 近期涨停事件的"封单质量"均值.
+
+    逻辑: 涨停股中, 封单金额/流通市值 (lock_capital/circ_mv) 越高 → 买盘承诺越强 →
+          次日/后续惯性越强 (散户FOMO + 供给受限). 取近 window 日涨停事件的均值, 截面z-score.
+    数据源: limit_up_pool 表 (lock_capital, circ_mv, change_pct, zt_stat).
+    不依赖 aux (自包含DB查询, 与 fundamental.py 模式一致).
+
+    来源: A股涨跌停制度独有. 封单强度是比"是否涨停"更细粒度的动量信号 —
+          区分"强封单涨停"(主力锁仓) 与"弱封单涨停"(散户追板易开板). 前者惯性显著更强.
+    实证预期: IC≈0.05-0.08 (涨停惯性异象, 强于经典动量).
+
+    添加: 2026-08-26 — 因子研究 v569 后续: 针对经典动量A股偏弱, 研发A股特异强因子.
+    """
+    symbols = list(data["close"].columns)
+    date_str = to_str(date)
+
+    all_dates = sorted(data.index)
+    idx = None
+    for i, d in enumerate(all_dates):
+        if to_str(d) == date_str:
+            idx = i
+            break
+    if idx is None or idx < 1:
+        return pd.Series(0.0, index=symbols, name=f"limit_up_seal_strength_{window}d")
+
+    # 近 window 交易日 (含今日, 排除最近1日预测期尚未走完)
+    start_idx = max(0, idx - window)
+    end_idx = max(0, idx - 1)
+    if end_idx <= start_idx:
+        return pd.Series(0.0, index=symbols, name=f"limit_up_seal_strength_{window}d")
+    start_date = to_str(all_dates[start_idx])[:10]
+    end_date = to_str(all_dates[end_idx])[:10]
+
+    try:
+        conn = sqlite3.connect(_MARKET_DB)
+        # 涨停事件: change_pct>=9.5 (主板近似) 或 zt_stat 标记涨停
+        df = pd.read_sql_query(
+            """SELECT symbol, lock_capital, circ_mv, change_pct, zt_stat
+               FROM limit_up_pool
+               WHERE date >= ? AND date <= ?""",
+            conn, params=[start_date, end_date])
+    except Exception as e:
+        _log.warning(f"limit_up_seal_strength DB query failed: {e}")
+        return pd.Series(0.0, index=symbols, name=f"limit_up_seal_strength_{window}d")
+
+    if df.empty:
+        return pd.Series(0.0, index=symbols, name=f"limit_up_seal_strength_{window}d")
+
+    # 筛选真实涨停事件: change_pct>=9.5% 或 zt_stat 含涨停标记
+    is_limit = (df["change_pct"] >= 9.5) | (df["zt_stat"].astype(str).str.contains("涨", na=False))
+    lu = df[is_limit].copy()
+    if lu.empty:
+        return pd.Series(0.0, index=symbols, name=f"limit_up_seal_strength_{window}d")
+
+    # 封单强度 = 封单金额 / 流通市值 (占比越高=买盘承诺越强)
+    lu = lu[(lu["lock_capital"].notna()) & (lu["circ_mv"].notna()) & (lu["circ_mv"] > 0)]
+    if lu.empty:
+        return pd.Series(0.0, index=symbols, name=f"limit_up_seal_strength_{window}d")
+    lu["seal"] = lu["lock_capital"] / lu["circ_mv"]
+
+    # 每只股票: 窗口内涨停事件封单强度均值
+    grouped = lu.groupby("symbol")["seal"].mean()
+    scores = grouped.to_dict()
+
+    result = pd.Series(scores, dtype=float)
+    result = result.reindex(symbols).fillna(0.0)
+    if (result == 0).all():
+        return result.rename(f"limit_up_seal_strength_{window}d")
+    return _cs_zscore(result).rename(f"limit_up_seal_strength_{window}d")
 
 
 def compute_dt_streak(data: "pd.DataFrame", date: str, window: int = 0, aux=None) -> "pd.Series":

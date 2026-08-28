@@ -34,10 +34,17 @@ function setHTML(id, html) { const el = document.getElementById(id); if (el) el.
 
 // C14 (CODE-REVIEW): XSS 防护 — 所有从 API 进入 innerHTML 的字符串必须 escape.
 function escapeHtml(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&')
+    .replace(/</g, '<')
+    .replace(/>/g, '>')
+    .replace(/"/g, '"')
+    .replace(new RegExp("'", "g"), '');
 }
+
+
+
 
 // ── Build factor objects from parallel arrays (API returns [names] + [ics] separately)
 function buildFactorObjs(fd) {
@@ -129,6 +136,12 @@ function showTab(name) {
     renderPNLChart();
   }
   if (activeTab === 'strategies') { loadStrategies(); }
+  if (activeTab === 'systems') { loadSystems();
+    if (!_systemsTimer) { _systemsTimer = setInterval(loadSystems, 15000); }
+  }
+  if (activeTab === 'canary') { loadCanaryDashboard();
+    if (!_canaryTimer) { _canaryTimer = setInterval(loadCanaryDashboard, 15000); }
+  } else if (_canaryTimer) { clearInterval(_canaryTimer); _canaryTimer = null; }
   if (activeTab === 'systems') { loadSystems();
     if (!_systemsTimer) { _systemsTimer = setInterval(loadSystems, 15000); }
   } else if (_systemsTimer) { clearInterval(_systemsTimer); _systemsTimer = null; }
@@ -669,6 +682,8 @@ async function loadScheduler() {
   try {
     const data = await fetchJSON(API + '/scheduler');
     if (data && data.tasks) {
+      // v565: 更新编排器模式指示器
+      updateModeBadge(data.orchestrator_mode);
       renderTable('table-scheduler', data.tasks, [
         { key: 'task', label: '任务' },
         { key: 'schedule', label: '调度' },
@@ -684,6 +699,20 @@ async function loadScheduler() {
     }
   } catch (e) { console.warn('scheduler error:', e.message); }
   loadRecon();
+}
+
+// v565: 更新模式徽标
+function updateModeBadge(mode) {
+  const badge = $('#orchestrator-mode-badge');
+  if (!badge) return;
+  const modeVal = mode || 'legacy';
+  badge.setAttribute('data-mode', modeVal);
+  const dot = $('#mode-badge-dot');
+  if (dot) dot.setAttribute('data-mode', modeVal);
+  const textEl = badge.querySelector('#mode-badge-text');
+  if (textEl) {
+    textEl.textContent = modeVal === 'dagster' ? 'Dagster' : 'Legacy';
+  }
 }
 
 // ── 日终对账 (OMS recon) ──
@@ -1142,6 +1171,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   initSidebarTooltip();
   // version already rendered by server-side template — no JS needed
   document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
+  $$('.sidebar-tab').forEach(b => {
+    b.addEventListener('click', () => showTab(b.dataset.tab));
+  });
+  // v565: Load orchestrator mode indicator
+  await updateOrchestratorMode();
   connectSSE();
   await pollOverview();
   setInterval(pollOverview, POLL_MS);
@@ -1156,3 +1190,162 @@ document.addEventListener('DOMContentLoaded', async () => {
   setTimeout(checkPlotly, 100);
   loadFactors();
 });
+
+
+// ════════════════════════════════════════════════════════════
+// Canary Release Dashboard Functions
+// ════════════════════════════════════════════════════════════
+
+let _canaryTimer = null;
+
+// v565: Orchestrator mode indicator in sidebar
+async function updateOrchestratorMode() {
+  try {
+    const data = await fetchJSON(API + '/scheduler');
+    if (!data) return;
+    updateModeBadge(data.orchestrator_mode);
+  } catch (e) {
+    console.warn('updateOrchestratorMode failed:', e);
+  }
+}
+
+async function loadCanaryDashboard() {
+  try {
+    const overview = await fetchJSON(API + '/canary/dashboard');
+    if (overview) {
+      setText('kpi-canary-total', overview.total_canaries || 0);
+      setText('kpi-canary-running', overview.running || 0);
+      setText('kpi-canary-paused', overview.paused || 0);
+      setText('kpi-canary-completed', overview.completed || 0);
+      setText('kpi-canary-failed', overview.failed || 0);
+      setText('kpi-canary-rolling', overview.rolling_back || 0);
+    }
+  } catch (e) {
+    console.error('loadCanaryDashboard failed:', e);
+  }
+
+  await loadCanaryList();
+  await loadCanaryDetail();
+}
+
+async function loadCanaryList() {
+  try {
+    const data = await fetchJSON(API + '/canary');
+    if (!data) return;
+    const container = document.getElementById('table-canary');
+    if (!container) return;
+
+    const rows = data.map(c => {
+      return {
+        'ID': c.canary_id,
+        '名称': c.name,
+        '策略': c.strategy_ids?.join(', ') || '—',
+        '账户': c.account_ids?.join(', ') || '—',
+        '流量': fmtPct(c.traffic_split),
+        '阶段': c.current_phase >= 0 ? '阶段 ' + (c.current_phase + 1) : '—',
+        '状态': c.status === 'running' ? '<span class="badge blue">运行中</span>' :
+                c.status === 'paused' ? '<span class="badge yellow">已暂停</span>' :
+                c.status === 'completed' ? '<span class="badge green">已完成</span>' :
+                c.status === 'failed' ? '<span class="badge red">失败</span>' :
+                c.status === 'rolling_back' ? '<span class="badge red">回滚中</span>' :
+                '<span class="badge gray">待启动</span>',
+        "操作": '<button class="btn-action" onclick="viewCanaryDetail(' + c.canary_id + ')" style="padding:4px 8px;background:var(--accent);border:none;border-radius:4px;color:#fff;cursor:pointer">详情</button>'
+      };
+    });
+    renderTable('table-canary', rows, ['ID', '名称', '策略', '账户', '流量', '阶段', '状态', '操作'], { escapeHtml: false });
+  } catch (e) {
+    console.error('loadCanaryList failed:', e);
+  }
+}
+
+async function loadCanaryDetail() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const canaryId = urlParams.get('canary');
+  if (!canaryId) return;
+
+  try {
+    const detail = await fetchJSON(API + '/canary/' + canaryId);
+    if (!detail) return;
+
+    const config = detail.config;
+    const status = detail.status;
+
+    // Set detail header
+    setText('detail-canary-name', config.name + ' (' + config.canary_id + ')');
+    setText('detail-meta', '策略: ' + (config.strategy_ids?.join(', ') || '—') + ' | 账户: ' + (config.account_ids?.join(', ') || '—'));
+
+    // KPIs
+    setText('det-status', statusText(status.status));
+    setText('det-phase', status.current_phase >= 0 ? '阶段 ' + (status.current_phase + 1) + '/' + config.phases.length : '—');
+    setText('det-traffic', fmtPct(status.traffic_split));
+    setText('det-duration', formatDuration(status.started_at));
+
+    // Buttons
+    const isRunning = detail.status === 'running';
+    const isPaused = detail.status === 'paused';
+    const isCompleted = detail.status === 'completed';
+    const isFailed = detail.status === 'failed';
+    const isRollingBack = detail.status === 'rolling_back';
+
+    const btnStart = document.getElementById('btn-start');
+    const btnPause = document.getElementById('btn-pause');
+    const btnResume = document.getElementById('btn-resume');
+    const btnRollback = document.getElementById('btn-rollback');
+    const btnComplete = document.getElementById('btn-complete');
+
+    if (btnStart) {
+      btnStart.style.display = isRunning || isPaused ? 'none' : 'inline-block';
+      btnStart.onclick = () => controlCanary(detail.config.canary_id, 'start');
+    }
+    if (btnPause) {
+      btnPause.style.display = isRunning ? 'inline-block' : 'none';
+      btnPause.onclick = () => controlCanary(detail.config.canary_id, 'pause');
+    }
+    if (btnResume) {
+      btnResume.style.display = isPaused ? 'inline-block' : 'none';
+      btnResume.onclick = () => controlCanary(detail.config.canary_id, 'resume');
+    }
+    if (btnRollback) {
+      btnRollback.style.display = (isRunning || isPaused) ? 'inline-block' : 'none';
+      btnRollback.onclick = () => controlCanary(detail.config.canary_id, 'rollback');
+    }
+    if (btnComplete) {
+      btnComplete.style.display = isRunning || isPaused ? 'inline-block' : 'none';
+      btnComplete.onclick = () => controlCanary(detail.config.canary_id, 'complete');
+    }
+
+    // A/B Test Results
+    await loadABTestResults(detail.config.canary_id);
+  } catch (e) {
+    console.error('loadCanaryDetail failed:', e);
+  }
+}
+
+async function loadABTestResults(canaryId) {
+  try {
+    const results = await fetchJSON(API + '/canary/' + canaryId + '/abtest');
+    if (!results || !results.length) {
+      setHTML('abtest-results', '<div style="padding:20px;text-align:center;color:var(--text2)">暂无 A/B 测试数据</div>');
+      return;
+    }
+
+    const rows = results.map(r => {
+      return {
+        '指标': r.metric_name,
+        '灰度组': fmtNum(r.canary_value, 4),
+        '对照组': fmtNum(r.control_value, 4),
+        '差值': fmtNum(r.difference, 4),
+        '差值%': fmtPct(r.difference_pct),
+        'P值': r.p_value ? r.p_value.toFixed(4) : '—',
+        '显著': r.significant ? '<span class="badge green">是</span>' : '<span class="badge gray">否</span>',
+        '样本(灰度)': r.sample_size_canary,
+        '样本(对照)': r.sample_size_control,
+        '结论': r.conclusion
+      };
+    });
+    renderTable('abtest-results', rows, ['指标', '灰度组', '对照组', '差值', '差值%', 'P值', '显著性', '样本(灰度)', '样本(对照)', '结论'], { escapeHtml: false });
+  } catch (e) {
+    console.error('loadABTestResults failed:', e);
+  }
+}
+

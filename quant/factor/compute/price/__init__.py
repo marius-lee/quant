@@ -40,6 +40,7 @@ from quant.factor.compute.price._event import (  # noqa: F401
     compute_lhb_frequency,       # ADR-040
     compute_limit_up_proximity,
     compute_limit_up_streak,
+    compute_limit_up_seal_strength,
     compute_main_flow_ratio,
     compute_margin_balance_chg,
     compute_margin_buy_ratio_price,
@@ -140,6 +141,7 @@ _PRICE_FN_MAP = {
     "vol_price_corr_10d":    (compute_volume_price_corr,  10),
     "turnover_anomaly":      (compute_turnover_anomaly,    5),
     "limit_up_prox_5d":      (compute_limit_up_proximity,  5),
+    "limit_up_seal_strength_20d": (compute_limit_up_seal_strength, 20),
     "zt_streak":             (compute_limit_up_streak,     0),
     "dt_streak":             (compute_dt_streak,          0),
     "lhb_net_buy_20d":       (compute_lhb_net_buy,        20),

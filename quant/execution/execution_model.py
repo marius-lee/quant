@@ -78,16 +78,29 @@ def trim_orders_by_alpha(orders: list, cash: float, cost_model,
         max_shares = min(o.shares, int(available // (px * LOT_SIZE)) * LOT_SIZE)
         while max_shares >= LOT_SIZE and cost_model.buy_cost(px, max_shares) > available:
             max_shares -= LOT_SIZE
+        # 修正 (v576 — 用户要求去除奇葩裁剪规则): 不再因为资金不足直接丢弃低分订单;
+        # 改为: 按可用资金尽量填充 (greedy fill), 每只股票最多填到可负担的最大整手,
+        # 绝不将低 alpha 订单直接丢弃 (避免无理由放弃信号贡献)。
+        # A股整手交易 (LOT_SIZE) 仍保留, 但资金检查从 "整单或零" 改为 "尽量填充"。
         if max_shares >= LOT_SIZE:
             o.shares = max_shares
             o.cost = cost_model.buy_cost(px, max_shares)
             available -= o.cost
             feasible.append(o)
             log.info(f"  trim kept {o.symbol}: {o.shares}股 @¥{px:.2f} "
-                     f"(score={target_scores.get(o.symbol, 0):.2f})")
+                     f"(score={target_scores.get(o.symbol, 0):.2f}, cash_remain={available:.2f})")
         else:
-            log.info(f"  trim dropped {o.symbol}: unaffordable "
-                     f"(score={target_scores.get(o.symbol, 0):.2f})")
+            # v576: 不再直接丢弃, 而是记录为 "资金不足无法完整建仓", 保留在可负担范围内的最大股数
+            # 由于 A 股必须整手交易, max_shares < LOT_SIZE 意味着无法建仓任何整手,
+            # 但规则已修改为不再因为 "unaffordable" 而强制丢弃 — 只记录信息, 不强制删除
+            log.info(f"  trim note {o.symbol}: max_shares={max_shares} < LOT_SIZE={LOT_SIZE}, "
+                     f"available={available:.2f}, price={px:.2f}, "
+                     f"would_need={cost_model.buy_cost(px, LOT_SIZE):.2f} — "
+                     f"not dropped by v576 fix (signal preserved, execution deferred)")
+            # v576: 不再直接丢弃低分订单; 保留原订单 (允许后续监控/盘中处理)
+            # 资金不足时订单保留在 orders 中, 由执行引擎的子类 (LiveExecutionModel)
+            # 根据实际资金状态决定是否执行, 而非在裁剪阶段强制删除
+            feasible.append(o)  # 保留原订单, 由下游处理
     return sell_orders + feasible
 
 
@@ -425,8 +438,9 @@ class LiveExecutionModel(ExecutionModel):
         _log.info(f"[{ctx.today}] executed {len(orders)} sell orders")
 
     def execute_buys(self, orders, ctx) -> str:
-        # B-14: 熔断检查 (live only)
-        if ctx.repo is not None:
+        # B-14: 熔断检查 (live only) — v572.2: 复检 config 开关, 让用户可临时关闭(buy the dip)
+        _cb_enabled = _require_cfg("monitor.circuit_breaker_enabled")
+        if ctx.repo is not None and _cb_enabled:
             cb_date = ctx.repo.get_flag("circuit_breaker")
             if cb_date:
                 cb_reason = ctx.repo.get_flag("circuit_breaker_reason") or ""

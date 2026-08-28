@@ -78,6 +78,38 @@ body {
   background: var(--accent-dim);
   user-select: none; letter-spacing: .08em;
 }
+/* v565: 编排器模式指示器 */
+.orchestrator-mode-bar {
+  padding: 0 10px 12px;
+  display: flex;
+  justify-content: center;
+}
+.mode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+}
+.mode-badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.mode-badge[data-mode="legacy"] .mode-badge-dot,
+#orchestrator-mode-badge[data-mode="legacy"] .mode-badge-dot {
+  background: #3b82f6;
+}
+.mode-badge[data-mode="dagster"] .mode-badge-dot,
+#orchestrator-mode-badge[data-mode="dagster"] .mode-badge-dot {
+  background: #a855f7;
+}
 .sidebar-tabs {
   display: flex; flex-direction: column; gap: 6px;
   flex: 1; min-height: 0; overflow-y: auto;

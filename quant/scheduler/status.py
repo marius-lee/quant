@@ -12,7 +12,7 @@ _tasks: dict[str, dict] = {}
 _GROUPS = {
     "signals": "盘前", "execute": "盘中", "monitor": "盘中",
     "reconcile": "盘后", "daily_data": "盘后", "attribution": "盘后",
-    "factor_cache": "盘后", "weekly_eval": "研究",
+    "factor_cache": "盘后", "weekly_eval": "研究", "duckdb_sync": "盘后",
 }
 
 
@@ -49,7 +49,7 @@ def register_all():
              desc="重试昨日审计失败表 (T+1 迟发) + weekly_full 7 天兜底 + factor_cache 缺口兜底")
     register("signals",      "08:30",       label="信号生成",
              desc="计算所有 using 因子，生成 Alpha 信号与目标持仓", has_multiprocess=True)
-    register("execute",      "09:30",       label="交易执行",
+    register("execute",      "09:20 (开盘前下单, 09:30开盘)", label="交易执行",
              desc="读取信号、获取行情、执行调仓订单", has_multiprocess=True)
     register("snapshot_open",  "10:00 (execute后)", label="开盘快照",
              desc="快照所有A股开盘30分钟实时价+量, 供日内反转/量比因子")
@@ -66,6 +66,8 @@ def register_all():
              desc="拉取当日 A 股日线行情，更新 market.db")
     register("adj_factor",   "daily_data完成后", label="复权因子同步",
              desc="tushare+baostock 双源同步复权因子, 每晚1批(晚间链子进程)")
+    register("duckdb_sync",  "daily_data完成后", label="DuckDB同步",
+             desc="增量同步 SQLite→DuckDB (daily_data 后、factor_cache 前)")
     register("factor_cache", "adj_factor完成后", label="因子物化",
              desc="增量更新 factor_cache，用当日行情计算回测因子值")
     register("attribution",  "factor_cache完成后", label="盘后归因",

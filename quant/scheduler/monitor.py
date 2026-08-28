@@ -37,6 +37,7 @@ _log = get_logger(__name__)
 MAX_DRAWDOWN_PCT = _require_cfg("monitor.max_drawdown_pct")
 # 报告 §6.5 fix: 原硬编码 5.0 绕过配置 → 移入 config.yaml monitor.circuit_breaker_pct
 CIRCUIT_BREAKER_PCT = _require_cfg("monitor.circuit_breaker_pct")
+CIRCUIT_BREAKER_ENABLED = _require_cfg("monitor.circuit_breaker_enabled")  # B-14: 熔断总开关 (v572.2)
 CHECK_INTERVAL_SEC = 30
 QUOTE_THROTTLE_SEC = 5  # 行情 API 限频
 
@@ -104,7 +105,7 @@ def _run_continuous_inner(today: str, stop_event=None):
             dd_pct = round((1 - total / initial) * 100, 1)
             if dd_pct > MAX_DRAWDOWN_PCT:
                 alerts.append(f"回撤 {dd_pct}% > {MAX_DRAWDOWN_PCT}%")
-            cb_triggered = total < initial * (1 - CIRCUIT_BREAKER_PCT / 100)
+            cb_triggered = CIRCUIT_BREAKER_ENABLED and total < initial * (1 - CIRCUIT_BREAKER_PCT / 100)
             if cb_triggered:
                 alerts.append(f"熔断! ¥{total:,.0f} < ¥{initial*0.95:,.0f}")
                 broker.update({"circuit_breaker": True,

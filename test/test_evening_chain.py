@@ -54,7 +54,7 @@ class TestEveningChain:
         monkeypatch.setattr(evening, "_load_stage", fake_loader({}))
         evening._run("2026-07-27")
         run_order = [c[1] for c in calls if c[0] == "run"]
-        assert run_order == ["daily_data", "factor_cache", "attribution"]
+        assert run_order == ["daily_data", "duckdb_sync", "factor_cache", "attribution"]
         assert ("finish", "ok", None) in calls
 
     def test_daily_data_failure_aborts_chain(self, chain, monkeypatch):
@@ -74,7 +74,7 @@ class TestEveningChain:
         monkeypatch.setattr(evening, "_load_stage", fake_loader({"factor_cache": "failed"}))
         evening._run("2026-07-27")
         run_order = [c[1] for c in calls if c[0] == "run"]
-        assert run_order == ["daily_data", "factor_cache"]
+        assert run_order == ["daily_data", "duckdb_sync", "factor_cache"]
         assert ("finish", "failed", "factor_cache status=failed, chain aborted (后续阶段跳过)") in calls
 
     def test_stage_already_ok_is_skipped(self, chain, monkeypatch):
@@ -84,7 +84,7 @@ class TestEveningChain:
         monkeypatch.setattr(evening, "_load_stage", fake_loader({}))
         evening._run("2026-07-27")
         run_order = [c[1] for c in calls if c[0] == "run"]
-        assert run_order == ["factor_cache", "attribution"]
+        assert run_order == ["duckdb_sync", "factor_cache", "attribution"]
 
     def test_duplicate_trigger_returns_early(self, chain, monkeypatch):
         """已有 running 行 (grace 内) → 不启动任何阶段."""
@@ -100,7 +100,7 @@ class TestEveningChain:
         monkeypatch.setattr(evening, "_load_stage", fake_loader({}, raise_map={"attribution"}))
         evening._run("2026-07-27")
         run_order = [c[1] for c in calls if c[0] == "run"]
-        assert run_order == ["daily_data", "factor_cache", "attribution"]
+        assert run_order == ["daily_data", "duckdb_sync", "factor_cache", "attribution"]
         finish = [c for c in calls if c[0] == "finish"][0]
         assert finish[1] == "failed"
         assert "attribution" in finish[2]

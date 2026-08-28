@@ -936,6 +936,20 @@ def api_scheduler():
         run = db_runs.get(key)
         run_today = db_runs_today.get(key)
 
+        # v565: 从 schedule 字段提取 HH:MM, 判断是否已过 cron 启动时间
+        import re as _re
+        cron_hhmm = None
+        if has_cron:
+            m = _re.search(r'(\d{2}):(\d{2})', t.get("schedule", ""))
+            if m:
+                try:
+                    cron_hhmm = int(m.group(1)) * 60 + int(m.group(2))
+                except (ValueError, TypeError):
+                    cron_hhmm = None
+        now_dt = datetime.now()
+        now_hhmm = now_dt.hour * 60 + now_dt.minute
+        past_cron = cron_hhmm is not None and now_hhmm >= cron_hhmm
+
         if run and run["status"] == "running" and run["finished_at"] is None:
             # 任务专属超时检测 (与 orchestrator._check_timeouts 阈值一致)
             try:
@@ -987,7 +1001,28 @@ def api_scheduler():
             t["status_label"] = _badge("yellow", "今日跳过")
             t["status"] = "skipped"
             t["last_run"] = (run_today["finished_at"] or run_today["started_at"] or "")[:16].replace("T", " ")
-        elif has_cron:
+        elif has_cron and not run_today and past_cron:
+            # v565: 已过启动时间但无 DB 记录 → 任务未执行 (过时)
+            # Legacy 模式: cron 到点触发任务, 任务执行后写 DB.
+            # 无 DB 记录说明 cron 触发失败或任务未启动.
+            # 特殊处理: monitor 有时间窗口 (非单一 HH:MM), 不应标记为过时
+            if key == "monitor" and ("-" in (t.get("schedule") or "")):
+                # 时间窗口格式 (如 09:35-11:30) → 仍在运行窗口内, 视为运行中
+                t["status_label"] = _badge("blue", "运行中")
+                t["status"] = "running"
+                t["last_run"] = "—"
+            else:
+                # 用红色: 表示已过期未执行, 与 "等待调度"(灰) 区分
+                t["status_label"] = _badge("red", "过时未执行")
+                t["status"] = "missed"
+                t["last_run"] = "—"
+        elif has_cron and not run_today and not past_cron:
+            # 未到启动时间 → 等待调度
+            t["status_label"] = _badge("gray", "等待调度")
+            t["status"] = "pending"
+            t["last_run"] = "—"
+        elif has_cron and not run_today:
+            # 无法判断时间 → 等待调度
             t["status_label"] = _badge("gray", "等待调度")
             t["status"] = "pending"
             t["last_run"] = "—"
@@ -998,7 +1033,16 @@ def api_scheduler():
 
         t["cron"] = "已配置" if has_cron else "未配置"
 
-    return _api_response(data={"tasks": tasks})
+    # v565: 报告编排器模式 — Dagster 或 legacy
+    from quant.scheduler import get_orchestrator_mode
+    mode = get_orchestrator_mode()
+    dagster_enabled = mode == "dagster"
+
+    return _api_response(data={
+        "tasks": tasks,
+        "orchestrator_mode": mode,
+        "dagster_enabled": dagster_enabled,
+    })
 @app.route("/api/metrics")
 def api_metrics():
     """模板9 T1: 指标快照 (Prometheus 本地等价)."""

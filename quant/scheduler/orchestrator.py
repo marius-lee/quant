@@ -183,8 +183,10 @@ def _run():
         # —— B23: monitor daemon 线程已退出 (崩溃或自退) → 重置, 下一轮可重启 ——
         # 原 _monitor_runner 非 None 永不重置 → 崩溃后盘中风控静默丢失
         if _monitor_runner is not None and not _monitor_runner.is_alive():
+            _in_window = ALL["monitor"].in_window(hhmm, now.weekday())
+            _cur_status = status.get("monitor")
             _log.warning(f"[{today}] monitor daemon thread exited "
-                         f"(status={status.get('monitor')}); will restart next poll")
+                         f"(status={_cur_status}, in_window={_in_window}); will restart next poll")
             # v555: 重置前兜底 finish — daemon 自退时 MonitorRunner.run() 已写 ok;
             # 但 B23 重置发生在 run() 的 finish 之前 (线程先死, 主循环后重置) 时
             # 状态仍 running, 若清理分支 (runner 已置 None) 不再 finish →
@@ -193,8 +195,7 @@ def _run():
             # 窗口内 → 兜底 failed (盘中线程死=崩溃, 且 daemon 崩溃 finish 失败
             # 未落 failed 时, _should_run 对 running 恒返回 False, 不兜底 failed
             # 则当日风控永不重启 — v555 之前注释"交重试逻辑"不成立)
-            _in_window = ALL["monitor"].in_window(hhmm, now.weekday())
-            if status.get("monitor") in ("running", "lunch"):
+            if _cur_status in ("running", "lunch"):
                 # F5: 'lunch' 为午休 stage, daemon 午休崩溃后行永卡 'lunch'
                 # (task_log.finish 原仅认 'running'), 一并兜底
                 _tk_finish("monitor", today, "ok" if not _in_window else "failed",
@@ -267,6 +268,19 @@ def _run():
             if s.mode == "monitor":
                 monitor_done = status.get("monitor") == "ok"
                 monitor_exhausted = _get_monitor_failures(today) >= _MAX_TASK_RETRIES
+                # FIX(v565): 窗口已关闭时不重启 monitor — 原逻辑在收盘后仍重启
+                # (_should_run 对 "failed" 返回 True 在重试预算内) → 守护线程
+                # 立即退出 ("market closed") → 再次标 failed → 重启风暴(15:00 实证
+                # 3 次连续重启). 仅窗口内崩溃才重试; 窗口外 "failed" 保持 failed.
+                _monitor_in_window = ALL["monitor"].in_window(hhmm, now.weekday())
+                if not _monitor_in_window:
+                    # 窗口外: 不重启, 清理 runner
+                    if _monitor_runner is not None:
+                        _monitor_runner.stop()
+                        _monitor_thread and _monitor_thread.join(timeout=5)
+                    _monitor_runner = None
+                    _monitor_thread = None
+                    continue
                 if not monitor_done and not monitor_exhausted:
                     if _monitor_runner is None:
                         _monitor_runner = MonitorRunner(today)
@@ -305,15 +319,22 @@ def _run():
             _monitor_thread = None
 
         # —— 08:00 早间补拉链 (每日, signals 08:30 前修复 T+1 迟发缺口) ——
+        # v555 (F3): 同 weekly — 异常不得杀死主循环
+        # FIX(v557): 添加互斥机制，防止 daily_repair 与 evening_chain 冲突
         _rep = ALL.get("daily_repair")
-        if _rep and not _repair_done and _should_run(_rep, hhmm, now.weekday(), status, aborted):
+        _even = ALL.get("evening_chain")
+        _evening_running = _even and _should_run(_even, hhmm, now.weekday(), status, aborted)
+        if _rep and not _repair_done and not _evening_running and _should_run(_rep, hhmm, now.weekday(), status, aborted):
             _log.info(f"[{today}] 08:00 — spawning daily repair subprocess")
-            # v555 (F3): 同 weekly — 异常不得杀死主循环
             try:
                 _repair_done = SubprocessRunner(today).run_daily_repair()
             except Exception as _re:
                 _log.exception(f"[{today}] daily repair crashed (orchestrator continues): {_re}")
                 _repair_done = False
+        elif _rep and _evening_running and _should_run(_rep, hhmm, now.weekday(), status, aborted):
+            # daily_repair 仍在窗口内但 evening_chain 已启动，延迟到次日
+            _log.info(f"[{today}] daily repair paused — evening chain in progress")
+            _repair_done = True  # 标记为完成，避免今日重复尝试
 
         # —— 19:00+ — 晚间链 subprocess ——
         _even = ALL.get("evening_chain")

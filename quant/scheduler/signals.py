@@ -1,12 +1,13 @@
 """信号生成调度器 — 每日 08:30.
 
-注意: task_log 由 Runner 统一管理，任务模块不再调用 _tk_start/_tk_finish。
+v565: Dagster + Legacy 双模式统一监控 — 调度模块恢复写入 task_runs。
 """
 import time as _time, uuid as _uuid
 from datetime import time
 from quant.utils.date import today_str
 from quant.monitor.metrics import metrics as _m
 from quant.utils.logger import get_logger, set_trace_id
+from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
 
 _log = get_logger(__name__)
 
@@ -14,6 +15,11 @@ _log = get_logger(__name__)
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
+    # v565: Dagster 双模式统一写入 task_runs
+    rid = _tk_start("signals", today, grace_seconds=1800)
+    if rid is None:
+        _log.info(f"[{today}] signals already running, skip duplicate trigger")
+        return {"targets": 0, "elapsed": 0.0}
     _log.info(f"[{today}] 08:30 — generating signals")
     t0 = _time.time()
 
@@ -46,6 +52,8 @@ def _run(today: str):
     _log.info(f"[{today}] signals done: {len(targets)} targets ({elapsed:.1f}s)")
     _log.info(f"[SCHEDULER] {today} | TASK=signals | STATUS=OK | targets={len(targets)} | elapsed={elapsed:.1f}s")
     _m.inc("scheduler.signals.ok")
+    # v565: 正常完成写入状态
+    _tk_finish("signals", today, "ok", summary={"targets": len(targets), "elapsed": round(elapsed, 1)})
     return {"targets": len(targets), "elapsed": round(elapsed, 1)}
 
 

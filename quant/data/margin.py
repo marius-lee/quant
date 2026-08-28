@@ -69,9 +69,15 @@ def _sync_sse_raw(date_str: str, conn) -> int:
         "pageHelp.beginPage": "1", "pageHelp.endPage": "21"
     }
     r = requests.get(url, params=params, headers=SSE_HEADERS, timeout=_require_cfg("data.http_timeout.sse"))
+    if r.status_code != 200:
+        # 零 fallback: HTTP 非 200 必须显式失败, 不静默返回 0 (曾被静默吞掉 → 诊断盲区)
+        raise RuntimeError(f"SSE margin API HTTP {r.status_code} for {date_str}")
     data = r.json()
     rows = data.get("result", [])
     if not rows:
+        # v567: 可观测性 — API 返回空结果 (限流/无数据) 必须留痕, 不能静默吞掉
+        logger.warning(f"SSE margin API returned 0 rows for {date_str} "
+                       f"(likely rate-limited or data not yet published)")
         return 0
 
     # v408: executemany
@@ -126,6 +132,9 @@ def _sync_szse_wrapper(date_str: str, conn) -> int:
         return ak.stock_margin_detail_szse(date=date_compact)
     df = _fetch_margin(to_compact(date_str))
     if df is None or df.empty:
+        # v567: 可观测性 — 深交所 API 返回空 (限流/无数据) 必须留痕, 不静默返回 0
+        logger.warning(f"SZSE margin API returned 0 rows for {date_str} "
+                       f"(likely rate-limited or data not yet published)")
         return 0
 
     col_map = {

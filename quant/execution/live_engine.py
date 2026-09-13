@@ -33,7 +33,6 @@ class SliceAlgorithm(Enum):
     POV = "pov"            # Percentage of Volume
     IMPLEMENTATION_SHORTFALL = "is"  # Implementation Shortfall (到达价)
 
-
 class OrderState(Enum):
     """订单状态."""
     PENDING = "pending"
@@ -45,7 +44,6 @@ class OrderState(Enum):
     CANCELLED = "cancelled"
     REJECTED = "rejected"
     EXPIRED = "expired"
-
 
 @dataclass
 class SliceConfig:
@@ -61,7 +59,6 @@ class SliceConfig:
     display_size: int = 0            # 冰山单显示量 (0=自动)
     randomize_slices: bool = True    # 随机化分片大小/时间
     urgency: float = 0.5             # 紧迫度 0-1 (IS 算法用)
-
 
 @dataclass
 class OrderSlice:
@@ -81,7 +78,6 @@ class OrderSlice:
     updated_at: datetime = field(default_factory=datetime.utcnow)
     broker_order_id: str = ""
     metadata: Dict = field(default_factory=dict)
-
 
 @dataclass
 class ParentOrder:
@@ -105,7 +101,6 @@ class ParentOrder:
     account_id: str = ""
     metadata: Dict = field(default_factory=dict)
 
-
 class SliceAlgorithmBase(ABC):
     """分片算法基类."""
 
@@ -126,7 +121,6 @@ class SliceAlgorithmBase(ABC):
     def on_market_update(self, parent: ParentOrder, market_data: Dict) -> List[OrderSlice]:
         """行情更新回调，可能调整分片."""
         pass
-
 
 class TWAPAlgorithm(SliceAlgorithmBase):
     """TWAP (Time-Weighted Average Price) - 均匀时间分片."""
@@ -180,7 +174,6 @@ class TWAPAlgorithm(SliceAlgorithmBase):
     def on_market_update(self, parent: ParentOrder, market_data: Dict) -> List[OrderSlice]:
         return []
 
-
 class VWAPAlgorithm(SliceAlgorithmBase):
     """VWAP (Volume-Weighted Average Price) - 按成交量分布分片."""
 
@@ -233,7 +226,6 @@ class VWAPAlgorithm(SliceAlgorithmBase):
     def on_market_update(self, parent: ParentOrder, market_data: Dict) -> List[OrderSlice]:
         return []
 
-
 class IcebergAlgorithm(SliceAlgorithmBase):
     """Iceberg (冰山单) - 显示小量，隐藏大量."""
 
@@ -280,7 +272,6 @@ class IcebergAlgorithm(SliceAlgorithmBase):
 
     def on_market_update(self, parent: ParentOrder, market_data: Dict) -> List[OrderSlice]:
         return []
-
 
 class POVAlgorithm(SliceAlgorithmBase):
     """POV (Percentage of Volume) - 按市场成交量比例参与."""
@@ -333,7 +324,6 @@ class POVAlgorithm(SliceAlgorithmBase):
         target_volume = int(current_volume * self.config.participation_rate)
         # 这里可以动态调整后续分片大小
         return []
-
 
 class ImplementationShortfallAlgorithm(SliceAlgorithmBase):
     """Implementation Shortfall (IS) - 到达价算法，平衡市场冲击和机会成本."""
@@ -398,7 +388,6 @@ class ImplementationShortfallAlgorithm(SliceAlgorithmBase):
         # 价格不利移动时加速执行
         return []
 
-
 class SmartRouter:
     """智能路由器 - 根据订单特征选择最优券商和算法."""
 
@@ -436,7 +425,6 @@ class SmartRouter:
             return ImplementationShortfallAlgorithm(order.slice_config)  # 紧急单用 IS
         else:
             return TWAPAlgorithm(order.slice_config)  # 默认 TWAP
-
 
 class LiveOrderExecutionEngine:
     """实盘订单执行引擎 - 统一入口."""
@@ -688,7 +676,6 @@ class LiveOrderExecutionEngine:
         if self.on_order_update:
             self.on_order_update(order)
 
-
 class CostModelCalibrator:
     """成本模型校准器 - 基于历史成交数据校准滑点/冲击参数."""
 
@@ -764,11 +751,9 @@ class CostModelCalibrator:
         # 简化：假设 daily_volume 固定，拟合 eta
         pass
 
-
 # 全局实例
 _live_engine: Optional[LiveOrderExecutionEngine] = None
 _cost_calibrator: Optional[CostModelCalibrator] = None
-
 
 def get_live_engine() -> LiveOrderExecutionEngine:
     global _live_engine
@@ -780,7 +765,6 @@ def get_live_engine() -> LiveOrderExecutionEngine:
             execution_model=LiveExecutionModel(),
         )
     return _live_engine
-
 
 def init_live_engine(
     broker_manager: BrokerManager = None,
@@ -796,10 +780,8 @@ def init_live_engine(
     )
     return _live_engine
 
-
 def get_cost_calibrator() -> CostModelCalibrator:
     global _cost_calibrator
     if _cost_calibrator is None:
         _cost_calibrator = CostModelCalibrator(CostModel.from_config())
     return _cost_calibrator
-

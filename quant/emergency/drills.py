@@ -29,64 +29,6 @@ from quant.utils.logger import get_logger
 
 logger = get_logger("emergency.drills")
 
-
-class EmergencyType(Enum):
-    BROKER_FAILURE = "broker_failure"
-    NETWORK_INTERRUPTION = "network_interruption"
-    ORDER_ERROR = "order_error"
-    DATA_MISMATCH = "data_mismatch"
-    RISK_BREACH = "risk_breach"
-    SYSTEM_OVERLOAD = "system_overload"
-    MARKET_ANOMALY = "market_anomaly"
-
-
-class DrillStatus(Enum):
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-
-class DrillSeverity(Enum):
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-    CRITICAL = "critical"
-
-
-@dataclass
-class EmergencyScenario:
-    scenario_id: str
-    name: str
-    description: str
-    emergency_type: EmergencyType
-    severity: DrillSeverity
-    trigger_conditions: Dict[str, Any] = field(default_factory=dict)
-    expected_actions: List[str] = field(default_factory=list)
-    expected_rto_seconds: int = 30
-    expected_rpo_seconds: int = 0
-    success_criteria: Dict[str, Any] = field(default_factory=dict)
-    tags: List[str] = field(default_factory=list)
-
-
-@dataclass
-class DrillExecution:
-    drill_id: str
-    scenario_id: str
-    status: DrillStatus = DrillStatus.PENDING
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    duration_seconds: float = 0.0
-    steps: List[Dict[str, Any]] = field(default_factory=list)
-    current_step: int = 0
-    actual_rto_seconds: float = 0.0
-    actual_rpo_seconds: float = 0.0
-    success: bool = False
-    error_message: str = ""
-    logs: List[Dict[str, Any]] = field(default_factory=list)
-
-
 class EmergencyDrillManager:
     def __init__(
         self,
@@ -556,7 +498,6 @@ class EmergencyDrillManager:
     def get_running_drill(self) -> Optional[DrillExecution]:
         return self._running_drill
 
-
 class AutoFailoverManager:
     def __init__(
         self,
@@ -665,7 +606,6 @@ class AutoFailoverManager:
             "failover_count": self._failover_count,
             "last_failover": self._last_failover.isoformat() if self._last_failover else None,
         }
-
 
 class ReconciliationEngine:
     def __init__(
@@ -786,12 +726,10 @@ class ReconciliationEngine:
     def get_reconcile_history(self, limit: int = 100) -> List[Dict]:
         return self._deltas[-limit:]
 
-
 # 全局实例
 _emergency_drill_manager: Optional[EmergencyDrillManager] = None
 _auto_failover_manager: Optional[AutoFailoverManager] = None
 _reconciliation_engine: Optional[ReconciliationEngine] = None
-
 
 def get_emergency_drill_manager() -> EmergencyDrillManager:
     global _emergency_drill_manager
@@ -802,7 +740,6 @@ def get_emergency_drill_manager() -> EmergencyDrillManager:
             risk_manager=get_live_risk_manager(),
         )
     return _emergency_drill_manager
-
 
 def init_emergency_drill_manager(
     broker_manager: BrokerManager = None,
@@ -817,7 +754,6 @@ def init_emergency_drill_manager(
     )
     return _emergency_drill_manager
 
-
 def get_auto_failover_manager() -> AutoFailoverManager:
     global _auto_failover_manager
     if _auto_failover_manager is None:
@@ -827,7 +763,6 @@ def get_auto_failover_manager() -> AutoFailoverManager:
             risk_manager=get_live_risk_manager(),
         )
     return _auto_failover_manager
-
 
 def init_auto_failover_manager(
     broker_manager: BrokerManager = None,
@@ -842,7 +777,6 @@ def init_auto_failover_manager(
     )
     return _auto_failover_manager
 
-
 def get_reconciliation_engine() -> ReconciliationEngine:
     global _reconciliation_engine
     if _reconciliation_engine is None:
@@ -851,7 +785,6 @@ def get_reconciliation_engine() -> ReconciliationEngine:
             execution_engine=get_live_engine(),
         )
     return _reconciliation_engine
-
 
 def init_reconciliation_engine(
     broker_manager: BrokerManager = None,

@@ -61,6 +61,20 @@ TypeError: screen_factors() got an unexpected keyword argument 'prefilter_from_d
 
 ---
 
+## v631: 大文件拆分重构 (2026-09-13)
+
+### 背景
+- `quant/data/store.py` 3061行，严重违反模板10 (Python 文件 <800 行)
+
+### 操作
+1. **P2-1**: 拆分 `quant/data/store.py` → `store/` 包 (9 文件, 每个 <800 行)
+2. DataStore 通过多继承组合各 mixin，接口不变
+3. 所有 `from quant.data.store import` 引用无需修改
+
+### 归档
+- HANDOFF.md 更新
+- VERSION: test-v646
+
 # HANDOFF — adj_factor 资产名称修复 (v577) + Dagster 分区键触发修复 (v610) + 晚间链修复 (v619)
 
 ## v621: execute 任务重复补跑 Bug 修复

@@ -1,5 +1,3 @@
-"""实盘订单执行引擎 - 智能路由、分片执行、TWAP/VWAP/冰山单、成本模型校准."""
-
 from __future__ import annotations
 import asyncio
 import logging
@@ -25,8 +23,7 @@ from quant.execution.engine import ExecutionEngine, Order
 from quant.config.constants import _require_cfg
 from quant.utils.logger import get_logger
 
-logger = get_logger("execution.live_engine")
-
+logger = get_logger('execution.live_engine')
 
 class SliceAlgorithm(Enum):
     """分片算法."""
@@ -805,3 +802,4 @@ def get_cost_calibrator() -> CostModelCalibrator:
     if _cost_calibrator is None:
         _cost_calibrator = CostModelCalibrator(CostModel.from_config())
     return _cost_calibrator
+

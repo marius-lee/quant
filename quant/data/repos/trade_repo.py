@@ -12,84 +12,9 @@ import sqlite3
 from quant.utils.logger import get_logger
 from quant.data.repos._base import DatabaseManager
 from quant.config.paths import TRADE_DB
+from quant.data.repos._constants import *
 
 logger = get_logger("repos.trade_repo")
-
-# ── 列名常量 (DDL 与查询共引) ──
-# sim_trades
-ST_DATE         = "date"
-ST_SYMBOL       = "symbol"
-ST_SIDE         = "side"
-ST_PRICE        = "price"
-ST_SHARES       = "shares"
-ST_PNL          = "pnl"
-ST_PNL_PCT      = "pnl_pct"
-ST_CAPITAL_AFTER = "capital_after"
-ST_STRATEGY     = "strategy"
-ST_MODE         = "mode"
-ST_BOARD_COUNT  = "board_count"
-ST_COST         = "cost"
-ST_CREATED_AT   = "created_at"
-
-# strategy_config
-SC_STRATEGY       = "strategy"
-SC_MODE           = "mode"
-SC_INITIAL_CAPITAL = "initial_capital"
-SC_INITIALIZED    = "initialized"
-SC_UPDATED_AT     = "updated_at"
-
-# daily_signals
-DS_DATE         = "date"
-DS_STRATEGY     = "strategy"
-DS_SIGNALS_JSON = "signals_json"
-DS_CAPITAL      = "capital"
-DS_GENERATED_AT = "generated_at"
-DS_MODE         = "mode"
-DS_EXEC_NOTES   = "exec_notes"
-
-# pending_orders
-PO_ID             = "id"
-PO_STRATEGY      = "strategy"
-PO_SYMBOL        = "symbol"
-PO_SIDE          = "side"
-PO_TARGET_SHARES = "target_shares"
-PO_LIMIT_PRICE   = "limit_price"
-PO_REFERENCE_PRICE = "reference_price"
-PO_STATUS        = "status"
-PO_PLACED_AT     = "placed_at"
-PO_FILLED_AT     = "filled_at"
-PO_FILLED_SHARES = "filled_shares"
-PO_FILLED_PRICE  = "filled_price"
-PO_CHASE_COUNT   = "chase_count"
-PO_CANCEL_REASON = "cancel_reason"
-PO_DAY           = "day"
-PO_MODE          = "mode"
-
-# daily_equity
-DE_DATE           = "date"
-DE_CASH           = "cash"
-DE_POSITION_VALUE = "position_value"
-DE_TOTAL_EQUITY   = "total_equity"
-DE_DRAWDOWN_PCT   = "drawdown_pct"
-
-# position_meta
-PM_SYMBOL     = "symbol"
-PM_DAY        = "day"
-PM_TP1_HIT    = "tp1_hit"
-PM_PEAK_PRICE = "peak_price"
-
-# benchmark_tracking
-BT_DATE              = "date"
-BT_STRATEGY_EQUITY   = "strategy_equity"
-BT_STRATEGY_RETURN   = "strategy_return"
-BT_BENCH_RETURN      = "bench_return"
-BT_ALPHA             = "alpha"
-BT_ROLLING_ALPHA_60D = "rolling_alpha_60d"
-BT_ROLLING_IR_60D    = "rolling_ir_60d"
-BT_ROLLING_BETA_60D  = "rolling_beta_60d"
-BT_UP_CAPTURE_60D    = "up_capture_60d"
-BT_DOWN_CAPTURE_60D  = "down_capture_60d"
-
 
 class TradeRepo:
     """Trade data access — single source of truth for trades.db.
@@ -814,3 +739,6 @@ class TradeRepo:
 
     def clear_flag(self, key: str):
         self._execute("DELETE FROM meta WHERE key=?", (key,))
+
+
+__all__ = ['TradeRepo']

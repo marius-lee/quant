@@ -11,6 +11,11 @@ import sys
 import pandas as pd
 import numpy as np
 
+from quant.utils.logger import get_logger
+
+logger = get_logger("factor.golden_test")
+
+
 _PROJ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _GOLDEN_PATH = os.path.join(_PROJ, "test", "golden_factors.json")
 

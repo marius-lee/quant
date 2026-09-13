@@ -17,6 +17,11 @@ import pandas as pd
 from quant.config.constants import _require_cfg
 from quant.factor.registry import _cs_zscore
 
+from quant.utils.logger import get_logger
+
+logger = get_logger("factor.compute.price._bb")
+
+
 # ── 参数从 config.yaml 读取 ──
 BB_WINDOW = _require_cfg("factor.bb.window")              # N: 主窗口, 默认 20
 BB_WIDTH_MULTIPLIER = _require_cfg("factor.bb.width_multiplier")  # K: 带宽系数, 默认 2.0

@@ -40,6 +40,11 @@ echo "等待服务就绪 (10 秒)..."
 sleep 10
 
 echo ""
+echo "4. 启动所有 Dagster 调度..."
+DAGSTER_HOME=$DAGSTER_HOME .venv/bin/dagster schedule start --start-all --module-name quant.orchestrator.dagster_assets 2>/dev/null || true
+echo "   ✅ 调度已启动"
+
+echo ""
 echo "✅ Dagster 环境启动完成!"
 echo ""
 echo "📊 监控面板:"

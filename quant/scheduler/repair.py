@@ -69,6 +69,16 @@ def _ensure_factor_cache(today: str) -> list[str]:
     _log.info(f"[{today}] factor_cache 未物化 (晚间链失败/中止) — 08:00 增量物化兜底")
     from quant.config.constants import _require_cfg
     _fc_start = _require_cfg("backtest.factor_cache_start")
+    # v626 (OOM fix): instead of full-range _fc_start→today (1622 dates,
+    # OOM-kill on 8GB M1), scope to last materialized date + 1 → today.
+    # trading_days.json records successfully materialized dates; resume from there.
+    from quant.factor.store import FactorStore as _FS
+    _fs = _FS()
+    _td = _fs._load_trading_days()
+    if _td:
+        _last_ok = max(d for d in _td if d <= today)
+        _fc_start = _last_ok  # re-materialize last date (idempotent, 已物化跳过)
+        _log.info(f"[{today}] factor_cache scoped to last_ok={_last_ok} → {today} (OOM-safe)")
     from quant.scheduler.factor_cache import _run as _fc_run
     _fc_run(_fc_start, today)
     _log.info(f"[{today}] factor_cache repair done")
@@ -101,7 +111,29 @@ def _run(today: str):
     # v532: factor_cache 兜底 — 晚间链失败时 08:00 增量物化 (signals 08:30 前)
     fc_dates = _ensure_factor_cache(today)
 
+    # v594: 非 ok 状态必须记录错误信息 - 查询具体失败原因
+    _repair_error = None
+    if still:
+        try:
+            import sqlite3
+            from quant.config.paths import MARKET_DB
+            _conn = sqlite3.connect(MARKET_DB)
+            _conn.row_factory = sqlite3.Row
+            _errors = []
+            for _table in still:
+                _row = _conn.execute(
+                    "SELECT detail FROM data_audit WHERE date=? AND table_name=? AND status='fail' "
+                    "ORDER BY id DESC LIMIT 1", (today, _table)).fetchone()
+                if _row and _row["detail"]:
+                    _errors.append(f"{_table}({_row['detail'][:80]})")
+                else:
+                    _errors.append(f"{_table}")
+            _conn.close()
+            _repair_error = "修复失败: " + "; ".join(_errors)
+        except Exception:
+            _repair_error = f"修复失败表: {', '.join(still)}"
     _tk_finish("daily_repair", today, "ok" if not still else "failed",
+               error=_repair_error,
                summary={"tables": tables, "repaired": repaired, "still": still,
                         "factor_cache_repaired": fc_dates})
 

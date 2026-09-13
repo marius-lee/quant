@@ -3,13 +3,12 @@
 IC -> Sharpe: Sharpe = ICIR * sqrt(breadth)  (GK99 Eq.6.5)
 breadth = N_positions * rebalances_per_year (monthly = *12)
 
-扣费估算:
-  - 单边佣金: config execution.commission (0.03%)
-  - 印花税: 0.05% (卖出单向, 2025年起)
-  - 冲击成本: config execution.impact_eta
-  - 往返 = 2*佣金 + 印花税(卖) + 冲击 + 滑点
+扣费估算 (v573 对齐回测执行层):
+  - 往返成本统一复用 quant.execution.cost.CostModel.from_config().round_trip_cost_pct()
+    = (佣金 + 滑点) × 2 + 印花税(卖) ≈ 0.31% (A股万三佣/千一滑/千五印花口径)
+  - 与回测 loop.py:471 CostModel.from_config() 同口径, 避免筛选/执行成本背离
 
-来源: Grinold & Kahn (1999) Ch.8; 国内券商因子研报惯例
+来源: Grinold & Kahn (1999) Ch.8; Almgren & Chriss (2001) 成本结构; 国内券商惯例
 """
 
 import json
@@ -60,15 +59,14 @@ def verify_costs(input_json: str = None) -> dict:
     # 模型参数
     net_sharpe_min = _require_cfg("factor.evaluation.net_sharpe_min")
     n_positions = _require_cfg("alpha.sleeve.positions_per_factor")
-    commission_rate = _require_cfg("execution.commission")
-    impact_eta = _require_cfg("execution.impact_eta")
 
-    # 印花税 (卖出单向 0.05%, 2025年起) + 滑点估算
-    stamp_tax = 0.0005
-    slippage_est = 0.001
-
-    # 往返成本 (买入+卖出)
-    round_trip_cost = 2 * commission_rate + stamp_tax + impact_eta + slippage_est
+    # v573 fix (2026-08-30): 往返成本统一复用执行层 CostModel, 与回测 loop.py 同口径
+    # (Grinold & Kahn 1999 Ch.8 扣费口径). 原实现把 execution.impact_eta(=0.1, 实为
+    # sqrt 冲击系数 10bp) 平加成 10% 往返成本 → annual_cost_pct≈122% (换手12×10.2%),
+    # 任何因子 net_Sharpe 被砍至负 → Phase 4 实质全拒 (过严 ~33x vs 回测 CostModel≈0.31%).
+    # 改读 CostModel.round_trip_cost_pct() ≈ 0.31%, 与回测执行成本对齐.
+    from quant.execution.cost import CostModel
+    round_trip_cost = CostModel.from_config().round_trip_cost_pct()
 
     # breadth: 独立下注次数/年 (GK99 Eq.6.5), 月度调仓
     rebalances_per_year = 12

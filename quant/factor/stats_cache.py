@@ -49,12 +49,14 @@ def compute_factor_stats(
     symbols: list = None, n_symbols: int = None, lookback: int = None,
     factor_names: list = None, status_filter=None,
     eval_start: str = None, eval_end: str = None,
+    compute_corr: bool = True,
 ) -> dict:
     """计算所有已注册因子的评估统计量，返回前端可用格式。
 
     n_symbols / lookback 默认值来源: config.yaml factor.evaluation (单一真相源).
     eval_start / eval_end (YYYY-MM-DD): 评估窗口边界 (Phase 7 训练窗口注入,
     默认今天往前的 lookback×1.5 日). 回测 PIT 采样用, 缺省逻辑不变.
+    compute_corr: 是否计算因子相关性矩阵 (内存密集型, 大因子集建议 False)
     """
     if n_symbols is None:
         n_symbols = _require_cfg("factor.evaluation.n_symbols")
@@ -170,54 +172,55 @@ def compute_factor_stats(
     # B34 (2026-08-18): 删除死代码 — 原 156-180 行构建 forward_1d/5d/20d 与
     # close_by_date, 定义后从未被引用 (仅注释声称"后续需要"); _shared_data 也
     # 仅服务于该死代码, 一并移除 → 省一次全量行情加载.
-    # 从 factor_cache.db 读取因子值用于相关性矩阵计算 (修正 test-v139 引入的全零 bug)
-    from quant.factor.store import FactorStore
-    _fs = FactorStore()
-    factor_values_by_date = {name: {} for name in factor_names}
-    _fv_miss = 0  # Q7-5 fix: 加载失败计数 (原裸 except: pass 吞错)
-    for _ds in eval_date_strs:
-        try:
-            _fv = _fs.load(_ds, symbols=symbols, factor_names=factor_names)
-            for _fn, _series in _fv.items():
-                if isinstance(_series, pd.Series) and _series.notna().sum() >= 30:
-                    factor_values_by_date[_fn][_ds] = _series.dropna()
-        except Exception as _load_err:
-            _fv_miss += 1
-            logger.debug(f"factor_cache: FactorStore.load({_ds}) failed ({_fv_miss} misses): {_load_err}")
-    _fs.close()
-    if _fv_miss:
-        logger.warning(f"factor_cache: {_fv_miss}/{len(eval_date_strs)} dates failed FactorStore.load")
-
     logger.info(
         f"factor_cache: loaded IC data for {_n_valid} factors, "
         f"{sum(1 for v in ic_means.values() if abs(v) > 0.001)} with non-zero IC"
     )
-    # 6. 计算因子相关性矩阵
+    # 6. 计算因子相关性矩阵 (仅当 compute_corr=True)
     n = len(factor_names)
-
-    def _compute_pair(i, j, ni, nj):
-        common_d = set(factor_values_by_date[ni].keys()) & set(factor_values_by_date[nj].keys())
-        pair_corrs = []
-        for d in sorted(common_d):
-            si = factor_values_by_date[ni][d].dropna()
-            sj = factor_values_by_date[nj][d].dropna()
-            common_sym = si.index.intersection(sj.index)
-            if len(common_sym) < 30:
-                continue
-            if np.std(si.loc[common_sym]) < 1e-10 or np.std(sj.loc[common_sym]) < 1e-10:
-                continue
-            rho = si.loc[common_sym].corr(sj.loc[common_sym], method="spearman")
-            if not np.isnan(rho):
-                pair_corrs.append(rho)
-        avg = float(np.mean(pair_corrs)) if pair_corrs else 0.0
-        return i, j, avg, len(pair_corrs)
-
-    pairs = [(i, j, factor_names[i], factor_names[j])
-                for i in range(n) for j in range(i + 1, n)]
-    logger.info(f"correlation matrix: {n}×{n} factors, {len(pairs)} pairwise pairs")
     corr_matrix = np.eye(n)
     corr_counts = np.zeros((n, n))
-    if pairs:
+    
+    if compute_corr:
+        # 从 factor_cache.db 读取因子值用于相关性矩阵计算
+        from quant.factor.store import FactorStore
+        _fs = FactorStore()
+        factor_values_by_date = {name: {} for name in factor_names}
+        _fv_miss = 0
+        for _ds in eval_date_strs:
+            try:
+                _fv = _fs.load(_ds, symbols=symbols, factor_names=factor_names)
+                for _fn, _series in _fv.items():
+                    if isinstance(_series, pd.Series) and _series.notna().sum() >= 30:
+                        factor_values_by_date[_fn][_ds] = _series.dropna()
+            except Exception as _load_err:
+                _fv_miss += 1
+                logger.debug(f"factor_cache: FactorStore.load({_ds}) failed ({_fv_miss} misses): {_load_err}")
+        _fs.close()
+        if _fv_miss:
+            logger.warning(f"factor_cache: {_fv_miss}/{len(eval_date_strs)} dates failed FactorStore.load")
+
+        def _compute_pair(i, j, ni, nj):
+            common_d = set(factor_values_by_date[ni].keys()) & set(factor_values_by_date[nj].keys())
+            pair_corrs = []
+            for d in sorted(common_d):
+                si = factor_values_by_date[ni][d].dropna()
+                sj = factor_values_by_date[nj][d].dropna()
+                common_sym = si.index.intersection(sj.index)
+                if len(common_sym) < 30:
+                    continue
+                if np.std(si.loc[common_sym]) < 1e-10 or np.std(sj.loc[common_sym]) < 1e-10:
+                    continue
+                rho = si.loc[common_sym].corr(sj.loc[common_sym], method="spearman")
+                if not np.isnan(rho):
+                    pair_corrs.append(rho)
+            avg = float(np.mean(pair_corrs)) if pair_corrs else 0.0
+            return i, j, avg, len(pair_corrs)
+
+        pairs = [(i, j, factor_names[i], factor_names[j])
+                    for i in range(n) for j in range(i + 1, n)]
+        logger.info(f"correlation matrix: {n}×{n} factors, {len(pairs)} pairwise pairs")
+        
         executor = ThreadPoolExecutor(max_workers=_MAX_WORKERS)
         try:
             futures = {executor.submit(_compute_pair, i, j, ni, nj): (i, j)
@@ -230,7 +233,9 @@ def compute_factor_stats(
                 corr_counts[j][i] = n_pairs
         finally:
             executor.shutdown(wait=True)
-    logger.info(f"corr matrix: {n}x{n}, avg pairwise periods: {corr_counts.sum()/(n*(n-1)):.1f}" if n > 1 else "corr: single factor")
+        logger.info(f"corr matrix: {n}x{n}, avg pairwise periods: {corr_counts.sum()/(n*(n-1)):.1f}" if n > 1 else "corr: single factor")
+    else:
+        logger.info("correlation matrix skipped (compute_corr=False)")
 
     # 7. 生成因子元信息
     display_names = {

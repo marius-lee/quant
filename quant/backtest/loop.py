@@ -169,7 +169,8 @@ def _compute_dsr(returns: pd.Series, n_trials: int = None) -> float | None:
             skewness=-0.5, kurtosis=8.0,
         )
         return round(result["dsr"], 4)
-    except Exception:
+    except Exception as _e:
+        _log.warning("silent exception: %s", _e)
         return None
 
 
@@ -543,7 +544,8 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
                     index="effective_from", columns="symbol",
                     values="industry").sort_index()
                 _industry_piv.index = pd.to_datetime(_industry_piv.index)
-                _log.info("backtest: industry PIT pivot — %d dates x %d symbols",
+                _industry_piv = _industry_piv.ffill()  # PIT forward fill: propagate last known industry
+                _log.info("backtest: industry PIT pivot — %d dates x %d symbols (ffilled)",
                           len(_industry_piv), len(_industry_piv.columns))
         except Exception as _ihe:
             _log.warning("backtest: industry PIT pivot build failed: %s", _ihe)
@@ -708,6 +710,10 @@ def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, re
             # "持仓周期内跨日保留, 清仓重买重置"。
             risk_manager=_rm,
         )
+
+        # B-06 fix: 将 ExecutionContext 传递给 broker, 确保 execute_signals
+        # 使用共享 engine/cost_model 而非重新创建新实例
+        _br.ctx = _ctx
 
         # ── Main loop ──
         equity_curve = [{"date": trading_days[0], "equity": float(capital)}]

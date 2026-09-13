@@ -10,6 +10,9 @@
 import numpy as np
 import pandas as pd
 from quant.factor.registry import _cs_zscore
+from quant.factor.compute._pit import (
+    pit_visible_mask, pit_where_sql, pit_where_params,
+)
 from quant.utils.logger import get_logger
 
 _log = get_logger(__name__)
@@ -127,6 +130,9 @@ def compute_revenue_growth_yoy(data, date, window=None, fundamentals=None, aux=N
     sym_data = defaultdict(list)  # {symbol: [(stat_date, revenue), ...]}
     if aux is not None and "financial_income" in aux:
         fi = aux["financial_income"]
+        # P0 (2026-08-29): PIT 披露过滤替代全量遍历 (aux 已由 slice_aux_for_date 预切片, 兜底)
+        if not fi.empty and "symbol" in fi.columns and "stat_date" in fi.columns:
+            fi = fi[pit_visible_mask(fi, date)]
         if not fi.empty and "symbol" in fi.columns and "stat_date" in fi.columns:
             for _, r in fi.iterrows():
                 sd = r["stat_date"]
@@ -138,9 +144,9 @@ def compute_revenue_growth_yoy(data, date, window=None, fundamentals=None, aux=N
         conn = DatabaseManager.market()
         rows = conn.execute(
             "SELECT symbol, stat_date, operating_revenue "
-            "FROM financial_income WHERE stat_date <= ? "
+            f"FROM financial_income WHERE ({pit_where_sql()}) "
             "ORDER BY symbol, stat_date DESC",
-            (date,)
+            pit_where_params(date)
         ).fetchall()
         conn.close()
         for r in rows:
@@ -187,6 +193,9 @@ def compute_earnings_growth_yoy(data, date, window=None, fundamentals=None, aux=
     sym_data = defaultdict(list)
     if aux is not None and "financial_income" in aux:
         fi = aux["financial_income"]
+        # P0 (2026-08-29): PIT 披露过滤替代全量遍历
+        if not fi.empty and "symbol" in fi.columns and "stat_date" in fi.columns:
+            fi = fi[pit_visible_mask(fi, date)]
         if not fi.empty and "symbol" in fi.columns and "stat_date" in fi.columns:
             for _, r in fi.iterrows():
                 sd = r["stat_date"]
@@ -198,9 +207,9 @@ def compute_earnings_growth_yoy(data, date, window=None, fundamentals=None, aux=
         conn = DatabaseManager.market()
         rows = conn.execute(
             "SELECT symbol, stat_date, net_profit "
-            "FROM financial_income WHERE stat_date <= ? "
+            f"FROM financial_income WHERE ({pit_where_sql()}) "
             "ORDER BY symbol, stat_date DESC",
-            (date,)
+            pit_where_params(date)
         ).fetchall()
         conn.close()
         for r in rows:
@@ -265,6 +274,13 @@ def compute_piotroski_fscore(data, date, window=None, fundamentals=None, aux=Non
         fi = aux["financial_income"]
         fb = aux["financial_balance"]
         fc = aux["financial_cashflow"]
+        # P0 (2026-08-29): PIT 披露过滤替代全量遍历 (aux 已预切片, 此处兜底)
+        if not fi.empty:
+            fi = fi[pit_visible_mask(fi, date)]
+        if not fb.empty:
+            fb = fb[pit_visible_mask(fb, date)]
+        if not fc.empty:
+            fc = fc[pit_visible_mask(fc, date)]
         fin_rows = [(r["symbol"], r["stat_date"], r.get("net_profit"), r.get("operating_revenue"),
                      r.get("operating_cost"), r.get("total_operating_revenue"), r.get("total_profit"),
                      r.get("operating_profit"))
@@ -286,22 +302,22 @@ def compute_piotroski_fscore(data, date, window=None, fundamentals=None, aux=Non
         fin_rows = conn.execute(
             "SELECT symbol, stat_date, net_profit, operating_revenue, operating_cost, "
             "total_operating_revenue, total_profit, operating_profit "
-            "FROM financial_income WHERE stat_date <= ? "
+            f"FROM financial_income WHERE ({pit_where_sql()}) "
             "ORDER BY symbol, stat_date DESC",
-            (date,)
+            pit_where_params(date)
         ).fetchall()
         bal_rows = conn.execute(
             "SELECT symbol, stat_date, total_assets, total_liability, total_owner_equities, "
             "fixed_assets, intangible_assets "
-            "FROM financial_balance WHERE stat_date <= ? "
+            f"FROM financial_balance WHERE ({pit_where_sql()}) "
             "ORDER BY symbol, stat_date DESC",
-            (date,)
+            pit_where_params(date)
         ).fetchall()
         cf_rows = conn.execute(
             "SELECT symbol, stat_date, net_operate_cash_flow "
-            "FROM financial_cashflow WHERE stat_date <= ? "
+            f"FROM financial_cashflow WHERE ({pit_where_sql()}) "
             "ORDER BY symbol, stat_date DESC",
-            (date,)
+            pit_where_params(date)
         ).fetchall()
         conn.close()
 

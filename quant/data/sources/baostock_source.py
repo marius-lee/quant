@@ -637,11 +637,13 @@ class BaostockSource(BaseDataSource):
                 end_date=datetime.today().strftime("%Y-%m-%d"),
             )
             return rs.error_code == "0"
-        except Exception:
+        except Exception as _e:
+            logger.warning(f"silent exception: {_e}")
             return False
         finally:
             try:
                 import baostock as bs
                 bs.logout()
-            except Exception:
+            except Exception as _e:
+                logger.debug(f"silent exception: {_e}")
                 pass

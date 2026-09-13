@@ -125,6 +125,15 @@ def _run(today: str):
                     stage._run(today)
             except Exception as e:
                 _log.exception(f"[{today}] evening chain: {name} crashed: {e}")
+                # v625: finish the crashed STAGE row. stage._run() (e.g.
+                # attribution._run) has no module-level try/finally yet; without
+                # this the stage stays 'running' while evening_chain itself is
+                # marked failed (HANDOFF v625). Idempotent if module self-finished.
+                try:
+                    from quant.scheduler.task_log import finish as _tf
+                    _tf(name, today, "failed", error=str(e))
+                except Exception as _sfe:
+                    _log.debug(f"[{today}] evening chain: {name} finish guard: {_sfe}")
                 status = "failed"
                 error_msg = f"{name} crashed: {e}"
                 break

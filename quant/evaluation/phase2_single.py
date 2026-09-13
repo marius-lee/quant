@@ -71,6 +71,7 @@ def screen_factors(input_json: str = None, output_json: str = None,
         factor_names=active_names,
         eval_start=eval_start,
         eval_end=eval_end,
+        compute_corr=False,
     )
 
     factor_names = stats["factor_keys"]

@@ -85,7 +85,7 @@ def trim_orders_by_alpha(orders: list, cash: float, cost_model,
         if max_shares >= LOT_SIZE:
             o.shares = max_shares
             o.cost = cost_model.buy_cost(px, max_shares)
-            available -= o.cost
+            available = max(0, available - o.cost)
             feasible.append(o)
             log.info(f"  trim kept {o.symbol}: {o.shares}股 @¥{px:.2f} "
                      f"(score={target_scores.get(o.symbol, 0):.2f}, cash_remain={available:.2f})")
@@ -93,14 +93,12 @@ def trim_orders_by_alpha(orders: list, cash: float, cost_model,
             # v576: 不再直接丢弃, 而是记录为 "资金不足无法完整建仓", 保留在可负担范围内的最大股数
             # 由于 A 股必须整手交易, max_shares < LOT_SIZE 意味着无法建仓任何整手,
             # 但规则已修改为不再因为 "unaffordable" 而强制丢弃 — 只记录信息, 不强制删除
-            log.info(f"  trim note {o.symbol}: max_shares={max_shares} < LOT_SIZE={LOT_SIZE}, "
+            log.info(f"  trim drop {o.symbol}: max_shares={max_shares} < LOT_SIZE={LOT_SIZE}, "
                      f"available={available:.2f}, price={px:.2f}, "
                      f"would_need={cost_model.buy_cost(px, LOT_SIZE):.2f} — "
-                     f"not dropped by v576 fix (signal preserved, execution deferred)")
-            # v576: 不再直接丢弃低分订单; 保留原订单 (允许后续监控/盘中处理)
-            # 资金不足时订单保留在 orders 中, 由执行引擎的子类 (LiveExecutionModel)
-            # 根据实际资金状态决定是否执行, 而非在裁剪阶段强制删除
-            feasible.append(o)  # 保留原订单, 由下游处理
+                     f"dropped (v625: 资金不足一手即丢弃, 防止可用资金为负)")
+            # v625 fix: 资金不足一手时必须丢弃, 不可保留原始未减仓订单
+            # (v576 的 "保留由下游处理" 导致全单穿透 engine.execute, 现金无底线为负)
     return sell_orders + feasible
 
 
@@ -454,8 +452,21 @@ class LiveExecutionModel(ExecutionModel):
         from quant.scheduler.order_manager import OrderManager
         om = OrderManager()
         om.cancel_all(ctx.today, ctx.strategy)  # 先清旧挂单, 防重启重复
+        # v594: 散户标准 - 小资金用市价单保证成交
+        # v625: ctx.total_capital 可能不存在 → 用 engine.get_cash() 做真实资本检查
+        _capital = ctx.total_capital if hasattr(ctx, 'total_capital') else ctx.engine.get_cash(ctx.strategy)
+        _threshold = _require_cfg("market.order_type_threshold")
+        _order_type = "market" if _capital < _threshold else "limit"
         for o in orders:
             ref_price = ctx.prices.get(o.symbol, o.price)
-            om.place(ctx.today, ctx.strategy, o.symbol, o.shares, ref_price)
-        _log.info(f"[{ctx.today}] placed {len(orders)} limit buy orders")
-        return "limit_placed"
+            om.place(ctx.today, ctx.strategy, o.symbol, o.shares, ref_price,
+                     order_type=_order_type)
+        # v622: 市价单立即成交 (模拟盘需调用 check_and_manage 触发成交)
+        if _order_type == "market":
+            # check_and_manage 期望 quotes 格式: {symbol: {price/ask/open/volume}}
+            _prices_raw = ctx.prices.to_dict() if hasattr(ctx.prices, 'to_dict') else ctx.prices
+            _quotes = {sym: {"price": float(p), "ask": float(p)} for sym, p in _prices_raw.items()}
+            _filled = om.check_and_manage(ctx.today, _quotes, ctx.strategy)
+            _log.info(f"[{ctx.today}] market orders filled: {len(_filled)} orders")
+        _log.info(f"[{ctx.today}] placed {len(orders)} {_order_type} buy orders (capital=¥{_capital:,.0f}, threshold=¥{_threshold:,.0f})")
+        return "limit_placed" if _order_type == "limit" else "filled"

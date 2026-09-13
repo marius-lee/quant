@@ -16,12 +16,73 @@ from quant.optimizer.portfolio import PortfolioConstructor
 
 _log = get_logger(__name__)
 
+# v621 fix: 恢复 task_log 调用（InlineRunner 和 Dagster 都依赖此记录）
+from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
+
+
+def _should_rebalance(current_positions: list[dict], target_positions: list[dict],
+                       quotes: dict, prices: dict, today: str) -> tuple[bool, str]:
+    """v628: 智能调仓决策 — 仅当推荐股票显著优于当前持仓时才调仓.
+
+    业务逻辑 (用户要求):
+    1. 每天推荐的 alpha 股票池应该是增长潜力最高的股票
+    2. 如果已买入的股票表现比推荐的好 → 继续持有
+    3. 如果推荐的股票比已买入的好 → 调仓
+
+    比较方法:
+    - 对每个当前持仓，计算其 momentum (price / prev_close - 1)
+    - 对每个推荐股票，获取其 alpha score
+    - 如果推荐股票的 score 总和 > 当前持仓的 momentum 总和 + min_score_improvement
+    → 调仓; 否则跳过 (risk_only)
+    """
+    if not current_positions and target_positions:
+        return True, "no_current_positions"
+    if not target_positions and current_positions:
+        return True, "clear_all"
+    if not target_positions and not current_positions:
+        return False, "empty_both"
+
+    _min_improvement = _require_cfg("optimizer.min_score_improvement",
+                                     default=0.3)
+    # 计算当前持仓的价格动量 (今日相对于前日收盘)
+    current_momentum = 0.0
+    for p in current_positions:
+        sym = p["symbol"]
+        q = quotes.get(sym, {})
+        last_price = q.get("price", 0) or q.get("open", 0)
+        prev_close = q.get("prev_close", 0)
+        cost = p.get("avg_cost", p.get("cost", 0))
+        if prev_close > 0 and last_price > 0:
+            current_momentum += (last_price / prev_close - 1) * 100
+        elif cost > 0 and last_price > 0:
+            current_momentum += (last_price / cost - 1) * 100
+
+    # 计算推荐股票的 alpha score 总和
+    target_score = sum(t.get("score", 0) for t in target_positions)
+
+    # 比较: 如果推荐分数显著高于当前动量 → 调仓
+    improvement = target_score - current_momentum
+    _log.info(f"[{today}] rebalance check: target_score={target_score:.2f}, "
+              f"current_momentum={current_momentum:.2f}%, improvement={improvement:.2f}%")
+
+    if improvement >= _min_improvement:
+        _log.info(f"[{today}] improvement={improvement:.2f}% >= min={_min_improvement:.2f}%, "
+                 f"rebalancing (new signals outperform)")
+        return True, "score_improvement"
+    else:
+        _log.info(f"[{today}] improvement={improvement:.2f}% < min={_min_improvement:.2f}%, "
+                 f"keeping current positions (outperform)")
+        return False, "no_improvement"
+
 
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
     _log.info(f"[{today}] 09:30 — executing trades")
     t0 = _time.time()
+
+    # v621 fix: 写入 task_runs 记录
+    _tk_start("execute", today)
 
     from quant.data.repos import TradeRepo
     repo = TradeRepo()
@@ -47,7 +108,8 @@ def _run(today: str):
     if not targets and _rebalance:
         _log.warning(f"[{today}] 今日无信号, 跳过执行 (business idle, ok)")
         _m.inc("scheduler.execute.no_targets")
-        return {"reason": "no signals", "targets": 0}
+        _tk_finish("execute", today, "ok", summary={"sells": 0, "limit_buys": 0, "elapsed": round(_time.time() - t0, 1), "reason": "no_rebalance"})
+        return {"reason": "no_rebalance", "targets": 0}
     if not _rebalance:
         targets = []  # risk_only 不使用 targets
 
@@ -105,6 +167,20 @@ def _run(today: str):
             q = quotes.get(tp["symbol"], {})
             prices[tp["symbol"]] = q.get("price", 0) or q.get("open", 0)
     prices = pd.Series(prices)
+
+    # ── v628: 智能调仓决策 (解决机械每日调仓问题) ──
+    # 业务逻辑:
+    #   1. 每天推荐的 alpha 股票池应该是增长潜力最高的股票
+    #   2. 如果已买入的股票表现比推荐的好 → 继续持有
+    #   3. 如果推荐的股票比已买入的好 → 调仓
+    if _rebalance and targets and current_positions:
+        _do_rebalance, _reason = _should_rebalance(
+            current_positions, targets, quotes, prices, today)
+        if not _do_rebalance:
+            _log.info(f"[{today}] v628: smart rebalance → 跳过调仓 (reason={_reason}), "
+                     f"进入 risk-only 模式")
+            _rebalance = False
+            targets = []  # risk_only 不使用 targets
 
     # ── Step 3.5: 涨停封死预检 (test-v214) ──
     sealed_at_open = []
@@ -236,6 +312,7 @@ def _run(today: str):
     _log.info(f"[SCHEDULER] {today} | TASK=execute | STATUS=OK | "
              f"sells={sells_done} limit_buys={buys_done} | elapsed={elapsed:.1f}s")
     _m.inc("scheduler.execute.ok")
+    _tk_finish("execute", today, "ok", summary={"sells": sells_done, "limit_buys": buys_done, "elapsed": round(elapsed, 1), "reason": "no_rebalance" if not _rebalance else "ok"})
     return {"sells": sells_done, "limit_buys": buys_done, "elapsed": round(elapsed, 1)}
 
 

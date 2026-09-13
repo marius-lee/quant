@@ -11,7 +11,7 @@ P5: Brinson 基准从等权改为市值加权
   严格模式 (Small, >¥500K):    全量归因, 业界标准阈值 (换手率 50%, 滑点 1%)
 """
 import time as _time, uuid as _uuid
-from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
+from quant.scheduler.task_log import task as _task, start as _tk_start, finish as _tk_finish
 from quant.scheduler.manifest import EVENING_STAGE_GRACE
 import numpy as np
 from datetime import time
@@ -124,13 +124,10 @@ def _sector_returns_from_df(df) -> dict:
     return sector_returns
 
 
+@_task("attribution", grace_seconds=EVENING_STAGE_GRACE["attribution"])
 def _run(today: str):
     tid = _uuid.uuid4().hex[:12]
     set_trace_id(tid)
-    rid = _tk_start("attribution", today, grace_seconds=EVENING_STAGE_GRACE["attribution"])
-    if rid is None:
-        _log.info(f"[{today}] attribution already running, skip duplicate trigger")
-        return
     _log.info(f"[{today}] 15:30 — attribution")
     t0 = _time.time()
 
@@ -494,7 +491,6 @@ def _run(today: str):
         ic_vals = [r["ic_value"] for r in rolling[-MONITORING_BUFFER_DAYS:] if r["ic_value"] is not None]
         if len(ic_vals) < max(5, MONITORING_BUFFER_DAYS // 2):
             continue
-        import numpy as np
         mean_ic = np.mean(ic_vals)
         se_ic = np.std(ic_vals, ddof=1) / np.sqrt(len(ic_vals)) if len(ic_vals) > 1 else 0
         t_stat = mean_ic / se_ic if se_ic > 0 else 0
@@ -658,7 +654,8 @@ def _run(today: str):
     else:
         _log.info(f"[{today}] R4 signal decay: no signal data for today, skip")
     elapsed = _time.time() - t0
-    _tk_finish("attribution", today, "ok", summary={"elapsed": round(elapsed, 1)})
+    # v625: _tk_finish 由 @_task("attribution") 统一管理 (crash→自动标 failed);
+    # 该行原手动 finish 被移除, 避免双重写入 task_runs。
     _log.info(f"[SCHEDULER] {today} | TASK=attribution | STATUS=OK | elapsed={elapsed:.1f}s")
     _m.inc("scheduler.attribution.ok")
 

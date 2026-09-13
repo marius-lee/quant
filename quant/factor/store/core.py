@@ -1,202 +1,28 @@
-"""因子缓存存储 v480 — parquet 列式分区 + fork 共享内存 + checkpoint 续传。
-
-设计原则:
-  - 存储布局: factor_cache/parquet_f/{factor}/{year}.parquet (因子×年分区)
-  - 列: date_i16 (全局交易日序号), symbol_i16 (字典 idx), value_f32 (float32)
-  - 压缩: zstd level 3 — 相比 v469 按日期分区, 减少文件数量 (1886 → ~300 文件)
-  - 多进程: fork 模式, 一次性继承 data_full/prims/aux/fundamentals (COW),
-    单 Worker 顺序处理日期范围
-  - 结果装配 (v480): worker 返回紧凑 numpy 数组 (symbol_i16/value_f32),
-    父进程边收边写 — 消除 Python tuple 累积 + 全量 pickle 双份驻留
-    (2026-08-13 全量回填实测 40+GB 卡死 macOS → B 方案修复, 峰值 ≈10GB)
-  - checkpoint: 记录 last_date + failed_dates, resume 时加回重试
-  - manifest: 每日期×因子 source_hash, 细粒度失效
-  - 零 fallback: 读失败即抛, 无旧格式回退
-
-对标: Qlib 因子库(parquet) + DolphinDB factorDB
-"""
-import os
-import json
-import time
-import hashlib
-import inspect
-import shutil
+"""FactorStore — 因子物化核心类."""
 import gc
+import json
+import os
+import time as _time
 import multiprocessing as mp
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
-
-import pandas as pd
 import numpy as np
-import pyarrow as pa
-import pyarrow.parquet as pq
+import pandas as pd
 
 from quant.config.constants import _require_cfg
-from quant.utils.logger import get_logger
-from quant.factor.compute._dispatch import compute_all_factors
-from quant.factor.compute._primitives import precompute_primitives
 from quant.factor.compute._preload import preload_aux_data_chunk, slice_aux_for_date
-from quant.factor.compute.price._alternative import preload_ztd_cache, clear_ztd_cache
+from quant.factor.compute.price._alternative import clear_ztd_cache, preload_ztd_cache
+from quant.factor.store.helpers import (_log, _PROJ_ROOT, _CACHE_DIR, _PARQUET_DIR,
+    _DATA_FULL, _PRIMS, _AUX_FULL, _FUNDAMENTALS, _SYMBOLS, _MISSING_MAP,
+    _BLOCKED_PATH, _EMPTY_WARN_DAYS, _SOURCE_HASH_CACHE, _DATA_FINGERPRINT_CACHE,
+    _unblock_recovered, _empty_factor_summary, _last_sqlite_date,
+    _materialize_mem_budget_gb, _materialize_rss_gb, _compute_data_fingerprint,
+    _source_hash_single, _compute_factor_source_hash)
+
+from quant.factor.compute._dispatch import compute_all_factors
 from quant.factor.windows import max_factor_calendar_days
 
-_log = get_logger("quant.factor.store")
+from quant.utils.logger import get_logger
 
-_PROJ_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_CACHE_DIR = os.path.join(_PROJ_ROOT, "quant", "data", "factor_cache")
-_PARQUET_DIR = os.path.join(_CACHE_DIR, "parquet_f")
-
-# 全局共享数据 (fork COW 继承)
-_DATA_FULL = None
-_PRIMS = None
-_AUX_FULL = None
-_FUNDAMENTALS = None
-_SYMBOLS = None
-
-# v483: 每日期待算缺失因子表 (fork COW 继承; worker 只算缺失因子, 杜绝整日期白算)
-_MISSING_MAP: dict[str, list[str]] = {}
-
-_BLOCKED_PATH = os.path.join(_CACHE_DIR, "blocked.json")
-
-# v546: 空结果聚合告警阈值 (交易日) — 单因子单轮空结果超阈值 → 判为异常 (代码/数据源),
-# 而非正常缺数据; 避免 bug 因子静默 blocked 永久归档
-_EMPTY_WARN_DAYS = 50
-
-
-def _unblock_recovered(blocked: dict, per_factor: dict) -> None:
-    """v546: 本轮成功算出结果的 (date, factor) 从 blocked 移除 — 恢复因子自动解除剔除.
-
-    blocked 结构 {date_str: {factor: ts}}; 原地修改, 无返回.
-    """
-    for fname, dset in per_factor.items():
-        for _d in dset:
-            bfs = blocked.get(_d)
-            if bfs and fname in bfs:
-                del bfs[fname]
-                if not bfs:
-                    del blocked[_d]
-
-
-def _empty_factor_summary(empty_factors, min_days: int = _EMPTY_WARN_DAYS):
-    """v546: 本轮空结果按因子聚合, 返回 [(factor, 天数)] 按天数降序 (只含 >= min_days)."""
-    from collections import Counter
-    return sorted(((f, n) for f, n in Counter(f for _, f in empty_factors).items()
-                   if n >= min_days), key=lambda x: -x[1])
-
-# per-factor 源码 hash 缓存 (代码不变则 hash 不变, 进程内安全缓存)
-_SOURCE_HASH_CACHE: dict[str, str] = {}
-
-# 输入数据指纹缓存 (进程内一次) — v492: 检测 daily/财务表数据变化触发重算
-_DATA_FINGERPRINT_CACHE: dict[str, str] = {}
-
-
-def _last_sqlite_date() -> str:
-    """SQLite daily 最新日期 (v529 新鲜度断言用)."""
-    from quant.data.repos._base import DatabaseManager
-    mc = DatabaseManager.market()
-    try:
-        row = mc.execute("SELECT MAX(date) FROM daily").fetchone()
-        return row[0] if row and row[0] else "1970-01-01"
-    finally:
-        mc.close()
-
-
-def _compute_data_fingerprint(db_path: str = None) -> str:
-    """计算输入数据指纹: daily 行数/turnover>0/amount>0/MAX(date) +
-    财务三表 行数/MAX(stat_date)/MAX(pub_date)。
-
-    v492: source_hash 只覆盖因子代码; 回填 amount/turnover/财务后已物化日期
-    永不重算 → 缓存永远读旧值。本指纹纳入缺失判定: 指纹变化 → 该日期全部
-    因子视为缺失 → 自动重算。指纹查询失败时返回 "" (与任何实值不等 →
-    触发全量重算, 失败安全)。进程内缓存, 物化每晚只算一次。
-    """
-    if db_path is None:
-        from quant.config.paths import MARKET_DB
-        db_path = MARKET_DB
-    cached = _DATA_FINGERPRINT_CACHE.get(db_path)
-    if cached is not None:
-        return cached
-    import sqlite3
-    h = hashlib.sha256()
-    try:
-        conn = sqlite3.connect(db_path, timeout=30)
-        try:
-            r = conn.execute(
-                "SELECT COUNT(*), "
-                "SUM(CASE WHEN turnover > 0 THEN 1 ELSE 0 END), "
-                "SUM(CASE WHEN amount > 0 THEN 1 ELSE 0 END), "
-                "COALESCE(MAX(date),'') FROM daily"
-            ).fetchone()
-            h.update(f"daily:{r[0]}:{r[1]}:{r[2]}:{r[3]}".encode())
-            # v492b: daily_valuation 也是基本面因子输入 (pe_ttm/pb/market_cap,
-            # fundamental.py EPD/EPDS), 回填/修正后已物化日期须重算
-            try:
-                r = conn.execute(
-                    "SELECT COUNT(*), "
-                    "SUM(CASE WHEN market_cap > 0 AND market_cap IS NOT NULL THEN 1 ELSE 0 END), "
-                    "SUM(CASE WHEN pe_ttm IS NOT NULL THEN 1 ELSE 0 END), "
-                    "COALESCE(MAX(date),'') FROM daily_valuation"
-                ).fetchone()
-                h.update(f"daily_valuation:{r[0]}:{r[1]}:{r[2]}:{r[3]}".encode())
-            except sqlite3.OperationalError:
-                h.update(b"daily_valuation:missing")
-            for tbl in ("financial_income", "financial_balance", "financial_cashflow"):
-                try:
-                    r = conn.execute(
-                        f"SELECT COUNT(*), COALESCE(MAX(stat_date),''), "
-                        f"COALESCE(MAX(pub_date),'') FROM {tbl}"
-                    ).fetchone()
-                    h.update(f"{tbl}:{r[0]}:{r[1]}:{r[2]}".encode())
-                except sqlite3.OperationalError:
-                    h.update(f"{tbl}:missing".encode())
-        finally:
-            conn.close()
-    except Exception as e:
-        _log.warning("factor_cache: data fingerprint query failed (%s) — 触发全量重算", e)
-        return ""
-    _DATA_FINGERPRINT_CACHE[db_path] = h.hexdigest()[:16]
-    return _DATA_FINGERPRINT_CACHE[db_path]
-
-
-def _source_hash_single(factor_name: str) -> str:
-    """单因子源码 hash (缓存) — meta 与缺失判定统一用此口径。"""
-    if factor_name in _SOURCE_HASH_CACHE:
-        return _SOURCE_HASH_CACHE[factor_name]
-    h = _compute_factor_source_hash({factor_name})
-    _SOURCE_HASH_CACHE[factor_name] = h
-    return h
-
-
-def _compute_factor_source_hash(factor_names: set[str]) -> str:
-    """计算因子函数源码复合 hash — 检测函数变更触发重算。"""
-    h = hashlib.sha256()
-    try:
-        h.update(inspect.getsource(precompute_primitives).encode())
-    except (OSError, TypeError):
-        h.update(b"precompute_primitives")
-    for name in sorted(factor_names):
-        fn = None
-        try:
-            from quant.factor.compute.price import _PRICE_FN_MAP
-            from quant.factor.compute.fundamental import _FUNDAMENTAL_FN_MAP
-            if name in _PRICE_FN_MAP:
-                fn = _PRICE_FN_MAP[name][0]
-            elif name in _FUNDAMENTAL_FN_MAP:
-                fn = _FUNDAMENTAL_FN_MAP[name][1]
-        except Exception:
-            pass
-        if fn is not None:
-            try:
-                h.update(inspect.getsource(fn).encode())
-            except (OSError, TypeError):
-                h.update(name.encode())
-        try:
-            from quant.factor.compute._primitives import FACTOR_SHORTCUT
-            sc = FACTOR_SHORTCUT.get(name)
-            if sc is not None:
-                h.update(inspect.getsource(sc).encode())
-        except (OSError, TypeError):
-            h.update(("sc:" + name).encode())
-    return h.hexdigest()[:16]
+logger = get_logger("factor.store.core")
 
 
 class FactorStore:
@@ -237,8 +63,11 @@ class FactorStore:
     def _load_json(self, path: str) -> dict:
         if not os.path.exists(path):
             return {}
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            return {}
 
     def _save_json(self, path: str, data: dict):
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -311,7 +140,6 @@ class FactorStore:
         Returns:
             dict: {results, failed_dates, empty_factors, source_hash}
         """
-        import time as _time
         t0 = _time.time()
         global _DATA_FULL, _PRIMS, _AUX_FULL, _FUNDAMENTALS, _SYMBOLS
 
@@ -400,7 +228,8 @@ class FactorStore:
                     force: bool = False,
                     chunk_days: int = 200,
                     workers: int = None,
-                    max_slice_days: int = None) -> dict:
+                    max_slice_days: int = None,
+                    in_process: bool = False) -> dict:
         """批量物化因子值: fork pool + parquet column 分区写入。
 
         Args:
@@ -411,12 +240,15 @@ class FactorStore:
             force: True 时删除旧数据重新物化
             chunk_days: 每块最大交易日数
             workers: 并行 worker 数 (默认 3-4)
+            in_process: True 时跳过 subprocess 段并行, 主进程同步直算
+                (复用 _materialize_sync). 由 Ray 分布式引擎调用 — Ray 已持有
+                跨分区并行, 若再嵌套内部 subprocess 会核心过订/无加速.
 
         Returns:
             dict: {n_dates, n_factors, n_symbols, n_rows, elapsed_sec}
         """
-        import time as _time
         from quant.data.store import DataStore
+        from quant.execution.calendar import is_trading_day
 
         if workers is None:
             # v525: 并发段进程数 — 每段峰值 ~1.5GB, 8GB 机器 3 并发 ≈ 5GB 总量
@@ -427,6 +259,15 @@ class FactorStore:
             store = DataStore()
 
         t0 = _time.time()
+
+        # 过滤非交易日 — 只物化交易日，节假日/周末直接跳过，避免空算+FAILED 污染日志
+        if date_range:
+            original_len = len(date_range)
+            from datetime import datetime
+            date_range = [d for d in date_range if is_trading_day(datetime.strptime(d, "%Y-%m-%d").date())]
+            if len(date_range) != original_len:
+                _log.info("factor_cache: filtered %d non-trading days from input date_range (%d → %d)",
+                          original_len - len(date_range), original_len, len(date_range))
 
         # v529: DuckDB 新鲜度断言 — 物化读 DuckDB 优先, 若副本落后于 SQLite
         # 会静默读旧值 (2026-08-18 实证: 手动补数后晚间链未跑, DuckDB 停 08-14,
@@ -527,9 +368,10 @@ class FactorStore:
                         "n_symbols": len(symbols), "n_rows": 0, "elapsed_sec": 0,
                         "skipped": True, "failed_dates": []}
 
-        # 0.6 执行: 归一 subprocess 段并行; store 注入 (测试/mock) 时降级
-        # 主进程同步直算 — subprocess 无法继承内存数据源
-        if not _store_owned:
+        # 0.6 执行: 归一 subprocess 段并行; store 注入 (测试/mock) 或
+        # Ray 分布式引擎 (in_process) 时降级主进程同步直算 — subprocess
+        # 无法继承内存数据源, 且 Ray 已持有跨分区并行, 嵌套 subprocess 会过订.
+        if in_process or not _store_owned:
             return self._materialize_sync(
                 store=store, date_list=sorted(todo_map.keys()),
                 factor_names=factor_names, symbols=symbols, todo_map=todo_map,
@@ -639,18 +481,39 @@ class FactorStore:
                     if _d not in blocked:
                         blocked[_d] = {}
                     if _f not in blocked[_d]:
-                        blocked[_d][_f] = time.time()
+                        blocked[_d][_f] = _time.time()
                         _log.warning(
                             "factor_cache: factor %s blocked at %s — 计算为空结果 "
                             "(依赖数据缺失/不足), 已剔除后续重算; 数据补齐后自动恢复",
                             _f, _d)
+
+            # v571: 内存守卫 — 按物理内存动态下调段并发, 防 swap→watchdog panic
+            _per_w = float(_require_cfg("factor.compute.materialize_mem_per_worker_gb"))
+            _budget = _materialize_mem_budget_gb()
+            _cap = max(1, min(workers, int(_budget // _per_w)))
+            if _cap != workers:
+                _log.warning(
+                    "factor_cache: mem guard — workers %d→%d (budget %.1fGB / %.1fGB per "
+                    "worker, total RAM %.1fGB reserved headroom %.1fGB)",
+                    workers, _cap, _budget, _per_w,
+                    _budget + float(_require_cfg("factor.compute.materialize_mem_headroom_gb")),
+                    float(_require_cfg("factor.compute.materialize_mem_headroom_gb")))
+            else:
+                _log.info("factor_cache: mem guard — workers=%d within budget %.1fGB", workers, _budget)
+            workers = _cap
 
             _env = dict(_os.environ)
             _env["PYTHONPATH"] = _os.getcwd()
             active = []  # (proc, oj, oj_log, ws, we)
             try:
                 for sj, oj, oj_log, ws, we in pending:
-                    while len(active) >= workers:
+                    # 内存守卫: 并发达上限 或 当前物化RSS超预算时, 先等子进程退出释放内存
+                    while len(active) >= workers or _materialize_rss_gb(active) > _budget:
+                        _mem = _materialize_rss_gb(active) if len(active) >= 1 else 0.0
+                        if _mem > _budget:
+                            _log.warning(
+                                "factor_cache: mem guard — RSS %.1fGB > budget %.1fGB, "
+                                "hold launch until a segment finishes", _mem, _budget)
                         _proc, _oj, _ojl, _ws, _we = active.pop(0)
                         _rc = _proc.wait()
                         if _rc != 0:
@@ -748,7 +611,6 @@ class FactorStore:
         测试/mock 数据源无法跨 subprocess 继承, 语义与 v525 前 fork 版一致
         (每 chunk 装载数据 → _worker_main → consume 落盘), 仅无并行。
         """
-        import time as _time
         from quant.factor.compute._preload import preload_aux_data_chunk
         from quant.factor.compute._primitives import precompute_primitives
         from quant.factor.compute.price._alternative import clear_ztd_cache, preload_ztd_cache
@@ -1026,7 +888,7 @@ class FactorStore:
                     if yr in years:
                         factor_year_dfs[fname][yr] = pd.read_parquet(
                             os.path.join(fdir, f),
-                            filters=[('date_i16', 'in', [date_to_idx[d] for d in dates if d[:4] == str(yr)])],
+                            filters=[('date_i16', 'in', [date_to_idx[d] for d in dates if d in date_to_idx and d[:4] == str(yr)])],
                         )
 
         for date_str in dates:
@@ -1186,7 +1048,7 @@ class FactorStore:
             _log.warning("factor_cache: blocked.json unreadable, treating as empty: %s", e)
             return {}
         ttl = _require_cfg("factor.compute.cache_checkpoint_ttl_sec")   # 86400s = 1天
-        now = time.time()
+        now = _time.time()
         out = {}
         for d, facs in raw.items():
             if not isinstance(facs, dict):
@@ -1307,9 +1169,9 @@ class FactorStore:
             else:
                 val_df["total_mv"] = _mc * 1e4
             val_df["pe"] = val_df["pe_ttm"]  # compute_ep_ratio 优先 pe_ttm
-            val_piv = val_df.pivot(index="date", columns="symbol",
-                                   values=["pe_ttm", "pb", "market_cap",
-                                           "total_mv", "pe"]).ffill()
+            val_piv = val_df.pivot(index="date", columns="symbol",  # v629: 加入 ps_ttm, pcf_ttm
+                                   values=["pe_ttm", "pb", "ps_ttm", "pcf_ttm",
+                                           "market_cap", "total_mv", "pe"]).ffill()
         else:
             val_piv = None
 
@@ -1336,7 +1198,7 @@ class FactorStore:
         _static_index = stocks_df.index
         # 全部被排除列显式补 NaN 占位 (覆盖外日期 df 仍含这些列,
         # 下游 null_roe 派生/pe 过滤依赖列存在; 原 _fallback 提供快照=前视)
-        for _c in ("pe_ttm", "pb", "market_cap", "close_latest", "high_52w",
+        for _c in ("pe_ttm", "pb", "ps_ttm", "pcf_ttm", "market_cap", "close_latest", "high_52w",  # v629: +ps_ttm,pcf_ttm
                    "total_mv", "roe", "pe", "eps", "bvps"):
             _static_cols[_c] = pd.Series(np.nan, index=_static_index)
 
@@ -1362,7 +1224,7 @@ class FactorStore:
 
             if val_piv is not None and ts in val_piv.index:
                 row = val_piv.loc[ts]
-                for col in ["pe_ttm", "pb", "market_cap", "total_mv", "pe"]:
+                for col in ["pe_ttm", "pb", "ps_ttm", "pcf_ttm", "market_cap", "total_mv", "pe"]:  # v629: +ps_ttm,pcf_ttm
                     if col in row.index.get_level_values(0):
                         _dyn[col] = row[col].reindex(_static_index)
 

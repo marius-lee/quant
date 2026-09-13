@@ -67,12 +67,12 @@ def _run(seg_path: str, out_path: str) -> int:
     fund = fs._build_fundamentals_panel(st, symbols, dates, data_full=data_full)
 
     global_map = seg.get("missing", {})
-    _store_mod._DATA_FULL = data_full
-    _store_mod._PRIMS = prims
-    _store_mod._AUX_FULL = aux
-    _store_mod._FUNDAMENTALS = fund
-    _store_mod._SYMBOLS = symbols
-    _store_mod._MISSING_MAP = {d: global_map.get(d, []) for d in dates}
+    _store_mod.core._DATA_FULL = data_full
+    _store_mod.core._PRIMS = prims
+    _store_mod.core._AUX_FULL = aux
+    _store_mod.core._FUNDAMENTALS = fund
+    _store_mod.core._SYMBOLS = symbols
+    _store_mod.core._MISSING_MAP = {d: global_map.get(d, []) for d in dates}
 
     sym_map = fs._load_symbol_map()
     all_days = fs._load_trading_days()

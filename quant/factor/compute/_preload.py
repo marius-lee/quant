@@ -25,6 +25,13 @@ _log = get_logger("factor.preload")
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 from quant.config.paths import MARKET_DB as _DB
+from quant.factor.compute._pit import (
+    pit_visible_mask,
+    pit_where_sql,
+    pit_where_params,
+)
+
+_PIT_WHERE = pit_where_sql()
 
 _AUX_TABLES = [
     "margin_detail",
@@ -153,8 +160,8 @@ def preload_aux_data(symbols: list, date: str, conn=None) -> dict:
         try:
             df = pd.read_sql_query(
                 f"SELECT * FROM {tbl} WHERE symbol IN ({ph}) "
-                f"AND stat_date >= ? AND stat_date <= ? ORDER BY stat_date",
-                conn, params=symbols + [fin_start, date]
+                f"AND stat_date >= ? AND ({_PIT_WHERE}) ORDER BY stat_date",
+                conn, params=symbols + [fin_start] + list(pit_where_params(date))
             )
             # v523: stat_date 统一 datetime — 下游因子过滤免 3 亿次 object 比较
             if not df.empty and "stat_date" in df.columns:
@@ -424,11 +431,11 @@ def slice_aux_for_date(aux_full: dict, date: str) -> dict:
     else:
         result["lhb"] = lhb
 
-    # financial tables: stat_date ≤ date
+    # financial tables: PIT disclosure filter (pub_date / statutory lag), NOT stat_date <= date
     for tbl in ["financial_income", "financial_balance", "financial_cashflow"]:
         tbl_df = aux_full.get(tbl, pd.DataFrame())
         if not tbl_df.empty and "stat_date" in tbl_df.columns:
-            result[tbl] = tbl_df.loc[pd.to_datetime(tbl_df["stat_date"]) <= ts]
+            result[tbl] = tbl_df.loc[pit_visible_mask(tbl_df, date)]
         else:
             result[tbl] = tbl_df
 

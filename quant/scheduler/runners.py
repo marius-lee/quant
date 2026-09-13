@@ -118,7 +118,7 @@ def _should_run(s: TaskSpec, hhmm: time, weekday: int,
         if aborted.get(s.name, 0) >= _MAX_TASK_RETRIES:
             return False
         # fall through: 继续检查窗口 + 依赖 (允许重试)
-    if cur == "running":
+    if cur in ("running", "lunch"):
         return False
     if not s.in_window(hhmm, weekday):
         return False
@@ -169,8 +169,12 @@ def _cleanup_zombie_tasks():
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
 
+        # v625 fix: 也清理 status='lunch' (monitor 午休 stage) 的僵尸行。
+        # 原仅清理 'running'，monitor 在午休时打 'lunch' 后若进程被 kill，
+        # 该行永久卡住 (3 段 8 月 lunch 僵尸 — HANDOFF v625)。
         rows = conn.execute(
-            "SELECT id, task_name, pid FROM task_runs WHERE date=? AND status='running'",
+            "SELECT id, task_name, pid FROM task_runs "
+            "WHERE date=? AND status IN ('running', 'lunch')",
             (today,)
         ).fetchall()
 
@@ -215,10 +219,6 @@ class BaseRunner:
         import uuid as _uuid
         tid = _uuid.uuid4().hex[:12]
         set_trace_id(tid)
-        rid = _tk_start(s.name, self.today, grace_seconds=s.grace_s)
-        if rid is None:
-            _log.info(f"[{s.name}] already running, skip")
-            return
         try:
             if s.mode == "subprocess":
                 import importlib as _importlib
@@ -227,16 +227,21 @@ class BaseRunner:
                 from quant.scheduler.snapshot import snapshot_open, snapshot_close
                 fn = snapshot_open if s.name == "snapshot_open" else snapshot_close
                 fn(self.today)
-                _tk_finish(s.name, self.today, "ok")
                 return
             else:
                 # inline: quant.scheduler.{task_name}
                 mod = __import__(f"quant.scheduler.{s.name}", fromlist=["_run"])
             mod._run(self.today)
-            _tk_finish(s.name, self.today, "ok")
         except Exception as e:
             _log.exception(f"[{self.today}] {s.name} crashed: {e}")
-            _tk_finish(s.name, self.today, "failed", error=str(e))
+            # v625 (InlineRunner safety net): if a legacy module without an outer
+            # try/finally (e.g. execute._run) crashes, guarantee its task_runs row
+            # is not left 'running'. Modules with V586/@task self-finish first;
+            # finish() is idempotent on already-terminal rows.
+            try:
+                _tk_finish(s.name, self.today, "failed", error=str(e))
+            except Exception as _fe:
+                _log.debug(f"[{self.today}] {s.name} dispatch finish guard: {_fe}")
             raise
 
 
@@ -463,6 +468,17 @@ class SubprocessRunner(BaseRunner):
         else:
             _log.warning(f"[{self.today}] subprocess failed (rc={ret}), cleanup")
             _cleanup_evening_children(self.today)
+            # v625: finish the TOP-LEVEL subprocess task (weekly_eval /
+            # daily_repair / evening_chain) if its _run() crashed before reaching
+            # its own _tk_finish — otherwise the schedule page shows it stuck
+            # 'running' forever (no orchestrator _check_timeouts in Dagster mode).
+            _top = {"weekly_eval", "daily_repair", "evening_chain"}
+            if s.name in _top:
+                try:
+                    _tk_finish(s.name, self.today, "failed",
+                               error=f"subprocess exited rc={ret}")
+                except Exception as _sfe:
+                    _log.debug(f"[{self.today}] {s.name} subprocess finish guard: {_sfe}")
             # v555 (F2): 移除内部 respawn — 原 v532 内部重试 (≤2) 与
             # orchestrator 级 _evening_retries/_repair_done/_weekly_done 重试
             # 双重叠加, 每晚最多 9 次完整链 spawn, 远超声明的预算 2.

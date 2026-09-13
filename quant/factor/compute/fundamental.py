@@ -61,12 +61,23 @@ from quant.utils.date import to_str
 from quant.config.constants import *
 from quant.factor.registry import _cs_zscore, _db_connect, _FIN_FACTORS
 from quant.factor.compute._shared import _market_db_path
+from quant.factor.compute.classic.value import (
+    compute_alpha_ep, compute_alpha_bp, compute_alpha_sp, compute_alpha_cfp,
+)  # v629: 迁移自 _PRICE_FN_MAP (旧接口 date_str,conn → 新接口 fundamentals,date)
+from quant.factor.compute._pit import (
+    pit_visible_mask, pit_where_sql, pit_where_params,
+)
 from quant.data.repos._base import DatabaseManager  # noqa: F401 (bw compat)
 from quant.factor.compute.missing import compute_revenue_growth_yoy  # test-v323
 from quant.factor.compute.missing import (
     compute_earnings_growth_yoy, compute_piotroski_fscore,
 )  # test-v325
 from quant.factor.compute.high_priority import compute_cf_roa  # v358
+
+from quant.utils.logger import get_logger
+
+logger = get_logger("factor.compute.fundamental")
+
 
 def compute_high52w_dist(fundamentals: "pd.DataFrame", date: str) -> "pd.Series":
     """接近52周高点→高分。dist = 1 - close_latest/high_52w, 取负号。
@@ -189,10 +200,12 @@ _ALLOWED_FINANCIAL_TABLES = {"financial_income", "financial_balance", "financial
 
 
 def _get_financial_historical(table: str, date: str, forward_days: int = 0) -> "pd.DataFrame":
-    """Query quarterly financial data up to date (PIT-safe, no forward-looking).
+    """Query quarterly financial data up to date, PIT-disclosure-safe (no look-ahead).
 
-    P1-6 fix: 移除 +90d forward_days (前视偏差). 仅查询 stat_date <= date 的已发布数据.
-    季报公告日延迟需另行处理 (中期: anunciate_date <= date).
+    P1-6 fix: 移除 +90d forward_days (前视偏差).
+    P0 (2026-08-29): 改用 PIT 披露口径 — 仅取 `pub_date <= date` (真实公告日) 或
+    `stat_date + 法定披露时滞` (无公告日源) 的已披露数据, 而非 `stat_date <= date`.
+    直接用 stat_date 作"已知边界"会让报告期后 1-4 个月才披露的财报提前泄漏进信号.
 
     安全: 表名白名单校验，防止 SQL 注入。
     """
@@ -201,8 +214,8 @@ def _get_financial_historical(table: str, date: str, forward_days: int = 0) -> "
     max_stat = (pd.Timestamp(date) + pd.DateOffset(days=forward_days)).strftime("%Y-%m-%d")
     conn = _db_connect()
     df = pd.read_sql(
-        f"SELECT * FROM {table} WHERE stat_date <= ? ORDER BY stat_date",
-        conn, params=(max_stat,),
+        f"SELECT * FROM {table} WHERE ({pit_where_sql()}) ORDER BY stat_date",
+        conn, params=pit_where_params(max_stat),
     )
     conn.close()
     return df
@@ -282,8 +295,10 @@ def compute_financial_anomaly(fundamentals: "pd.DataFrame", date: str, aux=None)
     # v523: aux 快路径 — chunk 级预载两表, 消除每日 2× 400k 行全表查询
     if aux is not None and "financial_income" in aux and "financial_balance" in aux:
         date_ts = pd.Timestamp(to_str(date)) if not isinstance(date, str) else pd.Timestamp(date)
-        df_inc = aux["financial_income"][aux["financial_income"]["stat_date"] <= date_ts]
-        df_bal = aux["financial_balance"][aux["financial_balance"]["stat_date"] <= date_ts]
+        # P0 (2026-08-29): PIT 披露过滤替代 stat_date<=; aux 已由 slice_aux_for_date
+        # 预先 PIT 切片, 此处再用 pit_visible_mask 兜底 (独立调用/单测亦正确).
+        df_inc = aux["financial_income"][pit_visible_mask(aux["financial_income"], date)]
+        df_bal = aux["financial_balance"][pit_visible_mask(aux["financial_balance"], date)]
         if df_inc.empty or df_bal.empty:
             return pd.Series(dtype=float, name="financial_anomaly")
     else:
@@ -691,7 +706,8 @@ def compute_asset_growth(fundamentals, date, financials=None, aux=None):
         fb = aux["financial_balance"]
         if not fb.empty and "total_assets" in fb.columns:
             date_ts = pd.Timestamp(to_str(date)) if not isinstance(date, str) else pd.Timestamp(date)
-            sub = fb[fb["stat_date"] <= date_ts].copy()
+            # P0 (2026-08-29): PIT 披露过滤替代 stat_date<=
+            sub = fb[pit_visible_mask(fb, date)].copy()
             if not sub.empty:
                 sub["stat_date"] = pd.to_datetime(sub["stat_date"])
                 results = _asset_growth_from_rows(sub.sort_values("stat_date"),
@@ -725,9 +741,9 @@ def compute_asset_growth(fundamentals, date, financials=None, aux=None):
         SELECT symbol, stat_date, total_assets
         FROM financial_balance
         WHERE symbol IN ({_ph})
-          AND stat_date <= ?
+          AND ({pit_where_sql()})
         ORDER BY stat_date DESC
-    """, (*_syms, date)).fetchall()
+    """, tuple(_syms) + pit_where_params(date)).fetchall()
 
     # 按 symbol 分组, 取最新和去年同期
     df_hist = pd.DataFrame(rows, columns=['symbol', 'stat_date', 'total_assets'])
@@ -836,7 +852,8 @@ def compute_sue(fundamentals, date, financials=None, aux=None):
         stk = aux["stocks"]
         if not fi.empty and "total_shares" in stk.columns and "net_profit" in fi.columns:
             date_ts = pd.Timestamp(to_str(date)) if not isinstance(date, str) else pd.Timestamp(date)
-            sub = fi[fi["stat_date"] <= date_ts].copy()
+            # P0 (2026-08-29): PIT 披露过滤替代 stat_date<=
+            sub = fi[pit_visible_mask(fi, date)].copy()
             if not sub.empty:
                 sub["eps"] = sub["net_profit"] / sub["symbol"].map(stk["total_shares"])
                 sub = sub[sub["eps"].notna()]
@@ -854,18 +871,18 @@ def compute_sue(fundamentals, date, financials=None, aux=None):
     #       sqlite3 "type Timestamp is not supported" → 因子永远 0 行
     date_str = to_str(date) if not isinstance(date, str) else date
 
-    # 读取季度净利润 + 总股本
+    # 读取季度净利润 + 总股本 (P0 2026-08-29: PIT 披露过滤替代 stat_date<=)
     rows = conn.execute(f"""
         SELECT fi.symbol, fi.stat_date, fi.net_profit, s.total_shares
         FROM financial_income fi
         JOIN stocks s ON fi.symbol = s.symbol
-        WHERE fi.stat_date <= ?
+        WHERE ({pit_where_sql()})
           AND fi.symbol IN ({_ph})
           AND s.total_shares IS NOT NULL
           AND s.total_shares > 0
           AND fi.net_profit IS NOT NULL
         ORDER BY fi.symbol, fi.stat_date DESC
-    """, [date_str] + _syms).fetchall()
+    """, list(pit_where_params(date_str)) + _syms).fetchall()
 
     if not rows:
         return pd.Series(np.nan, index=fundamentals.index, name="sue")
@@ -1127,10 +1144,10 @@ def compute_ocfp(fundamentals, date, financials=None):
         f"""SELECT symbol, stat_date, net_operate_cash_flow
             FROM financial_cashflow
             WHERE stat_date >= date(?, '-1 year')
-              AND stat_date <= ?
+              AND ({pit_where_sql()})
               AND symbol IN ({placeholders})
             ORDER BY symbol, stat_date""",
-        _conn, params=[date_str, date_str] + valid_syms
+        _conn, params=[date_str] + list(pit_where_params(date_str)) + valid_syms
     )
     if not cf_df.empty:
         for sym in valid_syms:
@@ -1367,4 +1384,9 @@ _FUNDAMENTAL_FN_MAP = {
     "earnings_growth_yoy":  ("fundamental",    compute_earnings_growth_yoy),
     "piotroski_fscore":     ("fundamental",    compute_piotroski_fscore),
     "cf_roa":              ("fundamental",    compute_cf_roa),
+    # v629: Alpha 价值因子迁入 (旧接口 date_str,conn 导致物化零结果)
+    "alpha_ep":              ("value",          compute_alpha_ep),
+    "alpha_bp":              ("value",          compute_alpha_bp),
+    "alpha_sp":              ("value",          compute_alpha_sp),
+    "alpha_cfp":             ("value",          compute_alpha_cfp),
 }

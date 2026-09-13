@@ -17,6 +17,8 @@ from quant.utils.date import today_str
 from quant.data.repos._base import DatabaseManager
 from quant.utils.logger import get_logger
 
+from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
+
 _log = get_logger("snapshot.intraday")
 
 _TENCENT_URL = "http://qt.gtimg.cn/q="
@@ -91,40 +93,55 @@ def _snapshot(today: str = None, mode: str = "open"):
     if today is None:
         today = datetime.now().strftime("%Y-%m-%d")
 
-    from quant.data.repos.universe_repo import UniverseRepo
-    from quant.data.repos._base import DatabaseManager
+    _name = "snapshot_open" if mode == "open" else "snapshot_close"
+    rid = _tk_start(_name, today, grace_seconds=1800)
+    if rid is None:
+        _log.info(f"[{today}] {_name} already running, skip duplicate trigger")
+        return {"saved": 0, "errors": 0}
+    _status = "ok"
+    _error = None
+    try:
+        from quant.data.repos.universe_repo import UniverseRepo
+        from quant.data.repos._base import DatabaseManager
 
-    symbols = UniverseRepo().get_symbols(exclude_market="BJ")
-    label = "开盘" if mode == "open" else "尾盘"
-    _log.info(f"snapshot {label}: {today} — {len(symbols)} stocks")
+        symbols = UniverseRepo().get_symbols(exclude_market="BJ")
+        label = "开盘" if mode == "open" else "尾盘"
+        _log.info(f"snapshot {label}: {today} — {len(symbols)} stocks")
 
-    conn = DatabaseManager.market()
-    conn.execute("PRAGMA journal_mode=WAL")
+        conn = DatabaseManager.market()
+        conn.execute("PRAGMA journal_mode=WAL")
 
-    saved = 0
-    errors = 0
-    for i in range(0, len(symbols), _BATCH_SIZE):
-        batch = symbols[i:i + _BATCH_SIZE]
-        data = _fetch_batch(batch)
-        if not data:
-            continue
-        for sym, val in data.items():
-            try:
-                conn.execute(
-                    "INSERT OR REPLACE INTO intraday_snapshot (date, symbol, mode, price, volume, prev_close) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (today, sym, mode, val["price"], val["volume"], val["prev_close"])
-                )
-                saved += 1
-            except Exception as e:
-                errors += 1
-                _log.warning(f"snapshot write {sym} failed: {e}")
-        conn.commit()
-        _time.sleep(0.05)  # 限速
+        saved = 0
+        errors = 0
+        for i in range(0, len(symbols), _BATCH_SIZE):
+            batch = symbols[i:i + _BATCH_SIZE]
+            data = _fetch_batch(batch)
+            if not data:
+                continue
+            for sym, val in data.items():
+                try:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO intraday_snapshot (date, symbol, mode, price, volume, prev_close) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (today, sym, mode, val["price"], val["volume"], val["prev_close"])
+                    )
+                    saved += 1
+                except Exception as e:
+                    errors += 1
+                    _log.warning(f"snapshot write {sym} failed: {e}")
+            conn.commit()
+            _time.sleep(0.05)  # 限速
 
-    conn.close()
-    _log.info(f"snapshot {label} done: saved={saved} errors={errors}")
-    return {"saved": saved, "errors": errors}
+        conn.close()
+        _log.info(f"snapshot {label} done: saved={saved} errors={errors}")
+        return {"saved": saved, "errors": errors}
+    except Exception as e:
+        _status = "failed"
+        _error = str(e)
+        _log.exception(f"[{today}] {_name} crashed: {e}")
+        raise
+    finally:
+        _tk_finish(_name, today, _status, error=_error)
 
 
 if __name__ == "__main__":

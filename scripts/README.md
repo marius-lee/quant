@@ -10,6 +10,7 @@
 | `run_task.sh` / `run_task.py` | 手动触发调度任务 (signals/execute/monitor/attribution/daily_data/factor_cache/weekly) |
 | `setup_cron.sh` | 安装 crontab 定时调度 |
 | `init_data.py` | 数据源初始化 (全量/行业/日线/基本面/基准指数) |
+| `monitor_materialize.sh` | 因子全量物化后台监控 (v573): 每 600s 记录分区文件数/进程存活, 扫描真实错误(OOM/Killed/Traceback), 写 `logs/monitor_materialize.log`, 遇 DONE/崩溃自动停. 用法 `nohup bash scripts/monitor_materialize.sh >/dev/null 2>&1 &` |
 
 ## 因子评估
 

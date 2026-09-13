@@ -19,6 +19,11 @@ from scipy import stats as scipy_stats
 
 from quant.config.constants import _require_cfg
 
+from quant.utils.logger import get_logger
+
+logger = get_logger("factor.marginal")
+
+
 
 def compute_marginal_evaluation(
     factor_names: List[str],
@@ -26,7 +31,7 @@ def compute_marginal_evaluation(
     ic_irs: Dict[str, float],
     corr_matrix: np.ndarray,
     n_days: int = None,
-    # n_days default from config.yaml factor.evaluation.n_days, fallback 120 交易日 ≈ 半年, 国内券商因子研报标准; t=|IR|×√n 最小可检测 |IR|≥0.18
+    # n_days: IC 计算使用的交易日数 (来源: config.yaml factor.evaluation.n_days); t=|IR|×√n 最小可检测 |IR|≥0.18 (Harvey 等)
     t_threshold: float = 2.0,
 ) -> Dict[str, dict]:
     """综合评估每个因子的边际贡献。

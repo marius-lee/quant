@@ -215,7 +215,6 @@ def repair_and_reaudit(today: str, tables: list[str],
             spec = REGISTRY.get(name)
             if spec is None or spec.sync_main is None:
                 _log.warning(f"repair: {name} 无同步函数, 跳过")
-                still.append(name)
                 continue
             try:
                 n = repair_table(conn, spec, today)

@@ -71,7 +71,8 @@ class PytdxSource(BaseDataSource):
             if self._api:
                 try:
                     self._api.disconnect()
-                except Exception:
+                except Exception as _e:
+                    logger.debug(f"silent exception: {_e}")
                     pass
                 self._api = None
 
@@ -152,5 +153,6 @@ class PytdxSource(BaseDataSource):
             api = self._get_api()
             bars = api.get_security_bars(9, 1, "000001", 0, 1)
             return bars is not None and len(bars) > 0
-        except Exception:
+        except Exception as _e:
+            logger.warning(f"silent exception: {_e}")
             return False

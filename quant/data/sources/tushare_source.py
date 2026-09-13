@@ -418,5 +418,6 @@ class TushareSource(BaseDataSource):
                 end_date=datetime.today().strftime("%Y%m%d"),
             )
             return df is not None
-        except Exception:
+        except Exception as _e:
+            logger.warning(f"silent exception: {_e}")
             return False

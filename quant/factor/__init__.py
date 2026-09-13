@@ -1,3 +1,7 @@
+from quant.utils.logger import get_logger
+
+logger = get_logger("factor.__init__")
+
 """因子层 — Layer 2: 因子计算 + 合成 + 缓存。
 
 模块:

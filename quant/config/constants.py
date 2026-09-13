@@ -6,6 +6,11 @@ import sqlite3
 import os as _os
 from typing import Any
 
+from quant.utils.logger import get_logger
+
+logger = get_logger("config.constants")
+
+
 
 
 # ═══════════════════════════════════════════════════════════

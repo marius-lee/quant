@@ -228,7 +228,8 @@ class BaostockGate:
                 return m4.group(0)
             m6 = re.search(r"([0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{1,4}", text)
             return m6.group(0) if m6 else ""
-        except Exception:
+        except Exception as _e:
+            logger.warning(f"silent exception: {_e}")
             return ""
 
     def ip_rotated(self) -> tuple:
@@ -263,7 +264,8 @@ class BaostockGate:
             try:
                 from quant.monitor.alerts import clear_baostock_quota_alert
                 clear_baostock_quota_alert()   # v513: 恢复续跑 → 前端横幅消失
-            except Exception:
+            except Exception as _e:
+                logger.debug(f"silent exception: {_e}")
                 pass
             return rotated, st
         if new:
@@ -448,7 +450,8 @@ def _patch_baostock_gbk() -> None:
         return
     try:
         from baostock.util import socketutil as _su
-    except Exception:
+    except Exception as _e:
+        logger.warning(f"silent exception: {_e}")
         return
     src = getattr(_su, "send_msg", None)
     if src is None:

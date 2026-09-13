@@ -1063,9 +1063,11 @@ def _vp_divergence(prims: dict, date: str, window: int = 20):
     from quant.factor.registry import _cs_zscore
     if "pct_ret" not in prims or "volume_ma_20" not in prims:
         return pd.Series(np.nan, index=prims["log_ret"].columns, name="vp_divergence")
+    if date not in prims["pct_ret"].index:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="vp_divergence")
     pct = prims["pct_ret"].loc[date].dropna()
-    vol = prims["raw_volume"].loc[date] if "raw_volume" in prims else pd.Series(np.nan, index=pct.index)
-    vol_ma = prims["volume_ma_20"].loc[date].reindex(pct.index)
+    vol = prims["raw_volume"].loc[date] if "raw_volume" in prims and date in prims["raw_volume"].index else pd.Series(np.nan, index=pct.index)
+    vol_ma = prims["volume_ma_20"].loc[date].reindex(pct.index) if date in prims["volume_ma_20"].index else pd.Series(np.nan, index=pct.index)
     # volume/volume_ma_20 - 1
     vol_ratio = vol / vol_ma.replace(0, np.nan) - 1.0
     r1 = _cs_zscore(pct).rename(None)
@@ -1116,6 +1118,8 @@ def _trend_strength(prims: dict, date: str, window: int = 60):
     import numpy as np
     if "mean_log_20" not in prims or "vol_60" not in prims:
         return pd.Series(np.nan, index=prims["log_ret"].columns, name="trend_strength")
+    if date not in prims["mean_log_20"].index or date not in prims["vol_60"].index:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="trend_strength")
     mean_log = prims["mean_log_20"].loc[date]
     vol = prims["vol_60"].loc[date]
     result = mean_log / vol.replace(0, np.nan)
@@ -1129,11 +1133,13 @@ def _liquidity_shock(prims: dict, date: str, window: int = 60):
     import numpy as np
     if "pct_ret" not in prims or "volume_ma_60" not in prims:
         return pd.Series(np.nan, index=prims["log_ret"].columns, name="liquidity_shock")
-    pct = prims["pct_ret"].loc[date]
-    vol = prims["raw_volume"].loc[date] if "raw_volume" in prims else pd.Series(np.nan, index=pct.index)
-    vol_ma60 = prims["volume_ma_60"].loc[date].reindex(pct.index)
+    pct = prims["pct_ret"]
+    if date not in pct.index:
+        return pd.Series(np.nan, index=prims["log_ret"].columns, name="liquidity_shock")
+    vol = prims["raw_volume"].loc[date] if "raw_volume" in prims and date in prims["raw_volume"].index else pd.Series(np.nan, index=pct.columns)
+    vol_ma60 = prims["volume_ma_60"].loc[date].reindex(pct.index) if date in prims["volume_ma_60"].index else pd.Series(np.nan, index=pct.index)
     vol_ratio = vol / vol_ma60.replace(0, np.nan) - 1.0
-    result = -(vol_ratio * pct.abs()).dropna()
+    result = -(vol_ratio * pct.loc[date].abs()).dropna()
     return _cs_zscore(result).rename("liquidity_shock")
 
 FACTOR_SHORTCUT["vp_divergence"] = _vp_divergence

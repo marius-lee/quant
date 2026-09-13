@@ -6,6 +6,11 @@ A1/A3: 替代 16 个独立参数，将可复用依赖集中注入。
 from quant.config.paths import TRADE_DB
 from dataclasses import dataclass, field
 
+from quant.utils.logger import get_logger
+
+logger = get_logger("core.context")
+
+
 
 @dataclass
 class PipelineContext:

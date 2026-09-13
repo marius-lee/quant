@@ -8,6 +8,11 @@ from typing import Optional
 from .models import Tenant
 from .registry import get_tenant_registry
 
+from quant.utils.logger import get_logger
+
+logger = get_logger("tenant.context")
+
+
 # 线程本地存储
 _thread_local = threading.local()
 

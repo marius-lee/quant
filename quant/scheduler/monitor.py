@@ -56,7 +56,12 @@ def _run_continuous_inner(today: str, stop_event=None):
     def _should_stop():
         return stop_event is not None and stop_event.is_set()
 
+    _iter = 0
     while True:
+        _iter += 1
+        if _iter > 28800:
+            _log.warning(f"[{today}] monitor max iterations reached ({_iter}), exiting")
+            break
         if _should_stop():
             _log.info(f"[{today}] monitor stopped — orchestrator signal")
             break

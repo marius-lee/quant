@@ -13,6 +13,11 @@ Web 界面(/api/scheduler)通过 task_runs 表统一监控, 无论使用哪种�
 """
 import os
 
+from quant.utils.logger import get_logger
+
+logger = get_logger("orchestrator.__init__")
+
+
 def get_mode() -> str:
     """获取当前编排器模式."""
     return os.environ.get("QUANT_ORCHESTRATOR", "legacy")

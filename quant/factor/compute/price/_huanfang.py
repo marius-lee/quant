@@ -16,6 +16,11 @@ import pandas as pd
 from quant.config.constants import _require_cfg
 from quant.factor.registry import _cs_zscore
 
+from quant.utils.logger import get_logger
+
+logger = get_logger("factor.compute.price._huanfang")
+
+
 # ── 参数 ──
 HF_TURNOVER_VOL_WINDOW = _require_cfg("factor.huanfang.turnover_vol_window")    # 20
 HF_MIF_WINDOW = _require_cfg("factor.huanfang.mif_window")                       # 20

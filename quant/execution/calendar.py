@@ -122,12 +122,12 @@ def get_trading_days() -> set[str]:
     return days
 
 
-def is_trading_day(d: Optional[date] = None) -> bool:
-    """判断是否为A股交易日。默认今天。"""
-    if d is None:
-        d = date.today()
+def is_trading_day(date_obj=None):
+    """判断是否为交易日"""
+    if date_obj is None:
+        date_obj = date.today()
     trading_days = get_trading_days()
-    return d.strftime("%Y-%m-%d") in trading_days
+    return date_obj.strftime("%Y-%m-%d") in trading_days
 
 
 def is_rebalance_day(d: Optional[date] = None, freq: str = None,

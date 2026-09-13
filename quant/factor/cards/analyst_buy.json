@@ -3,8 +3,8 @@
   "display_name": "analyst_buy",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0433,
-  "icir_12m": 0.3008,
+  "ic_mean_12m": 0.0502,
+  "icir_12m": 0.3438,
   "last_evaluated": "auto",
-  "n_obs": 45
+  "n_obs": 42
 }

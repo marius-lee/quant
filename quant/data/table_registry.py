@@ -21,6 +21,11 @@
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from quant.utils.logger import get_logger
+
+logger = get_logger("data.table_registry")
+
+
 # 从 quant.data.X import sync_* — 延迟导入避免模块加载时序 (quant.data 各模块
 # 顶层连库), 统一在 _lazy_sync 包装器内 import.
 
@@ -48,6 +53,10 @@ FACTORS_BY_TABLE: dict[str, frozenset[str]] = {
     "financial_income": frozenset(_FIN_FACTOR_NAMES),
     "financial_balance": frozenset(_FIN_FACTOR_NAMES),
     "financial_cashflow": frozenset(_FIN_FACTOR_NAMES),
+    # 另类数据表 → 另类因子
+    "research_report": frozenset({"alt_rpt_sentiment", "alt_rpt_target_price", "alt_rpt_rating", "alt_rpt_consensus"}),
+    "esg_score": frozenset({"alt_esg", "alt_env", "alt_social", "alt_gov", "alt_carbon", "alt_green_rev"}),
+    "macro_high_freq": frozenset({"alt_macro_electricity", "alt_macro_freight", "alt_macro_credit", "alt_macro_pmi", "alt_macro_gdp", "alt_macro_cpi", "alt_macro_ppi", "alt_macro_m2", "alt_macro_shibor", "alt_macro_lpr", "alt_macro_money_supply", "alt_macro_bank_financing", "alt_macro_industrial", "alt_macro_exports", "alt_macro_imports", "alt_macro_retail", "alt_macro_real_estate", "alt_macro_traffic"}),
 }
 
 
@@ -139,17 +148,17 @@ def _sync_em_valuation(start: Optional[str] = None, end: Optional[str] = None) -
 
 
 def _check_stocks_coverage(conn) -> tuple[bool, str]:
-    """自定义规则: total_shares 覆盖率 ≥99% (非北交所 92xxx)."""
+    """自定义规则: total_shares 覆盖率 ≥99% (非北交所 92xxx, 非退市 D)."""
     tot = conn.execute(
-        "SELECT COUNT(*) FROM stocks WHERE symbol NOT LIKE '92%'").fetchone()[0]
+        "SELECT COUNT(*) FROM stocks WHERE symbol NOT LIKE '92%' AND list_status != 'D'").fetchone()[0]
     filled = conn.execute(
-        "SELECT COUNT(*) FROM stocks WHERE symbol NOT LIKE '92%' "
+        "SELECT COUNT(*) FROM stocks WHERE symbol NOT LIKE '92%' AND list_status != 'D' "
         "AND total_shares IS NOT NULL AND total_shares > 0").fetchone()[0]
     if tot == 0:
         return (True, "stocks 空表跳过")
     pct = filled / tot * 100
     ok = pct >= 99.0
-    return (ok, f"total_shares 覆盖 {filled}/{tot} = {pct:.1f}% (≥99%)")
+    return (ok, f"total_shares 覆盖 {filled}/{tot} = {pct:.1f}% (≥99%, 排除退市/北交所股)")
 
 
 def _fin_income_field_check(conn) -> tuple[bool, str]:
@@ -173,6 +182,24 @@ def _fin_income_field_check(conn) -> tuple[bool, str]:
                 f"administration_expense NaN {admin_pct:.0f}% (≤50%)")
     return (True,
             f"最新期 {mx}: cost NaN {cost_pct:.0f}% / admin NaN {admin_pct:.0f}% (≤50%)")
+
+
+def _sync_research_report(start: Optional[str] = None, end: Optional[str] = None) -> int:
+    """同步研报数据 (akshare 东财源)."""
+    from quant.data.research_report import sync_range
+    return sync_range(start, end)
+
+
+def _sync_esg_score(start: Optional[str] = None, end: Optional[str] = None) -> int:
+    """同步 ESG 评分 (akshare 新浪源)."""
+    from quant.data.esg_score import sync_range
+    return sync_range(start, end)
+
+
+def _sync_macro_high_freq(start: Optional[str] = None, end: Optional[str] = None) -> int:
+    """同步宏观高频数据 (akshare 统计局/央行源)."""
+    from quant.data.macro_high_freq import sync_range
+    return sync_range(start, end)
 
 
 @dataclass(frozen=True)
@@ -203,6 +230,7 @@ REGISTRY: dict[str, TableSpec] = {
         table="daily_valuation", date_col="date", mode="rollback",
         sync_main=_lazy_sync("em_valuation", "sync_range", wraps_rollback=True),
         window_days=14, min_rows_per_day=5200, slo_days=6,
+        repair_eligible=False,  # 所有因子 archived，早间链无 alpha 贡献
         factors=FACTORS_BY_TABLE["daily_valuation"],
         desc="估值 (东财源, 封禁时 audit fail → partial 可见)"),
     "adj_factor": TableSpec(
@@ -213,15 +241,17 @@ REGISTRY: dict[str, TableSpec] = {
                                  # 白进待处理列表且永远 skip+still
         desc="复权因子 (事件型: 仅调整日有行; 独立 stage, 失败在晚间链层面)"),
     "fund_flow": TableSpec(
-        table="fund_flow", date_col="date", mode="rollback",
-        sync_main=_sync_fund_flow, window_days=100,
-        min_rows_per_day=450, slo_days=6,
-        factors=FACTORS_BY_TABLE["fund_flow"],
-        desc="个股资金流 (东财源; 晚间链仅维护市值前 500)"),
+        table="fund_flow", date_col="date", mode="none",
+        sync_main=None, window_days=None,
+        min_rows_per_day=None, slo_days=None,
+        repair_eligible=False,  # v593: DATA_DEAD，无 sync_main，早间链无法兜底
+        factors=frozenset(),
+        desc="个股资金流 (DATA_DEAD: 仅 158 天 2026-01+, 已归档 fund_flow_3m, main_flow_ratio 未注册; 无活跃因子依赖)"),
     "margin_detail": TableSpec(
         table="margin_detail", date_col="date", mode="rollback",
         sync_main=_sync_margin, window_days=30,
         min_rows_per_day=1600, slo_days=6,
+        repair_eligible=False,  # 所有因子 archived，早间链无 alpha 贡献
         factors=FACTORS_BY_TABLE["margin_detail"],
         desc="两融 (SSE 沪市, T+1 发布 → 次日回补)"),
     "lhb_detail": TableSpec(
@@ -235,23 +265,27 @@ REGISTRY: dict[str, TableSpec] = {
         sync_main=_sync_limit_days, window_days=7,
         min_rows_per_day=None, slo_days=6,
         factors=FACTORS_BY_TABLE["limit_up_pool"],
-        desc="涨停池 (逐日, 事件型)"),
+        desc="涨停池 (逐日, 事件型)",
+        repair_eligible=False),   # v593: limit_up_prox_5d/net_limit_ratio archived (DATA_DEAD/DATA_SPARSE), limit_touch_no_seal 历史仅 2026-06+
     "limit_down_pool": TableSpec(
         table="limit_down_pool", date_col="date", mode="rollback",
         sync_main=_sync_limit_down, window_days=7,
         min_rows_per_day=None, slo_days=6,
         factors=FACTORS_BY_TABLE["limit_down_pool"],
-        desc="跌停池 (独立逐日; 常态与涨停池同循环拉取, 单独失败可独立修复)"),
+        desc="跌停池 (独立逐日; 常态与涨停池同循环拉取, 单独失败可独立修复)",
+        repair_eligible=False),   # v593: 依赖 net_limit_ratio (archived, DATA_DEAD); 无活跃因子依赖
     "dividend": TableSpec(
         table="dividend", date_col="ex_date", mode="weekly_full",
         sync_main=_lazy_sync("dividend", "sync_range"),
         min_total_rows=50000, slo_days=None,
+        repair_eligible=False,  # 所有因子 archived，早间链无 alpha 贡献
         factors=FACTORS_BY_TABLE["dividend"],
         desc="分红 (新浪源全量幂等, 周六刷; 事件型不判新鲜度)"),
     "stocks": TableSpec(
         table="stocks", date_col="list_date", mode="weekly_full",
         sync_main=_lazy_sync("stocks_snapshot", "refresh_all"),
         min_total_rows=5000, slo_days=None,
+        repair_eligible=False,  # 所有因子 archived，早间链无 alpha 贡献
         custom_check=_check_stocks_coverage,
         factors=FACTORS_BY_TABLE["stocks"],
         desc="股票快照 (股本 baostock + 列表 tushare, 周六全量)"),
@@ -291,6 +325,27 @@ REGISTRY: dict[str, TableSpec] = {
         factors=frozenset(_FIN_FACTOR_NAMES),
         repair_eligible=False,
         desc="现金流量表 (sina 全历史幂等)"),
+    # 另类数据表 (研报/ESG/宏观高频) — v582
+    "research_report": TableSpec(
+        table="research_report", date_col="pub_date", mode="rollback",
+        sync_main=_sync_research_report, window_days=30,
+        min_rows_per_day=200, slo_days=7,
+        repair_eligible=False,  # 所有因子 archived，早间链无 alpha 贡献
+        factors=FACTORS_BY_TABLE["research_report"],
+        desc="研报情感/目标价/评级 (akshare 东财源, 日更)"),
+    "esg_score": TableSpec(
+        table="esg_score", date_col="data_year", mode="weekly_full",
+        sync_main=_sync_esg_score, min_total_rows=5000, slo_days=None,
+        repair_eligible=False,  # 所有因子 archived，早间链无 alpha 贡献
+        factors=FACTORS_BY_TABLE["esg_score"],
+        desc="ESG 评分/碳排放/绿色收入 (akshare 新浪源, 月更)"),
+    "macro_high_freq": TableSpec(
+        table="macro_high_freq", date_col="date", mode="rollback",
+        sync_main=_sync_macro_high_freq, window_days=365,
+        min_rows_per_day=10, slo_days=30,
+        repair_eligible=False,  # 所有因子 archived，早间链无 alpha 贡献
+        factors=FACTORS_BY_TABLE["macro_high_freq"],
+        desc="宏观高频 (用电/货运/信贷/社融/PMI/GDP/CPI/PPI/M2/Shibor/LPR, akshare 统计局/央行源)"),
 }
 
 

@@ -70,7 +70,7 @@ _DAYLINE: list[TaskSpec] = [
     TaskSpec(
         name="execute", label="交易执行", schedule="09:20 (开盘前下单, 09:30开盘)",
         window=(time(9, 20), time(14, 56)),
-        depends_attempt=("signals",),  # 原始: signals 尝试过即可 (不要求 ok)
+        depends_ok=("signals",),  # 要求 signals ok 才执行
         grace_s=1800, timeout_s=1800,
         mode="inline", group="盘中",
         desc="读取信号、获取行情、执行调仓订单",

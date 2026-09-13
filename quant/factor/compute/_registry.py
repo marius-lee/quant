@@ -62,6 +62,9 @@ def load_active_price_factors(status_filter='using', registered_before: str = No
         'backtesting' → evaluating + probation (评估池)
         None → 全部因子
     registered_before: v535 — PIT: 仅 created_at 早于该日期的因子.
+
+    含 curator 表达式因子: 注册表中 status 匹配且含 compute_fn 表达式、但不在原生
+    fn map 的因子, 按表达式编译接入 (price 风格: fn(data, date, win=None)).
     """
     statuses = _resolve_statuses(status_filter)
     name_list = list(_PRICE_FN_MAP.keys())
@@ -71,7 +74,40 @@ def load_active_price_factors(status_filter='using', registered_before: str = No
     for name, (fn, win) in _PRICE_FN_MAP.items():
         if name in active_names:
             result[name] = ("dynamic", win, fn)
+    # 表达式因子接入 (curator 注册, compute_fn 为公式) — 仅价量类 (category != fundamental)
+    if statuses:
+        for r in repo.get_factors_with_expression(statuses):
+            nm = r["name"]
+            if nm in _PRICE_FN_MAP or nm in _FUNDAMENTAL_FN_MAP or nm in result:
+                continue
+            if r.get("category") == "fundamental":
+                continue
+            try:
+                result[nm] = ("dynamic", None, _resolve_expr_factor(nm))
+            except Exception as _e:
+                _log.warning("expr factor %s compile failed (skip): %s", nm, _e)
     return result
+
+
+_EXPR_FN_CACHE: dict = {}
+
+
+def _resolve_expr_factor(name: str):
+    """按 name 从 factor_registry 取 compute_fn 表达式编译为可调用因子函数.
+
+    返回签名兼容 price 因子: fn(data, date_str, win=None) -> pd.Series.
+    编译结果按 name 缓存, 避免每因子每日期重编译.
+    """
+    if name in _EXPR_FN_CACHE:
+        return _EXPR_FN_CACHE[name]
+    repo = FactorRepo()
+    expr = repo.get_compute_fn(name)
+    if not expr:
+        raise KeyError(f"factor {name}: no compute_fn expression in registry")
+    from quant.factor.compute.expr_compiler import compile_factor
+    fn = compile_factor(expr)  # → factor_fn(data, date_str, win=None)
+    _EXPR_FN_CACHE[name] = fn
+    return fn
 
 
 def load_active_fundamental_factors(status_filter='using', registered_before: str = None):

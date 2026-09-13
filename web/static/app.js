@@ -278,6 +278,7 @@ function renderSignals(state) {
   const el = document.getElementById('meta-signals');
   if (el) el.textContent = signals.length + ' 候选';
   renderTable('table-signals', signals.slice(0, 5), [
+    { key: 'generated_at', label: '日期' },
     { key: 'symbol', label: '代码' },
     { key: 'name', label: '名称' },
     { key: 'price', label: '股价' },
@@ -286,6 +287,7 @@ function renderSignals(state) {
     { key: 'exec_note', label: '状态' },
   ], {
     fmtMap: {
+      generated_at: v => v ? v.replace("T", " ").slice(0, 16) : "—",
       score: v => fmtNum(v, 2),
       reason: v => {
         if (!v) return '—';

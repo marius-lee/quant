@@ -50,7 +50,7 @@ LOT_SIZE = _require_cfg("backtest.lot_size")  # A股每手 100 股, ① 交易�
 _TC_LAMBDA = _require_cfg("optimizer.tc_lambda")
 _TC_HORIZON = _require_cfg("optimizer.tc_horizon_days")
 _TC_IC_REF = _require_cfg("optimizer.tc_ic_ref")
-_DEFAULT_SIGMA_DAILY = _require_cfg("execution.default_daily_vol")  # 典型日波动率 fallback
+_DEFAULT_SIGMA_DAILY = _require_cfg("execution.default_daily_vol")  # 典型日波动率 (来源: config.yaml execution.default_daily_vol)
 
 # test-v397: 换手率约束 (Problem 9)
 _MAX_TURNOVER = _require_cfg("optimizer.max_turnover_ratio")
@@ -155,8 +155,8 @@ def _iterative_clip(w, max_single, max_iter=20):
 def _get_regime_max_lots(tier: str, regime_label: str | None) -> int:
     """test-v401: 统一的 tier+regime 手数限制 (Nano/Micro 共享模式).
 
-    Nano: 震荡/熊市→1手, 牛市→不限. 来源: config optimizer.nano.regime_max_lots.
-    Micro: 震荡→5手, 熊市→2手, 牛市→不限. 来源: config optimizer.micro.regime_max_lots.
+    Nano: 不限手数 (v594: 集中买入排名靠前股票).
+    Micro: 不限手数 (v594: 集中买入排名靠前股票).
     Small: 不使用 lot cap, 已有 _regime_kelly_fraction() (v397 Problem 7).
     """
     if regime_label is None or regime_label == "unknown":
@@ -261,9 +261,7 @@ class PortfolioConstructor:
         )
 
         if tier == "nano":
-            # test-v399: regime sizing 挪入 construct — Nano 层不缩资本,
-            # 改为限制每只股票手数 (震荡/熊市→1手, 牛市→不限)。
-            # 原因: v309 在外部缩资 (¥5K×0.6=¥3K) → ¥3K < cheapest_lot → 空仓。
+            # v594: Nano 层不缩资本, 不限手数 — 集中买入排名靠前股票。
             # ADR-032 反模式 #4: 0 仓位必须暴露, 不得吞掉。
             _max_lots = _get_regime_max_lots("nano", regime_label)
             try:
@@ -335,6 +333,8 @@ class PortfolioConstructor:
             if covariance is not None:
                 if self.method == "hrp":
                     rp = self._hrp_lot(a, p, capital, covariance)
+                elif self.method == "black_litterman":
+                    rp = self._black_litterman(a, p, capital, covariance, alpha)
                 else:
                     rp = self._risk_parity(a, p, capital, covariance)
                 if rp.lots.sum() > 0:
@@ -642,7 +642,7 @@ class PortfolioConstructor:
     ) -> TargetPortfolio:
         """排名集中: 按 alpha 降序逐只满仓买入, 直至资金不足买下一手。
         v393: 2+持仓时用协方差剔除高相关性票 (ρ>0.7则弃低alpha).
-        v399: max_lots_per_stock — regime 手数限制 (牛=不限, 震荡/熊=1手)。
+        v594: max_lots_per_stock — 不限手数, 集中买入排名靠前股票。
         """
         n_candidates = min(self.max_positions, len(alpha))
         if n_candidates == 0:
@@ -875,6 +875,87 @@ class PortfolioConstructor:
         lots, cash = self._recycle_residual_cash(lots, p, cash, 999, capital)
         total_value = (lots * p * LOT_SIZE).sum()
         return TargetPortfolio(lots[lots > 0], round(cash, 2), "hrp", total_value)
+
+    def _black_litterman(self, alpha, prices, capital, covariance, alpha_scores=None):
+        """Black-Litterman 组合优化 + 整手离散化。
+
+        来源: Black & Litterman (1992), "Global Portfolio Optimization"
+        思想: 以市场均衡收益为先验, 用投资者观点 (alpha 得分) 修正后验收益,
+        再用均值-方差求最优权重。解决均值-方差对输入敏感的缺陷。
+
+        简化实现:
+          π = δΣw_mkt (均衡收益, δ=risk_aversion, w_mkt=市值权重)
+          P = I (每个资产一个观点), Q = alpha 得分
+          Ω = τ·diag(PΣP') (观点不确定性)
+          μ_BL = [(τΣ)⁻¹ + P'Ω⁻¹P]⁻¹ [(τΣ)⁻¹π + P'Ω⁻¹Q]
+          w = (δΣ)⁻¹ μ_BL / sum((δΣ)⁻¹ μ_BL)
+        """
+        common = [s for s in alpha.index if s in covariance.index and s in prices.index]
+        if len(common) < 2:
+            return self._risk_parity(alpha, prices, capital, covariance)
+        n = min(self.max_positions, len(common))
+        top = common[:n]
+        p = prices.loc[top]
+        Sigma = covariance.loc[top, top].values
+        if Sigma.shape[0] < 2:
+            return self._risk_parity(alpha, prices, capital, covariance)
+
+        # 超参数
+        risk_aversion = float(_require_cfg("optimizer.risk_aversion"))
+        delta = risk_aversion
+        tau = float(_require_cfg("optimizer.bl_tau"))
+        # 观点矩阵 P = I, 观点 Q = alpha 得分 (归一化)
+        if alpha_scores is not None:
+            Q = alpha_scores.loc[top].values.astype(float)
+        else:
+            Q = alpha.loc[top].values.astype(float)
+        # 归一化 Q 到 [0,1]
+        q_min, q_max = Q.min(), Q.max()
+        if q_max > q_min:
+            Q = (Q - q_min) / (q_max - q_min)
+        else:
+            Q = np.ones(len(Q)) * 0.5
+        P = np.eye(len(top))
+        Omega = tau * np.diag(np.diag(Sigma))  # 观点不确定性
+
+        try:
+            # 均衡收益 π = δΣw_mkt (用等权作为市场权重近似)
+            w_mkt = np.ones(len(top)) / len(top)
+            pi = delta * Sigma @ w_mkt
+
+            # 后验收益 μ_BL
+            inv_tauSigma = np.linalg.inv(tau * Sigma)
+            inv_Omega = np.linalg.inv(Omega)
+            A = inv_tauSigma + P.T @ inv_Omega @ P
+            b = inv_tauSigma @ pi + P.T @ inv_Omega @ Q
+            mu_bl = np.linalg.solve(A, b)
+
+            # 均值-方差最优权重 w = (δΣ)⁻¹ μ_BL
+            Sigma_reg = Sigma + 1e-6 * np.eye(len(Sigma))
+            w_raw = np.linalg.solve(delta * Sigma_reg, mu_bl)
+            w_raw = np.maximum(w_raw, 0)  # 不允许做空
+            if w_raw.sum() > 0:
+                w_cont = w_raw / w_raw.sum()
+            else:
+                w_cont = np.ones(len(top)) / len(top)
+        except np.linalg.LinAlgError:
+            logger.warning("[black_litterman] singular matrix, falling back to risk_parity")
+            return self._risk_parity(alpha, prices, capital, covariance)
+
+        # 整手离散化
+        lots = pd.Series(0, index=top, dtype=int)
+        cash = capital
+        for i, sym in enumerate(top):
+            alloc = capital * w_cont[i]
+            n_lots = int(alloc / (p[sym] * LOT_SIZE))
+            if n_lots > 0:
+                cost = n_lots * p[sym] * LOT_SIZE
+                if cost <= cash:
+                    lots[sym] = n_lots
+                    cash -= cost
+        lots, cash = self._recycle_residual_cash(lots, p, cash, 999, capital)
+        total_value = (lots * p * LOT_SIZE).sum()
+        return TargetPortfolio(lots[lots > 0], round(cash, 2), "black_litterman", total_value)
 
     def _risk_parity(self, alpha, prices, capital, covariance):
         """Risk parity: w_i = (1/sigma_i) / sum(1/sigma_j)"""

@@ -39,10 +39,18 @@ def validate_oos(input_json: str = "/tmp/_eval_phase2.json",
 
     # v406: v346 将 Phase2 输出键对齐为 active/probation/archived,
     # Phase3 之前读 'passed' → 永远空, 评估链路全断
-    candidates = p2.get('active', [])
-    if not candidates:
+    p2_active = p2.get('active', [])
+    if not p2_active:
         logger.warning("No candidates from Phase 2. Stopping.")
         return {"kept": [], "oos_irs": [], "pbo_result": {}, "n_folds": 0}
+
+    # v644 FIX: Phase 2 only evaluates backtesting pool (evaluating+probation),
+    # so already-active factors (alpha_momentum_20d, alpha_rsi_14d) are missing
+    # from p2_active. Merge with registry active factors to get full pool.
+    from quant.factor.compute._registry import get_factor_names
+    registry_using = get_factor_names(status_filter="using")
+    candidates = list(dict.fromkeys(p2_active + registry_using))  # dedupe, preserve order
+    logger.info(f"Phase 3 candidate pool: {len(candidates)} factors (p2_active={len(p2_active)} + registry_active)")
 
     # ── CPCV 参数 ──
     n_groups = _require_cfg("factor.evaluation.cpcv_groups")

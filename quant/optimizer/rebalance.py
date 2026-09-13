@@ -190,7 +190,7 @@ def validate_orders(orders: list[Order], capital: float) -> tuple[bool, str]:
         else:
             cash -= o.cost  # buy_cost already = price*shares + fees, don't double-count
 
-    if cash < -1:  # 允许 1 元容差
+    if cash < 0:  # 可用资金不得为负 (v625: 严格零底线)
         return False, f"insufficient funds: need {-cash:.2f} more"
 
     return True, "OK"

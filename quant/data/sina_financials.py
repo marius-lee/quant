@@ -88,17 +88,21 @@ def _upsert_one(conn, table: str, row: dict) -> None:
 
 
 def _latest_report_end(today=None) -> str:
-    """最近一个已结束的报告期 (季末) — 如 2026-08-14 → 2026-06-30."""
+    """最近一个已结束的报告期 (季末) — 如 2026-08-14 → 2026-06-30.
+    
+    v618 fix: 默认使用上一季度作为目标，避免半年报未发布导致的循环拉取。
+    """
     from datetime import date as _d, timedelta as _td
     d = _d.fromisoformat(today) if today else _d.today()
     y, m = d.year, d.month
+    # v618: 使用上一季度作为目标（半年报通常 8-9 月才发布）
     if m >= 10:
-        return f"{y}-09-30"
+        return f"{y}-06-30"  # Q3 → Q2
     if m >= 7:
-        return f"{y}-06-30"
+        return f"{y}-03-31"  # Q2 → Q1
     if m >= 4:
-        return f"{y}-03-31"
-    return f"{y-1}-12-31"
+        return f"{y-1}-12-31"  # Q1 → Q4
+    return f"{y-1}-09-30"  # Q4 → Q3
 
 
 def sync() -> int:
@@ -169,7 +173,8 @@ def sync() -> int:
                     or needs_cost):
                 need_fetch.setdefault(symbol, set()).add(tbl)
 
-    client = SinaClient()
+    # v617 fix: 新浪 API 响应需要 20-25 秒，把超时从 15 秒改为 30 秒，并添加重试逻辑
+    client = SinaClient(timeout=30.0)
     total = 0
     t0 = _time.monotonic()
     n_fetch = sum(len(v) for v in need_fetch.values())
@@ -184,11 +189,27 @@ def sync() -> int:
             if table_name not in fetch_tbls:
                 continue
             mapping = _MAP_BY_TABLE[table_name]
-            try:
-                df = client.get_financial_report(symbol, report_type=report_type, num=50)
-            except Exception as e:
-                _log.warning(f"{symbol} {report_type}: fetch failed ({type(e).__name__}: {e})")
-                continue
+            # v617 fix: 添加重试逻辑 (最多 3 次)，处理偶发的网络波动
+            # v618 fix: num=50 改为 num=4，只拉最近 4 期数据（约 1 年）
+            # v619 fix: 对于代码 bug（如 'NoneType' object has no attribute）不重试
+            df = None
+            _retryable = True
+            for attempt in range(3):
+                try:
+                    df = client.get_financial_report(symbol, report_type=report_type, num=4)
+                    break  # 成功，跳出重试循环
+                except Exception as e:
+                    err_str = str(e)
+                    # 'NoneType' object has no attribute 'get' 是代码 bug，不重试
+                    if "'NoneType' object has no attribute" in err_str:
+                        _log.warning(f"{symbol} {report_type}: code bug (NoneType), skipping after 1 attempt: {e}")
+                        _retryable = False
+                        break
+                    if attempt < 2 and _retryable:  # 还有重试机会
+                        _log.warning(f"{symbol} {report_type}: fetch failed (attempt {attempt+1}/3, {type(e).__name__}: {e}), retrying...")
+                        _time.sleep(5)  # 等待 5 秒后重试
+                    else:  # 3 次都失败
+                        _log.warning(f"{symbol} {report_type}: fetch failed after 3 attempts ({type(e).__name__}: {e})")
             if df is None or df.empty:
                 continue
             for _, raw in df.iterrows():

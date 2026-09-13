@@ -131,10 +131,6 @@ class DataStore:
         # v435: DuckDB 查询代理 (读查询分流)
         self._duckdb_proxy: Optional["DuckDBDataProxy"] = None
 
-        self._local = threading.local()  # thread-local connections for WAL concurrent reads
-        self._lock = threading.Lock()     # guard shared _conn creation (P71)
-        self._query_cache: dict = {}  # LRU query cache per DataStore instance
-
         conn = self._connect()
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS stocks (
@@ -1102,8 +1098,17 @@ class DataStore:
                     continue
 
                 if rs.error_code != "0":
-                    logger.warning(f"baostock daily {bs_code}: error_code={rs.error_code} "
-                                   f"msg={rs.error_msg} — 该源本轮放弃 (后续源兜底)")
+                    # 常见"无数据"类错误码/消息 → DEBUG 级别, 不刷屏
+                    # 常见: 日期格式错误(股票未上市/已退市), 无数据, 股票代码不存在
+                    no_data_msgs = (
+                        "日期格式不正确", "无数据", "不存在", "不在交易日历",
+                        "stock not exist", "no data", "invalid date",
+                    )
+                    msg = rs.error_msg or ""
+                    is_no_data = any(m in msg for m in no_data_msgs)
+                    level = logger.debug if is_no_data else logger.warning
+                    level(f"baostock daily {bs_code}: error_code={rs.error_code} "
+                          f"msg={rs.error_msg} — 该源本轮放弃 (后续源兜底)")
                     continue
 
                 while rs.next():

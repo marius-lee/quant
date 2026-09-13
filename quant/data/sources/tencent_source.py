@@ -163,5 +163,6 @@ class TencentSource(BaseDataSource):
                 impersonate="chrome131",
             )
             return r.status_code == 200
-        except Exception:
+        except Exception as _e:
+            logger.warning(f"silent exception: {_e}")
             return False

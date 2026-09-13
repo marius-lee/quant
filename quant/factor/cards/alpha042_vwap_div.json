@@ -3,8 +3,8 @@
   "display_name": "alpha042_vwap_div",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0086,
-  "icir_12m": 0.1495,
+  "ic_mean_12m": 0.0121,
+  "icir_12m": 0.1409,
   "last_evaluated": "auto",
-  "n_obs": 98
+  "n_obs": 130
 }

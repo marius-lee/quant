@@ -358,6 +358,13 @@ tbody td {
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover td { background: var(--accent-dim); }
 
+/* v566: Alpha 候选池列表横向滚动 (避免长 reason 文本溢出挤压其他列) */
+#table-signals {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+#table-signals table { min-width: 720px; }
+
 /* 交易记录表: 日期列收缩到内容宽度 */
 #table-trades td:first-child,
 #table-trades th:first-child {
@@ -382,9 +389,9 @@ td.down { color: var(--down); }
 @media (max-width: 900px) {
   .grid-2 { grid-template-columns: 1fr; }
   .kpi-strip { grid-template-columns: repeat(2, 1fr); }
-  .sidebar { width: 40px; min-width: 40px; }
-  .main-wrap { margin-left: 40px; }
-  :root { --sidebar-w: 40px; }
+  .sidebar { width: 52px; min-width: 52px; }
+  .main-wrap { margin-left: 52px; }
+  :root { --sidebar-w: 52px; }
 }
 
 /* ── Scheduler status ── */

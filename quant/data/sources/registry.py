@@ -199,7 +199,8 @@ class DataSourceRegistry:
         try:
             config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "config.yaml")
             return os.path.getmtime(config_path)
-        except Exception:
+        except Exception as _e:
+            logger.warning(f"silent exception: {_e}")
             return 0
 
     def maybe_reload(self) -> bool:

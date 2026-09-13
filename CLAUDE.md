@@ -34,8 +34,8 @@ PYTHONPATH=. .venv/bin/python -c "from quant.scheduler.factor_cache import _run;
 # LightGBM 训练
 PYTHONPATH=. .venv/bin/python -c "from quant.alpha.qlib_model import train_lgb_model; train_lgb_model()"
 
-# 回测
-PYTHONPATH=. .venv/bin/python -c "from quant.backtest.loop import run_backtest; r=run_backtest('2024-01-01','2025-12-31',capital=5000); print(r['metrics'])"
+# 回测 (North Star: Nano tier, 3 factors, equal_weight post-warmup, 20.9x)
+PYTHONPATH=. .venv/bin/python scripts/run_backtest.py
 
 # 测试 — 必须用 .venv (optuna/hmmlearn 在 .venv 中)
 PYTHONPATH=. .venv/bin/python -m pytest test/ -v

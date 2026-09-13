@@ -20,6 +20,11 @@ import time as _time
 from quant.config.paths import MARKET_DB
 from quant.utils.date import to_str
 
+from quant.utils.logger import get_logger
+
+logger = get_logger("data.stocks_snapshot")
+
+
 STOCK_BASIC_FIELDS = (
     "ts_code,symbol,name,area,industry,market,list_date,list_status,delist_date"
 )

@@ -3,8 +3,8 @@
   "display_name": "sue",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0023,
-  "icir_12m": 0.0302,
+  "ic_mean_12m": -0.0036,
+  "icir_12m": -0.0467,
   "last_evaluated": "auto",
-  "n_obs": 98
+  "n_obs": 130
 }

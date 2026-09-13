@@ -3,8 +3,8 @@
   "display_name": "gp_ta",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": 0.0011,
-  "icir_12m": 0.0102,
+  "ic_mean_12m": 0.0056,
+  "icir_12m": 0.0499,
   "last_evaluated": "auto",
-  "n_obs": 98
+  "n_obs": 130
 }

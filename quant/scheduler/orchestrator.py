@@ -310,11 +310,29 @@ def _run():
                                f"(orchestrator continues): {_e}")
 
         # —— monitor 窗口关闭后清理 ——
-        if not ALL["monitor"].in_window(hhmm, now.weekday()) and _monitor_runner is not None:
-            _monitor_runner.stop()
-            _tk_finish("monitor", today, "ok")
-            if _monitor_thread is not None:
-                _monitor_thread.join(timeout=5)
+        if not ALL["monitor"].in_window(hhmm, now.weekday()):
+            if _monitor_runner is not None:
+                _monitor_runner.stop()
+                _monitor_thread and _monitor_thread.join(timeout=5)
+                _tk_finish("monitor", today, "ok")
+            else:
+                # vXXX: restart 后 _monitor_runner 为 None，但 running 行可能因 zombie cleanup 删除
+                # 确保今天有 monitor 完成记录，避免 web 显示"窗口未运行"
+                _monitor_status = status.get("monitor")
+                if _monitor_status != "ok":
+                    try:
+                        _tk_finish("monitor", today, "ok")
+                    except RuntimeError:
+                        # 无 running 行，直接插入 ok
+                        now_ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                        conn = sqlite3.connect(MARKET_DB)
+                        conn.execute("PRAGMA journal_mode=WAL")
+                        conn.execute(
+                            "INSERT OR REPLACE INTO task_runs (task_name, date, started_at, finished_at, status, pid) VALUES (?, ?, ?, ?, 'ok', ?)",
+                            ("monitor", today, now_ts, now_ts, os.getpid())
+                        )
+                        conn.commit()
+                        conn.close()
             _monitor_runner = None
             _monitor_thread = None
 

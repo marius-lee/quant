@@ -48,7 +48,7 @@ class InProcessBroker:
     def _init_state(self) -> dict:
         """从 trades.db 构建完整财务状态 (唯一真相源)。"""
         import sys as _sys
-        _root = _os.path.dirname(_os.path.dirname(_os.path.dirname(__file__)))  # v411: moved to quant/core
+        _root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
         if _root not in _sys.path:
             _sys.path.insert(0, _root)
         state = {'progress': '',
@@ -153,14 +153,18 @@ class InProcessBroker:
                 sig_path = TRADE_DB
                 sc_sig = _sql2.connect(sig_path)
                 sc_sig.row_factory = _sql2.Row
-                # mode='live' 是实盘, 排除了回测写入的 backtest 信号
+                # v565: 同时读 signals_json 和 generated_at
                 sig_row = sc_sig.execute(
-                    "SELECT signals_json FROM daily_signals WHERE date=? AND mode='live' "
+                    "SELECT signals_json, generated_at FROM daily_signals WHERE date=? AND mode='live' "
                     "ORDER BY generated_at DESC LIMIT 1",
                     (today,)
                 ).fetchone()
                 if sig_row and sig_row["signals_json"]:
                     signals = _json_sig.loads(sig_row["signals_json"])
+                    gen_at = sig_row["generated_at"] or ""
+                    # v565: 给每个 signal 注入生成时间
+                    for s in signals:
+                        s["generated_at"] = gen_at
                     # exec_notes: monitor 回写的执行状态 (test-v210)
                     exec_notes_str = sig_row.get("exec_notes") if hasattr(sig_row, "get") else None
                     if not exec_notes_str:
@@ -327,11 +331,20 @@ class InProcessBroker:
             # v418 (R5): 原静默 pass → warning 可观测 (桥仅进度显示, 不阻断)
             logging.getLogger("web.state_broker").warning(
                 f"get(): state_bridge 读取失败: {_br_err}")
+        # 保存 _init_state 加载的今日真实信号 (带 generated_at)
+        fresh_signals = state.get("signals", [])
         # pipeline 进度/信号 overlay (signals/progress/mood/trace_id/timestamp)
         # v513: + alerts (跨进程告警 — 行业同步每日上限等)
         for k in ("signals", "progress", "mood", "trace_id", "timestamp", "alerts"):
             if k in cached:
                 state[k] = cached[k]
+        # v565: bridge overlay 后恢复今日真实信号
+        # - 若今日无 live 信号 (fresh_signals 为空), 不用 bridge 的旧数据
+        # - 若今日有 live 信号, 用 fresh_signals (含 generated_at) 而非 bridge 旧数据
+        if not fresh_signals:
+            state["signals"] = []
+        else:
+            state["signals"] = fresh_signals
         # Dynamically inject trading period status
         try:
             from quant.execution.calendar import get_trading_period

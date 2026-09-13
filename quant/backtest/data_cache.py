@@ -78,7 +78,8 @@ def _is_cache_valid(cache_key: str) -> bool:
     try:
         with open(meta_path, "rb") as f:
             meta = pickle.load(f)
-    except Exception:
+    except Exception as _e:
+        logger.warning(f"silent exception: {_e}")
         return False
     
     # 检查 TTL

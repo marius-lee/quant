@@ -129,8 +129,9 @@ def _fetch_tencent_batch(batch: list[str], include_ask_bid: bool = False) -> dic
 
     try:
         text = _do_request()
-    except Exception:
-        return {}
+    except Exception as _e:
+        logger.warning(f"tencent quote request failed: {_e}")
+        raise
     result: dict[str, dict] = {}
     for line in text.strip().split("\n"):
         p = _parse_tencent_line(line, include_ask_bid)
@@ -188,8 +189,9 @@ def _fetch_sina_batch(batch: list[str]) -> dict[str, dict]:
 
     try:
         text = _do_request()
-    except Exception:
-        return {}
+    except Exception as _e:
+        logger.warning(f"sina quote request failed: {_e}")
+        raise
     result: dict[str, dict] = {}
     for line in text.strip().split("\n"):
         p = _parse_sina_line(line)

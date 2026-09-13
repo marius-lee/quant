@@ -451,7 +451,19 @@ class BrokerAdapterBase(ABC):
 
 class SimulatorBroker(BrokerAdapterBase):
     """模拟盘适配器 - 用于测试."""
-    
+
+    def sell(self, symbol, price, shares, order_type="MARKET"):
+        from quant.execution.broker_adapter import OrderResult
+        return OrderResult(success=True, symbol=symbol, side="sell",
+                          shares=int(shares), price=price, filled_shares=int(shares),
+                          filled_price=price, status="FILLED", is_simulated=True)
+
+    def buy(self, symbol, price, shares, order_type="LIMIT"):
+        from quant.execution.broker_adapter import OrderResult
+        return OrderResult(success=True, symbol=symbol, side="buy",
+                          shares=int(shares), price=price, filled_shares=int(shares),
+                          filled_price=price, status="FILLED", is_simulated=True)
+
     async def _connect_impl(self) -> bool:
         await asyncio.sleep(0.1)
         return True
@@ -1408,8 +1420,8 @@ def get_broker_adapter(name: str = "simulated", **kwargs) -> BrokerAdapterBase:
                 name="simulated",
                 account_id=kwargs.get("db_path", "SIM_ACCOUNT"),
             )
-            _adapter_instance = SimulatorBroker(config)
-            asyncio.get_event_loop().run_until_complete(_adapter_instance.connect())
+            _adapter_instance = _SimulatedAdapterCompat()
+            _adapter_instance.connect()
         else:
             raise ValueError(f"Unknown adapter: {name}")
     return _adapter_instance
@@ -1418,7 +1430,7 @@ def get_broker_adapter(name: str = "simulated", **kwargs) -> BrokerAdapterBase:
 def reset_adapter():
     global _adapter_instance
     if _adapter_instance:
-        asyncio.get_event_loop().run_until_complete(_adapter_instance.disconnect())
+        _adapter_instance.disconnect()
     _adapter_instance = None
 
 
@@ -1428,7 +1440,8 @@ def _cfg_get(key: str, default: str = "") -> str:
     from quant.config.constants import _require_cfg
     try:
         return _require_cfg(key)
-    except Exception:
+    except Exception as _e:
+        logger.warning(f"silent exception: {_e}")
         return default
 
 

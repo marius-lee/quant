@@ -13,6 +13,11 @@ from datetime import datetime
 
 from quant.config.paths import MARKET_DB as _DB_PATH
 
+from quant.utils.logger import get_logger
+
+logger = get_logger("evaluation.run_store")
+
+
 
 def save_phase(phase: str, data: dict) -> int:
     """Save a phase result to evaluation_runs. Returns row id."""

@@ -8,6 +8,9 @@ import time
 import sqlite3
 from quant.data.repos._base import DatabaseManager
 import os as _os
+from quant.utils.logger import get_logger
+
+logger = get_logger("monitor.metrics")
 
 _DB = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "data", "metrics.db")
 

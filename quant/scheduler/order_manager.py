@@ -126,13 +126,18 @@ class OrderManager:
 
     # ── 挂单 ──
     def place(self, day: str, strategy: str,
-              symbol: str, shares: int, ref_price: float) -> int:
-        """挂限价买单: limit_price = ref_price × (1 - DISCOUNT_PCT).
+              symbol: str, shares: int, ref_price: float,
+              order_type: str = "limit") -> int:
+        """挂买单.
+
+        order_type: "limit" (限价单, limit=ref×(1-DISCOUNT)) 或 "market" (市价单, limit=ref).
 
         B24 (2026-08-18): 同日同 symbol 已有 pending 单 → 去重跳过, 返回已有 id.
-        原无去重 × execute 失败无限重试 → 盘中重复挂单/双倍仓位风险.
         """
-        limit = round(ref_price * (1 - DISCOUNT_PCT), 2)
+        if order_type == "market":
+            limit = round(ref_price, 2)  # 市价单: 限价 = 市价
+        else:
+            limit = round(ref_price * (1 - DISCOUNT_PCT), 2)
         c = _conn()
         row = c.execute(
             "SELECT id FROM pending_orders "
@@ -152,7 +157,7 @@ class OrderManager:
             (strategy, symbol, shares, limit, ref_price, now, day)
         ).lastrowid
         c.commit()
-        _log.info(f"[order_manager] placed limit buy: {symbol} {shares}股 "
+        _log.info(f"[order_manager] placed {order_type} buy: {symbol} {shares}股 "
                   f"limit=¥{limit:.2f} (ref=¥{ref_price:.2f})")
         return rid
 
@@ -289,6 +294,11 @@ class OrderManager:
         """执行成交: 通过 broker_adapter (ADR-036) 或 engine.execute (回退)."""
         from quant.execution.engine import ExecutionEngine, Order
         from quant.execution.broker_adapter import get_broker_adapter
+        # v625: 目标股数非正 → 直接取消, 防止 0/股负数订单穿透 engine.execute
+        if po.target_shares <= 0:
+            _log.warning(f"[order_manager] {po.symbol} target_shares={po.target_shares} <= 0 — cancelling")
+            self._cancel(po.id, "invalid target_shares")
+            return
         cost_model = CostModel.from_config()
         cost_est = cost_model.buy_cost(price, po.target_shares)
 
@@ -298,7 +308,8 @@ class OrderManager:
         except Exception:
             adapter = None
 
-        if adapter is not None and adapter.is_connected() and not adapter.name == "simulated":
+        _is_sim = getattr(adapter, 'is_simulated', False) or getattr(adapter, 'name', '') == 'simulated'
+        if adapter is not None and adapter.is_connected() and not _is_sim:
             # 真实券商路径: 通过 adapter 下单
             result = adapter.buy(po.symbol, price, po.target_shares, order_type="MARKET")
             if not result.success:

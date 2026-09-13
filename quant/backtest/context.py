@@ -11,6 +11,11 @@ import pandas as pd
 
 from quant.config.paths import TRADE_DB
 
+from quant.utils.logger import get_logger
+
+logger = get_logger("backtest.context")
+
+
 
 @dataclass
 class ExecutionContext:
@@ -58,6 +63,7 @@ class ExecutionContext:
     combine_mode: Optional[str] = None
     regime_label: Optional[str] = None
     regime_probs: Optional[dict] = None
+    risk_manager: Optional[object] = None
 
     # ── 实盘特有 ──
     live_broker_adapter: Optional[object] = None      # BrokerAdapter 实例 (实盘执行用)

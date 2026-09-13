@@ -420,5 +420,6 @@ class AkshareSource(BaseDataSource):
                 adjust="qfq",
             )
             return df is not None and not df.empty
-        except Exception:
+        except Exception as _e:
+            logger.warning(f"silent exception: {_e}")
             return False

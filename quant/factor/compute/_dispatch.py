@@ -64,10 +64,17 @@ def compute_all_factors(data: pd.DataFrame, date: str,
     """
     results = {}
     if factor_names is not None:
-        price_factors = {n: ('dynamic', _PRICE_FN_MAP[n][1], _PRICE_FN_MAP[n][0])
-                        for n in factor_names if n in _PRICE_FN_MAP}
-        fund_factors = {n: _FUNDAMENTAL_FN_MAP[n]
-                       for n in factor_names if n in _FUNDAMENTAL_FN_MAP}
+        price_factors = {}
+        fund_factors = {}
+        for n in factor_names:
+            if n in _PRICE_FN_MAP:
+                price_factors[n] = ('dynamic', _PRICE_FN_MAP[n][1], _PRICE_FN_MAP[n][0])
+            elif n in _FUNDAMENTAL_FN_MAP:
+                fund_factors[n] = _FUNDAMENTAL_FN_MAP[n]
+            else:
+                # curator 表达式因子: 按 registry compute_fn 编译接入 (price 风格)
+                from quant.factor.compute._registry import _resolve_expr_factor
+                price_factors[n] = ('dynamic', None, _resolve_expr_factor(n))
     else:
         price_factors = load_active_price_factors(status_filter=status_filter)
         fund_factors = load_active_fundamental_factors(status_filter=status_filter)

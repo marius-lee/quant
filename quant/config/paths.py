@@ -13,6 +13,11 @@
 """
 import os as _os
 
+from quant.utils.logger import get_logger
+
+logger = get_logger("config.paths")
+
+
 _PROJECT_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 DATA_DIR = _os.path.join(_PROJECT_ROOT, "quant", "data")
 

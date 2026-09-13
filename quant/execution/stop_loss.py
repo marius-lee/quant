@@ -163,8 +163,9 @@ class RiskManager:
             return {}
         try:
             return _json.loads(raw)
-        except Exception:
-            return {}
+        except Exception as _e:
+            _log.warning(f"flag json parse failed: {_e}")
+            raise
 
     def _save_cooloff_db(self, data: dict):
         from quant.data.repos import TradeRepo

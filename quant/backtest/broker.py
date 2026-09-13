@@ -6,6 +6,8 @@ in backtest/loop.py. Provides a clean API for backtest event handling.
 
 from typing import Optional
 
+import pandas as pd
+
 
 class SimulatedBroker:
     """Simulated broker for backtesting — wraps DataStore + ExecutionEngine.
@@ -14,11 +16,12 @@ class SimulatedBroker:
     消除每日期 SQLite round-trip。
     """
 
-    def __init__(self, store, engine, db_path, data_full=None):
+    def __init__(self, store, engine, db_path, data_full=None, ctx=None):
         self.store = store
         self.engine = engine
         self.db_path = db_path
         self.data_full = data_full
+        self.ctx = ctx  # ExecutionContext for backtest (shared engine/cost_model)
 
     def get_prices(self, symbols, date, field="open"):
         """Get prices — fast path from preloaded data_full, fallback DataStore DB.
@@ -52,6 +55,7 @@ class SimulatedBroker:
             db_path=self.db_path,
             suppress_push=suppress_push,
             ohlc=ohlc,
+            ctx=self.ctx,
         )
         # B-06 fix: 净值按当日收盘价 MTM (原成本价 → 净值只在交易日变动, 指标失真)
         result["wealth"] = self.get_mtm_capital(strategy, date)
@@ -67,10 +71,10 @@ class SimulatedBroker:
         if self.data_full is None:
             return out
         try:
-            if date not in self.data_full.index:
+            if pd.Timestamp(date) not in self.data_full.index:
                 return {}
-            row = self.data_full.loc[date]
-            prev_dates = [d for d in self.data_full.index if d < date]
+            row = self.data_full.loc[pd.Timestamp(date)]
+            prev_dates = [d for d in self.data_full.index if d < pd.Timestamp(date)]
             prev_close = self.data_full.loc[prev_dates[-1], "close"] if prev_dates else None
             for sym in symbols:
                 for f in ("open", "high", "low"):
@@ -111,6 +115,7 @@ class SimulatedBroker:
             db_path=self.db_path,
             suppress_push=True,
             risk_only=True,
+            ctx=self.ctx,
         )
         result["wealth"] = self.get_mtm_capital(strategy, date)
         return result

@@ -171,7 +171,14 @@ def _run(today: str):
 
         elapsed = _time.time() - t0
         # v479: partial — 主流程 ok 但审计有残留失败 → 次日早间补拉链修复
-        final_status = "ok" if not still else "partial"
+        # v614 fix: 过滤掉 repair_eligible=False 的表 (archived factors, 预期失败)
+        from quant.data.table_registry import REGISTRY
+        still_blocking = [t for t in still if REGISTRY.get(t) and REGISTRY.get(t).repair_eligible]
+        final_status = "ok" if not still_blocking else "partial"
+        # v594: 非 ok 状态必须记录错误信息
+        final_error = None
+        if still_blocking:
+            final_error = f"审计失败表: {', '.join(still_blocking)} (已修复: {', '.join(repaired) if repaired else '无'})"
         _log.info(f"[{today}] daily_data {final_status}: {elapsed:.1f}s, "
                   f"sync={sync_results}, repaired={repaired}, still_failed={still}")
         final_summary = {"elapsed": round(elapsed, 1), "synced": {k: str(v) for k, v in sync_results.items()},
@@ -190,6 +197,7 @@ def _run(today: str):
         # V586: 正常退出时调用 finish (异常路径已在 except 中 finish, 跳过)
         if not finished:
             try:
+                _log.info(f"[{today}] daily_data finish: status={final_status}, error={final_error}")  # v594: debug
                 _tk_finish("daily_data", today, final_status,
                            error=final_error,
                            summary=final_summary)

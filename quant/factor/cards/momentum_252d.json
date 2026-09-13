@@ -4,7 +4,7 @@
   "category": "unknown",
   "sub_category": "unknown",
   "ic_mean_12m": -0.0124,
-  "icir_12m": -0.0827,
+  "icir_12m": -0.0641,
   "last_evaluated": "auto",
-  "n_obs": 98
+  "n_obs": 130
 }

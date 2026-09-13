@@ -6,6 +6,11 @@
 import threading
 from datetime import datetime, timedelta
 
+from quant.utils.logger import get_logger
+
+logger = get_logger("scheduler.status")
+
+
 _lock = threading.Lock()
 _tasks: dict[str, dict] = {}
 

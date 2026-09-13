@@ -46,20 +46,14 @@ echo "============================================"
 # Ensure no stale DB locks from previous phases
 python3 -c "import sqlite3; c=sqlite3.connect('quant/data/market.db'); c.execute('PRAGMA wal_checkpoint'); c.close()" 2>/dev/null || true
 
-# 两步架构: 默认用 diagnostics 预筛; --all 跳过预筛
-PREFILTER="True"
-for arg in "$@"; do
-    case $arg in
-        --all) PREFILTER="False" ;;
-    esac
-done
-
+# v629: screen_factors 已重构为 evaluate-all (无 diagnostics 预筛参数)
+# --all 标记保持兼容, 但现在所有模式均评估全部 backtesting 因子
 PYTHONPATH=. .venv/bin/python3 -c "
 from quant.utils.logger import offline_mode
 from quant.utils.excepthook import setup; setup()
 with offline_mode():
     from quant.evaluation.phase2_single import screen_factors
-    screen_factors(prefilter_from_diagnostics=$PREFILTER)
+    screen_factors()
 "
 
 # ────────────────────────────────────────────
@@ -129,15 +123,15 @@ done
 if $RUN_PHASE6; then
     echo ""
     echo "============================================"
-    echo "Phase 6: 策略级全链路回测 (walk-forward)"
+    echo "Phase 6: 策略级全链路回测 (North Star v644)"
     echo "============================================"
+    # v644: Nano tier, 3 active factors, equal_weight post-warmup, 20.9x
     PYTHONPATH=. .venv/bin/python3 -c "
 from quant.utils.logger import offline_mode
 from quant.utils.excepthook import setup; setup()
 with offline_mode():
     from quant.evaluation.phase6_backtest import run_strategy_backtest
     import json
-    # 业务评估窗口 2023-2025 完整年度 (非数据终点, 勿随手改)
     result = run_strategy_backtest(
         start_date='2023-01-01',
         end_date='2025-12-31',
@@ -146,4 +140,7 @@ with offline_mode():
     )
     print(json.dumps(result, indent=2, ensure_ascii=False))
 "
+    echo ""
+    echo "--- North Star Backtest (2025-08-29 → 2026-09-08) ---"
+    PYTHONPATH=. .venv/bin/python3 scripts/run_backtest.py
 fi

@@ -123,6 +123,37 @@ class FactorRepo:
             (name,))
         return dict(row) if row else None
 
+    def get_compute_fn(self, name: str) -> str | None:
+        """返回因子的 compute_fn 表达式 (curator 注册的公式); 原生因子为 None."""
+        row = self._query_one(
+            f"SELECT {FR_COMPUTE_FN} FROM factor_registry WHERE {FR_NAME}=?",
+            (name,))
+        return row[FR_COMPUTE_FN] if row else None
+
+    def update_compute_fn(self, name: str, expression: str) -> None:
+        """写回因子的 compute_fn 表达式 (修复自引用占位的物化接线)."""
+        self._execute(
+            f"UPDATE factor_registry SET {FR_COMPUTE_FN}=? WHERE {FR_NAME}=?",
+            (expression, name))
+
+    def get_factors_with_expression(self, statuses: tuple[str, ...]) -> list[dict]:
+        """返回在给定状态下、且含有真实 compute_fn 公式的因子 (curator 表达式因子).
+
+        这些因子已在 factor_registry 中注册 (status=evaluating/probation),
+        但计算路径 (_PRICE_FN_MAP/_FUNDAMENTAL_FN_MAP) 只用原生 Python 函数,
+        故物化时被漏掉 — 需按 compute_fn 编译接入.
+
+        排除 compute_fn = name 的自引用 (原生因子以此标识"用原生函数", 非公式).
+        """
+        ph = ",".join("?" * len(statuses))
+        rows = self._query(
+            f"SELECT {FR_NAME}, {FR_CATEGORY}, {FR_COMPUTE_FN} "
+            f"FROM factor_registry WHERE {FR_STATUS} IN ({ph}) "
+            f"AND {FR_COMPUTE_FN} IS NOT NULL AND {FR_COMPUTE_FN} != '' "
+            f"AND {FR_COMPUTE_FN} != {FR_NAME}",
+            tuple(statuses))
+        return [dict(r) for r in rows]
+
     def update_status(self, name: str, status: str, reason: str = "",
                       retry_count: int | None = None) -> bool:
         if status not in VALID_STATUSES:

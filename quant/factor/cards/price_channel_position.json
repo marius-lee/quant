@@ -3,8 +3,8 @@
   "display_name": "price_channel_position",
   "category": "unknown",
   "sub_category": "unknown",
-  "ic_mean_12m": -0.0055,
-  "icir_12m": -0.0479,
+  "ic_mean_12m": 0.0093,
+  "icir_12m": 0.0664,
   "last_evaluated": "auto",
-  "n_obs": 98
+  "n_obs": 130
 }

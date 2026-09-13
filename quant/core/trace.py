@@ -29,6 +29,11 @@ from typing import Any
 
 from quant.config.constants import _market_db_path
 
+from quant.utils.logger import get_logger
+
+logger = get_logger("core.trace")
+
+
 
 @dataclass
 class Hypothesis:

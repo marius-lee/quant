@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Iterator, List, Optional
-from quant.execution.calendar import is_trading_day, get_trading_dates
+from quant.execution.calendar import is_trading_day, get_trading_days
 from quant.utils.logger import get_logger
 
 logger = get_logger("factor.distributed.partitioner")
@@ -55,7 +55,8 @@ class BasePartitioner:
 
     def get_trading_dates(self) -> List[str]:
         """获取区间内所有交易日."""
-        return get_trading_dates(self.start_date, self.end_date)
+        all_days = get_trading_days()
+        return sorted([d for d in all_days if self.start_date <= d <= self.end_date])
 
     def partition(self) -> List[Partition]:
         """生成分区列表."""

@@ -68,7 +68,11 @@ def _run(start_date: str, end_date: str):
             _log.warning(f"[{end_date}] factor_cache: freshness prune failed (non-fatal): {_fe}")
 
         fs = FactorStore()
-        result = fs.materialize(dates, factors, symbols, force=False)
+        from quant.config.constants import _require_cfg as _rcfg
+        _mw = _rcfg("factor.compute.materialize_max_workers")
+        _msd = _rcfg("factor.compute.materialize_slice_days")
+        result = fs.materialize(dates, factors, symbols, force=False,
+                                workers=_mw, max_slice_days=_msd)
 
         elapsed = _time.time() - t0
         if result.get("skipped"):

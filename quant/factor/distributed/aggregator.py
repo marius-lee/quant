@@ -4,6 +4,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional
 
+from quant.utils.logger import get_logger
+
+logger = get_logger("factor.distributed.aggregator")
+
+
 @dataclass
 class ComputeResult:
     """单个分区计算结果."""

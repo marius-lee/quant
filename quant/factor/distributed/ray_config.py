@@ -192,7 +192,10 @@ class FactorStoreActorPool:
 
             def materialize(self, dates, factors, symbols, force=False):
                 self.last_used = time.time()
-                result = self.store.materialize(dates, factors, symbols, force)
+                # in_process: Ray 已持有跨分区并行, 禁用内部 subprocess 段并行
+                # 避免 Ray 任务 × 段 subprocess 嵌套过订 (见 store.materialize).
+                result = self.store.materialize(
+                    dates, factors, symbols, force, in_process=True)
                 return result
 
             def health_check(self):
@@ -252,7 +255,8 @@ class FactorStoreActorPool:
                     self._actors.remove(actor)
                     self._available.remove(actor)
                     logger.info(f"Removed idle actor after {self.idle_timeout}s timeout")
-                except Exception:
+                except Exception as _e:
+                    _log.debug(f"silent exception: %s", _e)
                     pass
 
         return results
@@ -340,7 +344,8 @@ class MemoryPressureMonitor:
                     stats = ray.available_resources()
                     # 注意: ray.available_resources() 可能不直接给出 object_store 用量
                     # 可通过 ray._private.services.get_object_store_memory() 获取
-                except Exception:
+                except Exception as _e:
+                    _log.debug(f"silent exception: %s", _e)
                     pass
 
                 # 检查系统内存

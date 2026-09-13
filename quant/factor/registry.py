@@ -7,6 +7,9 @@ import os as _os
 import atexit as _atexit
 from typing import Optional
 from quant.config.constants import _require_cfg, _market_db_path
+from quant.utils.logger import get_logger
+
+logger = get_logger("factor.registry")
 
 
 # ═══════════════════════════════════════════════════════════

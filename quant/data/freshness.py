@@ -23,6 +23,11 @@ from quant.config.paths import MARKET_DB as DB_PATH
 from quant.data.table_registry import REGISTRY, factors_for_tables
 from quant.utils.date import to_str
 
+from quant.utils.logger import get_logger
+
+logger = get_logger("data.freshness")
+
+
 # 兼容旧调用方: {table: slo} (事件型 slo=None → 不判 stale)
 SLOS = {name: s.slo_days for name, s in REGISTRY.items()}
 

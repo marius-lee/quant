@@ -5,6 +5,11 @@
 
 from quant.factor.compute.price import _PRICE_FN_MAP
 
+from quant.utils.logger import get_logger
+
+logger = get_logger("factor.windows")
+
+
 
 def max_factor_calendar_days(factor_names: list[str] = None) -> int:
     """因子所需最大日历日窗口。

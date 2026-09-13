@@ -29,6 +29,26 @@ from quant.factor.compute.price._momentum import (
     compute_volume_ratio,
 )
 
+# v594: 经典 Alpha 因子
+from quant.factor.compute.classic.value import (
+    compute_alpha_ep,
+    compute_alpha_bp,
+    compute_alpha_sp,
+    compute_alpha_cfp,
+)
+from quant.factor.compute.classic.momentum import (
+    compute_alpha_momentum_20d,
+    compute_alpha_momentum_60d,
+    compute_alpha_reversal_5d,
+)
+from quant.factor.compute.classic.low_vol import (
+    compute_alpha_volatility_20d,
+    compute_alpha_turnover_20d,
+)
+from quant.factor.compute.classic.technical import (
+    compute_alpha_rsi_14d,
+)
+
 from quant.factor.compute.price._event import (  # noqa: F401
     compute_analyst_buy,
     compute_dt_streak,
@@ -117,6 +137,37 @@ from quant.factor.compute.high_priority import (
     compute_seasonality_12m_1m, compute_tail_risk,
     compute_industry_momentum, compute_cf_roa,
 )
+# 另类数据因子 (研报/ESG/宏观高频) — v582
+from quant.factor.compute.alternative import (
+    compute_alt_rpt_sentiment,
+    compute_alt_rpt_target_price,
+    compute_alt_rpt_rating,
+    compute_alt_rpt_consensus,
+    compute_alt_esg,
+    compute_alt_env,
+    compute_alt_social,
+    compute_alt_gov,
+    compute_alt_carbon,
+    compute_alt_green_rev,
+    compute_alt_macro_electricity,
+    compute_alt_macro_freight,
+    compute_alt_macro_credit,
+    compute_alt_macro_pmi,
+    compute_alt_macro_gdp,
+    compute_alt_macro_cpi,
+    compute_alt_macro_ppi,
+    compute_alt_macro_m2,
+    compute_alt_macro_shibor,
+    compute_alt_macro_lpr,
+    compute_alt_macro_money_supply,
+    compute_alt_macro_bank_financing,
+    compute_alt_macro_industrial,
+    compute_alt_macro_exports,
+    compute_alt_macro_imports,
+    compute_alt_macro_retail,
+    compute_alt_macro_real_estate,
+    compute_alt_macro_traffic,
+)
 
 
 _PRICE_FN_MAP = {
@@ -179,6 +230,13 @@ _PRICE_FN_MAP = {
     "vol_price_sync_20d":     (compute_vol_price_sync_20d,20),  # test-v323: 量价同步
     "intraday_reversal":      (compute_intraday_reversal, None), # test-v324: 日内反转
     "open_volume_ratio":      (compute_open_volume_ratio, None), # test-v327: 开盘成交量占比
+    # v594: 经典 Alpha 因子 (price-based, 采用新接口 data/date/window)
+    "alpha_momentum_20d":     (compute_alpha_momentum_20d, 20),
+    "alpha_momentum_60d":     (compute_alpha_momentum_60d, 60),
+    "alpha_reversal_5d":      (compute_alpha_reversal_5d,  5),
+    "alpha_volatility_20d":   (compute_alpha_volatility_20d, 20),
+    "alpha_turnover_20d":     (compute_alpha_turnover_20d, 20),
+    "alpha_rsi_14d":          (compute_alpha_rsi_14d,     14),
     "close_surge":            (compute_close_surge, None),       # test-v328: 尾盘异动
     "alpha033_gap":           (compute_alpha033, None), # test-v326: Alpha#33 开盘缺口
     "alpha042_vwap_div":      (compute_alpha042, None), # test-v326: Alpha#42 VWAP偏离
@@ -203,6 +261,35 @@ _PRICE_FN_MAP = {
     "smart_money_20d":        (_smart_money_20d_fn,        20),
     "trend_strength":         (_trend_strength_fn,         60),
     "liquidity_shock":        (_liquidity_shock_fn,        60),
+    # 另类数据因子 (研报/ESG/宏观高频) — v582
+    "alt_rpt_sentiment":      (compute_alt_rpt_sentiment,      0),
+    "alt_rpt_target_price":   (compute_alt_rpt_target_price,   0),
+    "alt_rpt_rating":         (compute_alt_rpt_rating,         0),
+    "alt_rpt_consensus":      (compute_alt_rpt_consensus,      20),
+    "alt_esg":                (compute_alt_esg,                0),
+    "alt_env":                (compute_alt_env,                0),
+    "alt_social":             (compute_alt_social,             0),
+    "alt_gov":                (compute_alt_gov,                0),
+    "alt_carbon":             (compute_alt_carbon,             0),
+    "alt_green_rev":          (compute_alt_green_rev,          0),
+    "alt_macro_electricity":  (compute_alt_macro_electricity,  0),
+    "alt_macro_freight":      (compute_alt_macro_freight,      0),
+    "alt_macro_credit":       (compute_alt_macro_credit,       0),
+    "alt_macro_pmi":          (compute_alt_macro_pmi,          0),
+    "alt_macro_gdp":          (compute_alt_macro_gdp,          0),
+    "alt_macro_cpi":          (compute_alt_macro_cpi,          0),
+    "alt_macro_ppi":          (compute_alt_macro_ppi,          0),
+    "alt_macro_m2":           (compute_alt_macro_m2,           0),
+    "alt_macro_shibor":       (compute_alt_macro_shibor,       0),
+    "alt_macro_lpr":          (compute_alt_macro_lpr,          0),
+    "alt_macro_money_supply": (compute_alt_macro_money_supply, 0),
+    "alt_macro_bank_financing": (compute_alt_macro_bank_financing, 0),
+    "alt_macro_industrial":   (compute_alt_macro_industrial,   0),
+    "alt_macro_exports":      (compute_alt_macro_exports,      0),
+    "alt_macro_imports":      (compute_alt_macro_imports,      0),
+    "alt_macro_retail":       (compute_alt_macro_retail,       0),
+    "alt_macro_real_estate":  (compute_alt_macro_real_estate,  0),
+    "alt_macro_traffic":      (compute_alt_macro_traffic,      0),
 }
 
 

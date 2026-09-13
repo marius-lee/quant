@@ -266,20 +266,39 @@ def get_recon(day: str = None, strategy: str = "quant",
 
 
 def _run(today: str):
-    _uuid.uuid4().hex[:12]
-    set_trace_id(_uuid.uuid4().hex[:12])
-    from quant.execution.engine import ExecutionEngine
-    from quant.data.repos import TradeRepo
+    tid = _uuid.uuid4().hex[:12]
+    set_trace_id(tid)
+    # v622 fix: 写入 task_runs 记录
+    from quant.scheduler.task_log import start as _tk_start, finish as _tk_finish
+    _tk_start("reconcile", today)
 
-    result = run_reconcile(today)
-    # v410: 写入 daily_equity 快照 (回撤告警 + Sharpe 计算依赖)
-    engine = ExecutionEngine()
-    cash = engine.get_cash("quant")
-    positions = engine.get_positions("quant")
-    pos_value = sum(p["shares"] * p.get("price", 0) for p in positions)
-    TradeRepo().record_daily_equity(today, cash, pos_value)
-    _m.inc("scheduler.reconcile.ok")
-    return {"recon_status": result["status"], "breaks": result["breaks"], "elapsed": 0}
+    _status = "ok"
+    _error = None
+    _result = None
+    try:
+        from quant.execution.engine import ExecutionEngine
+        from quant.data.repos import TradeRepo
+
+        result = run_reconcile(today)
+        # v410: 写入 daily_equity 快照 (回撤告警 + Sharpe 计算依赖)
+        engine = ExecutionEngine()
+        cash = engine.get_cash("quant")
+        positions = engine.get_positions("quant")
+        pos_value = sum(p["shares"] * p.get("price", 0) for p in positions)
+        TradeRepo().record_daily_equity(today, cash, pos_value)
+        _m.inc("scheduler.reconcile.ok")
+        _result = result
+    except Exception as e:
+        _status = "failed"
+        _error = str(e)
+        _log.exception(f"[{today}] reconcile crashed: {e}")
+        raise
+    finally:
+        # v577 (V586): guarantee task_runs row is finished on every exit path
+        _tk_finish("reconcile", today, _status, error=_error,
+                   summary={"status": _result["status"], "breaks": _result["breaks"]} if _result else None)
+        _log.info(f"[SCHEDULER] {today} | TASK=reconcile | STATUS={_status.upper()}")
+    return {"recon_status": _result["status"], "breaks": _result["breaks"], "elapsed": 0}
 
 
 if __name__ == "__main__":

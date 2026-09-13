@@ -1,0 +1,10 @@
+{
+  "name": "alpha_bp",
+  "display_name": "alpha_bp",
+  "category": "unknown",
+  "sub_category": "unknown",
+  "ic_mean_12m": 0.0318,
+  "icir_12m": 0.2063,
+  "last_evaluated": "auto",
+  "n_obs": 130
+}

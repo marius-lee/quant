@@ -97,7 +97,8 @@ def _macos_notify(title: str, body: str) -> bool:
              f'display notification "{body_esc}" with title "{title}" sound name "Glass"'],
             timeout=8, capture_output=True)
         return True
-    except Exception:
+    except Exception as _e:
+        _log.warning("silent exception: %s", _e)
         return False
 
 
@@ -111,7 +112,8 @@ def _macos_sound() -> bool:
             ["afplay", "/System/Library/Sounds/Glass.aiff"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
-    except Exception:
+    except Exception as _e:
+        _log.warning("silent exception: %s", _e)
         return False
 
 

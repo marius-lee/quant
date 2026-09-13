@@ -1,10 +1,11 @@
 """全因子分批物化 — 一次性回填 2020-01-01 → daily MAX(date)。
 
-池 = 90 全期因子 (价量/基本面/lhb/margin, 数据全期覆盖) + 4 macro (v470 注册)。
-排除: 北向 (northbound 表不存在) / intraday×3 (快照 2026-08 起) /
-analyst×4 / fund_hold×3 / holder_trade×3 / pledge_ratio (数据不足)。
+池 = 89 因子 (75 价量/基本面/lhb/margin + 14 另类数据: 研报/ESG/宏观高频)。
+排除: analyst_forecast 依赖×10 (deleted) / intraday×3 (快照 2026-08 起) /
+fund_hold×3 (deleted) / pledge_stat (deleted) / northbound (不存在) /
+fund_flow (仅 158 天) / news_sentiment (仅 7 天) / NO_COMPUTE_FN×7。
 
-起点约定 (2026-08-13 复核): 因子物化从 2020-01-01 起, 数据准备到 2019-01-01。
+起点约定 (2026-08-13 复核): 因子物化从 2024-01-01 起, 数据准备到 2019-01-01。
 勿改回 2019-01-01 — 2018 年 daily 仅 ~354 只股票子集 (2019 起才全量 ~3,500+ 只),
 1978-12 起按 2019 起点需要 2018 lookback, 绝大多数股票早期全 NaN,
 且短窗口因子会把 2019 日期误标已物化。
@@ -24,27 +25,31 @@ import time as _time
 BATCHES = {
     1: ["alpha002_vol_div", "alpha055_pos_vol", "dt_streak", "smart_money_20d", "wq_alpha_006"],
     2: ["alpha012_vol_dir", "alpha033_gap", "alpha035_range_mom", "alpha041_geo_vwap",
-        "alpha042_vwap_div", "amihud_20d", "amihud_250d", "ctr_20d", "day_night",
+        "alpha042_vwap_div", "amihud_20d", "amihud_250d", "ctr_20d",
         "gap_5d", "hl_volume_20d", "ideal_amplitude", "idio_vol_126d", "idio_vol_60d",
         "limit_touch_no_seal", "liquidity_shock", "ma_alignment_20d", "max_ret_20d",
         "momentum_126d", "momentum_252d", "momentum_63d", "money_flow_5d", "net_limit_ratio"],
     3: ["overnight_gap_5d", "overnight_gap_ratio", "price_channel_position", "qlib_vema",
         "range_20d", "residual_momentum_126d", "reversal_5d", "rsi_rev_14d", "seal_time",
-        "seal_turnover_ratio", "seasonality_12m_1m", "skewness_60d", "tail_risk", "trcf",
+        "seal_turnover_ratio", "skewness_60d", "trcf",
         "trend_strength", "turnover_accel", "turnover_adj_amihud_20d", "turnover_anomaly",
         "turnover_rev_5d", "uret_20d", "vol_price_corr_10d", "vol_price_sync_20d", "volatility_126d"],
-    4: ["vp_divergence", "zt_streak", "ztd", "abn_turnover", "abn_turnover_resid", "str",
-        "limit_up_prox_5d", "bp_ratio", "ep_ratio", "epa", "epd", "epds", "financial_anomaly",
-        "high52w_dist", "roe_ratio", "roe_trimmed", "size", "accruals", "debt_ratio",
+    4: ["vp_divergence", "zt_streak", "abn_turnover", "abn_turnover_resid", "str",
+        "financial_anomaly", "high52w_dist", "accruals", "debt_ratio",
         "gp_ta", "roa", "roe_reported"],
     5: ["ocfp", "asset_growth", "earnings_growth_yoy", "revenue_growth_yoy", "sue",
         "piotroski_fscore", "gross_margin_diff", "dividend_yield",
         "lhb_freq_60d", "lhb_intensity_5d", "lhb_net_buy_20d", "lhb_post_quality",
-        "lhb_reversal_5d", "margin_balance_chg", "margin_buy_ratio", "margin_buy_ratio_5d",
-        "short_interest", "macro_cpi_yoy", "macro_m2_yoy", "macro_pmi_diff", "macro_rate_10y"],
+        "lhb_reversal_5d", "margin_balance_chg", "short_interest"],
+    # 另类数据因子 (研报/ESG/宏观高频) — v582
+    6: ["alt_macro_bank_financing", "alt_macro_cpi", "alt_macro_credit", "alt_macro_electricity", "alt_macro_freight", "alt_macro_lpr", "alt_macro_m2", "alt_macro_money_supply", "alt_macro_pmi", "alt_macro_ppi", "alt_macro_retail", "alt_macro_shibor", "alt_macro_traffic"],
 }
 
-START = "2020-01-01"
+START = "2024-01-01"
+
+ALL_FACTORS = sorted({f for fs in BATCHES.values() for f in fs})
+
+START = "2024-01-01"
 
 ALL_FACTORS = sorted({f for fs in BATCHES.values() for f in fs})
 
@@ -67,7 +72,7 @@ def _dates_until(end: str) -> list[str]:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--batch", type=int, default=None, help="只跑指定批号 (默认全部 94 因子单次物化)")
+    ap.add_argument("--batch", type=int, default=None, help="只跑指定批号 (默认全部 89 因子单次物化 (从 2024-01-01))")
     ap.add_argument("--dry", action="store_true", help="只打印计划")
     ap.add_argument("--workers", type=int, default=None,
                     help="并行 worker 数 (默认 config factor.compute.materialize_max_workers)")

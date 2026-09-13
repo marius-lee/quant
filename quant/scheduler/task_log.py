@@ -48,13 +48,16 @@ def _ensure_table():
                 status     TEXT    NOT NULL,
                 pid        INTEGER,
                 error      TEXT,
-                summary    TEXT
+                summary    TEXT,
+                retry_count INTEGER DEFAULT 0
             )
         """)
         # 兼容旧表: 无 pid 列时添加
         cols = [r[1] for r in conn.execute("PRAGMA table_info(task_runs)").fetchall()]
         if "pid" not in cols:
             conn.execute("ALTER TABLE task_runs ADD COLUMN pid INTEGER")
+        if "retry_count" not in cols:
+            conn.execute("ALTER TABLE task_runs ADD COLUMN retry_count INTEGER DEFAULT 0")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_date ON task_runs(date, task_name)")
         conn.commit()
     finally:
@@ -135,7 +138,7 @@ def start(task_name: str, date: str, dedup: bool = False, grace_seconds: int = 1
             # 每天每任务最多一行 (2026-07-22: monitor防膨胀)
             conn.execute("DELETE FROM task_runs WHERE task_name=? AND date=?", (task_name, date))
         cur = conn.execute(
-            "INSERT INTO task_runs (task_name, date, started_at, status, pid) VALUES (?, ?, ?, 'running', ?)",
+            "INSERT INTO task_runs (task_name, date, started_at, status, pid, retry_count) VALUES (?, ?, ?, 'running', ?, 0)",
             (task_name, date, now, os.getpid()))
         conn.commit()
         return cur.lastrowid

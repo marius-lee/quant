@@ -11,11 +11,13 @@ v433 重构: 拆分为三大 Runner (InlineRunner/MonitorRunner/SubprocessRunner
 
 启动入口: restart.sh → start_all() (兼容旧); 幂等, 双进程防御由 PID 锁 + grace dedup.
 
-v565: Dagster 模式支持 — 环境变量 QUANT_ORCHESTRATOR=dagster 使用新架构,
-通过 quant.orchestrator.get_dagster_definitions() 提供 Dagster Definitions.
+v565: Dagster 模式支持 — 环境变量 QUANT_ORCHESTRATOR=dagster 使用新架构.
+v577 fix: Dagster daemon 正确启动, definitions 验证, Web UI /api/scheduler 统一.
 Web 界面(/api/scheduler)通过 task_runs 表统一监控, 无论使用哪种模式.
 """
 import os
+import threading
+import subprocess
 from quant.utils.logger import get_logger
 from quant.scheduler.runners import (
     run_inline_tasks as _run_inline_tasks,
@@ -35,10 +37,7 @@ def get_orchestrator_mode():
 def start_all():
     """启动编排器 (v428: 单任务源 — weekly 由 manifest 窗口并入 orchestrator).
 
-    历史: v417 之前 start_all 另起 start_weekly 线程 — manifest 化后
-    weekly_eval 触发条件统一收编进 orchestrator, 删除重复路径 (双触发之源).
-
-    v565: 如果 QUANT_ORCHESTRATOR=dagster, 使用 Dagster 模式 (不阻塞)。
+    v565: 如果 QUANT_ORCHESTRATOR=dagster, 使用 Dagster 模式 (非阻塞).
     """
     if get_orchestrator_mode() == "dagster":
         _start_dagster()
@@ -53,15 +52,76 @@ def start_scheduler():
 def _start_dagster():
     """启动 Dagster 编排器 (非阻塞 — Dagster Daemon 在独立进程管理).
 
-    该函数仅验证 Definitions 可用性并记录日志; 实际调度由 Dagster Daemon
-    (cron + Sensors) 在独立进程执行. Web 界面通过 task_runs 表监控,
-    Dagster 在内部调用相同的 _run() 函数 (见 dagster_assets.py)。
+    启动方式 (DAGSTER_LAUNCH_MODE 环境变量控制):
+      - "daemon" (默认): 启动 dagster-daemon 进程管理调度 + dagster-webserver 提供 UI
+      - "webserver" 仅: 仅启动 dagster-webserver (daemon 需独立部署)
+      - "process": 进程内模拟 (开发测试用)
+
+    实际调度由 Dagster Daemon (cron + Sensors) 在独立进程执行.
+    Web 界面通过 task_runs 表监控, 与 legacy 模式统一.
     """
-    from quant.orchestrator import get_dagster_definitions
-    get_dagster_definitions()  # 验证 Definitions 加载
-    _log.info("Dagster Definitions loaded — Dagster Daemon managing scheduling "
-              "(QUANT_ORCHESTRATOR=dagster)")
-    # 不阻塞 — Dagster Daemon 在 Docker/独立进程运行
+    from quant.orchestrator.dagster_assets import get_definitions
+
+    # 验证 Definitions 可加载
+    try:
+        defs = get_definitions()
+        _log.info(f"Dagster Definitions loaded: {[j.name for j in defs.jobs]}")
+    except Exception as e:
+        _log.error(f"Dagster Definitions 加载失败: {e}")
+        raise
+
+    launch_mode = os.environ.get("DAGSTER_LAUNCH_MODE", "daemon")
+    proj_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    if launch_mode == "process":
+        # 开发测试模式: 不启动外部进程, 仅记录日志
+        _log.info("Dagster 模拟模式 (DAGSTER_LAUNCH_MODE=process) — "
+                   "仅验证 definitions 可用, 不启动外部进程")
+        return
+
+    dagster_bin = os.path.join(proj_root, ".venv", "bin", "dagster")
+    dagster_file = os.path.join(proj_root, "quant", "orchestrator", "dagster_assets.py")
+
+    if launch_mode == "webserver":
+        # 仅启动 dagster-webserver (daemon 需独立部署)
+        cmd = [
+            dagster_bin, "webserver",
+            "-f", dagster_file,
+            "-p", "3333",
+            "--working-directory", proj_root,
+        ]
+        _log.info(f"Dagster webserver: {' '.join(cmd)}")
+        proc = subprocess.Popen(cmd, cwd=proj_root, env={**os.environ})
+        _log.info(f"Dagster webserver started (pid={proc.pid})")
+        return
+
+    # 默认: 启动 dagster-daemon (调度) + 线程启动 dagster-webserver (UI)
+    daemon_cmd = [
+        dagster_bin, "daemon",
+        "-f", dagster_file,
+        "--working-directory", proj_root,
+    ]
+    _log.info(f"Dagster daemon: {' '.join(daemon_cmd)}")
+
+    def start_daemon():
+        proc = subprocess.Popen(daemon_cmd, cwd=proj_root, env={**os.environ})
+        _log.info(f"Dagster daemon started (pid={proc.pid})")
+
+    def start_webserver():
+        ws_cmd = [
+            dagster_bin, "webserver",
+            "-f", dagster_file,
+            "-p", "3333",
+            "--working-directory", proj_root,
+        ]
+        _log.info(f"Dagster webserver: {' '.join(ws_cmd)}")
+        proc = subprocess.Popen(ws_cmd, cwd=proj_root, env={**os.environ})
+        _log.info(f"Dagster webserver started (pid={proc.pid})")
+
+    # daemon 在独立线程启动 (不阻塞主线程)
+    threading.Thread(target=start_daemon, daemon=True, name="dagster-daemon").start()
+    # webserver 在独立线程启动
+    threading.Thread(target=start_webserver, daemon=True, name="dagster-webserver").start()
 
 
 # 向后兼容导出

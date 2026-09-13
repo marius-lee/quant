@@ -12,6 +12,11 @@ import os, sqlite3
 from quant.config.paths import TRADE_DB as _TRADES_DB
 from quant.config.paths import BACKTEST_DB as _BACKTEST_DB
 
+from quant.utils.logger import get_logger
+
+logger = get_logger("backtest.naming")
+
+
 
 def next_name(prefix: str, db_path: str = None) -> str:
     """Return the next available name for the given prefix.

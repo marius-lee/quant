@@ -2,6 +2,9 @@
 
 此模块不参与 import 链 — 运行时按需导入 factor.compute。
 """
+from quant.utils.logger import get_logger
+
+logger = get_logger("factor.orchestrator")
 
 
 def _get_load_functions():

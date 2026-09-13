@@ -249,7 +249,10 @@ def _run(today: str):
     ok = phases_ok == 7
     _log.info(f"[{today}] weekly evaluation done: {phases_ok}/7 phases OK, {n_factors} factors, "
               f"{len(decaying)} decay alerts ({elapsed:.1f}s)")
+    # v594: 非 ok 状态必须记录错误信息
+    _weekly_error = f"仅 {phases_ok}/7 阶段通过" if not ok else None
     _tk_finish("weekly_eval", today, "ok" if ok else "failed",
+               error=_weekly_error,
                summary={"phases_ok": phases_ok, "factors": n_factors,
                         "decay_alerts": len(decaying), "elapsed": round(elapsed, 1)})
     _log.info(f"[SCHEDULER] {today} | TASK=weekly_eval | STATUS={'OK' if ok else 'FAILED'} | "

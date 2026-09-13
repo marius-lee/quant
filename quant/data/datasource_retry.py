@@ -27,6 +27,11 @@
 
 from retry import retry
 
+from quant.utils.logger import get_logger
+
+logger = get_logger("data.datasource_retry")
+
+
 
 def datasource_retry(func=None, *, tries=4, delay=1, backoff=2):
     """批量数据源指数退避重试装饰器。

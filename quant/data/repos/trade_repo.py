@@ -717,7 +717,8 @@ class TradeRepo:
         if row and row[0]:
             try:
                 return _json.loads(row[0])
-            except Exception:
+            except Exception as _e:
+                logger.warning(f"silent exception: {_e}")
                 return {}
         return {}
 

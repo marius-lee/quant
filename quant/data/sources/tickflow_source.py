@@ -403,5 +403,6 @@ class TickFlowSource(BaseDataSource):
                 as_dataframe=True, show_progress=False,
             )
             return df is not None and "000001.SZ" in df and not df["000001.SZ"].empty
-        except Exception:
+        except Exception as _e:
+            logger.warning(f"silent exception: {_e}")
             return False

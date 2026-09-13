@@ -300,12 +300,13 @@ class DistributedFactorEngine:
                     # 创建 FactorStore (每个 Task 独立实例)
                     fs = FactorStore(**factor_store_config)
 
-                    # 执行物化
+                    # 执行物化 (in_process: Ray 持有跨分区并行, 禁内部 subprocess)
                     result = fs.materialize(
                         dates=partition.dates,
                         factors=partition.factors,
                         symbols=partition.symbols,
                         force=False,
+                        in_process=True,
                     )
 
                     elapsed_ms = (time.perf_counter() - task_start) * 1000

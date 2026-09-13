@@ -18,7 +18,7 @@ from quant.utils.date import to_compact
 
 import sys, os, time
 from datetime import datetime, timedelta
-from config.constants import _require_cfg
+from quant.config.constants import _require_cfg
 from quant.utils.logger import get_logger
 
 logger = get_logger("daily_sync")

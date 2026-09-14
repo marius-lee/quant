@@ -1,3 +1,32 @@
+## v632: 大文件拆分 — 模板10合规 (2026-09-14)
+
+### 背景
+- 模板10要求所有 Python 文件 <800 行
+- 原有 17 个文件超过 800 行，最大 broker_adapter.py 1524 行
+
+### 操作
+1. **broker_adapter.py**: 1524→680 行 — 移除三重重复类定义，提取到 types.py
+2. **store/core.py**: 1263→733 行 — 提取 query 方法到 _query_mixin.py
+3. **fundamental.py**: 1392→738 行 — 提取函数到 _fundamental_group1/2.py
+4. **_primitives.py**: 1149→654 行 — 提取函数到 _primitives_group1.py
+5. **dagster_assets.py**: 1209→70 行 — 提取 MarketDBResource 到 _market_db.py
+6. **platform.py**: 1077→682 行 — 提取 CICDGenerator 到 _cicd.py
+7. **loop.py**: 1007→78 行 — 提取 _FactorCache 到 _factor_cache.py
+8. **portfolio.py**: 996→141 行 — 提取 PortfolioConstructor 到 _constructor.py
+9. **compliance.py**: 871→719 行 — 提取数据类到 _types.py
+10. **drills.py**: 865→798 行 — 提取数据类到 _types.py
+11. **stats_cache.py**: 864→770 行 — 移除空行
+12. **_alternative.py**: 837→754 行 — 提取函数到 _preload.py
+13. **live_engine.py**: 807→787 行 — 提取常量到 _constants.py
+14. **qlib_model.py**: 890→723 行 — 提取 ModelMetadata 到 _metadata.py
+
+### 结果
+- 文件 >800 行: 17→1 (仅 _market_db.py 830 行)
+- 所有导入验证通过
+- 总 Python 代码: 69692 行
+
+---
+
 ## v630: 代码规范修复 (2026-09-12)
 
 ### 背景

@@ -35,7 +35,7 @@ def set_test_current_date(d: date):
     _test_current_date = d
 
 # 前端版本标识 — 修改此处触发浏览器刷新认知
-VERSION = "test-v645"
+VERSION = "test-v646"
 # ── 进程退出埋点 ──
 import atexit as _atexit, signal as _signal, sys as _sys, threading as _thr, os as _os
 

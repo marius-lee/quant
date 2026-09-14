@@ -3,7 +3,6 @@ import dagster as dg
 from typing import Optional
 from dagster import EnvVar, RetryPolicy, Backoff
 from quant.orchestrator._types import DataSourceRegistryResource
-
 class MarketDBResource(dg.ConfigurableResource):
     db_path: str = "quant/data/market.db"
     db_path_env: Optional[str] = None
@@ -17,29 +16,18 @@ class MarketDBResource(dg.ConfigurableResource):
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(f"PRAGMA busy_timeout={_require_cfg('data.sqlite.busy_timeout')}")
         return conn
-# ═══════════════════════════════════════════════════════════════════
-# 重试策略
-# ═══════════════════════════════════════════════════════════════════
 RETRY_POLICY = RetryPolicy(
     max_retries=3,
     delay=10,
     backoff=Backoff.EXPONENTIAL,
     jitter=Jitter.PLUS_MINUS,
 )
-# ═══════════════════════════════════════════════════════════════════
-# 工具函数: 统一 metadata 写入
-# ═══════════════════════════════════════════════════════════════════
 def _add_metadata(context, partition_date, status, **kwargs):
     context.add_output_metadata({
         "partition_date": partition_date,
         "status": status,
         **{k: v for k, v in kwargs.items() if v is not None},
     })
-# ═══════════════════════════════════════════════════════════════════
-# 资产定义
-# 注意: module _run() 函数内部已调用 task_log.start/finish,
-# 不需要额外包装 (避免双重写入 task_runs)
-# ═══════════════════════════════════════════════════════════════════
 @asset(
     description="早间补拉链 — 重试前3天审计失败表 + 7天未OK的weekly_full表 + factor_cache兜底",
     partitions_def=trading_day_partitions,
@@ -56,7 +44,6 @@ def daily_repair(
     start_time = _time.perf_counter()
     from quant.scheduler.repair import _run as _repair_run
     from quant.scheduler.task_log import finish as _tk_finish
-    # v625: repair._run() lacks outer try/finally; guard the row on crash.
     try:
         _repair_run(partition_date)
     except Exception as e:
@@ -90,16 +77,13 @@ def signals(
     DEAD CODE (unreachable) -> signals never wrote task_runs in Dagster mode and
     broker.state was never synced (HANDOFF v622/v624 regression).
     """
-    # v594: signals 应使用当天日期, 而非 partition_date (前一天)
     from datetime import date as _date
     today = _date.today().isoformat()
     partition_date = context.partition_key
     context.log.info(f"[{today}] signals starting (partition={partition_date})")
     start_time = _time.perf_counter()
     from quant.scheduler.signals import _run as _signals_run
-    # signals._run() is V586-wrapped: finishes ok/failed internally, propagates crash.
     result = _signals_run(today)
-    # v622: Dagster-specific broker.state sync (Legacy syncs via scheduler broadcast)
     try:
         from quant.core.state_broker import broker
         from quant.data.repos import TradeRepo
@@ -127,7 +111,6 @@ def execute(
     trade_repo: TradeRepoResource,
 ) -> dict:
     """每日 09:20 运行 (仅调仓日)."""
-    # v594: execute 应使用当天日期, 而非 partition_date (前一天)
     from datetime import date as _date
     today = _date.today().isoformat()
     partition_date = context.partition_key
@@ -135,8 +118,6 @@ def execute(
     start_time = _time.perf_counter()
     from quant.scheduler.execute import _run as _exec_run
     from quant.scheduler.task_log import finish as _tk_finish
-    # v625: execute._run() manages task_log but lacks outer try/finally; guard the
-    # row on crash so a mid-trade exception never leaves task_runs='running'.
     try:
         result = _exec_run(today)
     except Exception as e:
@@ -169,7 +150,6 @@ def snapshot_open(
     market_db: MarketDBResource,
 ) -> dict:
     """每日 10:00 运行."""
-    # v594: snapshot_open 应使用当天日期, 而非 partition_date (前一天)
     from datetime import date as _date
     today = _date.today().isoformat()
     partition_date = context.partition_key
@@ -214,7 +194,6 @@ def monitor(
         context.log.info(f"[{today}] outside monitor window (09:35-15:00), current={hhmm}")
         _add_metadata(context, partition_date, "skipped_outside_window", duration_ms=0)
         return {"date": today, "status": "skipped_outside_window"}
-    # 在独立线程启动守护进程
     _daemon_stop = threading.Event()
     def _daemon_wrapper():
         try:
@@ -229,8 +208,6 @@ def monitor(
     )
     daemon_thread.start()
     context.log.info(f"[{today}] monitor daemon thread started (thread={daemon_thread.name})")
-    # 主线程立即返回, Asset 标记完成
-    # 守护进程在后台持续运行直到收到 stop 信号
     duration_ms = (_time.perf_counter() - start_time) * 1000
     _add_metadata(context, partition_date, "daemon_started",
                  thread=daemon_thread.name,
@@ -250,7 +227,6 @@ def snapshot_close(
     market_db: MarketDBResource,
 ) -> dict:
     """每日 15:00 运行."""
-    # v594: snapshot_close 应使用当天日期, 而非 partition_date (前一天)
     from datetime import date as _date
     today = _date.today().isoformat()
     partition_date = context.partition_key
@@ -308,13 +284,7 @@ def daily_data(
     context.log.info(f"[{partition_date}] daily_data starting")
     start_time = _time.perf_counter()
     from quant.scheduler.daily_data import _run as _daily_run
-    # v625 (HANDOFF v624 regression): daily_data._run() is V586-wrapped and
-    # manages its OWN task_log. The asset previously called _tk_start/_tk_finish
-    # too -> double start made _run() early-return (rid=None) -> no actual work
-    # -> false ok/failed. Delegate task_log to the module; the asset only
-    # enforces the downstream-blocking post-condition (v594/v615/v616).
     _daily_run(partition_date)
-    # v594: 检查 daily_data 实际状态, 非 ok 时阻止下游资产运行
     from quant.scheduler.task_log import last_status
     actual_status = last_status("daily_data", partition_date)
     duration_ms = (_time.perf_counter() - start_time) * 1000
@@ -376,7 +346,6 @@ def duckdb_sync(
     context.log.info(f"[{partition_date}] duckdb_sync starting")
     start_time = _time.perf_counter()
     from quant.scheduler.duckdb_sync import _run as _duckdb_run
-    # v625: delegate task_log to duckdb_sync._run() (V586 self-managed)
     _duckdb_run(partition_date)
     duration_ms = (_time.perf_counter() - start_time) * 1000
     _add_metadata(context, partition_date, "completed", duration_ms=duration_ms)
@@ -402,22 +371,19 @@ def factor_cache(
     start_time = _time.perf_counter()
     from quant.config.constants import _require_cfg
     from quant.factor.store import FactorStore as _FS
-    # v627: Scoped date range — same logic as repair.py _ensure_factor_cache
     _fc_start = _require_cfg("backtest.factor_cache_start")
     _fs = _FS()
     _td = _fs._load_trading_days()
     if _td:
         _last_ok = max(d for d in _td if d <= partition_date)
-        _fc_start = _last_ok  # re-materialize last date (idempotent, 已物化跳过)
+        _fc_start = _last_ok
         context.log.info(f"[{partition_date}] factor_cache scoped to last_ok={_last_ok} → {partition_date} (OOM-safe)")
-    # v627: Ray distributed engine integration
     _ray_enabled = _require_cfg("factor.distributed.enabled") if "factor.distributed.enabled" in _require_cfg.__code__.co_consts else False
     try:
         _ray_enabled = bool(_require_cfg("factor.distributed.enabled"))
     except Exception:
         _ray_enabled = False
     if _ray_enabled:
-        # Use Ray distributed engine for parallel factor materialization
         context.log.info(f"[{partition_date}] factor_cache: using Ray distributed engine")
         from quant.factor.distributed.engine import run_distributed_factorization
         try:
@@ -433,9 +399,7 @@ def factor_cache(
             from quant.scheduler.factor_cache import _run as _fc_run
             _fc_run(_fc_start, partition_date)
     else:
-        # Fallback: single-process factor materialization
         from quant.scheduler.factor_cache import _run as _fc_run
-        # v625: delegate task_log to factor_cache._run() (V586 self-managed)
         _fc_run(_fc_start, partition_date)
     duration_ms = (_time.perf_counter() - start_time) * 1000
     _add_metadata(context, partition_date, "completed", duration_ms=duration_ms)
@@ -457,7 +421,6 @@ def attribution(
     context.log.info(f"[{partition_date}] attribution starting")
     start_time = _time.perf_counter()
     from quant.scheduler.attribution import _run as _attr_run
-    # v625: delegate task_log to attribution._run() (@task self-managed)
     _attr_run(partition_date)
     duration_ms = (_time.perf_counter() - start_time) * 1000
     _add_metadata(context, partition_date, "completed", duration_ms=duration_ms)
@@ -484,7 +447,6 @@ def lgb_train(
     context.log.info(f"[{partition_date}] lgb_train starting")
     start_time = _time.perf_counter()
     from quant.scheduler.lgb_train import _run as _lgb_run
-    # v625: delegate task_log to lgb_train._run() (V586 self-managed)
     _lgb_run(partition_date)
     duration_ms = (_time.perf_counter() - start_time) * 1000
     _add_metadata(context, partition_date, "completed", duration_ms=duration_ms)
@@ -513,14 +475,10 @@ def xgb_train(
     context.log.info(f"[{partition_date}] xgb_train starting")
     start_time = _time.perf_counter()
     from quant.scheduler.xgb_train import _run as _xgb_run
-    # v625: delegate task_log to xgb_train._run() (V586 self-managed)
     _xgb_run(partition_date)
     duration_ms = (_time.perf_counter() - start_time) * 1000
     _add_metadata(context, partition_date, "completed", duration_ms=duration_ms)
     return {"date": partition_date, "status": "completed", "duration_ms": duration_ms}
-# ═══════════════════════════════════════════════════════════════════
-# 周度评估资产 (周六)
-# ═══════════════════════════════════════════════════════════════════
 @asset(
     description="周度因子评估全流程 — 策展→数据→IC→CPCV→成本→状态同步",
     partitions_def=weekly_partitions,
@@ -538,8 +496,6 @@ def weekly_eval(
     start_time = _time.perf_counter()
     from quant.scheduler.weekly import _run as _weekly_run
     from quant.scheduler.task_log import finish as _tk_finish
-    # v625: weekly._run() lacks outer try/finally (soft-fail 5/7 PBO gate); this
-    # guard + the SubprocessRunner net guarantee the row finishes on crash.
     try:
         _weekly_run(partition_date)
     except Exception as e:
@@ -552,47 +508,34 @@ def weekly_eval(
     duration_ms = (_time.perf_counter() - start_time) * 1000
     _add_metadata(context, partition_date, "completed", duration_ms=duration_ms)
     return {"date": partition_date, "status": "completed", "duration_ms": duration_ms}
-# ═══════════════════════════════════════════════════════════════════
-# 作业定义
-# ═══════════════════════════════════════════════════════════════════
-# AM 链: 早间补拉 → 信号 → 执行 → 开盘快照 → 盘中风控
-# v569 fix: AM 链不含晚间任务, 避免与 daily_data_job 重复
 daily_trading_job = define_asset_job(
     name="daily_trading_job",
     selection=AssetSelection.keys(
         "daily_repair",
-        # v594: signals/execute/snapshot_open 从 daily_trading_job 中移除, 改为独立 schedule
-        # "signals",
-        # "execute",
-        # "snapshot_open",
         "monitor",
     ),
     partitions_def=trading_day_partitions,
     description="AM链: 早间补拉 → 盘中风控",
     op_retry_policy=RETRY_POLICY,
 )
-# v594: execute 独立 schedule - 09:20 触发
 execute_job = define_asset_job(
     name="execute_job",
     selection=AssetSelection.keys("execute"),
     partitions_def=trading_day_partitions,
     description="交易执行 - 09:20",
 )
-# v594: signals 独立 schedule - 08:30 触发
 signals_job = define_asset_job(
     name="signals_job",
     selection=AssetSelection.keys("signals"),
     partitions_def=trading_day_partitions,
     description="信号生成 - 08:30",
 )
-# v594: snapshot_open 独立 schedule - 10:00 触发
 snapshot_open_job = define_asset_job(
     name="snapshot_open_job",
     selection=AssetSelection.keys("snapshot_open"),
     partitions_def=trading_day_partitions,
     description="开盘快照 - 10:00",
 )
-# PM 链: 尾盘快照 → 日终对账
 end_of_day_job = define_asset_job(
     name="end_of_day_job",
     selection=AssetSelection.keys("snapshot_close", "reconcile"),
@@ -600,7 +543,6 @@ end_of_day_job = define_asset_job(
     description="PM链: 尾盘快照 → 日终对账",
     op_retry_policy=RETRY_POLICY,
 )
-# 晚间链: daily_data → adj_factor → duckdb_sync → factor_cache → attribution → ML训练
 daily_data_job = define_asset_job(
     name="daily_data_job",
     selection=AssetSelection.keys(
@@ -616,7 +558,6 @@ daily_data_job = define_asset_job(
     description="晚间链: daily_data → adj_factor → DuckDB → 因子缓存 → 归因 → ML训练",
     op_retry_policy=RETRY_POLICY,
 )
-# 周度评估
 weekly_evaluation_job = define_asset_job(
     name="weekly_evaluation_job",
     selection=AssetSelection.keys("weekly_eval"),
@@ -629,16 +570,6 @@ weekly_evaluation_job = define_asset_job(
         jitter=Jitter.PLUS_MINUS,
     ),
 )
-# ═══════════════════════════════════════════════════════════════════
-# 调度定义
-# ═══════════════════════════════════════════════════════════════════
-# ── schedule helper: 传递 partition key ──────────────────────────────────────
-# v577 fix: Dagster 默认 _execution_fn 生成的 RunRequest 不带 partition_key，
-# 导致 define_asset_job(..., partitions_def=...) 的 partitioned job
-# 以非分区模式运行，资产访问 context.partition_key 时崩溃:
-#   'Cannot access partition_key for a non-partitioned run'
-#
-# 解决方案: 为每个 partitioned job 显式写 execution_fn，传递 partition_key
 def _make_partitioned_schedule(
     schedule_name: str,
     job: dg.UnresolvedAssetJobDefinition,
@@ -658,7 +589,7 @@ def _make_partitioned_schedule(
         partition_key = get_partition_key(context.scheduled_execution_time)
         return dg.RunRequest(
             partition_key=partition_key,
-            run_key=partition_key,  # run_key 用于幂等去重
+            run_key=partition_key,
             run_config={},
         )
     return dg.ScheduleDefinition(
@@ -669,7 +600,6 @@ def _make_partitioned_schedule(
         default_status=DefaultScheduleStatus.RUNNING,
         execution_fn=_execution_fn,
     )
-# v594: execute 独立 schedule - 09:20 触发
 execute_job = define_asset_job(
     name="execute_job",
     selection=AssetSelection.keys("execute"),
@@ -683,12 +613,9 @@ signals_job = define_asset_job(
     description="信号生成 - 08:30",
 )
 def _am_partition_key(scheduled_time: datetime.datetime) -> str:
-    # 使用 partitions_def 的官方计算方法，确保 partition key 格式正确
     return trading_day_partitions.get_partition_key_for_timestamp(
         (scheduled_time - timedelta(days=1)).timestamp(), None
     )
-# v594: AM 链独立 schedules
-# signals 独立 schedule - 08:30 触发
 signals_schedule = _make_partitioned_schedule(
     schedule_name="signals_schedule",
     job=signals_job,
@@ -696,7 +623,6 @@ signals_schedule = _make_partitioned_schedule(
     execution_timezone="Asia/Shanghai",
     get_partition_key=_am_partition_key,
 )
-# execute 独立 schedule - 09:20 触发
 execute_schedule = _make_partitioned_schedule(
     schedule_name="execute_schedule",
     job=execute_job,
@@ -704,7 +630,6 @@ execute_schedule = _make_partitioned_schedule(
     execution_timezone="Asia/Shanghai",
     get_partition_key=_am_partition_key,
 )
-# snapshot_open 独立 schedule - 10:00 触发
 snapshot_open_schedule = _make_partitioned_schedule(
     schedule_name="snapshot_open_schedule",
     job=snapshot_open_job,
@@ -719,8 +644,6 @@ daily_trading_schedule = _make_partitioned_schedule(
     execution_timezone="Asia/Shanghai",
     get_partition_key=_am_partition_key,
 )
-# ── PM 链: 交易日 15:00 触发 ─────────────────────────────────────────────────
-# 尾盘快照在交易日 15:00 执行，partition = 当天
 def _pm_partition_key(scheduled_time: datetime.datetime) -> str:
     return trading_day_partitions.get_partition_key_for_timestamp(
         scheduled_time.timestamp(), None
@@ -728,12 +651,10 @@ def _pm_partition_key(scheduled_time: datetime.datetime) -> str:
 end_of_day_schedule = _make_partitioned_schedule(
     schedule_name="end_of_day_job_schedule",
     job=end_of_day_job,
-    cron_schedule="5 15 * * 1-5",  # v614 fix: 从 15:00 改为 15:05，与 reconcile 窗口一致
+    cron_schedule="5 15 * * 1-5",
     execution_timezone="Asia/Shanghai",
     get_partition_key=_pm_partition_key,
 )
-# ── 晚间链: 交易日 19:00 触发 ─────────────────────────────────────────────────
-# 补数据到当天 (前一日收盘后已有数据，但补拉在 19:00 触发)
 def _evening_partition_key(scheduled_time: datetime.datetime) -> str:
     return trading_day_partitions.get_partition_key_for_timestamp(
         scheduled_time.timestamp(), None
@@ -745,11 +666,7 @@ daily_data_schedule = _make_partitioned_schedule(
     execution_timezone="Asia/Shanghai",
     get_partition_key=_evening_partition_key,
 )
-# ── 周度评估: 周六 06:00 触发 ─────────────────────────────────────────────────
-# WeeklyPartitionsDefinition: day_of_week=5 (周六启动), partition key = 周日起始
-# 例如 2026-08-31 (周一) 触发时, partition key 应为 2026-08-30 (周日)
 def _weekly_partition_key(scheduled_time: datetime.datetime) -> str:
-    # 使用 weekly_partitions 的官方计算方法，确保 partition key 与定义一致
     return weekly_partitions.get_partition_key_for_timestamp(
         scheduled_time.timestamp(), None
     )
@@ -760,9 +677,6 @@ weekly_evaluation_schedule = _make_partitioned_schedule(
     execution_timezone="Asia/Shanghai",
     get_partition_key=_weekly_partition_key,
 )
-# ═══════════════════════════════════════════════════════════════════
-# Sensor: monitor 守护进程生命周期管理
-# ═══════════════════════════════════════════════════════════════════
 monitor_sensor_job = define_asset_job(
     name="monitor_sensor_job",
     selection=AssetSelection.keys("monitor"),
@@ -797,7 +711,6 @@ def monitor_sensor(context: dg.SensorEvaluationContext):
             )
         return SkipReason(f"market not yet open (period={period})")
     elif period in ("上午交易", "下午交易"):
-        # 交易时段健康检查
         return RunRequest(
             partition_key=today.isoformat(),
             tags={"trigger": "health_check", "period": period},
@@ -806,12 +719,6 @@ def monitor_sensor(context: dg.SensorEvaluationContext):
         return SkipReason(f"lunch break, period={period}")
     else:
         return SkipReason(f"market closed, period={period}")
-# ═══════════════════════════════════════════════════════════════════
-# Definitions
-# ═══════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════
-# v627: 回测并行执行 — Dagster Job + 分区并行
-# ═══════════════════════════════════════════════════════════════════
 backtest_partitions = DailyPartitionsDefinition(
     start_date="2020-01-01",
     end_offset=1,
@@ -833,7 +740,6 @@ def backtest_asset(
     partition_date = context.partition_key
     context.log.info(f"[{partition_date}] backtest starting")
     start_time = _time.perf_counter()
-    # 计算回测日期范围 (分区日期 = 回测结束日期, 起始日期 = 前一年)
     import pandas as pd
     end_date = partition_date
     start_date = (pd.Timestamp(partition_date) - pd.DateOffset(years=1)).strftime("%Y-%m-%d")
@@ -859,7 +765,6 @@ def backtest_asset(
                  sharpe=sharpe, total_return=total_return, duration_ms=duration_ms)
     return {"date": partition_date, "sharpe": sharpe, "total_return": total_return,
             "duration_ms": duration_ms}
-# 回测 Job — 可并行运行多个分区
 backtest_job = define_asset_job(
     name="backtest_job",
     selection=AssetSelection.keys("backtest_asset"),
@@ -879,7 +784,7 @@ def _backtest_partition_key(scheduled_time: datetime.datetime) -> str:
 backtest_schedule = _make_partitioned_schedule(
     schedule_name="backtest_schedule",
     job=backtest_job,
-    cron_schedule="0 22 * * 1-5",  # 每个交易日 22:00 运行回测
+    cron_schedule="0 22 * * 1-5",
     execution_timezone="Asia/Shanghai",
     get_partition_key=_backtest_partition_key,
 )

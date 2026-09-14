@@ -1,23 +1,17 @@
 """因子评估缓存 — 为 Web 前端的因子分析页面提供预计算数据。
-
 计算成本高（需遍历历史数据算 IC/IR/相关性），每次刷新页面不应该重算。
 评估结果存入 factor_snapshot 表，24h 过期自动重算。
-
 benchmark (模板 5): ~2.5s/factor @ 800 stocks × 120 dates (M1 Max).
 regression threshold: >5.0s/factor 时排查 (索引丢失 / O(n²)退化 / 磁盘IO瓶颈).
-
 参数依据: n_symbols=800 对标中证800 (A股量化策略标准基准, 中证指数有限公司);
 lookback=120 对标国内券商因子研报惯例 (过去120个交易日 ≈ 半年),
 t = |IR| × √n 提供 |IR|≥0.18 的最小可检测效应 (Grinold & Kahn 1999 第6章).
-
 用法:
     from factor.stats_cache import get_cached_factor_stats
     stats = get_cached_factor_stats()  # 返回前端需要的 dict
-
 多线程策略 (P78): 因子计算使用 ThreadPoolExecutor，worker 线程各自打开 DataStore
 (sqlite3 WAL 模式支持多线程并发读)。线程随 with 语句自动回收，无孤儿进程风险。
 """
-
 import json
 import os
 import time
@@ -25,25 +19,19 @@ import threading
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from collections import deque
-
 import warnings
 import numpy as np
 import pandas as pd
-
 from quant.utils.logger import get_logger
 from quant.config.constants import _require_cfg
-
 # Suppress ConstantInputWarning from scipy/pandas spearmanr on near-constant arrays
 warnings.filterwarnings("ignore", message="An input array is constant")
-
 logger = get_logger("factor.stats_cache")
-
 from quant.config.paths import MARKET_DB as _DB_PATH
 _SNAPSHOT_TTL_SEC = _require_cfg("factor.stats.snapshot_ttl_sec")
 _MAX_WORKERS = _require_cfg("factor.evaluation.max_workers")
 _WORKER_TIMEOUT_SEC = _require_cfg("factor.evaluation.worker_timeout_sec")
 _COMPUTE_LOCK = threading.Lock()  # in-process reentrancy guard: 因子计算最多一个线程运行
-
 def compute_factor_stats(
     symbols: list = None, n_symbols: int = None, lookback: int = None,
     factor_names: list = None, status_filter=None,
@@ -51,7 +39,6 @@ def compute_factor_stats(
     compute_corr: bool = True,
 ) -> dict:
     """计算所有已注册因子的评估统计量，返回前端可用格式。
-
     n_symbols / lookback 默认值来源: config.yaml factor.evaluation (单一真相源).
     eval_start / eval_end (YYYY-MM-DD): 评估窗口边界 (Phase 7 训练窗口注入,
     默认今天往前的 lookback×1.5 日). 回测 PIT 采样用, 缺省逻辑不变.
@@ -61,12 +48,9 @@ def compute_factor_stats(
         n_symbols = _require_cfg("factor.evaluation.n_symbols")
     if lookback is None:
         lookback = _require_cfg("factor.evaluation.lookback")
-
     from quant.data.store import DataStore
     from quant.factor.compute import compute_all_factors, get_factor_names
-
     store = DataStore()
-
     # 1. 选择样本股票 — 统一用 UniverseRepo (survivorship-free, 与 loop.py 一致)
     # v554 (P0-3): 传入评估窗口边界 — 原调用无 as_of, get_symbols 返回当前存续股,
     # 退市/衰败股被系统性排除 → 历史 IC 幸存者偏差高估 (评估与回测池口径分裂)
@@ -100,11 +84,9 @@ def compute_factor_stats(
             symbols = [r[0] for r in rows]
         else:
             symbols = all_symbols
-
     if not symbols:
         logger.warning("No symbols available for factor evaluation")
         return _empty_result(factor_names, status_filter)
-
     # 2. 获取评估日期
     if factor_names is None:
         # [test-v399] 前端因子页需全量活跃因子 (active + probation + evaluating)
@@ -113,7 +95,6 @@ def compute_factor_stats(
             status_filter = ('active', 'probation', 'evaluating')
         factor_names = get_factor_names(status_filter=status_filter)
     factor_values_by_date = {name: {} for name in factor_names}
-
     conn = store._connect()
     end_date = eval_end or datetime.today().strftime("%Y-%m-%d")
     start_date = (pd.Timestamp(end_date)
@@ -134,22 +115,17 @@ def compute_factor_stats(
         eval_dates = eval_dates[-lookback:]
     eval_date_strs = [d.strftime("%Y-%m-%d") for d in eval_dates]
     store.close()
-
     if not eval_date_strs:
         logger.warning("No eval dates available")
         return _empty_result(factor_names, status_filter)
-
     logger.info(f"eval dates: {len(eval_date_strs)} dates, {eval_date_strs[0]}→{eval_date_strs[-1]}, "
                 f"{len(factor_names)} factors, {_MAX_WORKERS} threads")
-
     # ══ Phase B: 从 factor_cache.db 读取因子值 + IC 计算 (不再重算) ══
     from quant.factor.ic import compute_ic as _compute_ic
-
     logger.info(
         f"factor_cache: computing IC for {len(factor_names)} factors "
         f"over {len(eval_date_strs)} dates ({eval_date_strs[0]}→{eval_date_strs[-1]})"
     )
-
     _ic_result = _compute_ic(
         factor_names=factor_names,
         date=eval_date_strs[-1],
@@ -159,15 +135,12 @@ def compute_factor_stats(
         start=eval_date_strs[0] if eval_start else None,
         status_filter=None,  # 已传 factor_names, 不额外过滤
     )
-
     ic_means = _ic_result["ic_means"]
     ic_irs = _ic_result["ic_irs"]
     ic_series = _ic_result.get("ic_series", {})
     ic_decay = _ic_result.get("ic_decay", {})
-
     _n_valid = _ic_result.get("n_valid", 0)
     logger.info(f"factor_cache IC done: {_n_valid}/{len(factor_names)} factors with valid IC")
-
     # B34 (2026-08-18): 删除死代码 — 原 156-180 行构建 forward_1d/5d/20d 与
     # close_by_date, 定义后从未被引用 (仅注释声称"后续需要"); _shared_data 也
     # 仅服务于该死代码, 一并移除 → 省一次全量行情加载.
@@ -179,7 +152,6 @@ def compute_factor_stats(
     n = len(factor_names)
     corr_matrix = np.eye(n)
     corr_counts = np.zeros((n, n))
-    
     if compute_corr:
         # 从 factor_cache.db 读取因子值用于相关性矩阵计算
         from quant.factor.store import FactorStore
@@ -198,7 +170,6 @@ def compute_factor_stats(
         _fs.close()
         if _fv_miss:
             logger.warning(f"factor_cache: {_fv_miss}/{len(eval_date_strs)} dates failed FactorStore.load")
-
         def _compute_pair(i, j, ni, nj):
             common_d = set(factor_values_by_date[ni].keys()) & set(factor_values_by_date[nj].keys())
             pair_corrs = []
@@ -215,11 +186,9 @@ def compute_factor_stats(
                     pair_corrs.append(rho)
             avg = float(np.mean(pair_corrs)) if pair_corrs else 0.0
             return i, j, avg, len(pair_corrs)
-
         pairs = [(i, j, factor_names[i], factor_names[j])
                     for i in range(n) for j in range(i + 1, n)]
         logger.info(f"correlation matrix: {n}×{n} factors, {len(pairs)} pairwise pairs")
-        
         executor = ThreadPoolExecutor(max_workers=_MAX_WORKERS)
         try:
             futures = {executor.submit(_compute_pair, i, j, ni, nj): (i, j)
@@ -235,7 +204,6 @@ def compute_factor_stats(
         logger.info(f"corr matrix: {n}x{n}, avg pairwise periods: {corr_counts.sum()/(n*(n-1)):.1f}" if n > 1 else "corr: single factor")
     else:
         logger.info("correlation matrix skipped (compute_corr=False)")
-
     # 7. 生成因子元信息
     display_names = {
         "size": "规模", "momentum_63d": "动量63d", "momentum_126d": "动量126d",
@@ -267,7 +235,6 @@ def compute_factor_stats(
         "reversal_5d": "Lehmann (1990) / Jegadeesh (1990)",
         "turnover_rev_5d": "Lee & Swaminathan (2000)",
     }
-
     meta = {}
     for name in factor_names:
         meta[name] = {
@@ -276,7 +243,6 @@ def compute_factor_stats(
             "source": sources.get(name, "—"),
             "n_periods": len(factor_values_by_date.get(name, {})),
         }
-
     # 8. 组装返回
     display_factor_names = [meta[n]["display"] for n in factor_names]
     result = {
@@ -307,9 +273,7 @@ def compute_factor_stats(
             update_factor_evaluation(k, ic_val, ir_val)
     except Exception as e:
         logger.warning(f"factor_registry update failed: {e}")
-
     return result
-
 def _empty_result(factor_names: list = None, status_filter=None) -> dict:
     """返回空结果（数据不足时）。使用传入 factor_names，None 时回退到全量因子。"""
     if factor_names is None:
@@ -330,13 +294,10 @@ def _empty_result(factor_names: list = None, status_filter=None) -> dict:
         "meta": {n: {"display": n, "category": "—", "source": "—", "n_periods": 0} for n in names},
         "cached_at": datetime.now().isoformat(),
     }
-
 def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, status_filter=None) -> dict:
     """获取缓存的因子评估数据。从 factor_snapshot 表读取，24h 过期自动重算。
-
     P78: 纯线程模型 — ThreadPoolExecutor with 语句自动回收，零孤儿进程风险。
     _COMPUTE_LOCK (threading.Lock) 防并发重入：最多一个线程进入计算路径。
-
     返回: compute_factor_stats() 的输出格式
     """
     if n_symbols is None:
@@ -380,7 +341,6 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
                         return cached
         except Exception as e:
             logger.warning(f"Factor snapshot read failed: {e}")
-
     # 进程内重入保护
     if not _COMPUTE_LOCK.acquire(blocking=False):
         logger.warning("factor stats: in-process lock held by another thread, returning stale cache")
@@ -393,12 +353,10 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
         except Exception:
             import logging; logging.getLogger("quant.factor.stats_cache").warning("load_latest failed", exc_info=True)
             return _empty_result(status_filter=status_filter)
-
     try:
         logger.info("computing factor stats (this may take ~30s)...")
         lookback_val = _require_cfg("factor.evaluation.lookback")
         stats = compute_factor_stats(n_symbols=n_symbols, lookback=lookback_val, status_filter=status_filter)
-
         try:
             conn = _sql.connect(_DB_PATH)
             conn.execute(
@@ -410,24 +368,19 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
             logger.info("factor snapshot saved to factor_snapshot table")
         except Exception as e:
             logger.warning(f"Factor snapshot write failed: {e}")
-
         return stats
     finally:
         _COMPUTE_LOCK.release()
-
 def _load_ic_from_db(filter_names=None, scope='live') -> dict:
     """从 factor_ic_daily 表加载因子 IC 权重 (按 scope 隔离).
-
     scope: 'live' (实盘, 读 factor_registry.ic_mean for active+monitoring),
            'backtest' (回测, 读 factor_ic_daily scope='backtest' 的末端 IC 均值).
-
     注意: live scope 读 factor_registry.ic_mean (由 nightly attribution sync 写入);
           backtest scope 读 factor_ic_daily (由 compute_backtest_ic 写入).
     """
     from quant.data.repos import FactorRepo
     repo = FactorRepo()
     ic_map = {}
-
     if scope == 'live':
         # 实盘: 从 factor_registry 读 active+monitoring 的 ic_mean
         rows = repo.get_factors_with_ic(('active', 'probation'))
@@ -459,7 +412,6 @@ def _load_ic_from_db(filter_names=None, scope='live') -> dict:
             conn.close()
     else:
         raise ValueError(f"Invalid scope: {scope}")
-
     if filter_names and ic_map:
         ic_map = {k: v for k, v in ic_map.items() if k in filter_names}
     total = sum(abs(v) for v in ic_map.values())
@@ -467,32 +419,27 @@ def _load_ic_from_db(filter_names=None, scope='live') -> dict:
         ic_map = {k: v / total for k, v in ic_map.items()}
     logger.info(f"IC weights loaded from DB: {len(ic_map)} factors (scope={scope})")
     return ic_map
-
 def compute_backtest_ic(start_date: str, n_train_days: int = 120,
                        status_filter: str = 'backtesting',
                        factor_cache: dict = None,
                        symbols: list = None) -> dict:
     """计算回测用 IC 权重 — 训练期 OOS 验证 → 写入 factor_ic_daily(scope='backtest').
-
     start_date: 回测开始日期 (如 '2026-01-01')
     n_train_days: 训练期天数, 从 start_date 往前数
     status_filter: 因子池 ('backtesting' = evaluating+probation)
     factor_cache: test-v397 (P0) — 预加载的 {date: {factor: Series}}, 跳过 gzip I/O
     symbols: test-v466 (BT-4) — 显式符号集 (回测主循环口径), None=全量+流动性 top-N
-
     返回: {factor_name: weight} 归一化 IC 权重, 供 generate_signals(ic_map=...) 使用.
     同时写入 factor_ic_daily(scope='backtest') 持久化.
     """
     from datetime import timedelta
     import pandas as pd
-
     # test-v397 (Problem 5): PIT 断言 — 确保 run_oos_check 只用 ≤ start_date 数据
     train_end = start_date
     start_dt = pd.Timestamp(start_date)
     train_start = (start_dt - timedelta(days=n_train_days)).strftime("%Y-%m-%d")
     logger.info(f"backtest IC: computing for {status_filter} pool, train window={train_start}→{train_end} "
                 f"(PIT: no data beyond train_end={train_end})")
-
     from quant.scheduler.oos_verify import run_oos_check
     result = run_oos_check(
         train_end,
@@ -506,10 +453,8 @@ def compute_backtest_ic(start_date: str, n_train_days: int = 120,
     )
     if result.get("alert"):
         logger.warning(f"backtest IC: OOS decay alert for {train_end}")
-
     per_factor = result.get("details", {}).get("per_factor", {})
     ic_daily = result.get("ic_daily", {})
-
     # Write to factor_ic_daily with scope='backtest'
     from quant.data.repos import FactorRepo
     f_repo = FactorRepo()
@@ -525,7 +470,6 @@ def compute_backtest_ic(start_date: str, n_train_days: int = 120,
                                    scope='backtest')
             written += 1
     logger.info(f"backtest IC: wrote {written} rows to factor_ic_daily(scope='backtest')")
-
     # Build ic_map from OOS IR (more robust than raw ic_mean for 1-day IC)
     ic_map = {}
     for fname, info in per_factor.items():
@@ -539,7 +483,6 @@ def compute_backtest_ic(start_date: str, n_train_days: int = 120,
             "ic_ir": ic_ir,
             "weight": weight,
         }
-
     # Normalize weights
     total = sum(abs(v["weight"]) for v in ic_map.values())
     if total > 0:
@@ -547,13 +490,10 @@ def compute_backtest_ic(start_date: str, n_train_days: int = 120,
             ic_map[k]["weight"] = ic_map[k]["weight"] / total
     logger.info(f"backtest IC: {len(ic_map)} factors with weights (train_end={train_end})")
     return ic_map
-
 def _bayesian_shrink_ic_map(ic_map: dict) -> dict:
     """ALG2: Bayesian shrinkage of IC estimates toward cross-sectional prior.
-
     Grinold & Kahn (1999) Eq. 6.16:
       IC_bayes = (σ²_prior × IC_sample + σ²_sample × IC_prior) / (σ²_prior + σ²_sample)
-
     Intuition: factors with noisy IC estimates (high standard error) are shrunk
     more aggressively toward the prior mean. Stable factors retain their signal.
     """
@@ -572,21 +512,18 @@ def _bayesian_shrink_ic_map(ic_map: dict) -> dict:
     if sigma2_prior < 1e-8:
         # All ICs essentially equal — return float weights (not raw dict)
         return _extract_float_weights(ic_map)
-
     # σ²_sample: approximate standard error of each IC estimate.
     # Using 1/√n assumption where n ≈ 120 trading days (config factor.evaluation.lookback).
     # More precise: each factor's ic_std from factor_ic_daily, but this is a robust default.
     from quant.config.constants import _require_cfg
     n_obs = _require_cfg("factor.evaluation.lookback")
     sigma2_sample = 1.0 / n_obs  # var(IC_est) ≈ 1/n under null
-
     shrunk = {}
     for name, ic_val in ic_map.items():
         ic = ic_val.get("ic_mean", ic_val.get("ic", ic_val)) if isinstance(ic_val, dict) else ic_val
         numerator = sigma2_prior * ic + sigma2_sample * ic_prior
         denominator = sigma2_prior + sigma2_sample
         shrunk[name] = float(numerator / denominator)
-
     logger = __import__("quant.utils.logger", fromlist=["get_logger"]).get_logger("quant.factor.stats_cache")
     logger.debug(
         "Bayesian shrinkage: %d factors, prior=%.4f σ²_prior=%.6f → max shrinkage %.0f%%",
@@ -594,10 +531,8 @@ def _bayesian_shrink_ic_map(ic_map: dict) -> dict:
         (1 - sigma2_prior / (sigma2_prior + sigma2_sample)) * 100
     )
     return shrunk
-
 def _extract_float_weights(ic_map: dict) -> dict:
     """Convert dict-valued ic_map to {name: float_weight} for early-return paths.
-
     The main path (len >= 3, sigma2_prior >= 1e-8) builds `shrunk` dict inline.
     Early-return paths (too few factors or zero variance) call this to avoid
     returning dict-valued entries to callers that expect floats (e.g. AlphaModel.combine).
@@ -606,28 +541,22 @@ def _extract_float_weights(ic_map: dict) -> dict:
     for name, v in ic_map.items():
         result[name] = float(v.get("ic_mean", v.get("ic", v)) if isinstance(v, dict) else v)
     return result
-
 def load_ic_map_from_cache(factor_values: dict = None, scope='live') -> dict:
     """从 DB 加载 IC 权重 (scope 隔离).
-
     返回: {factor_name: weight} 字典，已归一化。
     factor_values: 可选，用于过滤只保留实际计算出的因子。
     scope: 'live' (实盘, 读 factor_registry) 或 'backtest' (回测, 读 factor_ic_daily).
     """
     return _load_ic_from_db(factor_values, scope=scope)
-
 # ── Incremental IC (test-v458: P4) ──────────────────────────────────────
 class IncrementalIC:
     """增量 IC 维护器 — 滚动窗口 Spearman 相关增量更新替代全量重算。
-
     维护每个因子的滚动 IC 时间序列，支持：
       - 每日增量更新 (O(N) 单因子，利用 pandas rolling)
       - 增量 Spearman 相关更新 (近似: 用 Pearson 近似 + 秩转换)
       - 定期全量重算修正数值漂移
-
     适用场景: 回测/实盘每日需 IC 权重的场景 (generate_signals, alpha 合成)。
     """
-
     def __init__(
         self,
         window: int = 120,
@@ -648,7 +577,6 @@ class IncrementalIC:
         self.full_recalc_interval = full_recalc_interval
         self.symbols = list(symbols) if symbols else None
         self._update_count = 0
-
         # 存储每个因子的 (date, ic) 时间序列
         self._ic_series: dict[str, pd.Series] = {}
         # 存储每日因子值和收益率用于增量计算
@@ -660,17 +588,14 @@ class IncrementalIC:
         self._factor_names = None
         self._update_count = 0
         self._lock = threading.Lock()
-
     def update(self, factor_values: dict[str, pd.Series], returns: pd.Series,
                date: str = None) -> dict[str, float]:
         """增量更新 IC。
-
         Args:
             factor_values: {factor_name: Series(index=symbol, value=factor_value)}
             returns: pd.Series, index=symbol, value=当日收益率 (T+1)
             date: 交易日 YYYY-MM-DD — B34 (2026-08-18): 必须显式传入,
                 原实现 pd.Timestamp.now() 打戳, 回测/重放场景日期全错.
-
         Returns:
             {factor_name: ic_value} 当日 IC 值字典
         """
@@ -684,7 +609,6 @@ class IncrementalIC:
                 self._factor_names = list(factor_values.keys())
                 for fn in new_factors:
                     self._ic_series[fn] = pd.Series(dtype=float)
-
             # 2. 处理新进/退出的 symbol
             all_syms = set()
             for fv in factor_values.values():
@@ -698,7 +622,6 @@ class IncrementalIC:
                 self._factor_buffer.clear()
                 self._return_buffer.clear()
                 self._date_buffer.clear()
-
             # 3. 对齐并按日分组存入缓冲区
             #    B34: 原实现逐因子 append (fn, series) tuple — 类型标注是
             #    deque[pd.Series] 却混入 tuple, 结构损坏; 现按日存 {fn: Series}.
@@ -708,7 +631,6 @@ class IncrementalIC:
             self._factor_buffer.append(aligned_factors)
             self._return_buffer.append(returns.reindex(self._symbols))
             self._date_buffer.append(date)
-
             # 4. 计算当日 IC (Spearman 相关)
             ic_today = {}
             aligned_r = returns.reindex(self._symbols)
@@ -722,17 +644,13 @@ class IncrementalIC:
                         # 累加到时间序列 (B34: 用交易日 date 而非 now())
                         self._ic_series.setdefault(fn, pd.Series(dtype=float))
                         self._ic_series[fn].loc[date] = ic_today[fn]
-
             # 5. 定期全量重算 (修正数值漂移)
             self._update_count += 1
             if self._update_count % 20 == 0:
                 self._full_recalc()
-
             return ic_today
-
     def _full_recalc(self) -> None:
         """全量重算所有因子的滚动 IC (B34: 原为空实现只打日志 → 漂移从未修正).
-
 用缓冲区逐日重算: 因子 t 日 vs 收益 t+1 日 (T+1 前瞻口径, 与 update 一致).
         日期戳取 _date_buffer (B34: 原空实现; 序号 index 会丢失真实日期).
         注意: 调用方须已持 self._lock (threading.Lock 不可重入, 内部不得再取锁).
@@ -754,13 +672,10 @@ class IncrementalIC:
                         series.loc[self._date_buffer[i]] = float(ic)
             if len(series):
                 self._ic_series[fn] = series
-
     def get_ic_map(self, lookback: int = None) -> dict[str, float]:
         """获取最近 lookback 期 IC 均值 (用于 alpha 合成权重)。
-
         Args:
             lookback: 计算均值的回看天数，默认全长度
-
         Returns:
             {factor_name: ic_mean} 字典
         """
@@ -777,7 +692,6 @@ class IncrementalIC:
                 if len(tail) >= 5:
                     ic_map[fn] = float(tail.mean())
             return ic_map
-
     def get_ic_series(self, factor_name: str, lookback: int = None) -> pd.Series:
         """获取单因子的 IC 时间序列。"""
         with self._lock:
@@ -787,7 +701,6 @@ class IncrementalIC:
             if lookback:
                 return series.tail(lookback)
             return series
-
     def get_ic_ir(self, lookback: int = None) -> dict[str, float]:
         """获取 IR = mean(IC) / std(IC) * sqrt(252/lookback)。"""
         with self._lock:
@@ -807,10 +720,8 @@ class IncrementalIC:
                         ir = ic_mean / ic_std * np.sqrt(_ann / max(lookback, 1))
                         ir_map[fn] = float(ir)
             return ir_map
-
     def get_ic_decay(self, factor_name: str, horizons: list[int] = None) -> dict[str, float]:
         """计算 IC 衰减: 不同前瞻期的 IC (B34: 原 0.8/0.5 捏造系数已废除).
-
         真实口径: 因子 t 日截面 vs 收益 t+h 日截面 (Spearman), 每 horizon
         至少 10 对样本且 ≥5 个有效 IC 才返回均值.
         """
@@ -837,7 +748,6 @@ class IncrementalIC:
                 if len(ics) >= 5:
                     out[f"{h}d"] = float(np.mean(ics))
         return out
-
     def reset(self):
         """重置状态 (换因子池/换窗口时调用)。"""
         with self._lock:
@@ -847,12 +757,9 @@ class IncrementalIC:
             self._factor_buffer.clear()
             self._return_buffer.clear()
             self._update_count = 0
-
 def force_refresh_cache(n_symbols: int = None) -> dict:
     """强制刷新因子评估 — 重新计算并存入 factor_snapshot 表。
-
     用于: 基本面数据更新后、因子变更后、每日定时任务。
-
     返回: compute_factor_stats() 的输出 dict。
     """
     if n_symbols is None:

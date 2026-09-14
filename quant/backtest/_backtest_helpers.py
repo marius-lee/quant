@@ -1,0 +1,769 @@
+def _compute_dsr(returns: pd.Series, n_trials: int = None) -> float | None:
+    """ADR-041: Compute Deflated Sharpe Ratio for statistical significance.
+    Bailey & Lopez de Prado (2014). DSR < 0.5 → likely overfit.
+    v406: 修复三重 bug — 传数组而非 float, 缺 n_obs, 返回 dict 当 tuple 解包.
+    v554: n_trials 显式传入 — 原取 factor.evaluation.n_symbols (股票数 800) 当
+    试验次数, 方差惩罚虚高 ~10 倍 (De Prado: n_trials=候选策略/因子数量).
+    """
+    try:
+        from quant.evaluation.deflated_sharpe import deflated_sharpe_ratio
+        vals = returns.dropna().values
+        if len(vals) < 20:
+            return None
+        # 计算年化 Sharpe
+        ann_days = _require_cfg("market.annual_trading_days")
+        daily_rf = _require_cfg("benchmark.risk_free_rate") / ann_days
+        excess = vals - daily_rf
+        # P0-6 fix: PSR 公式要求 SR 与 n_obs 同周期 (日频).
+        # 年化 SR + 日频 n_obs → 方差放大 ~252 倍 → DSR 恒 1.0 (虚假显著).
+        # 用每日 SR 参与 DSR 计算 (De Prado 2018 Eq.7.2, 与 cpcv_dsr 口径统一).
+        sr = float(np.mean(excess) / np.std(excess)) if np.std(excess) > 0 else 0.0
+        result = deflated_sharpe_ratio(
+            observed_sr=sr,
+            n_trials=max(n_trials or 1, 1),
+            n_obs=len(vals),
+            skewness=-0.5, kurtosis=8.0,
+        )
+        return round(result["dsr"], 4)
+    except Exception as _e:
+        _log.warning("silent exception: %s", _e)
+        return None
+
+def _compute_backtest_metrics(equity_curve, benchmark_returns=None, n_trials: int = None):
+    """Compute Sharpe, MDD, CAGR, win rate, Sortino, Calmar, Alpha, IR, Beta from equity curve."""
+    ann_days = _require_cfg("market.annual_trading_days")
+    df = pd.DataFrame(equity_curve)
+    if df.empty or len(df) < 2:
+        return {"sharpe": 0, "max_drawdown_pct": 0, "cagr_pct": 0, "final_equity": 0}
+    df["return"] = df["equity"].pct_change()
+    returns = df["return"].dropna()
+    if len(returns) < 5:
+        return {"sharpe": 0, "max_drawdown_pct": 0, "cagr_pct": 0, "final_equity": df["equity"].iloc[-1]}
+    # Sharpe (daily → annualized)
+    mean_ret = returns.mean()
+    std_ret = returns.std()
+    ann_days = _require_cfg("market.annual_trading_days")
+    sharpe = (mean_ret / std_ret * np.sqrt(ann_days)) if std_ret > 0 else 0.0
+    # Max drawdown
+    cum = (1 + returns).cumprod()
+    running_max = cum.cummax()
+    drawdown = (cum - running_max) / running_max
+    max_dd = float(drawdown.min())
+    # CAGR
+    years = len(returns) / ann_days
+    final = df["equity"].iloc[-1]
+    initial = df["equity"].iloc[0]
+    cagr = (final / initial) ** (1 / max(years, 0.5)) - 1 if initial > 0 else 0
+    # Win rate
+    wins = (returns > 0).sum()
+    wr = wins / len(returns) if len(returns) > 0 else 0
+    # Sortino (annualized): only penalize downside deviation
+    downside = returns[returns < 0]
+    if len(downside) > 1 and downside.std() > 0:
+        sortino = (mean_ret / downside.std() * np.sqrt(ann_days))
+    else:
+        sortino = 0.0
+    # Calmar: CAGR / |MDD|
+    calmar = (cagr / abs(max_dd)) if max_dd < 0 else 0.0
+    # Benchmark-relative metrics (Alpha, IR, Beta)
+    alpha = None
+    ir = None
+    beta = None
+    if benchmark_returns is not None and not benchmark_returns.empty:
+        try:
+            bm_returns = benchmark_returns.reindex(returns.index, method='ffill').dropna()
+            if bm_returns.empty:
+                pass  # 无可用基准数据，跳过 Alpha/IR/Beta
+            else:
+                common_idx = returns.index.intersection(bm_returns.index)
+                if len(common_idx) > 20:
+                    strat = returns.loc[common_idx]
+                    bm = bm_returns.loc[common_idx]
+                    if len(strat) <= 1 or len(bm) <= 1:
+                        pass  # 样本不足，无法计算协方差
+                    else:
+                        cov_mat = np.cov(strat, bm)
+                        if cov_mat.shape == (2, 2):
+                            bm_var = cov_mat[1, 1]
+                            beta_val = 0.0
+                            if bm_var > 0:
+                                beta_val = cov_mat[0, 1] / bm_var
+                                beta = round(float(beta_val), 3)
+                            if beta is not None:
+                                # test-v466 (BT-8): alpha 扣无风险利率 —
+                                # 原 (strat - beta*bm) 未减 rf, 高估 alpha
+                                _daily_rf = _require_cfg("benchmark.risk_free_rate") / ann_days
+                                daily_alpha = (strat - _daily_rf - beta_val * bm).mean()
+                                alpha = round(float(daily_alpha * ann_days), 4)
+                                tracking_err = (strat - bm).std() * np.sqrt(ann_days)
+                                if tracking_err > 0:
+                                    ir = round(float(daily_alpha * ann_days / tracking_err), 3)
+        except (TypeError, ValueError, IndexError) as _e:
+            _log.debug("backtest diag compute skipped (non-fatal): %s", _e)
+    return {
+        "sharpe": round(sharpe, 3),
+        "max_drawdown_pct": round(max_dd * 100, 1),
+        "cagr_pct": round(cagr * 100, 1),
+        "final_equity": round(final, 2),
+        "initial_equity": round(initial, 2),
+        "total_return_pct": round((final / initial - 1) * 100, 1),
+        "win_rate": round(wr, 3),
+        "n_days": len(returns),
+        "sortino": round(sortino, 3),
+        "calmar": round(calmar, 3),
+        "alpha": alpha,
+        "info_ratio": ir,
+        "beta": beta,
+        # ADR-041: DSR (Deflated Sharpe Ratio)
+        "dsr": _compute_dsr(returns, n_trials=n_trials),
+    }
+
+def run_backtest(start_date=None, end_date=None, capital=5000, strategy=None, retrain_freq=None, mode='full',
+                    universe_size=None, ic_lookback=None, factor_status_filter="backtesting",
+                    factor_store=None, combine_mode=None, oos_start_date=None, suppress_push=False):  # v406: suppress_push for phase8
+    """Run a full walk-forward backtest.
+    Args:
+        start_date: YYYY-MM-DD
+        end_date: YYYY-MM-DD
+        capital: initial capital in RMB
+        strategy: strategy name (uses separate DB to not pollute real trades)
+        universe_size: override backtest.universe_size (None=use config)
+        ic_lookback: override backtest.diagnosis_ic_window (None=use config)
+        factor_status_filter: status filter for get_factor_names (default "backtesting";
+            None=all factors)
+        factor_store: FactorStore instance (因子值物化缓存). If provided, generate_signals()
+            will read from cache instead of re-computing factors each day.
+        oos_start_date: test-v397 (Problem 8): OOS 验证期起始日
+        combine_mode: walk-forward 合成模式覆盖 (None=默认: warmup 后切 ic_weighted)。
+            test-v298: hyperopt 把 combine_mode 纳入 Optuna 搜索空间用。
+    Returns:
+        dict with keys: equity_curve, metrics, signals_per_day, errors
+    """
+    with offline_mode():
+        from quant.execution.calendar import is_trading_day
+        from quant.data.store import DataStore
+        from quant.execution.engine import ExecutionEngine
+        from quant.execution.cost import CostModel
+        from quant.backtest.naming import next_backtest_name
+        from quant.factor.store import FactorStore
+        from quant.config.paths import FACTOR_CACHE_DB
+        if strategy is None:
+            strategy = next_backtest_name()
+        # ── Mode-based defaults: smoke (22d×10 stocks) vs full (244d×all) ──
+        if mode == 'smoke':
+            if start_date is None or end_date is None:
+                end_date = end_date or datetime.now().strftime('%Y-%m-%d')
+                start_date = start_date or (pd.Timestamp(end_date) - pd.DateOffset(months=1)).strftime('%Y-%m-%d')
+            universe_size = _require_cfg('backtest.smoke.universe_size')  # 10
+            _log.info(f'backtest: SMOKE mode — {start_date}→{end_date}, {universe_size} stocks')
+        else:  # full
+            if end_date is None:
+                # v538: 接入 config backtest.default_end (原 today — 滚动配置值
+                # 语义: 评估截止日, 数据就绪时由维护者更新)
+                end_date = _require_cfg('backtest.default_end')
+            if start_date is None:
+                # v538: 接入 config backtest.default_start (2020-01-01, 与
+                # factor_cache_start 同源 — 2018 年 daily 仅 ~354 只子集,
+                # 更早起点拉残缺 lookback 产生半脏缓存)
+                start_date = _require_cfg('backtest.default_start')
+            if universe_size is None:
+                u_cfg = cfgl.get('backtest.universe_size'); universe_size = u_cfg if u_cfg is not None else 0
+            _log.info(f'backtest: FULL mode — {start_date}→{end_date}, {universe_size or "all"} stocks')
+        set_trace_id(_uuid.uuid4().hex[:12])
+        _log.info(f"backtest: {start_date} → {end_date}, capital=Y{capital:,}, strategy={strategy}")
+        _log.info("=" * 70)
+        bt_tracker = PhaseTracker(f"backtest:{strategy}")
+        _log.info(f"  BACKTEST START: {strategy} | {start_date} → {end_date} | capital=Y{capital:,}")
+        # ── Setup: initialize strategy in backtest DB ──
+        engine = ExecutionEngine(db_path=BACKTEST_DB)
+        engine.set_initial_capital(strategy, capital)  # always fresh for each run
+        # ── Factor cache: use materialized values instead of daily recomputation ──
+        _fstore = FactorStore(db_path=FACTOR_CACHE_DB)
+        _log.info(f"backtest: factor_store from {FACTOR_CACHE_DB}")
+        _log.info(f"backtest: initialized {strategy} with Y{capital:,}")
+        # 清理该策略旧交易记录 (防止旧数据污染 get_cash() 计算)
+        import sqlite3 as _sql
+        _bc = _sql.connect(BACKTEST_DB)
+        deleted = _bc.execute("DELETE FROM sim_trades WHERE strategy=?", (strategy,)).rowcount
+        if deleted:
+            _bc.commit()
+            _log.info(f"backtest: cleaned {deleted} old trades for {strategy}")
+        _bc.close()
+        store = DataStore()
+        # broker created after data_full preload (needs data_full ref)
+        # ── Generate trading day list ──
+        start_dt = pd.Timestamp(start_date)
+        end_dt = pd.Timestamp(end_date)
+        all_dates = pd.date_range(start=start_dt, end=end_dt, freq="B")
+        trading_days = []
+        for d in all_dates:
+            ds = d.strftime("%Y-%m-%d")
+            if is_trading_day(d.date()):
+                trading_days.append(ds)
+        if len(trading_days) < _require_cfg("backtest.min_trading_days"):
+            _log.error(f"backtest: only {len(trading_days)} trading days — aborting")
+            return {"error": f"Too few trading days: {len(trading_days)}"}
+        _log.info(f"backtest: {len(trading_days)} trading days to simulate")
+        # ── Walk-forward IC ──
+        from quant.factor.compute import get_factor_names
+        if retrain_freq is None:
+            retrain_freq = _require_cfg("alpha.retrain_freq")
+        ic_lookback = ic_lookback if ic_lookback is not None else _require_cfg("backtest.diagnosis_ic_window")
+        bt_factor_names = get_factor_names(status_filter=factor_status_filter)
+        # v395 + test-v466 (BT-5): 缓存覆盖检查 — 全量 IC 窗口日期逐日检查, 缺则阻断
+        # (原只查 _ic_dates[0] 起始日, 窗口中间缺日期半路静默空算)
+        _ic_start = (pd.Timestamp(trading_days[0]) - pd.Timedelta(days=ic_lookback * 2)).strftime("%Y-%m-%d")
+        _ic_dates = [d.strftime("%Y-%m-%d") for d in pd.date_range(start=_ic_start, end=trading_days[0], freq="B")
+                     if is_trading_day(d.date())]
+        _missing_ic = [d for d in _ic_dates
+                       if _fstore._date_missing_factors(d, bt_factor_names)]
+        if _missing_ic:
+            raise RuntimeError(
+                f"factor cache missing for {len(_missing_ic)} IC lookback dates "
+                f"({_missing_ic[0]} .. {_missing_ic[-1]}). "
+                f"Run: scripts/materialize_full.sh")
+        # ── Pre-load all daily data once (eliminates 843 DB queries) ──
+        # test-v458 P1: 使用持久化缓存避免重复 DB 查询
+        from quant.factor.windows import max_factor_calendar_days
+        _eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(None))
+        _cache_key = _compute_cache_key(
+            start_date=start_date,
+            end_date=end_date,
+            symbols=[],  # will be filled after universe selection
+            lookback_days=_eff_days,
+            universe_size=universe_size,
+        )
+        def _load_all_data():
+            from quant.data.repos import UniverseRepo
+            _all_symbols = UniverseRepo().get_symbols(exclude_market='BJ', start_date=start_date, end_date=end_date)
+            from quant.factor.windows import max_factor_calendar_days
+            _eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(None))
+            _full_start = (pd.Timestamp(trading_days[0]) - pd.Timedelta(days=_eff_days)).strftime("%Y-%m-%d")
+            data_full = store.get_daily(_all_symbols, start=_full_start, end=end_date)
+            _log.info("backtest: pre-loaded %d days x %d symbols data", len(data_full), len(_all_symbols))
+            # Also load benchmark data
+            benchmark = store.get_benchmark("000300", start=start_date)
+            if benchmark is None or benchmark.empty:
+                benchmark = pd.Series(dtype=float)
+            # Also load fundamentals
+            from quant.factor.store import FactorStore
+            fs = FactorStore()
+            _fv_start = trading_days[0]
+            _fv_end = trading_days[-1]
+            _mconn = store._connect()
+            _val_df = pd.read_sql_query(
+                "SELECT symbol, date, pe_ttm, pb, ps_ttm, pcf_ttm, market_cap FROM daily_valuation "
+                "WHERE date >= ? AND date <= ? ORDER BY date",
+                _mconn, params=(_fv_start, _fv_end))
+            _stocks_df = pd.read_sql_query(
+                "SELECT symbol, pe, pe_ttm, pb, total_mv, roe, industry, high_52w, eps, bvps FROM stocks",
+                _mconn).set_index("symbol")
+            return {
+                "data_full": data_full,
+                "benchmark": benchmark if benchmark is not None else pd.Series(dtype=float),
+                "fundamentals": {
+                    "val_df": _val_df,
+                    "stocks_df": _stocks_df,
+                    "close_piv": data_full["close"] if "close" in data_full.columns.levels[0] else None,
+                },
+                "all_symbols": _all_symbols,
+                "start_date": start_date,
+                "end_date": end_date,
+            }
+        cached_data = get_or_load_backtest_data(
+            start_date=start_date,
+            end_date=end_date,
+            symbols=[],  # universe not yet filtered
+            lookback_days=_eff_days,
+            loader=_load_all_data,
+            universe_size=universe_size,
+        )
+        data_full = cached_data["data_full"]
+        _all_symbols = cached_data["all_symbols"]
+        _log.info("backtest: pre-loaded %d days x %d symbols data (cached=%s)", 
+                  len(data_full), len(_all_symbols), "hit" if len(data_full) > 0 else "miss")
+        # ── test-v466 (BT-3): 移除增量协方差/增量IC 死代码 — 
+        # _ctx.covariance 无消费者 (ExecutionContext 无此字段, pipeline 不读),
+        # inc_ic 参数 compute_backtest_ic 从不使用, 两段重复预热互覆盖。
+        # 协方差在图谱里由 PortfolioConstructor 内部现值计算承担。
+        # ── test-v398 (perf): broker + 复用实例 (需 data_full 已加载) ──
+        broker = SimulatedBroker(store, engine, BACKTEST_DB, data_full=data_full)
+        _br = broker  # Python 3.14 兼容: 循环内 try 块通过别名访问
+        cost_model = CostModel.from_config()
+        from quant.optimizer.portfolio import PortfolioConstructor
+        _prebuilt_constructor = PortfolioConstructor()
+        # ── test-v398 (perf): Benchmark 预加载一次, 消除每日 SQL 重复查询 ──
+        _bm_full = store.get_benchmark("000300", start=start_date)
+        _bm_returns_full = _bm_full.pct_change().dropna() if not _bm_full.empty else pd.Series(dtype=float)
+        _log.info("backtest: benchmark preloaded — %d days", len(_bm_full))
+        # ── test-v398 (perf): 静态数据预加载 — 消除每日 DB 查询 ──
+        _stock_names = dict(store.get_stock_names(_all_symbols))
+        _log.info("backtest: stock names preloaded — %d symbols", len(_stock_names))
+        # test-v398 (perf): 涨停封成比预加载 — 一次加载全表, 避免每日期独立连接
+        # test-v466 (BT-8): 删除错误建表 — 原 CREATE IF NOT EXISTS 用 3 列 schema,
+        # 与实际 16 列表 (quant/data/limit_up.py) 冲突恒失败, 只读即可。
+        import sqlite3 as _sql3
+        from quant.config.paths import MARKET_DB
+        _preloaded_seal: dict[str, list] = {}
+        try:
+            _sconn = _sql3.connect(MARKET_DB)
+            _seal_rows = _sconn.execute(
+                "SELECT date, symbol, lock_capital, amount FROM limit_up_pool ORDER BY date"
+            ).fetchall()
+            _sconn.close()
+            for _sd, _ss, _slc, _sa in _seal_rows:
+                _preloaded_seal.setdefault(_sd, []).append((_ss, _slc, _sa))
+            _log.info("backtest: limit_up_pool preloaded — %d rows across %d dates",
+                      len(_seal_rows), len(_preloaded_seal))
+        except Exception as _se:
+            _log.warning("backtest: limit_up_pool preload failed (non-fatal): %s", _se)
+        # v391 原 ztd 预加载 — test-v466 (BT-8): 移除。
+        # 回测因子全部来自物化缓存 (bulk_load), 不触发因子重算 → ztd 预计算 ~80MB 纯浪费。
+        # ── test-v398 (perf): 基本面 PIT 组件预加载 (共享 pivot 表, 按日切片, 零拷贝) ──
+        # 存 shared pivot 而非 dict-of-DataFrame: 全量回测 1580d×5000s 仅 ~400MB
+        # test-v466 (BT-8): 复用缓存 loader 的查询结果 — 原主路径重复查
+        # daily_valuation/stocks 两表 (与 data_cache loader 双重查询)。
+        _fund_data = cached_data.get("fundamentals", {})
+        _val_df = _fund_data.get("val_df")
+        _stocks_df = _fund_data.get("stocks_df")
+        if _val_df is None or _stocks_df is None:
+            # 仅兼容旧格式磁盘缓存 (缺 fundamentals key), 丢弃重载
+            _log.warning("backtest: cached fundamentals missing — reloading")
+            _fund_data = _load_all_data()["fundamentals"]
+            _val_df = _fund_data["val_df"]
+            _stocks_df = _fund_data["stocks_df"]
+        _log.info("backtest: fundamentals preload — %d valuation rows, %d stocks",
+                  len(_val_df), len(_stocks_df))
+        # PIT 估值 pivot: date × symbol × {pe_ttm, pb, market_cap}, ffill
+        _val_piv = None
+        if not _val_df.empty:
+            _val_df["date"] = pd.to_datetime(_val_df["date"])
+            _val_piv = _val_df.pivot(index="date", columns="symbol",
+                                     values=["pe_ttm", "pb", "market_cap"]).ffill()
+        # v502 (PIT industry): industry_history → date×symbol industry pivot.
+        # 取代 stocks.industry 当前快照 (tushare 申万口径 + 后视).
+        # 面板仅保留变更日行, 由 pipeline 按日前向填充; 消费端用
+        # industry_piv.loc[:date].iloc[-1] 切片 (不引入未来).
+        _industry_piv = None
+        try:
+            from quant.data.industry_history import _build_table as _ih_build
+            _ih_build(_mconn)
+            _ih_df = pd.read_sql_query(
+                "SELECT symbol, effective_from, industry FROM industry_history "
+                "WHERE effective_from <= ? ORDER BY effective_from",
+                _mconn, params=(end_date,))
+            if not _ih_df.empty:
+                _industry_piv = _ih_df.pivot(
+                    index="effective_from", columns="symbol",
+                    values="industry").sort_index()
+                _industry_piv.index = pd.to_datetime(_industry_piv.index)
+                _industry_piv = _industry_piv.ffill()  # PIT forward fill: propagate last known industry
+                _log.info("backtest: industry PIT pivot — %d dates x %d symbols (ffilled)",
+                          len(_industry_piv), len(_industry_piv.columns))
+        except Exception as _ihe:
+            _log.warning("backtest: industry PIT pivot build failed: %s", _ihe)
+        # close pivot + 52w high 复用 data_full
+        _close_piv_fund = data_full["close"] if "close" in data_full.columns.levels[0] else None
+        _high_52w_fund = _close_piv_fund.rolling(244, min_periods=60).max() if _close_piv_fund is not None else None
+        _log.info("backtest: fundamentals PIT components ready (shared pivot, lazy per-day assembly)")
+        # ── test-v398 (perf): 成交额排名 — 存 _amount_roll DataFrame, 按日排序 O(N log N) ~1ms
+        # 不存 dict-of-list (1580d×5000s 字符串 = ~500MB), 避免全量回测 OOM
+        _turnover_days = _require_cfg("backtest.universe_turnover_days")
+        _amount_roll = data_full["amount"].rolling(window=_turnover_days, min_periods=1).mean()
+        _log.info("backtest: turnover rolling mean ready (%d dates, shared array ~100MB)", len(trading_days))
+        # test-v397 (P0): 全量因子值预加载到内存, 消除逐日 gzip I/O
+        _ic_start2 = (pd.Timestamp(trading_days[0]) - pd.Timedelta(days=ic_lookback * 2)).strftime("%Y-%m-%d")
+        _factor_dates = [d.strftime("%Y-%m-%d") for d in pd.date_range(start=_ic_start2, end=end_date, freq="B")
+                         if is_trading_day(d.date())]
+        # 符号预过滤: universe_size 限制时只加载流动性 top-N (避免烟雾测试加载5000+股)
+        # test-v397 fix: IC 计算需要 ≥200 只样本做 Spearman 相关, 取 max(universe_size, 200)
+        _factor_syms = _all_symbols
+        if universe_size and len(_all_symbols) > universe_size:
+            _ic_min = max(universe_size, 200)
+            _factor_syms = store.rank_by_turnover(
+                _all_symbols, trading_days[0],
+                lookback_days=_require_cfg("backtest.universe_turnover_days"),
+                top_n=min(_ic_min, len(_all_symbols)),
+            )
+        _log.info("backtest: preloading factor cache for %d dates x %d factors x %d symbols...",
+                  len(_factor_dates), len(bt_factor_names), len(_factor_syms))
+        _factor_cache_raw = _fstore.bulk_load(_factor_dates, symbols=_factor_syms, factor_names=bt_factor_names)
+        # test-v398 (perf): dict-of-Series → DataFrame 存储, 共享 Index 省 ~2.5GB
+        # 每日期: dict{30×Series(800 rows)} ~1.6MB → DataFrame(800×30) ~192KB
+        _factor_cache = _FactorCache(_factor_cache_raw)
+        _log.info("backtest: factor cache ready - %d dates in memory (DataFrame compact)", len(_factor_cache))
+        # v501 (PIT fix): 初始 IC train_end 用回测首日的"前一交易日", 而非首日本身。
+        # 原用 trading_days[0] → run_oos_check 的 OOS 窗口延伸到 T0, 末样本配对
+        # ret(T0→T1) (T1=回测第二日收盘) → 生成 T0 信号时用了未来收益 (前视).
+        # 改传前一交易日 → 窗口止于 T0-1, 末样本 ret(T0-1→T0) 在 T0 信号前已知.
+        _ics_cursor = pd.Timestamp(trading_days[0])
+        _ics_prev = None
+        for _ in range(14):
+            _ics_cursor -= pd.Timedelta(days=1)
+            if is_trading_day(_ics_cursor.date()):
+                _ics_prev = _ics_cursor.strftime("%Y-%m-%d")
+                break
+        if _ics_prev is None:
+            raise RuntimeError("cannot find previous trading day for PIT IC train_end")
+        _log.info(f"backtest: PIT IC train_end={_ics_prev} (prev of {trading_days[0]})")
+        _current_ic_map = compute_backtest_ic(
+            start_date=_ics_prev,
+            n_train_days=ic_lookback,
+            status_filter=factor_status_filter or "backtesting",
+            factor_cache=_factor_cache,
+            symbols=_factor_syms,
+        )
+        _last_retrain_idx = 0
+        _log.info("backtest: initial IC: %d factors, retrain every %dd", len(_current_ic_map), retrain_freq)
+        # ── Diagnostics: factor tracker ──
+        tracker = FactorTracker()
+        _last_signals = None
+        # ── Cooling-off: prevent rebuy after stop-loss ──
+        # Q7-2 重构: 冷却注册表收敛到统一 RiskManager (内存 dict — 回测热路径无 DB 写)
+        from quant.execution.stop_loss import RiskManager
+        _rm = RiskManager(strategy=strategy, cooloff_store={})
+        # ── Combine mode: warmup with sleeve, switch to ic_weighted after lookback ──
+        warmup_days = _require_cfg("factor.evaluation.lookback")
+        # v501 (fix #4): 短回测 (天数 < lookback) 永不达到 warmup → 全程 sleeve,
+        # 3个月/半年回测无法验证 ic_weighted 合成. 回测长度为上限自适应:
+        # 最多用 1/3 回测期做 sleeve 热身, 之后切 ic_weighted (IC 每日已有).
+        if warmup_days > len(trading_days) // 3:
+            warmup_days = max(len(trading_days) // 3, 1)
+            _log.info(f"backtest: short window — warmup_days capped to {warmup_days} "
+                      f"({len(trading_days)} trading days)")
+        # ── rebalance_freq: weekly → 仅调仓日生成信号+再平衡, 非调仓日只跑风控 ──
+        _rebalance_freq = _require_cfg("optimizer.rebalance_freq")
+        from quant.execution.calendar import is_rebalance_day
+        # ── test-v299 §8.2: point-in-time regime (无前视) ──
+        # 起始日前训练 HMM; 逐调仓日用截止当日的 benchmark returns 前向滤波。
+        # (模块级 get_current_regime 用全量历史训练, 仅实盘可用, 回测禁用)
+        _regime_detector = None
+        _bm_rets = None
+        if _require_cfg("alpha.regime_combine"):
+            try:
+                from quant.regime.detector import RegimeDetector
+                _bm_rets = store.get_benchmark(
+                    _require_cfg("backtest.benchmark"),
+                    start=_require_cfg("regime.train_start"))  # v413: 去掉 *100, 与 live 路径量纲一致
+                _train_rets = _bm_rets[_bm_rets.index < pd.Timestamp(start_date)]
+                _regime_detector = RegimeDetector().train(_train_rets)
+                _log.info("backtest: PIT regime HMM trained on %d days (< %s)",
+                          len(_train_rets), start_date)
+            except ImportError:
+                _log.warning("backtest: hmmlearn not installed, regime detection disabled")
+            except Exception as _re:
+                _log.warning("backtest: regime detection skipped (non-fatal): %s", _re)
+        # ── test-v466 (BT-2): ATR 面板预计算 — 止损热路径免每仓每日 SQLite 查询 ──
+        # 口径与 _compute_atr 一致: 最近 atr_period 个 TR 的简单均值 (TR 不含当日行情)
+        try:
+            from quant.config.constants import _require_cfg as _rc
+            _atr_period = _rc("risk.atr_period")
+            _h, _l, _c = (data_full[f] for f in ("high", "low", "close"))
+            _prev_c = _c.shift(1)
+            _tr = np.maximum.reduce([
+                (_h - _l).values,
+                (_h - _prev_c).abs().values,
+                (_l - _prev_c).abs().values,
+            ])
+            # v553: Wilder SMMA — 与实盘 _compute_atr 同口径 (原 rolling mean = SMA,
+            # 回测/实盘 ATR 数值分裂且偏离 TradeStation 标准)。
+            # 种子 = 前 period 个 TR 的 SMA (rolling), 之后递归 (ATR*19+TR)/20。
+            _tr_df = pd.DataFrame(_tr, index=_h.index, columns=_h.columns)
+            _atr_df = _tr_df.rolling(_atr_period, min_periods=_atr_period).mean()
+            _w = (_atr_period - 1) / _atr_period
+            for _i in range(_atr_period, len(_tr_df)):
+                _atr_df.iloc[_i] = _atr_df.iloc[_i - 1] * _w + _tr_df.iloc[_i] / _atr_period
+            # v554 (P1): 面板 shift(1) — 当日 TR 含当日 H/L/C (收盘才可知),
+            # 止损判定在当日开盘 (prices=open), 原 atr_panel[today] 用当日行情 = 前视;
+            # 实盘 _compute_atr 用 date < as_of 不含当日 → 两口径分裂。
+            # shift(1) 后 atr_panel[today] = 截至昨日收盘的 ATR, 与 DB 版一致。
+            _atr_df = _atr_df.shift(1)
+            _ctx_atr_panel = {
+                _d.strftime("%Y-%m-%d"): {s: float(v) for s, v in _row.dropna().items()}
+                for _d, _row in _atr_df.iterrows()
+            }
+            _ctx_atr_panel = {d: p for d, p in _ctx_atr_panel.items() if p}
+            _log.info("backtest: ATR panel ready — %d dates (TR-based, period=%d)",
+                      len(_ctx_atr_panel), _atr_period)
+        except Exception as _ae:
+            _log.warning("backtest: ATR panel build failed — fallback per-position SQL: %s", _ae)
+            _ctx_atr_panel = None
+        # ── test-v466 (BT-6): probation 名单冻结一次 — 回测全程 PIT 一致 ──
+        from quant.data.repos.factor_repo import FactorRepo
+        _ctx_probation = sorted(set(FactorRepo().get_probation_factor_names()))
+        _log.info("backtest: probation frozen at start — %d factors", len(_ctx_probation))
+        # ── 统一上下文: ExecutionContext — 收敛 16+ 参数为单一上下文 ──
+        from quant.backtest.context import ExecutionContext
+        _ctx = ExecutionContext(
+            data_full=data_full, all_symbols=_all_symbols,
+            fund_stocks_df=_stocks_df, fund_val_piv=_val_piv,
+            fund_close_piv=_close_piv_fund, fund_high_52w=_high_52w_fund,
+            industry_piv=_industry_piv,
+            factor_cache=_factor_cache, factor_store=_fstore,
+            stock_names=_stock_names, preloaded_seal_ratios=_preloaded_seal,
+            turnover_amount_roll=_amount_roll, bm_returns=_bm_returns_full,
+            prebuilt_engine=engine, prebuilt_cost_model=cost_model,
+            prebuilt_constructor=_prebuilt_constructor,
+            suppress_push=suppress_push, db_path=BACKTEST_DB, universe_size=universe_size,
+            atr_panel=_ctx_atr_panel, probation_names=_ctx_probation,
+            # v532: 注入跨日共享 RiskManager — 原 BacktestExecutionModel.
+            # _risk_manager(ctx) 每 run 新建实例 → _meta_store 空 dict →
+            # 回测 peak/tp1 每日重置 (trailing 永基于当日, 与实盘全历史残留
+            # 方向相反)。注入 loop 顶层 _rm (内存 dict 跨日共享) 后统一为
+            # "持仓周期内跨日保留, 清仓重买重置"。
+            risk_manager=_rm,
+        )
+        # B-06 fix: 将 ExecutionContext 传递给 broker, 确保 execute_signals
+        # 使用共享 engine/cost_model 而非重新创建新实例
+        _br.ctx = _ctx
+        # ── Main loop ──
+        equity_curve = [{"date": trading_days[0], "equity": float(capital)}]
+        errors = 0
+        signal_counts = []
+        t0 = time.time()
+        for i, today in enumerate(trading_days[:-1]):
+            next_day = trading_days[i + 1]
+            _day_t0 = time.time()
+            # 调仓日判定 (执行日口径): daily 恒 True; weekly 仅本周首个交易日
+            _is_reb = is_rebalance_day(pd.Timestamp(next_day).date(),
+                                       freq=_rebalance_freq)
+            from quant.pipeline import generate_signals
+            # Filter out cooling-off symbols
+            cooloff_syms = list(_rm.get_cooloff_symbols(today))
+            # B-06 fix: sizing 用当日收盘 MTM 权益 (原成本价 → 无复利且亏损后仍满仓)
+            _held = engine.get_positions(strategy)
+            _held_close = _get_prices([p["symbol"] for p in _held], today, store, field="close", data_full=data_full) if _held else {}
+            kwargs = {
+                "date_str": today,
+                "capital": engine.get_capital(strategy, prices=_held_close),
+                "strategy": strategy,
+                "skip_pull": True,
+                "status_filter": factor_status_filter or "backtesting",
+                "scope": "backtest",
+                "store": store,
+                "exclude_symbols": cooloff_syms,
+                "ctx": _ctx,
+            }
+            # (原 test-v458 P2 增量协方差注入已移除 — 无消费者)
+            # Switch combine_mode from sleeve (warmup) to ic_weighted (walk-forward);
+            # test-v298: run_backtest(combine_mode=...) 可覆盖 walk-forward 模式 (hyperopt)
+            # B27 (2026-08-18): 原 `not _in_oos` 条件 → OOS 期不切换, 恒用
+            # pipeline 默认 sleeve — 而训练/评估假设 ic_weighted → OOS 口径
+            # 与假设不一致, OOS 指标失真. OOS 期同样切换.
+            _in_oos = oos_start_date and today >= oos_start_date
+            if i >= warmup_days:
+                kwargs["combine_mode"] = combine_mode or "ic_weighted"  # test-v307: None 时默认切 ic_weighted
+            # Walk-forward IC retrain - OOS 期冻结
+            if retrain_freq > 0 and (i - _last_retrain_idx) >= retrain_freq and bt_factor_names and not _in_oos:
+                _log.info("backtest: retraining IC at day %d (%s)", i, today)
+                _current_ic_map = compute_backtest_ic(
+                    start_date=(pd.Timestamp(today) - pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
+                    n_train_days=ic_lookback,
+                    status_filter=factor_status_filter or "backtesting",
+                    factor_cache=_factor_cache,
+                    symbols=_factor_syms,
+                )
+                _last_retrain_idx = i
+            kwargs["ic_map"] = _current_ic_map
+            # B-22 fix: 单日异常计入 errors 并跳过当日 (原 errors 计数器从未递增,
+            # 且单日异常会中断整个回测)
+            try:
+                if not _is_reb:
+                    # 非调仓日 (weekly): 跳过信号生成 (省 ~80% 计算), 只跑硬止损.
+                    # 组合不再平衡; 风控每日不断. signal_counts 不计入 (该计数
+                    # 描述"信号生成日", 非调仓日本就不生成信号).
+                    signals = {"date": today, "target_positions": []}
+                    exec_result = _br.execute_risk_only(next_day, strategy=strategy)
+                    if exec_result.get("skipped"):
+                        equity_curve.append({"date": next_day, "equity": _br.get_mtm_capital(strategy, next_day)})
+                        continue
+                else:
+                    # point-in-time regime 注入 (test-v299 §8.2)
+                    if _regime_detector is not None:
+                        _rets = _bm_rets[_bm_rets.index <= pd.Timestamp(today)]
+                        kwargs["regime_label"], kwargs["regime_probs"] = \
+                            _regime_detector.predict_proba(_rets)
+                    signals = generate_signals(**kwargs)
+                    _last_signals = signals
+                    targets = signals.get("target_positions", [])
+                    signal_counts.append(len(targets))
+                    # ── Record factor contributions for attribution ──
+                    fv = signals.get("_factor_values", {})
+                    ar = signals.get("_alpha_raw", pd.Series(dtype=float))
+                    # Get next-day returns for PnL tracking
+                    all_syms_track = list(set([tp["symbol"] for tp in targets]))
+                    next_close = _get_prices(all_syms_track, next_day, store, field="close", data_full=data_full) if all_syms_track and targets else {}
+                    today_close = _get_prices(all_syms_track, today, store, field="close", data_full=data_full) if all_syms_track and targets else {}
+                    if isinstance(next_close, dict) and next_close:
+                        ret_series = pd.Series({s: (next_close[s] / today_close[s] - 1) for s in next_close if s in today_close and today_close.get(s, 0) > 0})
+                    else:
+                        ret_series = pd.Series(dtype=float)
+                    if fv and not ar.empty and not ret_series.empty:
+                        tracker.record_day(today, fv, ar, targets, ret_series)
+                    if not targets:
+                        # Record equity without trading (B-06: MTM)
+                        wealth = _br.get_mtm_capital(strategy, next_day)
+                        equity_curve.append({"date": next_day, "equity": wealth})
+                        continue
+                    # ── Step 2: Execute at next-day open prices ──
+                    exec_result = _br.execute(targets, next_day, strategy=strategy)
+                    if exec_result.get("skipped"):
+                        _log.warning(f"backtest {next_day}: no open prices available, skipping")
+                        equity_curve.append({"date": next_day, "equity": _br.get_mtm_capital(strategy, next_day)})
+                        continue
+            except Exception as _day_err:
+                errors += 1
+                _log.error(f"backtest {today}: day failed ({errors} total): {_day_err}")
+                equity_curve.append({"date": next_day, "equity": _br.get_mtm_capital(strategy, next_day)})
+                continue
+            # ── Step 2.5: Update cooling-off from stop-loss events ──
+            stopped = exec_result.get("stopped_out", [])
+            if stopped:
+                for s in stopped:
+                    _rm.set_cooloff(s, next_day)
+            bt_tracker.phases.append(PhaseResult(name=f"day_{today}", started=_day_t0, finished=time.time(), status="ok", extra={"signals": len(signals.get("target_positions",[])) if signals else 0}))
+            # ── Step 3: Record equity ──
+            equity_curve.append({"date": next_day, "equity": exec_result.get("wealth", engine.get_capital(strategy))})
+            # Progress log every 60 days
+            if (i + 1) % _require_cfg("backtest.progress_log_interval") == 0:
+                elapsed = time.time() - t0
+                pct_done = (i + 1) / len(trading_days) * 100
+                _log.info(f"backtest: {i+1}/{len(trading_days)} days ({pct_done:.0f}%), "
+                            f"equity=Y{equity_curve[-1]['equity']:,.2f}, "
+                            f"{elapsed:.0f}s elapsed")
+        elapsed = time.time() - t0
+        # Fetch benchmark returns (test-v398: reuse preloaded, fallback DB)
+        if _bm_returns_full is not None and not _bm_returns_full.empty:
+            _bm_returns = _bm_returns_full
+        else:
+            _bm_levels = store.get_benchmark("000300", start=start_date)
+            _bm_returns = _bm_levels.pct_change().dropna() if not _bm_levels.empty else _bm_levels
+        _bm_returns = _bm_returns.reindex(pd.to_datetime([e["date"] for e in equity_curve]), method='ffill')
+        store.close()
+        # ── Compute metrics ──
+        # v555: n_trials 显式传参 — 原模块级函数引用 run_backtest 局部
+        # bt_factor_names 必抛 NameError, 回测最后一步必崩 (v554 引入)
+        metrics = _compute_backtest_metrics(equity_curve, _bm_returns,
+                                            n_trials=len(bt_factor_names))
+        # test-v397 (Problem 8): OOS split
+        if oos_start_date:
+            _is_curve = [e for e in equity_curve if e["date"] < oos_start_date]
+            _oos_curve = [e for e in equity_curve if e["date"] >= oos_start_date]
+            if len(_is_curve) >= 5:
+                metrics["is"] = _compute_backtest_metrics(_is_curve, _bm_returns,
+                                                          n_trials=len(bt_factor_names))
+            if len(_oos_curve) >= 5:
+                metrics["oos"] = _compute_backtest_metrics(_oos_curve, _bm_returns,
+                                                           n_trials=len(bt_factor_names))
+            metrics["oos_start_date"] = oos_start_date
+            _log.info("OOS split: IS %d days, OOS %d days", len(_is_curve), len(_oos_curve))
+        # ── Post-backtest diagnosis ──
+        _backtest_symbols = []
+        if _last_signals:
+            fv = _last_signals.get("_factor_values", {})
+            sym_set = set()
+            for series in fv.values():
+                if isinstance(series, pd.Series):
+                    sym_set.update(series.dropna().index.tolist())
+            _backtest_symbols = list(sym_set)
+        ic_map_pre = _current_ic_map  # reuse walk-forward IC (was: compute_pre_backtest_ic)
+        diag = diagnose(ic_map_pre, tracker, metrics)
+        # ── 回写诊断数据到 evaluation_runs (供 Phase 2 预筛) ──
+        # v85 原注释说 run_diagnostics.py 负责, 但该脚本未创建 → 诊断13天未更新
+        # v361 恢复: backtest 直接写 evaluation_runs, 同时保留独立脚本兼容性
+        passed = [name for name, info in diag.get("factor_report", {}).items()
+                  if info.get("recommendation") in ("keep", "boost")]
+        try:
+            from quant.evaluation.run_store import save_phase
+            save_phase("diagnostics", {
+                "n_factors": len(diag.get("factor_report", {})),
+                "passed": passed,
+                "factor_report": {
+                    n: {"recommendation": v["recommendation"], "ic_ir": v["ic_ir"]}
+                    for n, v in diag.get("factor_report", {}).items()
+                },
+                "summary": diag.get("summary", ""),
+                "backtest_cagr": metrics.get("cagr_pct", 0),
+                "backtest_sharpe": metrics.get("sharpe", 0),
+            })
+            _log.info("diagnostics saved to evaluation_runs: %d passed", len(passed))
+        except Exception as _de:
+            _log.warning(f"diagnostics save to evaluation_runs failed (non-fatal): {_de}")
+        # ── 应用诊断结果: 仅调整 IC 权重 ──
+        _adj_ic_map = apply_diagnosis(_current_ic_map, diag)
+        # B-22 fix: 调整后的 IC map 此前算出即丢弃 — 随 diagnosis 返回供调用方使用
+        diag["adjusted_ic_map"] = _adj_ic_map
+        # Stress test on final portfolio holdings
+        try:
+            from quant.risk.var import stress_test
+            _fp = engine.get_positions(strategy)
+            if _fp:
+                _fw_val = engine.get_capital(strategy)
+                _fw = {}
+                for _p in _fp:
+                    _pv = _p.get("price", 0) * _p.get("shares", 0)
+                    _fw[_p["symbol"]] = _pv / max(_fw_val, 1)
+                diag["stress_test"] = stress_test(_fp, _fw)
+        except Exception as _st_err:
+            # Q7-5 fix: stress test 失败必须可观测 (原裸 except: pass 吞错)
+            _log.warning(f"stress test skipped (non-fatal): {_st_err}")
+        _log.info("diagnosis: %s", diag["summary"])
+        for adj in diag["adjustments"]:
+            _log.info("  adjust: %s", adj)
+        avg_signals = sum(signal_counts) / max(len(signal_counts), 1)
+        # test-v344: 回测失败校验 — errors过多或无信号时不持久化,不报告虚假成功
+        valid_days = len(trading_days) - errors
+        if valid_days == 0 or avg_signals == 0:
+            _log.error(f"BACKTEST FAILED: {errors} errors/{len(trading_days)} days, "
+                       f"avg_signals={avg_signals:.1f} — result NOT persisted")
+            return {"error": "all_days_failed", "errors": errors, "avg_signals": avg_signals, "elapsed": elapsed}
+        # ADR-037: 回测结果持久化到 backtest_runs 表
+        _persist_backtest_result(strategy, start_date, end_date, capital, metrics, diag, elapsed, avg_signals, errors)
+        _log.info("=" * 70)
+        _log.info(f"  BACKTEST END: {strategy} | {len(trading_days)}d | elapsed={elapsed:.1f}s "
+                    f"| CAGR={metrics['cagr_pct']}% | Sharpe={metrics['sharpe']} | MDD={metrics['max_drawdown_pct']}%")
+        _log.info("=" * 70)
+        _log.info(f"backtest done in {elapsed:.1f}s: "
+                    f"CAGR={metrics['cagr_pct']}%, "
+                    f"Sharpe={metrics['sharpe']}, "
+                    f"MDD={metrics['max_drawdown_pct']}%, "
+                    f"avg_signals/day={avg_signals:.1f}, "
+                    f"errors={errors}")
+        # Explicit flush — web 服务进程同时在写同一日志文件, Python logging
+        # 多进程争用 FileHandler 时可能丢失最后几行. 强制刷盘.
+        for h in getattr(_log, "logger", _log).handlers:
+            try:
+                if hasattr(h, 'flush'):
+                    h.flush()
+            except Exception as _e:
+                _log.warning("backtest: reconcile final skipped (non-fatal): %s", _e)
+        # P1: 回测完成 → 释放 ztd 预计算缓存 (~80MB)
+        from quant.factor.compute.price._alternative import clear_ztd_cache
+        clear_ztd_cache()
+        # B29 (2026-08-18): 原返回无 "trades" 键 — phase8_live_consistency.py:214
+        # 读 bt_result["trades"] 恒空转 (死代码, D2 校验从不执行). 从 sim_trades
+        # 读回本策略成交 (回测执行经 engine.execute → record_trade 落库).
+        _trades = []
+        try:
+            _rows = _bc.execute(
+                "SELECT date, symbol, side, price, shares, pnl, pnl_pct "
+                "FROM sim_trades WHERE strategy=? ORDER BY date",
+                (strategy,)).fetchall()
+            _trades = [{"date": r[0], "symbol": r[1], "side": r[2],
+                        "price": r[3], "shares": r[4], "pnl": r[5],
+                        "pnl_pct": r[6]} for r in _rows]
+            _log.info("backtest: read back %d trades for strategy=%s",
+                      len(_trades), strategy)
+        except Exception as _te:
+            _log.warning("backtest: read-back sim_trades failed (non-fatal): %s", _te)
+        return {
+            "equity_curve": equity_curve,        "diagnosis": diag,
+            "metrics": metrics,
+            "trades": _trades,
+            "avg_signals_per_day": round(avg_signals, 1),
+            "errors": errors,
+            "elapsed_sec": round(elapsed, 1),
+        }
+# B-04 fix: BacktestEngine 之前缩进在 run_backtest 函数体内 return 之后,
+
+

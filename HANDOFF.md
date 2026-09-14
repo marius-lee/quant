@@ -46,7 +46,7 @@
 
 ### 归档
 - HANDOFF.md 更新
-- VERSION: test-v645
+- VERSION: test-v646
 - quant/core/version.py: 0.3.3
 
 ### 背景

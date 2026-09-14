@@ -522,8 +522,11 @@ def api_scheduler():
                     # 使用 started_at/finished_at 判断实际运行时间, 而非 date 字段
                     from datetime import date as _date
                     _today_str = _date.today().isoformat()
-                    _task_date = (run.get("finished_at") or run.get("started_at") or "")[:10]
-                    _is_today = _task_date == _today_str
+                    if run:
+                        _task_date = (run.get("finished_at") or run.get("started_at") or "")[:10]
+                        _is_today = _task_date == _today_str
+                    else:
+                        _is_today = False
                     if run and run["status"] == "ok":
                         if _is_today:
                             t["status_label"] = _badge("green", "今日已执行")

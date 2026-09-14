@@ -341,13 +341,34 @@ def api_scheduler():
                             t["status"] = "partial"
                         t["last_run"] = (_comp.get("finished_at") or _comp.get("started_at") or "")[:16].replace("T", " ")
                     else:
-                        t["status_label"] = _badge("blue", "运行中")
-                        t["status"] = "running"
-                        t["last_run"] = (run_today["started_at"] or "")[:16].replace("T", " ")
+                        # v594: 检查running状态是否超时
+                        try:
+                            from quant.scheduler.manifest import spec as _spec
+                            _task_spec = _spec(key)
+                            _timeout_s = _task_spec.timeout_s if _task_spec else None
+                            if _timeout_s and run_today.get("started_at"):
+                                from datetime import datetime as _dt
+                                _started_str = run_today["started_at"].replace("T", " ")
+                                _started = _dt.strptime(_started_str, "%Y-%m-%d %H:%M:%S")
+                                _elapsed = (_dt.now() - _started).total_seconds()
+                                if _elapsed > _timeout_s:
+                                    t["status_label"] = _badge("red", "超时失败")
+                                    t["status"] = "error"
+                                    t["last_run"] = (run_today["started_at"] or "")[:16].replace("T", " ")
+                                else:
+                                    t["status_label"] = _badge("blue", "运行中")
+                                    t["status"] = "running"
+                                    t["last_run"] = (run_today["started_at"] or "")[:16].replace("T", " ")
+                            else:
+                                t["status_label"] = _badge("blue", "运行中")
+                                t["status"] = "running"
+                                t["last_run"] = (run_today["started_at"] or "")[:16].replace("T", " ")
+                        except Exception:
+                            t["status_label"] = _badge("blue", "运行中")
+                            t["status"] = "running"
+                            t["last_run"] = (run_today["started_at"] or "")[:16].replace("T", " ")
             except Exception:
-                t["status_label"] = _badge("blue", "运行中")
-                t["status"] = "running"
-                t["last_run"] = (run_today["started_at"] or "")[:16].replace("T", " ")
+                pass
         elif run_today and (run_today.get("status", "") or "").strip().lower() == "lunch":
             t["status_label"] = _badge("yellow", "午休中")
             t["status"] = "lunch"

@@ -9,7 +9,8 @@ import pandas as pd
 
 from quant.config.constants import _require_cfg
 from quant.factor.compute._preload import preload_aux_data_chunk, slice_aux_for_date
-from quant.factor.compute.price._alternative import clear_ztd_cache, preload_ztd_cache
+from quant.factor.compute.price._alternative import clear_ztd_cache
+from quant.factor.compute.price._preload import preload_ztd_cache
 from quant.factor.store.helpers import (_log, _PROJ_ROOT, _CACHE_DIR, _PARQUET_DIR,
     _DATA_FULL, _PRIMS, _AUX_FULL, _FUNDAMENTALS, _SYMBOLS, _MISSING_MAP,
     _BLOCKED_PATH, _EMPTY_WARN_DAYS, _SOURCE_HASH_CACHE, _DATA_FINGERPRINT_CACHE,
@@ -613,7 +614,8 @@ class FactorStore:
         """
         from quant.factor.compute._preload import preload_aux_data_chunk
         from quant.factor.compute._primitives import precompute_primitives
-        from quant.factor.compute.price._alternative import clear_ztd_cache, preload_ztd_cache
+        from quant.factor.compute.price._alternative import clear_ztd_cache
+        from quant.factor.compute.price._preload import preload_ztd_cache
 
         t0 = _time.time()
         eff_days = max(_require_cfg("data.lookback_days"), max_factor_calendar_days(factor_names))

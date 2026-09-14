@@ -32,7 +32,6 @@ from quant.utils.logger import get_logger
 
 logger = get_logger("compliance")
 
-
 class ClientSuitabilityManager:
     def __init__(self):
         self._clients: Dict[str, ClientProfile] = {}
@@ -165,7 +164,6 @@ class ClientSuitabilityManager:
         if product_code:
             history = [h for h in history if h.product_code == product_code]
         return history[-limit:]
-
 
 class RegulatoryReportingEngine:
     def __init__(
@@ -419,7 +417,6 @@ class RegulatoryReportingEngine:
             reports = [r for r in reports if r.reporting_date <= end_date]
         return sorted(reports, key=lambda r: r.reporting_date, reverse=True)
 
-
 class FundAccountManager:
     def __init__(self, broker_manager: BrokerManager):
         self.broker_manager = broker_manager
@@ -472,7 +469,6 @@ class FundAccountManager:
 
     def get_total_assets(self) -> float:
         return sum(a.total_assets for a in self._accounts.values())
-
 
 class AuditTrail:
     def __init__(self, log_dir: str = "audit_logs"):
@@ -591,7 +587,6 @@ class AuditTrail:
 
         return len(errors) == 0, errors
 
-
 class ComplianceManager:
     def __init__(
         self,
@@ -698,9 +693,7 @@ class ComplianceManager:
             "violations_24h": 0,
         }
 
-
 _compliance_manager: Optional[ComplianceManager] = None
-
 
 def get_compliance_manager() -> ComplianceManager:
     global _compliance_manager
@@ -711,7 +704,6 @@ def get_compliance_manager() -> ComplianceManager:
             risk_manager=get_live_risk_manager(),
         )
     return _compliance_manager
-
 
 def init_compliance_manager(
     broker_manager: BrokerManager = None,

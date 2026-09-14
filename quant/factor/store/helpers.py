@@ -36,9 +36,10 @@ import pyarrow.parquet as pq
 from quant.config.constants import _require_cfg
 from quant.utils.logger import get_logger
 from quant.factor.compute._dispatch import compute_all_factors
-from quant.factor.compute._primitives import precompute_primitives
+from quant.factor.compute._primitives_group1 import precompute_primitives
 from quant.factor.compute._preload import preload_aux_data_chunk, slice_aux_for_date
-from quant.factor.compute.price._alternative import preload_ztd_cache, clear_ztd_cache
+from quant.factor.compute.price._preload import preload_ztd_cache
+from quant.factor.compute.price._alternative import clear_ztd_cache
 from quant.factor.windows import max_factor_calendar_days
 
 _log = get_logger("quant.factor.store")

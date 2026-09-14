@@ -44,7 +44,6 @@ _MAX_WORKERS = _require_cfg("factor.evaluation.max_workers")
 _WORKER_TIMEOUT_SEC = _require_cfg("factor.evaluation.worker_timeout_sec")
 _COMPUTE_LOCK = threading.Lock()  # in-process reentrancy guard: 因子计算最多一个线程运行
 
-
 def compute_factor_stats(
     symbols: list = None, n_symbols: int = None, lookback: int = None,
     factor_names: list = None, status_filter=None,
@@ -311,7 +310,6 @@ def compute_factor_stats(
 
     return result
 
-
 def _empty_result(factor_names: list = None, status_filter=None) -> dict:
     """返回空结果（数据不足时）。使用传入 factor_names，None 时回退到全量因子。"""
     if factor_names is None:
@@ -332,7 +330,6 @@ def _empty_result(factor_names: list = None, status_filter=None) -> dict:
         "meta": {n: {"display": n, "category": "—", "source": "—", "n_periods": 0} for n in names},
         "cached_at": datetime.now().isoformat(),
     }
-
 
 def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, status_filter=None) -> dict:
     """获取缓存的因子评估数据。从 factor_snapshot 表读取，24h 过期自动重算。
@@ -418,7 +415,6 @@ def get_cached_factor_stats(force_refresh: bool = False, n_symbols: int = None, 
     finally:
         _COMPUTE_LOCK.release()
 
-
 def _load_ic_from_db(filter_names=None, scope='live') -> dict:
     """从 factor_ic_daily 表加载因子 IC 权重 (按 scope 隔离).
 
@@ -471,7 +467,6 @@ def _load_ic_from_db(filter_names=None, scope='live') -> dict:
         ic_map = {k: v / total for k, v in ic_map.items()}
     logger.info(f"IC weights loaded from DB: {len(ic_map)} factors (scope={scope})")
     return ic_map
-
 
 def compute_backtest_ic(start_date: str, n_train_days: int = 120,
                        status_filter: str = 'backtesting',
@@ -553,7 +548,6 @@ def compute_backtest_ic(start_date: str, n_train_days: int = 120,
     logger.info(f"backtest IC: {len(ic_map)} factors with weights (train_end={train_end})")
     return ic_map
 
-
 def _bayesian_shrink_ic_map(ic_map: dict) -> dict:
     """ALG2: Bayesian shrinkage of IC estimates toward cross-sectional prior.
 
@@ -601,7 +595,6 @@ def _bayesian_shrink_ic_map(ic_map: dict) -> dict:
     )
     return shrunk
 
-
 def _extract_float_weights(ic_map: dict) -> dict:
     """Convert dict-valued ic_map to {name: float_weight} for early-return paths.
 
@@ -622,9 +615,6 @@ def load_ic_map_from_cache(factor_values: dict = None, scope='live') -> dict:
     scope: 'live' (实盘, 读 factor_registry) 或 'backtest' (回测, 读 factor_ic_daily).
     """
     return _load_ic_from_db(factor_values, scope=scope)
-
-
-
 
 # ── Incremental IC (test-v458: P4) ──────────────────────────────────────
 class IncrementalIC:
@@ -857,8 +847,6 @@ class IncrementalIC:
             self._factor_buffer.clear()
             self._return_buffer.clear()
             self._update_count = 0
-
-
 
 def force_refresh_cache(n_symbols: int = None) -> dict:
     """强制刷新因子评估 — 重新计算并存入 factor_snapshot 表。
